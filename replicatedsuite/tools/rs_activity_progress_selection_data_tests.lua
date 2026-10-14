@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Activity Progress Selection Data Policy Tests
+-- Replicated Suite · 活动进度选择数据测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Verifies the data-Authority contract introduced in .18.281:
--- every verified multi-objective activity is selectable by default, while
--- single-objective and instance-raid groups keep a fixed denominator.
+-- 验证活动进度的数据归属：已核实的多目标活动默认允许选择目标，单目标活动和副本团队任务保持固定分母。
 ------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
@@ -19,7 +19,7 @@ local function Auto(seed)
     seed = type(seed) == "table" and seed or {}
     return setmetatable(seed, {
         __index = function(t, key)
-            if type(key) == "number" then return nil end -- keep ipairs over unknown ID arrays finite
+            if type(key) == "number" then return nil end -- 为未知 ID 数组提供有限长度，避免 ipairs 测试遍历无法终止。
             local child = Auto({})
             rawset(t, key, child)
             return child

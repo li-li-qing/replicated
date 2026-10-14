@@ -1,17 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Transform Inspector v2
+-- Replicated Suite · 变换属性检查器
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Reusable editor-side Inspector for HUD/layout surfaces. It binds to the
--- shared AnchorPivotModel and LayoutEditorSnapSettingsModel; it never owns
--- Feature persistence and never creates a second geometry Authority.
---
--- Layout intent (dense editor inspector):
---   Transform  : local top-left X/Y + width/height
---   Anchor     : 9-point preset + normalized anchor/pivot + anchor offsets
---   Snapping   : enable/grid/alignment/canvas/guides + bounded parameters
---
--- Coordinate labels are explicit because ArcheAge/CryEngine uses top-left
--- origin: +X right, +Y down. "Up" therefore means negative Y.
+-- HUD/布局复用 Inspector，绑定 AnchorPivotModel/LayoutEditorSnapSettingsModel，不持 Feature 持久化或第二几何权威。
+-- 密集 Inspector：Transform 编辑局部左上 X/Y、宽高；Anchor 编辑九点预设、归一化 anchor/pivot、锚偏移；Snapping 编辑启用/网格/对齐/画布/引导与有界参数。
+-- 坐标标签须明确：ArcheAge/CryEngine 左上原点，+X 右、+Y 下，“上”即负 Y。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -32,9 +26,7 @@ local function Notify(label, fn, ...)
     local count = select("#", ...)
     local args = { ... }
     local ok, err = xpcall(function() fn(unpack(args, 1, count)) end, S.SafeTraceback)
-    -- Inspector callbacks are notifications, never mutation Authority. The local
-    -- editor model has already committed before this callback fires, so callback
-    -- failure must not turn a successful model mutation into a half-transaction.
+    -- Inspector 回调仅通知，触发前本地模型已提交；失败不能让成功模型修改变成半事务。
     if ok ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Warn) == "function" then
         pcall(function() S.DiagnosticsManager:Warn("ui", "TRANSFORM_INSPECTOR_CALLBACK_FAILED",
             "Transform Inspector 回调失败", { callback = tostring(label), error = tostring(err) }) end)

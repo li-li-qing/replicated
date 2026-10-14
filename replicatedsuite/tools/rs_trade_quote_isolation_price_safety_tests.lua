@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- 2026-09-30 quote-isolation-price-safety-1: real API/import/queue/search/material services.
+-- Replicated Suite · 交易报价隔离与价格安全测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用真实 API、导入、队列、搜索和材料服务验证报价隔离及价格安全。
 -- Native 窗口/网络回包/时钟只作为外部边界替身；同一套用例必须先在旧基线失败。
 -- 不进入 toc.g；离线通过不能证明 RU 服务器已发送请求可以撤回。
 ------------------------------------------------------------------------
@@ -99,9 +103,9 @@ local function Boot(staleAuctionHost)
             return 200, 150, 800, 600, h.visible
         end,
     }
-    -- Load services with no business namespaces present; import only Trade's actual registry dependencies later.
+    -- 加载服务时不预置业务命名空间，稍后只导入 Trade 注册元数据实际声明的依赖。
     for _,name in ipairs({"X2Auction","X2Craft","X2Store","X2Ability","X2Equipment"}) do _G[name]=nil end
-    if staleAuctionHost then _G.X2Auction={} end -- placeholder/reload host, replaced by ImportAPI
+    if staleAuctionHost then _G.X2Auction={} end -- 重载占位宿主，随后由 ImportAPI 替换。
     h.imports={}
     dofile("native/rs_native_contract.lua")
     function ADDON:ImportAPI(id)
@@ -115,7 +119,7 @@ local function Boot(staleAuctionHost)
     dofile("native/rs_native_imports.lua")
     assert(S.BootError==nil,S.BootError)
     dofile("features/rs_feature_registry.lua")
-    -- toc.g order: Query and Queue load BEFORE Surface. Guard lookups must be runtime-local, not captured nil.
+    -- toc.g 中 Query 和 Queue 先于 Surface 加载；保护条件必须在运行时读取对象，不能捕获加载期的 nil。
     dofile("services/rs_auction_query_v3.lua")
     dofile("services/rs_price_quote_queue_v3.lua")
     dofile("services/rs_auction_surface_v3.lua")

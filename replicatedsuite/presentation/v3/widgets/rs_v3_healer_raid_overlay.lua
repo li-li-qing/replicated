@@ -1,19 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Healer Raid Overlay Consumer (Panel A/B refactor)
+-- Replicated Suite · 治疗团队覆盖层
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Independent Presentation Consumer. The overlay consumes committed Healer
--- Recommendation + Roster projections only.
---
--- Architecture (this refactor):
---   RaidTeam   = team identity (TeamRosterV3 authority; teamIndex 1/2)
---   RaidPanel  = screen container A/B, each with its own rectangular geometry
---   Calibration= the panel rectangle; one rect per panel, cells are derived
---
--- A panel's bound team (which RaidTeam it shows) can change at runtime WITHOUT
--- any geometry change. Geometry is owned by the panel, not by the team. Single
--- list mode shows Panel A only; dual list mode shows A and B. Each panel holds
--- 50 pooled slots created once. Highlighting is event-driven (v3.healer.updated),
--- not a per-frame full scan.
+-- 独立表现 Consumer，仅消费已提交 Healer Recommendation 与 Roster 投影。
+-- 架构：RaidTeam 表示团队身份（TeamRosterV3 权威，teamIndex 1/2）；RaidPanel 为各自具有矩形几何的 A/B 屏幕容器；
+-- Calibration 为每面板一个矩形，单元格由此推导。
+-- 面板绑定团队可运行时变化而不改几何；几何归面板，单列表仅 A，双列表显示 A/B。每面板一次创建 50 个池槽，高亮由 v3.healer.updated 驱动，不逐帧全量扫描。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -61,7 +54,7 @@ local function Settings()
     }
 end
 
--- Deterministic HSL->RGB for test-color mode (h in [0,1]).
+-- 测试颜色模式使用确定性 HSL->RGB（h ∈ [0,1]）。
 local function HslColor(h, s, l)
     h = (h % 1 + 1) % 1
     local r, g, b
@@ -235,7 +228,7 @@ end
 function P:LayoutPanel(id)
     local panel = self.panels[id]
     if panel == nil or panel.moving == true then return true end
-    local settings = self.settings or Settings() -- 中文维护：布局与本轮高亮共用 Start/Reconcile 的 detached 配置。
+    local settings = self.settings or Settings() -- 布局与本轮高亮共用 Start/Reconcile 的 detached 配置。
     local geometry = nil
     for _, b in ipairs(self.bindings) do if b.id == id then geometry = b.geometry; break end end
     if geometry == nil then
@@ -244,13 +237,10 @@ function P:LayoutPanel(id)
     end
     if type(geometry) ~= "table" then return false end
     local width, height = math.max(120, N(geometry.width, DEFAULT_PANEL_WIDTH)), math.max(160, N(geometry.height, DEFAULT_PANEL_HEIGHT))
-    -- Geometry constants aligned with the proven legacy healer overlay
+    -- 几何常量对齐已验证旧治疗覆盖层。
     -- (参考的项目1 replicatedhealer_core2.lua:453-458 / rh_config.lua:95-98):
-    -- outerPad 4, title pad 22 (legacy reserved a title line inside each
-    -- section), group (column) gap 4, row gap 1, section gap 8. With the
-    -- default 340x400 panel this reproduces the legacy per-slot geometry
-    -- exactly: sectionH 196, cellW 63, slotHeight 33 -- instead of the first
-    -- draft 5px grid (192/63/34) that visually compressed rows.
+    -- outerPad=4、标题预留=22、列间距=4、行间距=1、区域间距=8；
+    -- 默认 340x400 面板得到 sectionH=196、cellW=63、slotHeight=33，精确复现已验证槽位几何，避免初稿 5px 网格（192/63/34）压缩行。
     local outerPadX, outerPadY, cellGapX, cellGapY, sectionGapY, titlePadY = 4, 0, 4, 1, 8, 22
     local sectionH = math.max(60, math.floor((height - outerPadY * 2 - sectionGapY) / 2))
     local cellW = math.max(6, math.floor((width - outerPadX * 2 - (HALF_COLS - 1) * cellGapX) / HALF_COLS))
@@ -264,8 +254,7 @@ function P:LayoutPanel(id)
     S.UI:SetAnchor(panel.borders[2], panel.window, 0, height - 2, self.owner); S.UI:SetExtent(panel.borders[2], width, 2, self.owner)
     S.UI:SetAnchor(panel.borders[3], panel.window, 0, 0, self.owner); S.UI:SetExtent(panel.borders[3], 2, height, self.owner)
     S.UI:SetAnchor(panel.borders[4], panel.window, width - 2, 0, self.owner); S.UI:SetExtent(panel.borders[4], 2, height, self.owner)
-    -- One native raid is NOT 10 columns x 5 rows.  It is two stacked 25-slot
-    -- sections: 1..25 above and 26..50 below.  Each half is column-major 5x5.
+    -- 原生团队由上下两个 25 槽区域组成，1..25 在上、26..50 在下；每半区为列优先 5x5，不能按 10 列×5 行处理。
     for i = 1, SLOTS_PER_PANEL do
         local half = i > HALF_SLOTS and 1 or 0
         local within = ((i - 1) % HALF_SLOTS) + 1
@@ -292,8 +281,7 @@ function P:LayoutAll()
     for id in pairs(self.panels) do self:LayoutPanel(id) end
 end
 
--- Map a roster member to its panel + local slot index. The binding is by team
--- identity; the player (teamIndex 0 / isSelf) resolves to the single-only panel.
+-- 按团队身份把成员映射到面板和局部槽下标；玩家（teamIndex 0/isSelf）解析到仅单列表的面板。
 function P:GetOverlaySlot(member)
     local team = tonumber(member and member.teamIndex) or 0
     local memberIndex = tonumber(member and member.memberIndex) or 0
@@ -315,9 +303,7 @@ function P:RefreshProjection()
     self.activePanels = {}
     self.selfSlot = nil
     for _, panel in pairs(self.panels) do panel.maxMemberIndex = 0 end
-    -- Geometry follows the native roster population, not the recommendation
-    -- projection. Out-of-range/dead members may be absent from displayRows but
-    -- still occupy a native party cell and must keep the overlay width stable.
+    -- 几何跟随原生名单人数，不跟随推荐投影；超距/死亡成员虽可能不在 displayRows 中，仍占原生队伍格，须保持覆盖宽度稳定。
     local roster = type(Feature.GetRosterProjection) == "function" and Feature:GetRosterProjection() or nil
     for _, member in ipairs(type(roster) == "table" and type(roster.members) == "table" and roster.members or {}) do
         local panel = self:GetOverlaySlot(member)
@@ -341,13 +327,13 @@ end
 
 function P:RefreshHighlights(nowMs)
     if self.running ~= true then return false end
-    -- 中文维护（performance-cache-1）：Start/Reconcile 在设置事件边沿取得 detached 配置，
+    -- 约束（performance-cache-1）：Start/Reconcile 在设置事件边沿取得 detached 配置，
     -- 生命发布/颜色动画复用它；不在每次高亮刷新重复复制 panels/geometry。
     local settings = self.settings or Settings()
     local calibration = settings.calibration == true
     local useRaidRuntime = self.rosterCount > 1
     nowMs = nowMs or (S.NowMs and S.NowMs() or 0)
-    -- 中文维护：先计算本轮最终占用，再逐格提交。旧“全隐藏→重显示”绕过 Diff，
+    -- 先计算本轮最终占用，再逐格提交。旧“全隐藏→重显示”绕过 Diff，
     -- 每个未变化成员也产生两次 Show；该索引仅属 Presenter，不共享业务可变状态。
     local slotRows = {}
     for _, row in ipairs(self.displayRows) do
@@ -384,7 +370,7 @@ function P:RefreshHighlights(nowMs)
             local runtimeCell = useRaidRuntime and row ~= nil
             local rankVisible = runtimeCell and not calibration and row.isCandidate == true
                 and settings.showRanks == true and N(row.rank, 99) <= N(settings.rankCount, 10)
-            -- 中文维护：rank/slot 都只提交最终可见性；退出校准、成员离队和定位闪光结束
+            -- rank/slot 都只提交最终可见性；退出校准、成员离队和定位闪光结束
             -- 同样通过这一轮最终状态隐藏，避免保留已离队成员或旧排名。
             S.UI:SetVisible(panel.ranks[i], rankVisible == true, self.owner)
             S.UI:SetVisible(panel.calibrationLabels[i], calibrationCell, self.owner)
@@ -420,7 +406,7 @@ end
 
 function P:AnimateTick()
     if self.running ~= true then return false end
-    local settings = self.settings or Settings() -- 中文维护：动画只读已提交配置，设置事件由 Reconcile 失效缓存。
+    local settings = self.settings or Settings() -- 动画只读已提交配置，设置事件由 Reconcile 失效缓存。
     if math.floor(N(settings.effectMode, 1)) == 1 then return true end
     local nowMs = S.NowMs and S.NowMs() or 0
     for _, candidate in ipairs(self.candidates) do
@@ -437,7 +423,7 @@ function P:AnimateTick()
 end
 
 function P:ReconcileEffectTask()
-    local settings = self.settings or Settings() -- 中文维护：任务需求与高亮共用同一配置快照。
+    local settings = self.settings or Settings() -- 任务需求与高亮共用同一配置快照。
     local needTask = self.running == true and self.calibrationMode ~= true and math.floor(N(settings.effectMode, 1)) ~= 1
     if needTask and self.taskActive and type(S.Scheduler.SetTaskInterval)=="function" then S.Scheduler:SetTaskInterval(self.taskName,N(settings.refreshMs,100),true) end
     if needTask and self.taskActive ~= true then
@@ -466,10 +452,7 @@ function P:Start(reason)
     if calibration == true then
         ok, err = Feature:AcquirePreviewConsumer(self.consumerToken)
         if ok ~= true then return false, err end
-        -- Calibration holds ONLY the preview lease. The gate and the aura
-        -- acceptance both require consumerHeld == false while calibrating;
-        -- tracking the preview under consumerHeld made every healthy
-        -- calibration run report healer_v3_visual_lifecycle failure.
+        -- 校准只持有预览租约；门禁和 Aura 验收均要求校准时 consumerHeld=false，不能把预览计为普通 Consumer 而误报 healer_v3_visual_lifecycle。
         self.previewHeld = true
         self.consumerHeld = false
     else

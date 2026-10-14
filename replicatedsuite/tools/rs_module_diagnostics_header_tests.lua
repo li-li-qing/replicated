@@ -1,6 +1,10 @@
--- Module diagnostics header injection contract.
--- The diagnostic affordance must be generated centrally by PageHost/DesignSystem,
--- not copied into every feature page. It must never initialize/enable a feature.
+------------------------------------------------------------------------
+-- Replicated Suite · 模块诊断页头测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 模块诊断入口由 PageHost/DesignSystem 集中生成，不能复制到每个功能页；入口不能初始化或启用功能。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS module-diag-header '..name)else failed=failed+1;print('FAIL module-diag-header '..name..': '..tostring(err))end end
 local function Boot()

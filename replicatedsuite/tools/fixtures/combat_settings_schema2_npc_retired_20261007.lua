@@ -1,2 +1,8 @@
--- Frozen with pre-removal schema2 production code and real Persistence. Synthetic in-memory data.
+------------------------------------------------------------------------
+-- Replicated Suite · NPC停用前的战斗设置结构2快照
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用移除前的生产 schema2 和真实 Persistence 固定测试快照；数据仅在内存中构造。
+------------------------------------------------------------------------
 return {["__rsmeta"]={["contractVersion"]=3,["encodedFingerprint"]="192360B1",["envelopeFingerprint"]="60B1DCF1",["envelopeIntegrityVersion"]=1,["framework"]=3,["integrityVersion"]=4,["lifetime"]="Permanent",["owner"]="v3.combat_analytics",["periodId"]="permanent",["reliabilityContract"]=8,["schema"]=2,["scope"]="Account",["store"]="v3.combat_analytics",["transportVersion"]=3,},["payload"]={["collectionScope"]="self",["metricEnabled"]={["aura"]=true,["casts"]=true,["control"]=true,["encounter"]=true,["kills"]=true,["mechanics"]=true,["performance"]=true,["songcraft"]=true,["utility"]=true,},["selectedMetric"]="kills",["selectedValues"]={["aura"]="buffUptimeMs",["casts"]="skillActivities",["control"]="controlHits",["encounter"]="durationMs",["kills"]="npcKills",["mechanics"]="mechanics",["performance"]="peak5sDps",["songcraft"]="songMs",["utility"]="utilityActivities",},},}

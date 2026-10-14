@@ -1,14 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Trade Diagnostics Floating Panel
+-- Replicated Suite · 贸易链路诊断
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Dedicated read-only debugging surface for the 跑商 quote pipeline
--- (route -> material identity -> PriceQuoteQueueV3 -> X2Auction). It consumes
--- public Feature/Service describe APIs only: no consumer lease, no Commands,
--- no native auction/craft access, and it never writes business state.
---
--- The copyable report is the debugging contract with the maintainer: it carries
--- per-layer facts (route, identity, live attempts, quote queue with the RAW
--- native return shape) so RU runtime answers come back in one paste.
+-- 跑商报价链路的专用只读诊断窗口。
+-- 链路为 route -> 材料身份 -> PriceQuoteQueueV3 -> X2Auction；
+-- 仅消费公开 Feature/Service describe API，不获取租约、不执行 Commands、不访问原生拍卖/制作，也不写业务状态。
+-- 可复制报告是维护者排查契约：包含 route、身份、实际尝试和携带原始 Native 返回结构的报价队列等分层事实，使 RU 运行反馈一次粘贴即可完整提供。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -98,8 +96,7 @@ local function DescribeQuoteText(record)
     return Bounded(record.error or record.rawShape or "未知", "-", 120)
 end
 
--- Read-only composition over public describe APIs. Safe while the feature is
--- disabled: every source is optional.
+-- 只读组合公开 describe API，所有来源均可选，Feature 停用时也安全。
 local function CollectState()
     local feature = Feature()
     local queue = Queue()
@@ -229,8 +226,7 @@ local function BuildCopyReport(state)
                     or (" 形态=" .. Bounded(record.rawShape or "-", "-", 120) .. " 错误=" .. Bounded(record.error or "-", "-", 120))))
         end
     end
-    -- Protocol discrimination evidence: without this the only signal is "all
-    -- nil", which cannot separate a wrong call protocol from an empty market.
+    -- 记录协议判别证据；单看“全部 nil”无法区分调用协议错误与市场为空。
     local probe = type(health.protocolProbe) == "table" and health.protocolProbe or nil
     if type(probe) == "table" then
         Add("协议探针: done=" .. tostring(probe.done == true) .. " 次=" .. tostring(probe.attempts or 0))
@@ -291,10 +287,7 @@ local function BuildCopyReport(state)
                     if firstError == nil then firstError = material.quoteError end
                 end
             end
-            -- This panel is the developer surface: internal identifiers belong
-            -- here and nowhere else. Pages/HUD rows carry localized Chinese names
-            -- only; the English data key and craftType/source trace arrive on the
-            -- diagnostics-only fields the projection now separates for us.
+            -- 本面板属于开发诊断，内部标识符仅在此显示；页面/HUD 使用本地化中文名，英文数据键及 craftType/source 链路来自投影单独分离的诊断字段。
             Add("  " .. tostring(index) .. ". " .. Bounded(row.sourceName or row.name or "?", "?", 48)
                 .. (row.materialRows ~= nil and #row.materialRows > 0
                     and (" 材料键[" .. Bounded((function()
@@ -370,7 +363,7 @@ function M:EnsureCreated()
         statePolicy = AuxStore:GetPolicy("trade_diagnostics"),
         getState = function() return AuxStore:GetWindowState("trade_diagnostics") end,
         setState = function(value, reason) return AuxStore:SetWindowState("trade_diagnostics", value, reason) end,
-        -- 中文维护注释：跑商诊断只把窗口几何/锁定/透明度写入 Presentation Store；
+        -- 跑商诊断只把窗口几何/锁定/透明度写入 Presentation Store；
         -- 业务数据继续由原 Feature/Service Authority 管理，避免第二业务 Authority。
         persist = function(reason, delayMs) return AuxStore:PersistWindow("trade_diagnostics", reason, delayMs) end,
         onClosed = function()
@@ -485,7 +478,7 @@ if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.Regis
         if type(feature)~='table' or type(feature.DescribeDiagnosticDetail)~='function' then return {available=false} end
         return feature:DescribeDiagnosticDetail()
     end, 110, {detailOnly=true})
-    -- 中文维护：raw 独立来源且晚于 Hub 核心状态；只读已采集挂单，新请求优先输出。
+    -- raw 独立来源且晚于 Hub 核心状态；只读已采集挂单，新请求优先输出。
     S.ModuleDiagnosticsHub:RegisterProvider('life_trade','DescribeAuctionListingDetail',function()
         local feature=Feature()
         if type(feature)~='table' or type(feature.DescribeAuctionListingDetail)~='function' then return {available=false} end

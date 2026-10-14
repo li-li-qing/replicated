@@ -1,6 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Mechanic Catalog
--- Exact O(1) indexes compiled from BossAlerts. No fuzzy scan in combat hot path.
+-- Replicated Suite · 战斗机制目录
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 从 BossAlerts 编译精确 O(1) 索引；战斗热路径禁止模糊扫描。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

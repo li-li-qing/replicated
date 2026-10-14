@@ -1,13 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - nameplate visual offline regression tests
--- Synthetic X2Option only. This proves lifecycle/transaction semantics and is
--- NOT an RU-client visual acceptance claim.
+-- Replicated Suite · 头顶标记显示测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 2026-09-20 nameplate-mark-ratio-3: RU acceptance from 18.272 proved the four
--- name_tag_hp_* variables affect native HP bars while over_head_marker_width /
--- height / offset do not visually resize X2Unit:SetOverHeadMarker marks. The
--- current contract therefore drives name_tag_mark_size_ratio only and keeps
--- schema1 markerWidth/markerHeight as persistence-compatible percent encoding.
+-- 头顶标记离线回归，仅模拟 X2Option；验证生命周期和事务语义，不能替代 RU 视觉验收。
+-- 2026-09-20 RU 验收证明四个 name_tag_hp_* 变量影响原生血条，而 over_head_marker_width/height/offset 不会改变 X2Unit:SetOverHeadMarker 标记的视觉尺寸。
+-- 因此当前契约只写 name_tag_mark_size_ratio，schema1 的 markerWidth/markerHeight 保留为存档兼容的百分比编码。
 ------------------------------------------------------------------------
 local function DeepCopy(v)
     if type(v) ~= "table" then return v end
@@ -30,8 +28,7 @@ local cvars = {
     name_tag_hp_height = 7,
     name_tag_hp_width_on_bgmode = 158,
     name_tag_hp_height_on_bgmode = 38,
-    -- Legacy candidates remain in the synthetic client specifically so tests can
-    -- prove 18.273 no longer writes them after RU showed they are visually inert.
+    -- 测试客户端故意保留旧候选变量，验证实机证明其无视觉效果后，当前实现不再写入这些变量。
     over_head_marker_width = 46,
     over_head_marker_height = 50,
     over_head_marker_offset = 10,
@@ -246,7 +243,7 @@ Test("write-only getter nil no longer blocks marker-ratio enable",function()
     Near(F.Authority.baseline.markerScale,1.15)
     Eq(F.Authority.baseline.hpWidth,82)
     Eq(F.Authority.baselineSources.markerScale,"system_cfg")
-    -- Enable still applies durable user settings even though every getter returns nil.
+    -- 所有 Getter 都返回 nil 时，启用功能仍应应用用户持久化设置。
     Near(cvars.name_tag_mark_size_ratio,1.5)
     Eq(cvars.name_tag_hp_width,F:GetSettings().hpWidth)
 end)

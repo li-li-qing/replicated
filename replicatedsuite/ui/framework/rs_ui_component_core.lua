@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Component Runtime v2
+-- Replicated Suite · 组件核心与构建事务
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Public component layer above UI Factory + UI Framework Diff/Lifecycle.
--- Business modules should construct reusable UI through S.RSUI instead of
--- talking to ArcheAge native widgets directly whenever a standard component
--- exists.
+-- UI Factory 与 UI Framework Diff/Lifecycle 上的公开组件层；已有标准组件时业务模块应经 S.RSUI 构造，不直接操作 ArcheAge 原生控件。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -151,9 +150,7 @@ local RSUI = {
         layoutStabilizationPasses = 0,
         layoutUnstableDeferrals = 0,
         siblingOverlapIssues = 0,
-        -- Advanced layout-template degradation counters (rs_ui_layout_templates).
-        -- Non-zero means a template hit a geometry dead end and degraded on
-        -- purpose; these are diagnostic signals, not errors.
+        -- 高级布局模板降级计数（rs_ui_layout_templates）；非零表示几何无解而主动降级，是诊断信号，不是错误。
         collapsibleHeaderUnavailable = 0,
         collapsibleHeaderBindFailed = 0,
         splitToolbarSpacerClamped = 0,
@@ -207,15 +204,10 @@ RSUI.AttachmentContractVersion = 1
 RSUI.ReparentPolicyContractVersion = 1
 RSUI.NativeReparentSupported = false
 
--- Event-driven invalidation queue.
+-- 事件驱动失效队列。
 --
--- Phase 1-8 established dirty propagation, but it deliberately required an
--- external caller to perform the next Layout pass.  That contract is not
--- sufficient for data-driven composites: Collapsed/Visible changes made after
--- an initial layout can leave stale gaps until the entire page is laid out
--- again.  M6-v10 closes that gap without adding a permanent Tick.  Only the
--- top-most logical RSUI component is queued, and the existing Suite Scheduler
--- executes one bounded one-shot flush.
+-- 数据驱动组合控件的 Collapsed/Visible 变化需自动重新布局，不能等待外部整页 Layout 留下空隙；
+-- 仅最高层逻辑 RSUI 根入队，由现有 Suite Scheduler 执行有界 one-shot，不添加永久 Tick。
 RSUI.layoutQueue = setmetatable({}, { __mode = "k" })
 RSUI.layoutFlushScratch = {}
 RSUI.layoutFlushScheduled = false
@@ -224,12 +216,7 @@ RSUI.layoutFlushTaskName = "rsui_layout_flush"
 RSUI.layoutEpoch = 0
 RSUI.typographyComponents = setmetatable({}, { __mode = "k" })
 
--- Synchronous construction transaction. V3 pages/widgets/windows are built
--- lazily, while the RU client does not expose a validated generic DestroyWidget
--- operation. A Lua exception after a native widget was committed therefore must
--- not be followed by a second constructor attempt with the same physical id.
--- Build scopes retain only objects created by the current synchronous factory;
--- normal rendering has zero per-frame cost.
+-- 同步构建事务：V3 页/组件/窗口延迟构建，RU 没有已验证通用 DestroyWidget；原生提交后 Lua 异常不能再次使用同物理 id 构造。scope 仅保留当前同步工厂对象，正常渲染无逐帧成本。
 RSUI.buildScopeStack = {}
 RSUI.buildScopeSerial = 0
 RSUI.BuildScopeContractVersion = 4
@@ -343,13 +330,7 @@ local function RollbackBuildScope(self, scope)
         if widget ~= nil then
             local owner = nil
             pcall(function() owner = widget.rsUiOwner end)
-            -- Rollback is a hard interaction boundary, not merely a visual hide.
-            -- A factory can fail after creating a top-level popup/EditBox that is
-            -- not yet attached to a healthy Component.  RU can retain keyboard or
-            -- hit-test ownership from such half-built Native widgets even after an
-            -- ancestor is hidden.  Quiesce every tracked primitive independently;
-            -- input retirement is idempotent and therefore safe after Component
-            -- Release already retired the same EditBox.
+            -- 回滚也是交互边界：半构建顶层弹层/EditBox 未附着健康组件时，即使祖先隐藏仍可能持有键盘/命中。每个已追踪原生控件独立静默；输入退休幂等，组件 Release 已退休的 EditBox 也可再次处理。
             if widget.rsUiKeyboardInput == true and type(UI.RetireInputWidget) == "function" then
                 local ok, retired = pcall(function() return UI:RetireInputWidget(widget, owner, "build_scope_rollback") end)
                 if ok ~= true or retired == false then
@@ -358,8 +339,7 @@ local function RollbackBuildScope(self, scope)
             end
             if type(UI.SetPickable) == "function" then UI:SetPickable(widget, false, owner) end
             if type(UI.SetEnabled) == "function" then UI:SetEnabled(widget, false, owner) end
-            -- UI:SetVisible() is the only V3 visibility Authority. A cache-hit
-            -- no-op must never be interpreted as permission to raw Show(false).
+            -- UI:SetVisible() 是唯一 V3 可见权威层；缓存命中无操作不能作为直接 Show(false) 的许可。
             if type(UI.SetVisible) == "function" then UI:SetVisible(widget, false, owner) end
             self.metrics.buildScopeWidgetsHidden = (tonumber(self.metrics.buildScopeWidgetsHidden) or 0) + 1
             pcall(function() if widget.rsBuildScope == scope then widget.rsBuildScope = nil end end)
@@ -372,11 +352,7 @@ function RSUI:EndBuildScope(scope, commit)
     if type(scope) ~= "table" or scope.closed == true then return false, "invalid build scope" end
     local stack = self.buildScopeStack
     if stack[#stack] ~= scope then
-        -- A leaked nested scope previously poisoned the whole Generation because
-        -- the outer caller could not close in stack order. Recover fail-closed:
-        -- rollback every descendant plus the requested scope, then report a hard
-        -- transaction error. This preserves Native quarantine while guaranteeing
-        -- activeBuildScopes returns to a consistent depth.
+        -- 嵌套 scope 泄漏时应回滚全部后代及目标 scope，再报告事务硬错误，保持 Native 隔离与 activeBuildScopes 深度一致，不能污染整个 Generation。
         local targetIndex = nil
         for index = #stack, 1, -1 do
             if stack[index] == scope then targetIndex = index; break end
@@ -429,9 +405,7 @@ function RSUI:EndBuildScope(scope, commit)
     return true
 end
 
--- Safe synchronous builder transaction. Callers no longer need to manually pair
--- BeginBuildScope/EndBuildScope across every return/error path. The wrapper also
--- benefits from EndBuildScope's close-order recovery if a nested builder leaks.
+-- 安全同步构建封装自动配对 BeginBuildScope/EndBuildScope 的全部返回/错误路径，也利用 EndBuildScope 关闭顺序恢复处理嵌套构建泄漏。
 function RSUI:WithBuildScope(label, fn, options)
     if type(fn) ~= "function" then return false, nil, "build transaction callback required" end
     options = type(options) == "table" and options or {}
@@ -454,9 +428,7 @@ function RSUI:WithBuildScope(label, fn, options)
         if ok == true then
             detail = scopeErr or (packed and packed[2]) or scope.failure
         elseif scope.failure ~= nil then
-            -- Preserve the first RSUI component failure as the primary cause.
-            -- The xpcall trace remains available as secondary context without
-            -- replacing the actionable preflight/native reason.
+            -- 首个 RSUI 组件失败保留为主因；xpcall 栈作为辅助信息，不能覆盖可操作的预检/Native 原因。
             detail = tostring(scope.failure) .. " | secondary=" .. tostring(trace or "callback exception")
         else
             detail = trace
@@ -471,9 +443,7 @@ RSUI.BuildTransaction = RSUI.WithBuildScope
 S.RSUI = RSUI
 UI.RSUI = RSUI
 
--- Semantic state vocabulary is shared across all component families. Native
--- hover/pressed feedback remains owned by the game's button implementation;
--- these states describe business-visible presentation state only.
+-- 所有组件族共用语义状态词汇；原生悬浮/按下反馈归游戏按钮，这些状态仅描述业务可见表现。
 RSUI.State = {
     Normal = "normal",
     Disabled = "disabled",
@@ -482,9 +452,7 @@ RSUI.State = {
     ReadOnly = "readonly",
 }
 
--- UMG-compatible layout visibility.  Legacy SetVisible(false) maps to
--- Collapsed so existing callers keep the old "does not consume layout"
--- behavior. Hidden is new: it consumes layout but does not paint.
+-- UMG 风格可见性：旧 SetVisible(false) 映射 Collapsed，不占布局；Hidden 占布局但不绘制。
 RSUI.Visibility = {
     Visible = "visible",
     Hidden = "hidden",
@@ -583,10 +551,7 @@ function RSUI:NewComponent(kind, spec, root)
     return component
 end
 
--- Typography is a low-frequency application setting, but changing it alters
--- the native line metrics of every styled RSUI label. Keep a weak set of only
--- typography-bearing components and invalidate their Measure chain once. This
--- is event-driven (settings/resolution changes only) and never runs from Tick.
+-- 字体设置虽低频，却改变全部 RSUI 标签的原生行度量；弱集合仅保存承载字体的组件并一次失效 Measure 链，仅设置/分辨率事件驱动，不从 Tick 执行。
 function RSUI:InvalidateTypography(reason)
     local invalidated = 0
     for component in pairs(self.typographyComponents) do
@@ -611,12 +576,8 @@ function Base:IsReleased()
     return self.released == true
 end
 
--- Native RSUI widgets are created under a physical parent and the RU client has
--- no validated generic reparent operation. Logical parent changes therefore
--- cannot be treated like UMG RemoveFromParent/AddChild: doing so would create a
--- split authority where layout believes one parent owns a widget while the
--- native object remains owned/clipped by another. Attachment is consequently
--- single-parent and fail-closed for the whole Generation.
+-- 原生 RSUI 物理父节点固定，RU 未验证通用换父；逻辑父变更不能当作 UMG RemoveFromParent/AddChild，否则布局与原生所有权/裁切不一致。
+-- 整个 Generation 单父且拒绝非法附着。
 function RSUI:ValidateAttachment(parent, component)
     if not self:IsComponent(parent) then return false, "attachment_parent_component_required" end
     if not self:IsComponent(component) then return false, "attachment_child_component_required" end
@@ -649,11 +610,7 @@ function RSUI:ValidateAttachment(parent, component)
         return false, "attachment_ancestor_guard"
     end
 
-    -- Native parent identity is immutable for the whole component generation.
-    -- Validate it on every attach path, including normal RSUI:Create().  This
-    -- catches a buggy/custom factory that creates its native root under the
-    -- wrong content host even if the logical parentComponent already points at
-    -- the requested owner.
+    -- 原生父身份在组件 Generation 内不可变；全部 attach 路径含 RSUI:Create() 均检查，捕获工厂把根建在错误宿主的情况，即使 parentComponent 已指向请求所有者。
     local expectedNative = select(1, self:ResolveParent(parent))
     if expectedNative ~= nil and component.parent ~= nil and component.parent ~= expectedNative then
         self.metrics.attachmentRejects = (tonumber(self.metrics.attachmentRejects) or 0) + 1
@@ -684,10 +641,7 @@ function Base:AddChild(component, slot)
     component.parentComponent = self
     if slot ~= nil then component.slot = slot end
 
-    -- Interaction containers (most importantly ScrollBox) may need to bind
-    -- behavior to descendants created after the container itself. Notify the
-    -- nearest interested ancestor once; nested containers therefore keep
-    -- ownership of their own input instead of leaking wheel events outward.
+    -- 交互容器尤其 ScrollBox 需绑定后创建的后代；只通知最近感兴趣祖先，使嵌套容器保留自身输入，不向外泄漏滚轮。
     local ancestor, guard = self, 0
     while type(ancestor) == "table" and guard < 64 do
         if type(ancestor.OnDescendantAdded) == "function" then
@@ -698,9 +652,7 @@ function Base:AddChild(component, slot)
         guard = guard + 1
     end
 
-    -- Appearance channels are inherited through the logical component tree.
-    -- This is event-driven: newly virtualized rows inherit the current visual
-    -- policy once when they are attached; no Tick/tree scan is introduced.
+    -- 外观通道沿逻辑树继承；新虚拟行附着时一次继承当前策略，事件驱动且不添加 Tick/树扫描。
     if (self.appearanceBackgroundOpacity ~= nil or self.appearanceTextOpacity ~= nil)
         and type(RSUI.ApplyOpacityChannels) == "function" then
         RSUI:ApplyOpacityChannels(component, self.appearanceBackgroundOpacity, self.appearanceTextOpacity)
@@ -734,10 +686,7 @@ function Base:ReorderChildren(ordered)
     return true, true
 end
 
--- Public child removal is terminal for the current Generation. The physical
--- widget cannot be safely reparented/recreated under the same identity, so a
--- removal always releases/hides the subtree instead of returning a detachable
--- widget that callers could mount elsewhere.
+-- 公开移除子节点在当前 Generation 是终态；物理控件不能安全换父或以同身份重建，因此始终释放/隐藏子树，不返回可在其它位置挂载的控件。
 function Base:RemoveChild(component)
     if self.released == true or type(component) ~= "table" or component.parentComponent ~= self then
         return false, "child_not_owned"
@@ -749,9 +698,7 @@ function Base:RemoveChild(component)
     return true, released
 end
 
--- Applies independent drawable/text alpha channels to an RSUI subtree. Whole-
--- window opacity remains Native Windowing authority and multiplies these local
--- channels. Calls are settings/lifecycle driven, never per-frame.
+-- 对子树应用独立 drawable/文字 alpha；整窗透明度归 Native Windowing 并与局部通道相乘，仅设置/生命周期驱动，不逐帧调用。
 function RSUI:ApplyOpacityChannels(component, backgroundOpacity, textOpacity)
     if not self:IsComponent(component) or component.released == true then return false end
     local background = backgroundOpacity ~= nil and math.max(0.0, math.min(1.0, tonumber(backgroundOpacity) or 1.0)) or nil
@@ -763,7 +710,7 @@ function RSUI:ApplyOpacityChannels(component, backgroundOpacity, textOpacity)
         visited = visited + 1
         if background ~= nil then
             node.appearanceBackgroundOpacity = background
-            -- 中文维护（2026-10-09）：包装式多行 Text 的 Native 子行不在逻辑 children 中，交给组件一起继承透明表面文字样式。
+            -- 约束（2026-10-09）：包装式多行 Text 的 Native 子行不在逻辑 children 中，交给组件一起继承透明表面文字样式。
             if type(node.ApplyBackgroundOpacity) == "function" then node:ApplyBackgroundOpacity(background)
             elseif theme ~= nil and type(theme.SetBackgroundOpacity) == "function" then theme:SetBackgroundOpacity(node.root, background) end
         end
@@ -775,7 +722,7 @@ function RSUI:ApplyOpacityChannels(component, backgroundOpacity, textOpacity)
                 theme:SetTextOpacity(node.root, text)
             end
         end
-        -- 中文维护（2026-10-09）：组件显式登记的原生标题/标题底板不在 children 中；仅处理 owner 登记列表，
+        -- 约束（2026-10-09）：组件显式登记的原生标题/标题底板不在 children 中；仅处理 owner 登记列表，
         -- 不扫描 Native 父子树，也不改布局/输入。背景与文字通道仍独立，延迟挂接复用本入口。
         for _, widget in ipairs(type(node.appearanceWidgets) == "table" and node.appearanceWidgets or {}) do
             if theme ~= nil then
@@ -789,12 +736,8 @@ function RSUI:ApplyOpacityChannels(component, backgroundOpacity, textOpacity)
     return visited > 0
 end
 
--- Applies a bounded local typography multiplier to an RSUI subtree. Global
--- addon/font scale remains Theme authority; this local multiplier is intended
--- for independently readable HUD surfaces. Native widgets keep their design
--- `rsBaseFontSize`, so repeated changes are drift-free. Virtualized descendants
--- inherit the multiplier from Base:AddChild instead of requiring a permanent
--- tree scan.
+-- 对子树应用有界局部字体倍率；全局 addon/font scale 归 Theme，局部倍率用于独立 HUD 可读性。
+-- Native 保留 rsBaseFontSize 避免累积漂移，虚拟后代从 Base:AddChild 继承，不常驻扫描树。
 function RSUI:ApplyFontScale(component, fontScale)
     if not self:IsComponent(component) or component.released == true then return false end
     local scale = math.max(0.50, math.min(2.00, tonumber(fontScale) or 1.0))
@@ -829,9 +772,7 @@ end
 
 RSUI.FloatingFontScaleContractVersion = 1
 
--- Containers may override this when their logical content host differs from
--- their visual root.  Business code can therefore pass an RSUI Component as
--- `parent` without reaching into `.root` / `.body` implementation details.
+-- 逻辑内容宿主与视觉根不同时容器可覆写此方法，使业务以 RSUI Component 为 parent，无需访问 .root/.body 实现字段。
 function Base:GetContentRoot()
     return self.root
 end
@@ -877,8 +818,7 @@ function Base:SetVisibility(visibility)
     local previousLayout = previous ~= RSUI.Visibility.Collapsed
     local nextLayout = nextValue ~= RSUI.Visibility.Collapsed
     self.visibility = nextValue
-    -- Legacy .visible means layout participation. This preserves every existing
-    -- Panel check while adding Hidden without changing old SetVisible(false).
+    -- 旧 .visible 表示是否参与布局；保留 Panel 检查语义，同时增加 Hidden 且不改变 SetVisible(false)。
     self.visible = nextLayout
     RSUI.metrics.visibilityChanges = (tonumber(RSUI.metrics.visibilityChanges) or 0) + 1
     if previousLayout ~= nextLayout then
@@ -890,15 +830,11 @@ function Base:SetVisibility(visibility)
 end
 
 function Base:SetVisible(visible)
-    -- Compatibility: false historically removed a widget from layout.
+    -- 兼容：false 仍将控件移出布局。
     return self:SetVisibility(visible == true and RSUI.Visibility.Visible or RSUI.Visibility.Collapsed)
 end
 
--- Common component visibility facade. All RSUI Components expose Show/Hide so
--- higher-level templates never depend on whether an individual primitive chose
--- to add its own visibility convenience method. Containers/surfaces may
--- override Show when they own additional shell semantics; the Base contract
--- remains a safe fallback and delegates to the single SetVisibility Authority.
+-- 全部 RSUI Component 公开 Show/Hide，使模板不依赖各原语是否自行提供便捷方法；持有额外 Shell 语义的容器可覆写 Show，Base 安全兜底并委托唯一 SetVisibility。
 function Base:Show(visible)
     if self.released == true or self.root == nil then return false end
     if visible == nil then visible = true end
@@ -914,9 +850,7 @@ function Base:Hide()
     return true, nil
 end
 
--- Viewport visibility is presentation-only. ScrollBox / WidgetSwitcher can
--- hide a child without mutating its logical visibility, so Measure can still
--- inspect it on the next layout pass.
+-- 视口显隐仅属表现；ScrollBox/WidgetSwitcher 可隐藏子节点而不修改逻辑可见性，使下次 Measure 仍可检查。
 function Base:SetViewportVisible(visible)
     if self.released == true or self.root == nil then return false, false, "component_released" end
     local desired = visible ~= false
@@ -936,9 +870,7 @@ end
 RSUI.InteractionStateFailClosedContractVersion = 1
 function Base:FailClosedInteraction(reason)
     reason = tostring(reason or "interaction_state_rejected")
-    -- Hide first while the Native root is still considered usable; afterwards
-    -- quarantine both component and root so no later diff write can accidentally
-    -- resurrect a control whose input state is unknown.
+    -- Native 根仍可用时先隐藏，再隔离组件与根，防止后续 Diff 重新显现输入状态未知的控件。
     if self.root ~= nil and type(UI.SetVisible) == "function" then pcall(function() UI:SetVisible(self.root, false, self.owner) end) end
     self.rsUiDegraded = true
     self.rsUiDegradedReason = reason
@@ -961,11 +893,7 @@ function Base:SetEnabled(enabled)
     local desired = enabled ~= false
     local previous = self.enabled ~= false
 
-    -- Establish the native state before publishing the logical state. Historically
-    -- this method updated self.enabled first and ignored UI:SetEnabled failure, so
-    -- business/presentation code could believe a button was disabled while the RU
-    -- native hit surface remained clickable (or the reverse). EnsureEnabled keeps
-    -- cache-hit success distinct from a rejected native transition.
+    -- 先确立原生状态再发布逻辑 enabled；忽略 UI:SetEnabled 失败会导致视觉禁用却仍可点击或反向不一致。EnsureEnabled 区分缓存成功与原生拒绝。
     if self.root ~= nil then
         if type(UI.EnsureEnabled) ~= "function" then
             return previous, false, "enabled_transaction_unavailable"
@@ -978,9 +906,7 @@ function Base:SetEnabled(enabled)
         end
     end
 
-    -- Revision is interaction metadata, not Domain state. ActionRunner uses it
-    -- to distinguish its own temporary Busy disable from a business refresh
-    -- that deliberately changed the final enabled state while the action ran.
+    -- Revision 属于交互元数据；ActionRunner 用它区分自身临时 Busy 禁用与业务刷新在执行期间修改的最终 enabled。
     self.enabledRevision = (tonumber(self.enabledRevision) or 0) + 1
     self.enabled = desired
     if self.root ~= nil and type(UI.SetAlpha) == "function" then
@@ -990,12 +916,8 @@ function Base:SetEnabled(enabled)
     return self.enabled, true, nil
 end
 
--- Composite enabled-state propagation is part of the same transaction. A parent
--- must not report success while one of its interactive children rejected the
--- requested native state; that creates a partially live control whose visual
--- state and hit-test state disagree. Legacy/custom SetEnabled overrides that
--- return only the resulting state remain compatible: child.enabled is verified
--- after the call, while an explicit accepted=false is treated as rejection.
+-- 组合 enabled 传播属同一事务，交互子节点拒绝时父节点不能报成功而留下视觉/命中不一致。旧/自定义 SetEnabled 仅返回结果状态时调用后检查 child.enabled；
+-- 显式 accepted=false 仍拒绝。
 RSUI.CompositeChildEnabledTransactionContractVersion = 1
 function Base:EnsureChildEnabled(child, enabled, role)
     if child == nil then return true, nil end
@@ -1100,8 +1022,7 @@ function RSUI:_ScheduleLayoutFlush()
     self.layoutFlushScheduled = true
     scheduler:RemoveTask(self.layoutFlushTaskName)
     scheduler:AddTask(self.layoutFlushTaskName, 50, function()
-        -- One-shot: remove before flushing so an invalidation raised during this
-        -- pass can schedule the next bounded pass instead of being lost.
+        -- one-shot 在 flush 前移除，使本轮失效可安排下个有界轮次而不丢失。
         if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then
             S.Scheduler:RemoveTask(RSUI.layoutFlushTaskName)
         end
@@ -1116,8 +1037,7 @@ function RSUI:QueueLayout(component, reason)
     local root = FindLayoutRoot(component)
     if not self:IsComponent(root) or root.released == true then return false end
     local width, height = tonumber(root.width), tonumber(root.height)
-    -- Creation-time invalidations are expected.  The first explicit layout will
-    -- establish geometry; only established roots need an automatic reflow.
+    -- 创建时失效属于正常过程；首个显式布局建立几何，仅已建立根需要自动重新布局。
     if width == nil or height == nil or width <= 0 or height <= 0 then return false end
     if type(root.spec) == "table" and root.spec.autoRelayout == false then return false end
     if root:IsCollapsed() then return false end
@@ -1156,8 +1076,7 @@ function RSUI:GetLayoutQueueSnapshot()
         local queuedAt = tonumber(type(entry) == "table" and entry.queuedAtMs) or now
         local age = math.max(0, now - queuedAt)
         if age > snapshot.oldestAgeMs then snapshot.oldestAgeMs = age end
-        -- A one-shot 50 ms scheduler turn and one bounded stabilization pass are
-        -- normal. Only roots that survive well beyond that window are stale.
+        -- 一次 50 ms Scheduler 轮次与有界稳定布局属正常，仅明显超过此窗口仍未完成的根视为陈旧。
         if age > 1000 then snapshot.stale = snapshot.stale + 1 else snapshot.fresh = snapshot.fresh + 1 end
         if #snapshot.details < 8 then
             snapshot.details[#snapshot.details + 1] = {
@@ -1178,12 +1097,7 @@ function RSUI:FlushLayoutQueue(maxRoots)
     self.layoutFlushRunning = true
     self.metrics.layoutFlushes = (tonumber(self.metrics.layoutFlushes) or 0) + 1
 
-    -- A layout pass is allowed to create/bind pooled descendants. Those new
-    -- children legitimately invalidate their ancestors while the ancestor is
-    -- already being arranged. Older code deferred the resulting second pass to
-    -- another 50ms scheduler turn, leaving an observable dirty tree between
-    -- passes. Stabilize within the same explicit flush, but keep a strict total
-    -- reflow budget so data-driven UI can never turn this into an unbounded loop.
+    -- 布局可创建/绑定池后代，新子节点会在祖先排列期间合法失效祖先；同一次显式 flush 内稳定，不再延迟下一 50ms 留下可观察脏树，同时限制总重排预算避免无限循环。
     local scratch = self.layoutFlushScratch
     local budget = math.max(1, math.min(tonumber(maxRoots) or 24, 64))
     local maxPasses = 3
@@ -1224,8 +1138,7 @@ function RSUI:FlushLayoutQueue(maxRoots)
     end
     self.layoutFlushRunning = false
 
-    -- A persistent invalidator, or a queue larger than the bounded budget, is
-    -- deliberately deferred instead of spinning synchronously.
+    -- 持续失效源或超预算队列有意延后，不能同步自旋。
     if next(self.layoutQueue) ~= nil then
         self.metrics.layoutUnstableDeferrals = (tonumber(self.metrics.layoutUnstableDeferrals) or 0) + 1
         self:_ScheduleLayoutFlush()
@@ -1233,9 +1146,7 @@ function RSUI:FlushLayoutQueue(maxRoots)
     return reflowed
 end
 
--- Coalescing is legal only while the root still owns a pending transaction.
--- A sticky dirty bit on a collapsed/reactivated child is not transaction
--- authority; this pure predicate is also exercised by sequence diagnostics.
+-- 仅根持有待处理事务时可合并；折叠/重新激活子节点的残留脏位不是事务权威，该纯谓词也由序列诊断验证。
 function RSUI:ShouldCoalesceInvalidation(rootQueued, parent, measureChanged)
     if rootQueued ~= true or type(parent) ~= "table" then return false end
     if measureChanged == true then return parent.measureDirty == true or parent.layoutDirty == true end
@@ -1270,12 +1181,7 @@ local function PropagateInvalidation(component, reason, measureChanged)
             break
         end
 
-        -- Coalesce only when the root still owns a pending layout transaction.
-        -- Sticky child dirty bits are NOT enough: after a parent has already
-        -- arranged (or a Collapsed child is reactivated) the queue may be empty,
-        -- in which case propagation must reach the root again. During an active
-        -- flush the root entry is removed before Layout, so a fresh invalidation
-        -- correctly re-queues a stabilization pass.
+        -- 仅根仍持有待处理布局事务时合并；父已排列或 Collapsed 子重新激活后，残留子脏位不足以抑制传播。flush 在 Layout 前移除根项，新失效须重新排入稳定布局。
         local parentAlreadyDirty = RSUI:ShouldCoalesceInvalidation(rootQueued, parent, measureChanged)
         if parentAlreadyDirty then
             RSUI.metrics.invalidationCoalesces = (tonumber(RSUI.metrics.invalidationCoalesces) or 0) + 1
@@ -1340,10 +1246,7 @@ function Base:SetSlot(slot)
     return self
 end
 
--- Commit the logical geometry after a component-specific native layout.
--- SetBounds owns the common native write path; adapters such as Dropdown,
--- Section and legacy Form containers perform specialized native writes and then
--- call CommitLayoutState so RSUI dirty state still has one authoritative end.
+-- 组件专用原生布局后提交逻辑几何；SetBounds 负责通用写入，Dropdown/Section/旧 Form 等适配器专用写入后调用 CommitLayoutState，使脏状态结束仍有唯一权威层。
 function Base:CommitLayoutState(x, y, width, height)
     if self.released == true then return false end
     self.x, self.y = tonumber(x) or 0, tonumber(y) or 0
@@ -1367,9 +1270,7 @@ function Base:Layout(x, y, width, height)
     return self:SetBounds(x, y, width, height)
 end
 
--- Dirty-only arrange helper. A parent may call this every time it performs a
--- layout pass; unchanged descendants will not re-run Layout or touch Native UI.
--- A bounds change always wins over the dirty flag.
+-- 仅脏节点排列辅助函数；父每次布局可调用，未变后代不再 Layout 或写 Native，边界变化优先于脏标志。
 function Base:LayoutIfNeeded(x, y, width, height, force)
     if self.released == true or self:IsCollapsed() then return false end
     local nx, ny = tonumber(x) or 0, tonumber(y) or 0
@@ -1427,8 +1328,7 @@ function Base:On(widget, eventName, fn, label)
         RSUI.metrics.eventDispatches = (tonumber(RSUI.metrics.eventDispatches) or 0) + 1
         RSUI:_Count(component.kind, "events", 1)
         local result = nil
-        -- Snapshot the length so a callback that subscribes another handler does
-        -- not execute that new subscription during the same native dispatch.
+        -- 派发前保存长度，避免回调新增订阅在同次原生事件中执行。
         local count = #current.handlers
         for index = 1, count do
             local entry = current.handlers[index]
@@ -1449,20 +1349,14 @@ function Base:On(widget, eventName, fn, label)
         RSUI.metrics.eventSubscriptions = (tonumber(RSUI.metrics.eventSubscriptions) or 0) + 1
         return true
     end
-    -- A failed first native binding cannot ever dispatch this subscription. Do
-    -- not retain it in the mux: a later retry would otherwise append another
-    -- handler and execute both once SetHandler eventually succeeds.
+    -- 首次原生绑定失败时不能保留 mux 订阅；否则重试又追加处理器，SetHandler 成功后会重复执行。
     for index = #channel.handlers, 1, -1 do
         if channel.handlers[index] == subscription then table.remove(channel.handlers, index); break end
     end
     return false
 end
 
--- Critical component-event delivery helper. Base:On intentionally remains
--- available for optional hover/wheel conveniences, but user-action controls
--- (click/drag) must not survive construction with an unbound Native handler.
--- Marking the component degraded lets RSUI:Create reject and release the entire
--- subtree at the post-factory fence instead of returning a visible dead control.
+-- 关键组件事件必须绑定成功；Base:On 可供可选悬浮/滚轮便利使用，但点击/拖动控件不能无处理器存活。标记降级，让 RSUI:Create 在工厂后边界拒绝并释放整棵子树。
 RSUI.CriticalComponentEventContractVersion = 1
 function Base:RequireOn(widget, eventName, fn, label)
     local bound = self:On(widget, eventName, fn, label)
@@ -1490,18 +1384,14 @@ end
 
 function Base:Release()
     if self.released == true then return 0 end
-    -- Standalone child teardown must not leave strong references in a live
-    -- parent's children/slots arrays. During recursive parent teardown the
-    -- parent is already marked released and children are detached from a
-    -- snapshot below, avoiding mutation-while-iterating skips.
+    -- 独立子节点拆除须清掉活跃父 children/slots 强引用；递归父拆除已标记 released，并从快照分离子节点，避免边遍历边修改漏项。
     local parent = self.parentComponent
     if type(parent) == "table" and parent.released ~= true then RSUI:DetachComponent(self) end
 
     self.released = true
     RSUI.layoutQueue[self] = nil
     RSUI.typographyComponents[self] = nil
-    -- Component lifetime is also scheduler lifetime. Interactive gestures are
-    -- normally removed on mouse-up, but teardown may happen mid-gesture.
+    -- 组件生命周期也决定 Scheduler 生命周期；鼠标抬起通常结束手势，但中途拆除也须移除任务。
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveOwner) == "function" then S.Scheduler:RemoveOwner(self) end
     local count = 0
     local children = self.children
@@ -1524,9 +1414,7 @@ function Base:Release()
         UI:SetVisible(self.root, false, self.owner)
         count = count + 1
     end
-    -- Native widget destruction is intentionally NOT attempted here. The owner
-    -- Lifecycle remains the release Authority and will release registered native
-    -- handlers during dialog/HUD teardown.
+    -- 此处不尝试原生销毁；owner Lifecycle 是释放权威，在对话框/HUD 拆除时释放已注册原生处理器。
     RSUI:_Count(self.kind, "releases", 1)
     return count
 end
@@ -1584,11 +1472,7 @@ local function EnsurePublicFactory(self, name)
     return true
 end
 
--- Runtime public-method fence for composite/workspace builders. Lua's dynamic
--- method lookup otherwise lets a template compile cleanly and only fail in RU
--- when it dereferences a method that a concrete component family never
--- implemented. Keep this check explicit and bounded; callers use it only at
--- construction boundaries, never from Tick/render hot paths.
+-- 组合/工作台构建器的公开方法边界：Lua 动态查找可让模板编译通过却在 RU 调用未实现方法时失败；显式有界检查仅在构建时使用，不能进入 Tick/渲染热路径。
 function RSUI:RequireComponentMethods(component, methods, context)
     if type(component) ~= "table" then
         self.metrics.componentApiValidationFailures = (tonumber(self.metrics.componentApiValidationFailures) or 0) + 1
@@ -1616,9 +1500,7 @@ function RSUI:ValidateSpec(name, spec)
     spec = type(spec) == "table" and spec or {}
     if NormalizeId(spec.id) == nil then return false, "id_required" end
     if spec.parent == nil and name ~= "SettingsPage" then return false, "parent_required" end
-    -- Reject a reused logical id before any native constructor is attempted. The
-    -- Native factory already fences the physical id, but this earlier fence keeps
-    -- duplicate attempts out of the C++-boundary diagnostics entirely.
+    -- 原生构造前拒绝重复逻辑 id；Native 工厂虽已检查物理 id，提前检查可避免重复尝试进入 C++ 边界诊断。
     local logicalId = tostring(spec.id)
     if self.consumedLogicalIds[logicalId] == true then
         return false, "logical_id_already_consumed_this_generation:" .. logicalId
@@ -1649,8 +1531,7 @@ function RSUI:RegisterType(name, factory, validator)
     return true
 end
 
--- Intentional upgrades must be explicit. This removes load-order authority from
--- duplicate RegisterType calls while preserving backwards-compatible names.
+-- 类型升级须显式声明，避免重复 RegisterType 由加载顺序决定权威，同时保留兼容名称。
 function RSUI:ReplaceType(name, factory, validator)
     name = tostring(name or "")
     if name == "" or type(factory) ~= "function" then return false end
@@ -1671,11 +1552,7 @@ function RSUI:Create(name, spec)
         local detail = tostring(reason or "component build failed")
         RecordBuildFailure(self, spec, detail)
         local scope = CurrentBuildScope(self)
-        -- A strict page/widget/modal transaction cannot commit after a required
-        -- component has failed. Abort at the first failure instead of allowing
-        -- downstream code to dereference nil parents/controls and overwrite the
-        -- useful root cause with a secondary Lua exception. Explicit
-        -- buildOptional components retain the old nil-return degradation path.
+        -- 严格页/组件/弹窗事务中必需组件失败即中止，避免后续解引用 nil 覆盖有用主因；显式 buildOptional 仍可返回 nil 降级。
         if scope ~= nil and scope.strict == true and spec.buildOptional ~= true then
             self.metrics.strictBuildFailFast = (tonumber(self.metrics.strictBuildFailFast) or 0) + 1
             error("required_component_build_failed:" .. tostring(name or "?") .. ":"
@@ -1694,11 +1571,8 @@ function RSUI:Create(name, spec)
         self.metrics.preflightFailures = (tonumber(self.metrics.preflightFailures) or 0) + 1
         return Fail(preflightErr)
     end
-    -- Logical identities are generation-consumed before entering a factory.
-    -- A failed/rolled-back Native build cannot safely reuse its old physical id
-    -- because the RU client has no validated generic DestroyWidget operation.
-    -- This turns a second attempt into a Lua preflight rejection instead of a
-    -- C++ NativeObjectFactory duplicate collision.
+    -- 进入工厂前逻辑身份即被 Generation 消费；失败/回滚后不能安全复用物理 id，RU 未验证通用 DestroyWidget。
+    -- 第二次尝试应由 Lua 预检拒绝，而非触发 C++ NativeObjectFactory 重复碰撞。
     self.consumedLogicalIds[tostring(spec.id)] = true
 
     local nativeParent, componentParent = self:ResolveParent(spec.parent)
@@ -1727,11 +1601,7 @@ function RSUI:Create(name, spec)
         return Fail(err)
     end
     local function RejectComponent(reason)
-        -- Factories can fail post-construction (API/degraded/root/attachment).
-        -- Outside a strict BuildScope there is no transaction rollback to hide
-        -- the already-created native subtree, so explicitly release it before
-        -- returning failure. Base:Release is idempotent; strict scopes may call
-        -- it again safely during rollback.
+        -- 工厂可能在构造后因 API/降级/根/附着失败；严格 BuildScope 外无事务回滚，返回失败前须显式释放已创建原生子树。Base:Release 幂等，严格回滚可再次调用。
         if type(component.Release) == "function" then pcall(component.Release, component) end
         return Fail(reason)
     end
@@ -1742,20 +1612,14 @@ function RSUI:Create(name, spec)
         self.metrics.errors = self.metrics.errors + 1
         return RejectComponent(apiErr)
     end
-    -- Composite controls can degrade even when their trigger/root primitive is
-    -- individually usable (for example a Dropdown whose popup/option factory
-    -- failed). Treat component-level degradation exactly like primitive-level
-    -- degradation so strict BuildScope cannot commit a visible-but-dead control.
+    -- 组合控件根虽可用，弹层/选项工厂失败仍会降级；按原语降级同样处理，严格 BuildScope 不能提交可见却无响应控件。
     if component.rsUiDegraded == true then
         self.metrics.errors = self.metrics.errors + 1
         self.metrics.componentCompositeRejects = (tonumber(self.metrics.componentCompositeRejects) or 0) + 1
         return RejectComponent("component_degraded:" .. tostring(component.rsUiDegradedReason or err or "composite_rejected"))
     end
 
-    -- A custom factory can technically return a Component even when its native
-    -- primitive was rejected/degraded. Refuse that root before attachment so a
-    -- strict BuildScope sees the original construction failure instead of a
-    -- page that renders with a dead control and still reports a green build.
+    -- 自定义工厂可能在原语拒绝/降级后仍返回 Component；附着前拒绝该根，使严格 BuildScope 保留原始构建失败，不能呈现死控件却报告成功。
     local componentRoot = component.root
     if componentRoot == nil and type(component.GetRoot) == "function" then
         local rootOk, rootValue = pcall(function() return component:GetRoot() end)
@@ -1777,8 +1641,7 @@ function RSUI:Create(name, spec)
             return RejectComponent("component_attach_failed:" .. tostring(attachErr or "unknown"))
         end
     end
-    -- Apply Hidden/Collapsed immediately after the factory has created its
-    -- native widget. This prevents a one-frame flash during initial build.
+    -- 工厂创建 Native 后立即应用 Hidden/Collapsed，防止初建闪现一帧。
     if type(component._ApplyVisibility) == "function" then component:_ApplyVisibility() end
     return component, err
 end
@@ -2049,9 +1912,7 @@ function RSUI:GetSnapshot()
     }
 end
 
--- On-demand, read-only layout inspector. It never creates overlay widgets and
--- never runs automatically from Tick; Diagnostics/debug pages may call it when
--- the user explicitly asks to inspect a component tree.
+-- 按需只读布局检查器，不创建覆盖控件、不自动 Tick；诊断页面仅在用户明确检查组件树时调用。
 function RSUI:InspectLayout(component, options)
     options = type(options) == "table" and options or {}
     if not self:IsComponent(component) then return { ok = false, reason = "component_required", rows = {}, issues = {} } end
@@ -2194,8 +2055,6 @@ function RSUI:ResetMetrics()
     return true
 end
 
--- Public component constructors are installed by RegisterType/ReplaceType.
--- Keep exactly one registry authority: adding a component type must not require
--- editing a second convenience-wrapper list.
+-- 公开构造器由 RegisterType/ReplaceType 安装；保持唯一注册表，新增类型无需再维护另一份便捷封装列表。
 
 RSUI.BaseComponent = Base

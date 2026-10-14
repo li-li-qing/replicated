@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Activity Progress Selection Schema1 Integrity Recovery
+-- Replicated Suite · 活动进度选择完整性恢复测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Offline cold-start persistence test. It writes the exact published schema1
--- codec1 Store through the real Persistence v4 pipeline, then boots the current
--- schema2 Store and proves old-canonical authentication happens before migrate.
+-- 离线冷启动存档测试：通过真实 Persistence v4 写入已发布的 schema1/codec1 Store，再启动当前 schema2 Store，验证先认证旧规范数据再迁移。
 ------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)

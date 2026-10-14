@@ -1,34 +1,13 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 6 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Feature (Runtime Lanes)
+-- Replicated Suite · 状态显示功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- AuraObservationV3 stays the single Aura Authority. This Feature owns:
---   * scope policy (player/target) and bounded projection for the page table
---   * six independent runtime lanes, each gated by the components it feeds:
---       aura      -> Buff/Debuff facts (page table + head buffs/debuffs)
---       position  -> unit screen projection (all head components)
---       distance  -> UnitDistance (distance component)
---       metadata  -> GetTargetAbilityTemplates class (class component)
---       equipment -> UnitGearScore + equipped slots (gearScore/weapons/wings)
---       cast      -> UnitCastingInfo (castBar component)
---   * UnitGearScore is unit-token keyed and read directly for player/target.
---     It is deliberately NOT gated by target kind: the 2026-09-11 RU API
---     update made kind resolution less reliable while UnitGearScore("target")
---     remains the authoritative read. Equipped icons are still player-scope
---     only: the RU client ignores
---     GetEquippedItemTooltipInfo's targetEquippedItem flag (returns own gear),
---     so a target read can never be trusted (evidence 2026-09-01).
---   * O(1) tracked index rebuilt on demand
---   * management-only session retention: keep old and newly observed rows until explicit clear
---     without altering live HUD lanes (implemented in rs_buff_display_management.lua)
---   * tracked-id import / full export-import with schema migration awareness
---
--- Closing a component stops its lane tasks and clears its cached facts; hiding
--- the window is NOT the same as disabling a component. Demand leases are still
--- reconciled through the shared Feature Runtime.
+-- AuraObservationV3是唯一Aura权威。Feature拥有player/target范围策略、有界页面投影与六独立组件门控通道。
+-- aura提供Buff/Debuff事实；position提供所有头顶组件的单位屏幕投影；distance读UnitDistance；metadata读GetTargetAbilityTemplates职业；equipment读UnitGearScore/装备槽；cast读UnitCastingInfo。
+-- 2026-09-11 RU证据支持UnitGearScore按player/target token直接读，不以kind为门槛；2026-09-01证据表明GetEquippedItemTooltipInfo忽略targetEquippedItem，目标图标禁止信任，仅限player。
+-- 按需重建O(1)追踪索引；管理会话保留旧/新观察行至显式清除，不影响实时HUD，见rs_buff_display_management.lua；导入/导出遵守schema迁移。
+-- 关组件停止通道并清缓存，隐藏窗口不等于禁用组件；Demand租约仍经共享Runtime协调。合并须先核对冲突标记、toc.g完整性与Lua语法，禁止绕过原权威/存档协议。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -39,8 +18,8 @@ local F = S.Features.BuffDisplay
 if type(Runtime) ~= "table" then return end
 
 F.Id = "combat_buff_display"
-F.EquipmentReadContractVersion = 2 -- player equipped icons read through shared GearV3 authority
-F.GearScoreApiContractVersion = 1 -- UnitGearScore(unit, comma=false) + target read independent of kind classification
+F.EquipmentReadContractVersion = 2 -- 玩家装备图标通过共享 GearV3 权威读取。
+F.GearScoreApiContractVersion = 1 -- UnitGearScore(unit, comma=false) 与目标读取不依赖 kind 分类。
 F.enabled = F.enabled == true
 F.consumers, F.consumerCount = {}, 0
 F.auraHeld = false
@@ -48,7 +27,7 @@ F.castingHeld = false
 F.cooldownHeld = false
 F.cooldownRevision = tonumber(F.cooldownRevision) or 0
 F.cooldownHudEvidence = {ticks=0,nonemptyTicks=0,lastActive={}}
-F.taskName = "v3_buff_display_refresh"          -- aura lane task (contract kept)
+F.taskName = "v3_buff_display_refresh"          -- 保留契约的光环通道任务。
 F.eventTaskName = "v3_buff_display_event_refresh"
 F.eventSubscribed = false
 F.eventEdges = tonumber(F.eventEdges) or 0
@@ -58,15 +37,11 @@ F.projections = F.projections or { player = {}, target = {} }
 F.coverage = F.coverage or { player = {}, target = {} }
 F.laneData = F.laneData or { player = {}, target = {} }
 F.trackedIndex = F.trackedIndex or { player={buff={},debuff={},auto={}}, target={buff={},debuff={},auto={}}, buff={},debuff={},auto={} }
--- 中文维护注释：清理旧 tracked-only 快照引用；唯一会话快照由 Management 文件建立。
+-- 清理旧 tracked-only 快照引用；唯一会话快照由 Management 文件建立。
 F.frozenRows = nil
 F.lanes = F.lanes or {
-    -- The aura lane intentionally keeps the historical contract task name so
-    -- FoundationGate / GetHealth() keep observing the same scheduled task the
-    -- Feature has always advertised. P1 (never denied by FrameBudget): tracked
-    -- buff latency is the feature's core correctness contract in PvP — as a
-    -- P3 lane it was deferred indefinitely during combat frames (real-machine
-    -- report 2026-09-01: a self-applied buff took seconds to appear).
+    -- 光环通道保留既有契约任务名，FoundationGate / GetHealth() 观察同一 Scheduler 任务；优先级必须为 P1，禁止 FrameBudget 拒绝。
+    -- PvP 追踪延迟是核心正确性约束；2026-09-01 实机证据显示 P3 在战斗帧被持续延后，自施 Buff 需数秒才显示。
     aura      = { active = false, revision = 0, task = "v3_buff_display_refresh",     priority = "P1", cost = 2 },
     position  = { active = false, revision = 0, task = "v3_buff_display_lane_position",  priority = "P1", cost = 1 },
     distance  = { active = false, revision = 0, task = "v3_buff_display_lane_distance",  priority = "P2", cost = 1 },
@@ -74,10 +49,9 @@ F.lanes = F.lanes or {
     equipment = { active = false, revision = 0, task = "v3_buff_display_lane_equipment", priority = "P1", cost = 2 },
     cast      = { active = false, revision = 0, task = "v3_buff_display_lane_cast",      priority = "P2", cost = 1 },
 }
--- A file-scoped reload must not leave the aura lane pointing at a stale task
--- name; the contract name is the single source of truth.
+-- 文件级重载不能让光环通道指向陈旧任务名；契约名称是唯一来源。
 F.lanes.aura.task = F.taskName
--- 维护（pvp-hud-1）：运动与换武器是当前两单位的时效性事实，不是全场后台扫描。
+-- 运动与换武器是当前两单位的时效性事实，不是全场后台扫描。
 -- 只提升这两条有界 lane；职业/装分慢项仍限频，避免把整个模块无差别提升到 P1。
 F.lanes.position.priority, F.lanes.equipment.priority = "P1", "P1"
 F.PvpPatch = "pvp-hud-1"
@@ -86,15 +60,14 @@ F.eventEpoch = (tonumber(F.eventEpoch) or 0) + 1
 F.pvpMetrics = { queued=0, merged=0, drained=0, maxQueueAgeMs=0, positionTicks=0,
     equipmentTicks=0, targetInvalidations=0, lastEquipmentAt=0, lastAuraAt=0 }
 
--- Bounded equipment-lane diagnostics (RU acceptance workflow §BuffGear).
--- Never persisted, never printed per frame; exposed through GetHealth().
+-- 装备通道诊断有界，遵循 RU 验收流程 BuffGear；禁止持久化和逐帧打印，仅从 GetHealth() 暴露。
 F.EquipmentDiagnostics = F.EquipmentDiagnostics or {
     laneTicks = 0, reads = 0, readErrors = 0, emptySlots = 0, validIcons = 0,
     nameOnlyTooltips = 0, unresolvedSlots = 0,
     lastError = nil, lastReadSource = nil, iconField = nil, lastIcon = nil,
     sampleItemKeys = nil, lastTickAt = 0,
-    -- 中文维护注释（装备分数 API 诊断，2026-09-11）：
-    -- 问题原因：RU 更新后 UnitGearScore(unit, comma) 的 comma 语义开始影响返回格式；旧代码
+    --
+    -- RU 更新后 UnitGearScore(unit, comma) 的 comma 语义开始影响返回格式；旧代码
     -- 对 target 传 true 并直接 tonumber，"12,345" 会变 nil。同时 target-kind gate 可能在 API
     -- 更新后阻断一个本来可读的 UnitGearScore("target")。
     -- Authority/数据流：这里仅保存 equipment lane 最近一次 API 读事实和有界计数，不持久化、
@@ -116,18 +89,13 @@ local function Publish(event, arg)
     if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish(event, arg) end
 end
 
--- Client globals are resolved through _G on purpose. The bundled RU API surface
--- is not guaranteed to expose these names at load time, and capturing a nil
--- X2*/constant at file scope would permanently disable the call path. Capability
--- hosts are resolved per call by S.Api:ResolveCapabilityHost().
+-- 故意从 _G 动态解析客户端全局：RU API 名称未必在加载时可用，文件级捕获 nil 的 X2*/常量会永久关闭调用路径。能力宿主逐次由 S.Api:ResolveCapabilityHost() 解析。
 local function Global(name)
     local value = rawget(_G, name)
     if value == nil then return nil end
     return value
 end
--- Detached settings snapshot cache. Presentation reads settings through
--- GetSettingsProjection() dozens of times per refresh; without a store-revision
--- gate every read would deep-copy the whole settings table.
+-- 独立设置快照缓存：Presentation 每轮刷新多次调用 GetSettingsProjection()，必须按 Store revision 复用，避免每次深拷贝完整设置。
 local function CopySettings()
     if S.Utils ~= nil and type(S.Utils.DeepCopy) == "function" then return S.Utils.DeepCopy(F.State.settings) end
     local out = {}
@@ -180,8 +148,8 @@ local function SplitLines(text)
     return lines
 end
 
--- 中文维护注释（双 HUD scope 读取，2026-09-11）：
--- 问题原因：旧 ComponentEnabled 永远读取 player 的 settings.components，targetLayout 即使
+--
+-- 旧 ComponentEnabled 永远读取 player 的 settings.components，targetLayout 即使
 -- 独立保存也无法驱动 lane，导致“目标 HUD 开启组件但后台不采集”。Authority 仍是 Store；
 -- Feature 只取得 detached profile。数据流为 Store profile -> scope lane gate -> projection -> Presentation。
 -- 兼容边界：无 scope 调用表示“任一 HUD 需要该能力”，用于共享 Scheduler lane；带 scope
@@ -206,7 +174,7 @@ local function EnsureScopeSettingsCache()
             headEnabled = settings.headEnabled ~= false, headShowAll = settings.headShowAll == true,
             headPlayer = settings.headPlayer ~= false, headTarget = settings.headTarget ~= false,
             headShowStacks = settings.headShowStacks ~= false, headShowTime = settings.headShowTime ~= false,
-            -- 中文维护注释：装备槽视觉顺序是 Store 的布局代际，不属于 target/player 独立几何；
+            -- 装备槽视觉顺序是 Store 的布局代际，不属于 target/player 独立几何；
             -- 必须随轻量 scope projection 进入 Renderer，否则 v4 新排列在 50ms HUD 路径会退回 v3。
             layoutPresetVersion = tonumber(settings.layoutPresetVersion) or 3,
             plateScale = profile.plateScale,
@@ -214,7 +182,7 @@ local function EnsureScopeSettingsCache()
             info = S.Utils.DeepCopy(profile.info or {}),
             components = S.Utils.DeepCopy(profile.components or {}),
         }
-        -- 中文维护注释（2026-09-27，target-alias-hud-2）：自定义名字只存在于目标 HUD。
+        -- 自定义名字只存在于目标 HUD。
         -- 几何 Authority 位于独立 alias Store，不能塞回 v3.buff_display/layout 的既有 schema；这里
         -- 只在 settingsRevision 改变时做 O(1) 小快照，Renderer/Projection 热路径不得直接读 Store。
         if name == "target" and type(F.GetTargetAliasHudConfigProjection) == "function" then
@@ -225,7 +193,7 @@ local function EnsureScopeSettingsCache()
 end
 
 local function ScopeLayout(scope)
-    -- 中文维护注释（lane 热路径缓存）：distance/position 可每 50ms 调用 ComponentEnabled。
+    -- distance/position 可每 50ms 调用 ComponentEnabled。
     -- 不能在这里每次 Normalize + DeepCopy Store profile；按 settingsRevision 构建一次小型
     -- scope cache，内部 lane 只读该 cache，公共 Presentation 接口再返回 detached copy。
     scope = tostring(scope or "player") == "target" and "target" or "player"
@@ -243,7 +211,7 @@ local function ComponentEnabled(key, scope)
             return info.enabled~=false and (info.showClass~=false or (component~=nil and component.enabled~=false))
         end
         if component == nil or component.enabled == false then return false end
-        -- 中文维护注释（Info 生命周期门，2026-09-11）：distance/gearScore 都只会
+        -- distance/gearScore 都只会
         -- 被绘制到 info 行。旧逻辑即使 info.enabled=false 仍会让 distance/equipment
         -- lane 继续采集，造成“UI 已关闭但后台仍轮询”。职业元数据的双显示门见上方。Authority 仍由
         -- 当前 scope 的 HUD profile 决定；这里只做运行时需求投影，不改 Store。兼容边界：
@@ -268,10 +236,7 @@ end
 
 local function HeadScopeActive()
     local settings = Settings()
-    -- headEnabled is the master switch the head renderer already honors
-    -- (VisualTick/Start/Reconcile); the lane gates must match it so turning the
-    -- head display off also stops the position/distance/metadata/equipment/cast
-    -- lanes instead of leaving them polling for a hidden renderer.
+    -- headEnabled 是 VisualTick/Start/Reconcile 的头顶总开关；所有通道门槛必须一致，关闭时同时停止位置、距离、元数据、装备和施法通道，避免隐藏渲染器仍轮询。
     return settings.headEnabled ~= false
         and ((settings.headPlayer ~= false and AnyHeadComponent("player"))
             or (settings.headTarget ~= false and AnyHeadComponent("target")))
@@ -279,23 +244,20 @@ end
 
 local function LaneInterval(laneKey)
     local settings = Settings()
-    -- 中文维护：留存短状态时复用 aura lane 的50ms兜底；停止留存恢复用户间隔，不写配置。
+    -- 留存短状态时复用 aura lane 的50ms兜底；停止留存恢复用户间隔，不写配置。
     if laneKey == "aura" then return F.managementFreeze and F.managementFreeze.active and 50 or settings.refreshMs or 120 end
-    -- 维护：位置 lane 仅两次原生屏幕点读取，由既有单 OnUpdate 调度器每渲染帧最多执行一次。
+    -- 位置 lane 仅两次原生屏幕点读取，由既有单 OnUpdate 调度器每渲染帧最多执行一次。
     -- 1ms 是请求每帧，不是保证 1000Hz；这里严禁 Buff/装备/职业读取与布局重建。
     if laneKey == "position" then return 1 end
     if laneKey == "distance" or laneKey == "cast" then return settings.headRefreshMs or 50 end
     if laneKey == "metadata" then return 1000 end
-    -- 维护：事件合并上限50ms；丢事件时200ms兜底，仅自己最多四个已启用装备槽。
+    -- 事件合并上限50ms；丢事件时200ms兜底，仅自己最多四个已启用装备槽。
     -- EquipmentTick 的装分读仍单独限为1秒，不能让兜底提频放大所有 Native 调用。
     if laneKey == "equipment" then return 200 end
     return 400
 end
 
--- Schedule a lane task. Intervals below the background floor (50 ms) go to the
--- high-frequency lane, which allows down to 1 ms and is never clamped upward.
--- Reconcile is deliberately idempotent: an unchanged active lane keeps its
--- existing Scheduler task instead of remove/add churn and runImmediately spikes.
+-- 小于后台下限 50ms 的任务进入最小可达 1ms 的高频通道，不能向上钳制。Reconcile 必须幂等：未变化的活动通道保留原 Scheduler 任务，避免反复移除/添加与 runImmediately 峰值。
 local function SetLaneActive(laneKey, needed, callback, runImmediately)
     local lane = F.lanes[laneKey]
     if lane == nil then return false end
@@ -331,14 +293,12 @@ local function BumpLane(laneKey)
     if lane ~= nil then lane.revision = (tonumber(lane.revision) or 0) + 1 end
 end
 
-------------------------------------------------------------------------
--- Lane tick handlers
-------------------------------------------------------------------------
+-- 各通道 Tick 处理。
 
 function F:RefreshScope(scope, forceRefresh)
     scope = tostring(scope or "")
     if scope ~= "player" and scope ~= "target" then return false, "invalid buff display scope" end
-    -- 中文维护（enemy-loadout-1）：先撤销旧目标类型，再读取当前实时事实。读取失败/目标消失
+    -- 先撤销旧目标类型，再读取当前实时事实。读取失败/目标消失
     -- 不等于继续沿用上一目标；管理留存仍独立，不因 HUD 失败而删除历史。
     if scope == "target" then
         self.laneData.target = self.laneData.target or {}
@@ -347,16 +307,12 @@ function F:RefreshScope(scope, forceRefresh)
     local aura = Aura()
     if type(aura) ~= "table" or type(aura.GetSnapshot) ~= "function" or type(aura.GetStatusMap) ~= "function" then
         self.projections[scope], self.coverage[scope] = {}, { available = false, complete = false, reliable = false, total = 0, error = "AuraObservationV3 unavailable" }
-        -- 维护（pvp-hud-1）：不可读不是当前Buff仍生效；只清live HUD，不删除独立的管理留存。
+        -- 不可读不是当前Buff仍生效；只清live HUD，不删除独立的管理留存。
         local live=self.laneData[scope] or {};live.buffRows,live.debuffRows={},{};self.laneData[scope]=live
         return false, "AuraObservationV3 unavailable"
     end
     local settings = Settings()
-    -- Snapshot TTL is HALF the lane interval: the previous form (ttl = full
-    -- interval) let the observation cache return facts up to one extra interval
-    -- old, doubling worst-case buff latency (lane wait + stale cache). With
-    -- ttl < interval every lane tick rescans fresh facts; other consumers
-    -- calling between ticks still coalesce onto one scan.
+    -- 快照 TTL 为通道间隔的一半。TTL 等于完整间隔会令缓存再旧一个间隔，使最坏 Buff 延迟加倍；TTL < interval 保证每次通道 Tick 重采事实，Tick 间其他消费者仍可合并扫描。
     local retaining=self.managementFreeze and self.managementFreeze.active==true
     local snapshotTtlMs = math.max(1, math.floor((tonumber(LaneInterval("aura")) or 120) / 2))
     local snapshot, snapshotErr = aura:GetSnapshot(scope, {
@@ -364,7 +320,7 @@ function F:RefreshScope(scope, forceRefresh)
     })
     if type(snapshot) ~= "table" then
         self.projections[scope], self.coverage[scope] = {}, { available = false, complete = false, reliable = false, total = 0, error = snapshotErr }
-        -- 维护：清除Presentation所用的live行，避免服务暂不可用时仍展示上次Buff图标。
+        -- 清除Presentation所用的live行，避免服务暂不可用时仍展示上次Buff图标。
         local live=self.laneData[scope] or {};live.buffRows,live.debuffRows={},{};self.laneData[scope]=live
         -- 不可读不是已消失；留存仍保留旧行，只更新覆盖状态。
         if type(self.ObserveManagementRows)=="function" then self:ObserveManagementRows(scope,nil,self.coverage[scope],nil) end
@@ -373,11 +329,11 @@ function F:RefreshScope(scope, forceRefresh)
     if scope == "target" then self.targetInvalidated = false end
     self.pvpMetrics.lastAuraAt = S.NowMs and S.NowMs() or 0
     local statusMap, meta = aura:GetStatusMap(snapshot, { buff = true, debuff = true, hidden = true })
-    -- 中文维护：类型识别与 Buff 可视白名单/冻结列表分离，不需要用户额外追踪这些被动效果。
+    -- 类型识别与 Buff 可视白名单/冻结列表分离，不需要用户额外追踪这些被动效果。
     if scope == "target" and type(self.ProjectTargetLoadout) == "function" then
         self.laneData.target.targetLoadout = self.ProjectTargetLoadout(statusMap)
     end
-    -- 中文维护注释：管理列表分页数不能截断 HUD 事实；普通模式三类各64，留存模式各128；投影上限随之为192/384个ID。
+    -- 管理列表分页数不能截断 HUD 事实；普通模式三类各64，留存模式各128；投影上限随之为192/384个ID。
     -- 最终显示容量仍由各组件 geometry/虚拟列表控制，而不是先丢掉后面的 Debuff。
     -- 管理事实无条件保留；旧 showBuffs/showDebuffs 仅在下面 HUD lane 生效，避免旧存档隐藏管理行。
     local limit = retaining and 384 or 192
@@ -386,14 +342,14 @@ function F:RefreshScope(scope, forceRefresh)
         available = meta and meta.available, complete = meta and meta.complete, reliable = meta and meta.reliable,
         revision = snapshot.revision,
     }, {showBuffs=true,showDebuffs=true,classification=settings.classification,tracked=settings.tracked}, scope, limit, self.trackedIndex)
-    -- 中文维护注释：这里只构建实时 Aura/HUD；管理冻结由独立 Session Snapshot 拥有，
+    -- 这里只构建实时 Aura/HUD；管理冻结由独立 Session Snapshot 拥有，
     -- 不得再把过期冻结行写入 laneData，否则头顶状态永远不消失。unknown 也不能误入 Buff lane。
     coverage.scannedAt, coverage.buffCount = tonumber(snapshot.at) or 0, snapshot.buff and tonumber(snapshot.buff.count) or 0
     coverage.debuffCount, coverage.hiddenCount = snapshot.debuff and tonumber(snapshot.debuff.count) or 0, snapshot.hidden and tonumber(snapshot.hidden.count) or 0
     self.projections[scope], self.coverage[scope] = rows, coverage
-    -- 中文维护：实时已读事实 -> Feature会话留存。副本去重，永不回写HUD，取消追踪不删除记录。
+    -- 实时已读事实 -> Feature会话留存。副本去重，永不回写HUD，取消追踪不删除记录。
     if retaining and type(self.ObserveManagementRows)=="function" then self:ObserveManagementRows(scope,rows,coverage,snapshot.at) end
-    -- cached category rows for the head plates renderer
+    -- 头顶渲染器使用的分类行缓存。
     local lane = self.laneData[scope] or {}
     lane.buffRows, lane.debuffRows = {}, {}
     local scopedIndex = type(self.trackedIndex) == "table" and type(self.trackedIndex[scope]) == "table" and self.trackedIndex[scope] or {buff={},debuff={},auto={}}
@@ -406,7 +362,7 @@ function F:RefreshScope(scope, forceRefresh)
     end
     for _, row in ipairs(rows) do
         local id=math.floor(tonumber(row.id) or 0)
-        -- 中文维护（已确认类型不被追踪翻转）：四列是独立追踪选择，不是正负面分类覆盖。
+        -- 四列是独立追踪选择，不是正负面分类覆盖。
         -- 已确定Buff/Debuff只进入自身事实lane；只有尚未分类的状态保留用户指定展示位置。
         -- 旧保存选择不清除、不迁移，真正分类纠错仍由原classification override负责。
         if row.category == "debuff" and settings.showDebuffs ~= false then lane.debuffRows[#lane.debuffRows + 1] = row
@@ -422,13 +378,12 @@ function F:RefreshScope(scope, forceRefresh)
     return true
 end
 
--- 中文维护注释：追踪索引只在 settings revision 改变时重建；Aura 的 50ms 热路径不能遍历整库。
+-- 追踪索引只在 settings revision 改变时重建；Aura 的 50ms 热路径不能遍历整库。
 function F:BuildTrackedIndex(settings)
     settings=type(settings)=="table" and settings or Settings()
     local revision=SettingsRevision()
     if settings==Settings() and self.trackedIndexRevision==revision then return self.trackedIndex end
-    -- schema8: nested scope indexes are the HUD Authority; top-level union fields remain detached
-    -- compatibility helpers for management/legacy pure projections and never drive scope placement.
+    -- schema8 以嵌套 scope 索引作为 HUD 权威；顶层并集仅为管理/旧纯投影提供独立兼容数据，禁止控制 scope 放置。
     local index={player={buff={},debuff={},auto={}},target={buff={},debuff={},auto={}},buff={},debuff={},auto={}}
     local tracked=type(settings.tracked)=="table" and settings.tracked or {}
     local hasNested=type(tracked.player)=="table" or type(tracked.target)=="table"
@@ -445,9 +400,7 @@ function F:BuildTrackedIndex(settings)
     return index
 end
 
--- Tracking is a user-setting mutation, not a Native Aura mutation. Re-stamp the
--- already bounded projection rows immediately so the table's 追踪 column and the
--- head whitelist react in the same click without forcing another Aura scan.
+-- 追踪是用户设置修改，不是Native Aura修改；立即重标已有有界投影行，让表格追踪列与头顶白名单同次点击响应，禁止额外Aura扫描。
 function F:SyncTrackedProjectionFlags()
     local index = self.trackedIndex or self:BuildTrackedIndex(Settings())
     for _, scope in ipairs({ "player", "target" }) do
@@ -467,7 +420,7 @@ function F:SyncTrackedProjectionFlags()
     return true
 end
 
--- 中文维护注释：留存的唯一实现位于 rs_buff_display_management.lua；仅管理列表读取历史，HUD不读。
+-- 留存的唯一实现位于 rs_buff_display_management.lua；仅管理列表读取历史，HUD不读。
 -- 不保留旧 ApplyFreezeRows 旁路；TOC 在完整加载 Feature 后注册管理命令。
 
 function F:Refresh(reason, forceRefresh)
@@ -497,7 +450,7 @@ local function ProjectScope(scope)
         F.laneData[scope] = lane
         return false
     end
-    -- 维护：原生血条与附着图标必须共用 native_unit 锚点；缺失时隐藏，不在不同帧
+    -- 原生血条与附着图标必须共用 native_unit 锚点；缺失时隐藏，不在不同帧
     -- 切换到 world+1 米的另一投影（也不覆写 behind_camera 否决），避免跳位和背面残影。
     local x, y, depth, err = projection:ProjectUnit(scope)
     local source = x ~= nil and "native_unit" or nil
@@ -519,7 +472,7 @@ function F:PositionTick()
     for _, scope in ipairs(HUD_SCOPES) do
         if ScopeHeadEnabled(scope) and AnyHeadComponent(scope) then ProjectScope(scope) end
     end
-    -- 维护：raw屏幕视口由同一Service提供，不再用插件logical尺寸裁剪raw投影。
+    -- raw屏幕视口由同一Service提供，不再用插件logical尺寸裁剪raw投影。
     -- 有限缓存仅减少视口getter；分辨率变更最多等待250ms，位置本身从不缓存/插值。
     local now = S.NowMs and S.NowMs() or 0
     if self.viewportAt == nil or now - self.viewportAt >= 250 then
@@ -531,7 +484,7 @@ function F:PositionTick()
     end
     self.pvpMetrics.positionTicks = self.pvpMetrics.positionTicks + 1
     BumpLane("position")
-    -- 维护：位置事件只移动父容器；静止帧也允许消费待提交的内容dirty，不再重复ProjectPlates。
+    -- 位置事件只移动父容器；静止帧也允许消费待提交的内容dirty，不再重复ProjectPlates。
     Publish("v3.buff_display.plates.motion", "position")
     return true
 end
@@ -548,7 +501,7 @@ function F:DistanceTick()
     if (tonumber(self.consumerCount) or 0) <= 0 then return true end
     local api = Api()
     local changed = false
-    -- Distance is meaningful for the target; player self-distance is 0 by definition.
+    -- 距离仅对目标有意义；玩家自身距离按定义为 0。
     if ScopeHeadEnabled("target") then
         local lane = self.laneData.target or {}
         local value = nil
@@ -568,13 +521,9 @@ function F:DistanceTick()
     return true
 end
 
--- UNIT-SCOPE gate for CLASS metadata only: ability templates must never be
--- trusted for a non-player target, so class still fails closed unless target
--- resolves to PLAYER. Gear score no longer uses this gate: UnitGearScore is a
--- unit-token keyed API and is read directly for target after the 2026-09-11 RU
--- update. Equipped icons remain player-scope only (see EquipmentTick).
--- The resolved kind is cached briefly; UnitIdentityV3:GetById additionally keeps
--- its own 60s kind TTL and a 1.5s miss TTL, so this helper adds no hot-path cost.
+-- CLASS 元数据必须经过 UNIT-SCOPE 门槛：非 PLAYER 目标不能使用职业模板，无法解析时安全拒绝。
+-- 装备分不受此门槛控制，UnitGearScore 按 unit token 读取；依据 2026-09-11 RU 更新可直接读取目标。装备图标仍仅限 player，见 EquipmentTick。
+-- kind 短暂缓存；UnitIdentityV3:GetById 自带 60s kind TTL 和 1.5s 失败 TTL，本助手不增加热路径成本。
 local targetKindCache = { kind = nil, at = 0 }
 local TARGET_KIND_TTL_MS = 1200
 local function ResolveTargetKind()
@@ -602,7 +551,7 @@ local function TargetIsPlayer()
     return ResolveTargetKind() == "PLAYER"
 end
 
--- 中文维护注释（2026-09-27，target-alias-1）：
+--
 -- 目标自定义名字只在 TARGET_CHANGED / Consumer 启动 / 用户显式保存删除时读取 UnitName，
 -- 严禁接入 PositionTick、DistanceTick 或 VisualTick。真实 UnitName 是目标身份 Authority；Alias Store
 -- 只是本地展示映射，不能反向修改真实名字、目标选择或任何网络状态。这里不以 TargetIsPlayer()
@@ -696,7 +645,7 @@ function F:SetCurrentTargetAliasDisplayEnabled(value)
     return true
 end
 
--- 中文维护注释（target-alias-hud-2，校准提交边界）：HUD 校准器只把 target alias 的
+-- HUD 校准器只把 target alias 的
 -- enabled/x/y/fontSize/alpha 草稿提交到独立 alias Store；真实名字映射仍由显式“保存名字/删除名字”
 -- 操作维护。这样取消校准不会写几何，且不会因为 HUD-only 保存重写大型 BuffDisplay Store。
 function F:PersistTargetAliasHudCalibration(value, reason)
@@ -710,7 +659,7 @@ function F:PersistTargetAliasHudCalibration(value, reason)
     return true
 end
 
--- 中文维护注释（UnitGearScore 规范化边界，2026-09-11）：
+--
 -- X2Unit 是装分 Authority；格式解析统一收敛到 S.Utils.ParseGearScore，避免状态显示与
 -- 团队战备检查各自维护一套地区数字规则。Feature 只负责调用 API 与记录最近诊断。
 local function ReadGearScore(scope, api)
@@ -729,8 +678,7 @@ local function ReadGearScore(scope, api)
         end
         return nil
     end
-    -- comma=false is the documented API contract. Target selection is expressed
-    -- by the unit token ("target"), never by the second argument.
+    -- comma=false 是文档契约；目标由 unit token target 表达，禁止通过第二参数选择目标。
     local ok, raw, err = api:CallCapability("X2Unit:UnitGearScore", X2Unit, "UnitGearScore", scope, false)
     local value, formatted = nil, false
     if ok == true and S.Utils ~= nil and type(S.Utils.ParseGearScore) == "function" then
@@ -747,8 +695,7 @@ local function ReadGearScore(scope, api)
             dia.gearScoreErrors = (tonumber(dia.gearScoreErrors) or 0) + 1
             dia.gearScoreLastError = tostring(err or "read_failed")
         elseif value == nil then
-            -- nil/0 is expected for NPCs and some non-inspectable units; keep it
-            -- observable without counting it as an API fault every P3 lane tick.
+            -- NPC 或不可查看单位返回 nil/0 属正常情况；保留可观察信息，不能每个 P3 Tick 都计为 API 故障。
             dia.gearScoreUnavailable = (tonumber(dia.gearScoreUnavailable) or 0) + 1
             dia.gearScoreLastError = "unavailable"
         end
@@ -770,7 +717,7 @@ local function ReadClass(scope)
     if x2Locale == nil or type(x2Locale.LocalizeUiText) ~= "function" or combinedText == nil then return nil end
     local localizedOk, localized = api:CallCapability("X2Locale:LocalizeUiText", x2Locale, "LocalizeUiText", combinedText, key, "")
     if localizedOk ~= true or localized == nil or tostring(localized) == "" then return nil end
-    -- 中文维护（enemy-loadout-1）：沿用中央精确三天赋分类，不以装备/名称猜职业；
+    -- 沿用中央精确三天赋分类，不以装备/名称猜职业；
     -- 图标是类别提示而非新的团队职责判定，未知组合保留真职业名且不冒用别人的图标。
     local catalog = S.Data and S.Data.TeamAutoRoleCatalog
     local row = catalog and catalog.byClassKey and catalog.byClassKey[key]
@@ -784,12 +731,10 @@ function F:MetadataTick()
     for _, scope in ipairs({ "player", "target" }) do
         if ScopeHeadEnabled(scope) and ComponentEnabled("class", scope) then
             local lane = self.laneData[scope] or {}
-            -- UNIT-SCOPE gate: ability templates are player metadata. NPC/UNKNOWN
-            -- targets fail closed so the player's own class can never leak onto
-            -- a foreign unit's head plate.
+            -- UNIT-SCOPE 门槛：职业模板是玩家元数据，NPC/UNKNOWN 目标必须拒绝，不能把自身职业显示在其他单位头顶。
             local value = nil
             if scope == "player" or TargetIsPlayer() then value = ReadClass(scope) end
-            -- Normalize legacy string lane values to { name } records.
+            -- 将旧字符串通道值归一化为 { name } 记录。
             local normalized = value
             if type(value) == "string" then normalized = { name = value, key = nil } end
             local same = (lane.class == nil and normalized == nil)
@@ -805,9 +750,7 @@ function F:MetadataTick()
     return true
 end
 
--- Equip-slot constants are not guaranteed client globals at load time; resolve
--- them through the safe global reader so a missing constant degrades to the
--- documented slot fallback instead of faulting the lane.
+-- 装备槽常量加载时未必存在；通过安全全局读取器解析，缺失时按文档槽位回退，不能让通道异常。
 local EQUIPMENT_SLOTS = {
     mainHand = function() local v = Global("ES_MAINHAND"); return type(v) == "number" and v or 16 end,
     offHand = function() local v = Global("ES_OFFHAND"); return type(v) == "number" and v or 17 end,
@@ -815,16 +758,9 @@ local EQUIPMENT_SLOTS = {
     wings = function() local v = Global("ES_BACKPACK"); return type(v) == "number" and v or nil end,
 }
 
--- slotId: numeric equip slot; scope: "player" (own gear) or "target".
--- Real-machine evidence 2026-09-01: the client ignores the second argument
--- (targetEquippedItem) and always returns the player's own equipped item, so
--- only the player scope may call this; the target scope fails closed upstream.
--- Every outcome is recorded into F.EquipmentDiagnostics (bounded, never
--- printed per frame): reads / readErrors / emptySlots / validIcons /
--- iconField / lastError / sampleItemKeys. The 2026-09-01 fix routed the read
--- through GearV3 yet real-machine icons stayed blank -- the remaining unknowns
--- (which icon field the RU tooltip actually carries, whether the lane ticks,
--- whether reads error) must be observable on the client instead of guessed.
+-- slotId 为装备槽数值；scope 为 player 或 target。2026-09-01 实机证明客户端忽略 targetEquippedItem，始终返回自身装备，因此只允许 player 调用，target 上游必须拒绝。
+-- 所有结果写入有界 F.EquipmentDiagnostics：reads/readErrors/emptySlots/validIcons/iconField/lastError/sampleItemKeys；禁止逐帧打印。
+-- GearV3 路由本身不能证明图标可用，RU tooltip 的图标字段、通道运行与读取错误必须通过客户端证据观察，禁止猜测。
 local function ReadEquippedIcon(slotId, scope)
     if slotId == nil or scope ~= "player" then
         if slotId == nil then
@@ -842,10 +778,7 @@ local function ReadEquippedIcon(slotId, scope)
         item, readErr = gear:GetEquipped(slotId)
         readSource = "gear_v3"
     else
-        -- Fail-soft bootstrap fallback only. Services load before Features in
-        -- toc.g, so normal runtime always takes GearV3 above. This is still a
-        -- PLAYER read: targetEquippedItem must remain false, matching GearV3.
-        -- Target equipment is not inferred through this API.
+        -- 仅供启动阶段的温和回退；toc.g 中 Service 先于 Feature 加载，正常运行应使用 GearV3。这里只读 PLAYER，targetEquippedItem 必须为 false，与 GearV3 一致；禁止通过本 API 推断目标装备。
         local api = Api()
         local equipment = Global("X2Equipment")
         if api ~= nil and type(api.CallCapability) == "function" and equipment ~= nil then
@@ -876,9 +809,7 @@ local function ReadEquippedIcon(slotId, scope)
             dia.iconField = item.icon ~= nil and "icon" or (item.iconPath ~= nil and "iconPath" or "path")
             dia.lastIcon = icon ~= "" and tostring(icon) or dia.lastIcon
         elseif name ~= "" then
-            -- Tooltip without any known icon field: capture the shape ONCE so
-            -- the client run reveals the actual field names instead of another
-            -- blind fix round.
+            -- Tooltip 无已知图标字段时，仅捕获一次数据形态，让客户端证据给出真实字段名。
             dia.nameOnlyTooltips = (tonumber(dia.nameOnlyTooltips) or 0) + 1
             if dia.sampleItemKeys == nil then
                 local keys = {}
@@ -902,12 +833,12 @@ end
 
 function F:EquipmentTick(onlyFast, forceGearScoreScope)
     if (tonumber(self.consumerCount) or 0) <= 0 then return true end
-    -- 维护：自己装备与装分分频，不改GetEquipped Authority；显式完整刷新仍可立即读装分。
+    -- 自己装备与装分分频，不改GetEquipped Authority；显式完整刷新仍可立即读装分。
     -- 无效装备读取仍清旧图，不把旧武器当作当前真相。周期/合并事件只执行有界快项。
     local now = S.NowMs and S.NowMs() or 0
     local scoresDue = onlyFast ~= true or self.lastGearScoreAt == nil or now - self.lastGearScoreAt >= 1000
     if scoresDue then self.lastGearScoreAt = now end
-    -- 中文维护注释（2026-09-19，目标切换即时装分）：1000ms 只是普通漂移校准预算，不能成为
+    -- 1000ms 只是普通漂移校准预算，不能成为
     -- TARGET_CHANGED 的用户可见延迟。事件边允许只强制读取“新目标”的装分一次；不会同时强制
     -- player 装分，也不会推进 lastGearScoreAt，因此不改变正常周期节流、更不会在 Tick 中增加轮询。
     -- 兼容边界：仅接受 player/target 两个 scope，其它值 fail-closed 为无强制读取。
@@ -924,21 +855,14 @@ function F:EquipmentTick(onlyFast, forceGearScoreScope)
     for _, scope in ipairs({ "player", "target" }) do
         if ScopeHeadEnabled(scope) then
             local lane = self.laneData[scope] or {}
-            -- EQUIP-SCOPE fail-closed (real-machine evidence 2026-09-01): the
-            -- current RU client ignores GetEquippedItemTooltipInfo's
-            -- targetEquippedItem flag and always returns the player's OWN gear,
-            -- so a target-scope read used to paint the player's weapons onto
-            -- the target's plate. The unit-keyed alternates
-            -- (GetEquippedItemInfo/GetEquippedItemTooltipText) are not-allowed,
-            -- so equipped icons are only ever read for the player scope. Any
-            -- cached target values are purged so a stale plate can never
-            -- survive a target switch.
+            -- 装备 scope 必须安全拒绝：2026-09-01 实机证明 GetEquippedItemTooltipInfo 忽略 targetEquippedItem，始终返回自身装备。
+            -- 单位键替代 API GetEquippedItemInfo/GetEquippedItemTooltipText 不允许调用，因此图标只读 player；清除所有 target 缓存，保证切换目标后不残留错误装备。
             if scope ~= "player" then
                 for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
                     if lane[key] ~= nil then lane[key], changed = nil, true end
                 end
             end
-            -- 中文维护注释（目标装分 API 更新修复，2026-09-11）：
+            --
             -- 旧逻辑同时犯了两个错误：把 UnitGearScore 的 comma 参数当 target 布尔传 true，
             -- 并用 TargetIsPlayer() 作为调用前置门。前者可能得到 "12,345" 后 tonumber 失败，
             -- 后者在本周 target-kind API 变化时会让一个仍可用的 unit-keyed 读完全不执行。
@@ -952,10 +876,7 @@ function F:EquipmentTick(onlyFast, forceGearScoreScope)
             elseif not ComponentEnabled("gearScore", scope) and lane.gearScore ~= nil then
                 lane.gearScore, changed = nil, true
             end
-            -- weapon / glider icons (player scope only). Grade overlay is part
-            -- of the same tooltip fact and therefore adds no Native read;
-            -- compare it as well so a quality change cannot be hidden behind an
-            -- unchanged base icon.
+            -- 武器/滑翔翼图标仅限 player。品质覆盖与图标来自同一 tooltip，不增加 Native 读取；也必须比较品质，不能因基础图标未变漏掉品质变化。
             if scope == "player" then
                 for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
                     if ComponentEnabled(key, scope) then
@@ -994,16 +915,14 @@ function F:CastTick()
     return true
 end
 
-------------------------------------------------------------------------
--- Lane reconciliation (component gating + demand)
-------------------------------------------------------------------------
+-- 通道协调：组件门槛与 Demand。
 
 local function LaneNeeds(laneKey, settings)
     local positionActive = HeadScopeActive()
     if laneKey == "aura" then
         -- 管理留存与HUD开关独立，否则隐藏Buff组件会让短状态无机会进入留存列表。
         if F.managementFreeze and F.managementFreeze.active then return true end
-        -- 中文维护：目标类型组件消费同一个 Aura 租约；隐藏 Buff 行不能意外停掉类型识别。
+        -- 目标类型组件消费同一个 Aura 租约；隐藏 Buff 行不能意外停掉类型识别。
         if positionActive and ScopeHeadEnabled("target")
             and (ComponentEnabled("mainHand", "target") or ComponentEnabled("offHand", "target")) then return true end
         return (settings.showBuffs ~= false or settings.showDebuffs ~= false)
@@ -1027,7 +946,7 @@ local function HasTrackedCooldowns()
 end
 
 local function CooldownRuntimeNeeded()
-    -- 中文维护注释（2026-09-19，cooldown-skill-id-only-1）：追踪 CD 本身就是功能需求，不能把
+    -- 追踪 CD 本身就是功能需求，不能把
     -- Native Runtime 生命周期绑到“管理页是否打开”或“CD HUD 是否显示”。更重要的是 V4 已把 Buff/Aura
     -- 与 CD Authority 彻底分离：Store.trackedCooldowns 只能保存 Skill ID，CooldownObservationV3 直接读取
     -- GetCooldown/GetMateCooldown，手动追踪不等待 COMBAT_MSG 或 Buff 出现。自己 CD HUD/管理页开启时，
@@ -1054,9 +973,7 @@ function F:_AcquireCooldowns()
     })
     if ok ~= true then return false, err end
     self.cooldownHeld = true
-    -- Acquire/update may happen after a UI reopen while a Native cooldown is
-    -- already active; mirror the detached service snapshot immediately instead
-    -- of waiting for the next 100ms revision edge.
+    -- UI 重开时 Native 冷却可能已在运行；Acquire/update 立即同步服务独立快照，不能等待下一个 100ms revision 边沿。
     self:CooldownTick("cooldown_acquire")
     return true
 end
@@ -1095,7 +1012,7 @@ function F:CooldownTick(reason)
         end
     end
     self.laneData.player.cooldownRows = selected
-    -- 中文维护（CD 显示链诊断）：只留常数规模的最后正读数，导出晚于冷却结束仍能确认曾进入 HUD 队列。
+    -- 只留常数规模的最后正读数，导出晚于冷却结束仍能确认曾进入 HUD 队列。
     -- 不写 Store、不打印逐帧日志；完整当前条目在用户显式诊断时从缓存限量复制。
     local evidence=self.cooldownHudEvidence
     evidence.ticks=evidence.ticks+1
@@ -1108,9 +1025,7 @@ function F:CooldownTick(reason)
     end
     self.laneData.target = self.laneData.target or {}
     self.laneData.target.cooldownRows = {}
-    -- CD owns an independent projection revision; never bump the Aura lane just
-    -- to wake Presentation, otherwise diagnostics would falsely attribute CD
-    -- churn to Buff observation.
+    -- CD 拥有独立投影 revision；禁止为了唤醒 Presentation 增加 Aura revision，避免诊断误将冷却变化归因于 Buff 观察。
     self.cooldownRevision = (tonumber(self.cooldownRevision) or 0) + 1
     Publish("v3.buff_display.plates.updated", tostring(reason or "cooldown"))
     Publish("v3.buff_display.updated", "cooldown")
@@ -1177,9 +1092,7 @@ function F:ReconcileLanes()
     return true
 end
 
-------------------------------------------------------------------------
--- Projection accessors
-------------------------------------------------------------------------
+-- 投影读取接口。
 
 function F:GetProjection(scope, limit)
     scope = tostring(scope or "player")
@@ -1222,18 +1135,18 @@ end
 
 function F:GetScopeSettingsProjection(scope)
     scope = tostring(scope or "player") == "target" and "target" or "player"
-    -- 中文维护注释（PVP 50ms 热路径）：cache 只含 6 个运行策略 + 当前视觉 profile，
+    -- cache 只含 6 个运行策略 + 当前视觉 profile，
     -- 不复制 tracked/classification 大表。内部 lane 读同一 generation 的只读 cache；
     -- Presentation 边界仍 DeepCopy，避免 UI 反向修改 Feature/Store Authority。
     EnsureScopeSettingsCache()
     return S.Utils.DeepCopy(scopeSettingsCache[scope] or {})
 end
 
--- Head plates projection for the renderer: enabled components + bounded rows.
+-- 供渲染器使用的头顶投影：启用组件与有界行。
 function F:GetPlatesProjection(scope, settingsProjection)
     scope = tostring(scope or "player")
     local laneData = self.laneData[scope] or {}
-    -- 中文维护（performance-visual-hotpath-1）：Renderer已取得本次独立scope布局时复用它，
+    -- Renderer已取得本次独立scope布局时复用它，
     -- 避免同一内容重建复制两份profile。旧调用不传第二参仍取得独立快照；不缓存单位事实。
     local settings = type(settingsProjection)=="table" and settingsProjection or self:GetScopeSettingsProjection(scope)
     local plates = self.ProjectPlates(laneData, settings, self.trackedIndex, scope)
@@ -1242,7 +1155,7 @@ function F:GetPlatesProjection(scope, settingsProjection)
     return plates, maxRevision
 end
 
--- 维护（pvp-hud-1）：原生UIParent屏幕坐标，不除以UI缩放；第五返回为只读失败原因，前四参保持兼容。
+-- 原生UIParent屏幕坐标，不除以UI缩放；第五返回为只读失败原因，前四参保持兼容。
 function F:GetDynamicPlatesProjection(scope)
     return self.ProjectDynamicPlates(self.laneData[tostring(scope or "player")] or {})
 end
@@ -1253,7 +1166,7 @@ function F:GetPlatesAnchor(scope)
     return lane.x, lane.y, lane.depth, lane.source, lane.projectErr
 end
 
--- Legacy accessor kept for old consumers: tracked BUFF rows only.
+-- 保留旧消费者接口，仅返回追踪的 BUFF 行。
 function F:GetTrackedHeadProjection(scope)
     scope = tostring(scope or "player")
     if scope ~= "player" and scope ~= "target" then return {} end
@@ -1275,19 +1188,14 @@ function F:GetTrackedHeadProjection(scope)
     return out, self.revision, S.Utils.DeepCopy(self.coverage[scope] or {})
 end
 
--- Full tracked list for the floating widget's tracking manager. Every tracked
--- id (buff + debuff) becomes one row; live projection rows contribute their
--- name/icon/scope, while tracked ids that have vanished (and are not frozen)
--- stay as "已消失" placeholders so the player can still untrack them.
+-- 浮动追踪管理器展示完整追踪列表，每个Buff/Debuff ID一行；实时投影补名称/图标/scope，已消失且未冻结ID保留已消失占位，玩家仍可取消追踪。
 function F:GetTrackedList()
-    -- 中文维护注释：包括非实时条目的管理投影由统一目录负责；这里不再每次热刷重建全部 ID。
+    -- 包括非实时条目的管理投影由统一目录负责；这里不再每次热刷重建全部 ID。
     if type(self.GetManagementProjection)=="function" then return self:GetManagementProjection({view="tracked",cacheOwner="widget"}) end
     return {}, self.revision
 end
 
-------------------------------------------------------------------------
--- Aura consumer lease (unchanged contract)
-------------------------------------------------------------------------
+-- 光环消费租约，保持原有契约。
 
 function F:_AcquireAura()
     if self.auraHeld == true then return true end
@@ -1329,7 +1237,7 @@ function F:_ReleaseCasting()
     return true
 end
 
--- Contract-compatible aura task wrappers (the aura lane is the periodic task).
+-- 光环任务契约兼容包装；周期任务由光环通道承担。
 function F:_StartTask()
     return SetLaneActive("aura", true, function() return F:Refresh("scheduled") end, true)
 end
@@ -1340,7 +1248,7 @@ end
 function F:_QueueEventRefresh(reason, delayMs)
     if self.enabled ~= true or (tonumber(self.consumerCount) or 0) <= 0 then return true end
     if S.Scheduler == nil then return false, "状态显示事件调度器不可用" end
-    -- 维护（pvp-hud-1）：旧单reason任务每个事件先删后建，BUFF洪流可永久推迟武器事件，
+    -- 旧单reason任务每个事件先删后建，BUFF洪流可永久推迟武器事件，
     -- 并用最后一个reason覆盖其它类型。现在保存三个位的并集与最早期限；后来事件只能合并
     -- 或提前目标切换，绝不向后延时。Authority是本Feature的待处理失效，不是第二份装备缓存。
     local now = S.NowMs and S.NowMs() or 0
@@ -1397,7 +1305,7 @@ function F:_StartEvents()
     local any = false
     if S.Events:SubscribeOptional("BUFF_UPDATE", self, function()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
-        -- 中文维护：留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
+        -- 留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
         -- forceRefresh 仅绕过共享Aura本次缓存，不遍历静态库；无消费者/关闭时不读Native。
         if F.managementFreeze and F.managementFreeze.active and F.enabled and (F.consumerCount or 0)>0 then
             return F:Refresh("capture_buff_update",true)
@@ -1406,7 +1314,7 @@ function F:_StartEvents()
     end) == true then any = true end
     if S.Events:SubscribeOptional("DEBUFF_UPDATE", self, function()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
-        -- 中文维护：留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
+        -- 留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
         -- forceRefresh 仅绕过共享Aura本次缓存，不遍历静态库；无消费者/关闭时不读Native。
         if F.managementFreeze and F.managementFreeze.active and F.enabled and (F.consumerCount or 0)>0 then
             return F:Refresh("capture_debuff_update",true)
@@ -1414,8 +1322,8 @@ function F:_StartEvents()
         return F:_QueueEventRefresh("debuff_update", 120)
     end) == true then any = true end
     if S.Events:SubscribeOptional("TARGET_CHANGED", self, function()
-        -- 中文维护：事件边立即撤掉前一目标类型/职业，延迟采样尚未执行时不能短暂贴到新目标。
-        -- 维护：失效必须覆盖整份身份快照；只清职业/类型仍会把旧Buff、装分、读条贴到新目标。
+        -- 事件边立即撤掉前一目标类型/职业，延迟采样尚未执行时不能短暂贴到新目标。
+        -- 失效必须覆盖整份身份快照；只清职业/类型仍会把旧Buff、装分、读条贴到新目标。
         F.laneData.target, F.projections.target, F.coverage.target = {}, {}, {}
         F.targetInvalidated = true
         F.pvpMetrics.targetInvalidations = F.pvpMetrics.targetInvalidations + 1
@@ -1424,29 +1332,26 @@ function F:_StartEvents()
         -- 名字读取只发生一次事件边；先清旧 target lane，再绑定新目标备注，绝不等 50ms/1s 轮询。
         if type(F.RefreshTargetAliasIdentity) == "function" then F:RefreshTargetAliasIdentity("target_changed_alias") end
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
-        -- 中文维护：留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
+        -- 留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
         -- forceRefresh 仅绕过共享Aura本次缓存，不遍历静态库；无消费者/关闭时不读Native。
         if F.managementFreeze and F.managementFreeze.active and F.enabled and (F.consumerCount or 0)>0 then
             F:Refresh("capture_target_changed",true)
         end
         return F:_QueueEventRefresh("target_changed", 80)
     end) == true then any = true end
-    -- Weapon/glider swaps must reach the head icons near-instantly (PvP swap
-    -- tracking); the 1000ms equipment lane is only a drift backstop.
+    -- PvP 武器/滑翔翼切换必须近乎即时反映到图标；1000ms 装备通道仅用于纠偏。
     if S.Events:SubscribeOptional("UNIT_EQUIPMENT_CHANGED", self, function()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
         return F:_QueueEventRefresh("equipment_changed", 60)
     end) == true then any = true end
-    -- internal: re-gate lanes when any display setting changes.  Internal
-    -- listeners share one owner, so clear stale generation listeners first and
-    -- register BOTH settings + cooldown bridges afterwards.
+    -- 显示设置变化时重新计算通道门槛。内部监听共用一个 owner，先清理陈旧 Generation 监听，再同时注册设置与冷却桥接。
     if type(S.Events.SubscribeInternal) == "function" then
         S.Events:UnsubscribeInternalOwner(self)
         S.Events:SubscribeInternal("v3.buff_display.settings", self, function()
             self.trackedIndex = self:BuildTrackedIndex(Settings())
             return self:ReconcileLanes()
         end)
-        -- 中文维护注释（2026-09-19，CD 服务事件桥）：CooldownObservationV3 只发布内部 revision，
+        -- CooldownObservationV3 只发布内部 revision，
         -- Feature 在这里复制 detached active rows 到自己的 player lane；事件处理不读 Native、不轮询目录。
         -- 这样 Presentation 继续只依赖 Feature 投影，Service 不与 HUD 直接耦合。
         S.Events:SubscribeInternal("v3.cooldown.updated", self, function()
@@ -1460,7 +1365,7 @@ function F:_StartEvents()
 end
 
 function F:_StopEvents()
-    -- 维护：已退订的旧闭包不能写入重开后的Feature；清掉未执行失效，不保留第二个调度器。
+    -- 已退订的旧闭包不能写入重开后的Feature；清掉未执行失效，不保留第二个调度器。
     self.eventEpoch = self.eventEpoch + 1
     self.pendingEdges, self.pendingSince, self.pendingDue = {}, nil, nil
     if S.Events ~= nil and type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(self) end
@@ -1502,7 +1407,7 @@ function F:ReconcileDemand(before, after)
         self.coverage = { player = {}, target = {} }
         self.laneData = { player = {}, target = {} }
         if type(self.ClearFrozenRows)=="function" then self:ClearFrozenRows() end
-        if type(self.SetManagementListFrozen)=="function" then self:SetManagementListFrozen(false) end -- 中文维护：最后一个事实消费者退出后，丢弃会话列表快照。
+        if type(self.SetManagementListFrozen)=="function" then self:SetManagementListFrozen(false) end -- 最后一个事实消费者退出后，丢弃会话列表快照。
     end
     return true
 end
@@ -1567,7 +1472,7 @@ function F:Disable(reason)
     local ok, err = self.Demand:Clear(reason or "feature_disable")
     if ok ~= true then return false, err end
     self.enabled = false
-    if type(self.SetManagementListFrozen)=="function" then self:SetManagementListFrozen(false) end -- 中文维护：无 Consumer 的关闭路径也必须清掉列表冻结。
+    if type(self.SetManagementListFrozen)=="function" then self:SetManagementListFrozen(false) end -- 无 Consumer 的关闭路径也必须清掉列表冻结。
     return true
 end
 function F:GetHealth()
@@ -1576,7 +1481,7 @@ function F:GetHealth()
     local activeLanes = {}
     for laneKey, lane in pairs(self.lanes) do if lane.active == true then activeLanes[#activeLanes + 1] = laneKey end end
     table.sort(activeLanes)
-    -- 中文维护注释：公开有界诊断，不把目录/冻结行写入 Store；未接入 Native 的 CD 不报告为可用。
+    -- 公开有界诊断，不把目录/冻结行写入 Store；未接入 Native 的 CD 不报告为可用。
     return { schemaVersion=self.SchemaVersion, management=type(self.GetManagementHealth)=="function" and self:GetManagementHealth() or nil,
         ok = self.enabled == true, consumers = self.consumerCount, auraHeld = self.auraHeld == true, castingHeld = self.castingHeld == true, cooldownHeld = self.cooldownHeld == true,
         revision = self.revision, player = self.coverage.player, target = self.coverage.target,
@@ -1590,7 +1495,7 @@ function F:GetHealth()
             lastEquipmentAt=self.pvpMetrics.lastEquipmentAt, lastAuraAt=self.pvpMetrics.lastAuraAt,
             targetInvalidations=self.pvpMetrics.targetInvalidations, equipmentBackstopMs=200, eventWindowMs=50 },
         equipmentDiagnostics = S.Utils ~= nil and type(S.Utils.DeepCopy) == "function" and S.Utils.DeepCopy(F.EquipmentDiagnostics) or F.EquipmentDiagnostics,
-        -- 中文维护注释（.18.253 远程武器专项可观测性）：仅在用户显式取健康快照时读取
+        -- 仅在用户显式取健康快照时读取
         -- 当前 layout gate 与 lane 缓存，不新增 Native 调用，也不进入 200ms equipment 热路径。
         -- 这样若实机仍缺远程图标，可以立即区分“用户关闭 ranged”与“槽18读取为空”。
         equipmentState = {
@@ -1603,7 +1508,7 @@ function F:GetHealth()
             rangedPresent = type(self.laneData.player and self.laneData.player.ranged) == "table",
             wingsPresent = type(self.laneData.player and self.laneData.player.wings) == "table",
         },
-        -- 中文维护注释（.18.321 目标自定义名字诊断）：这里只暴露已经加载的别名 Store 与 lane 缓存，
+        -- 这里只暴露已经加载的别名 Store 与 lane 缓存，
         -- 不读取 UnitName、不遍历别名表、不触发持久化，因此模块诊断不会把冷路径变成 Native/Store 热路径。
         targetAlias = {
             storeLoaded = self.TargetAliasStoreLoaded == true,
@@ -1634,11 +1539,9 @@ function F:GetWidgetWindowState()
 end
 function F:SetWidgetWindowState(value, reason)
     if type(value) ~= "table" or type(self.State) ~= "table" then return false, "buff display widget window state unavailable" end
-    -- FloatingSurface persists in a second callback after setState(). Preflight
-    -- here guarantees that callback can never be the first operation against a
-    -- cold Store, avoiding mutate-before-load state loss.
+    -- FloatingSurface 在 setState() 后第二个回调中持久化；这里预检保证该回调不是冷 Store 的首次操作，避免先修改后加载造成状态丢失。
     if S.Persistence ~= nil and type(S.Persistence.PrepareWrite) == "function" then
-        -- 中文维护注释（.18.243 Window Settings Authority）：悬浮窗几何/显隐属于小型 settings Store，
+        -- 悬浮窗几何/显隐属于小型 settings Store，
         -- 不属于旧 v3.buff_display。过去这里 PrepareWrite(self.StoreId) 会在任意窗口动作前重新触碰
         -- 393×2 tracking 大表；RU 已实证该物理边界会截断数组。兼容 fallback 仅给半覆盖旧文件，
         -- 新版必须优先 SettingsStoreId；此处只做写前门禁，不改变 HUD/Tracking Authority。
@@ -1662,12 +1565,7 @@ function F:SetWidgetVisible(value, reason)
     return true
 end
 
-------------------------------------------------------------------------
--- Import / Export
-------------------------------------------------------------------------
-
--- Parse a plain tracked-id text. Commas, semicolons and whitespace are valid
--- separators. Invalid entries do not invalidate the valid remainder.
+-- 导入/导出：解析纯追踪 ID 文本，允许逗号、分号和空白分隔；非法条目不影响其余有效条目。
 function F:ParseTrackedText(text)
     text = tostring(text or "")
     local ids, seen, errors, duplicates = {}, {}, {}, 0
@@ -1690,8 +1588,7 @@ function F:ParseTrackedText(text)
     return { ids = ids, errors = errors, duplicates = duplicates }
 end
 
--- Quick tracked-id import. category: "buff" | "debuff" | "auto".
--- mode: "merge" keeps existing tracked ids, "overwrite" replaces the category.
+-- 快速导入追踪 ID：category 为 buff/debuff/auto；merge 保留已有 ID，overwrite 替换对应分类。
 function F:ImportTrackedIds(text, category, mode)
     local parsed = self:ParseTrackedText(text)
     if type(parsed) ~= "table" then return false, "追踪 ID 解析失败" end
@@ -1700,7 +1597,7 @@ function F:ImportTrackedIds(text, category, mode)
         return false, "没有可导入的 Buff ID" .. suffix
     end
     category = (category == "buff" or category == "debuff" or category == "auto") and category or "auto"
-    -- 中文维护注释（.18.243 导入 Authority）：文本快速导入只改变 scoped tracking，因此必须走
+    -- 文本快速导入只改变 scoped tracking，因此必须走
     -- Tracking A/B + manifest，而不是 settings/legacy Store。数据流是 Draft parsed IDs → 内存 Domain →
     -- inactive player/target/meta durable readback → manifest commit。显式 Buff/Debuff 会从同 scope Auto
     -- 退让；兼容旧“未指定 scope=双方”交互，但禁止把 Twin 变成日常同步 Authority。任一 Store 失败
@@ -1737,7 +1634,7 @@ function F:ImportTrackedIds(text, category, mode)
     return true, "导入完成：" .. table.concat(details, " · ")
 end
 
--- Full export: schema version + tracked + components + classification + policy.
+-- 完整导出包含 schema 版本、tracked、components、classification 和 policy。
 function F:ExportAll()
     local settings = Settings()
     return {
@@ -1745,7 +1642,7 @@ function F:ExportAll()
         schemaVersion = self.SchemaVersion or 5,
         tracked = S.Utils.DeepCopy(settings.tracked or { buff = {}, debuff = {} }),
         components = S.Utils.DeepCopy(settings.components or {}),
-        -- 中文维护注释（完整导出双 HUD）：legacy `components` 继续导出 player 组件，
+        -- legacy `components` 继续导出 player 组件，
         -- 供旧文本兼容；`hud` 是新 Authority 快照，补齐 player 的 plate/info/scale 以及
         -- target 全量视觉 profile。导出只读 detached snapshot，不触碰运行时缓存。
         hud = type(self.GetHudCalibrationSnapshot) == "function" and self:GetHudCalibrationSnapshot() or nil,
@@ -1763,7 +1660,7 @@ function F:ExportAll()
     }
 end
 
--- Line-based serialization for the multi-line edit box.
+-- 多行编辑框使用逐行序列化。
 function F:SerializeExport(data)
     data = type(data) == "table" and data or {}
     local lines = {
@@ -1786,9 +1683,7 @@ function F:SerializeExport(data)
             lines[#lines + 1] = "COMPONENT=" .. key .. ":size:" .. tostring(component.size or 0)
             lines[#lines + 1] = "COMPONENT=" .. key .. ":fontSize:" .. tostring(component.fontSize or 0)
             lines[#lines + 1] = "COMPONENT=" .. key .. ":alpha:" .. tostring(component.alpha or 1)
-            -- Serialize component-specific geometry too. Without these fields a
-            -- full export/import silently lost row capacity/spacing and cast-bar
-            -- width/text settings even though the UI exposed them.
+            -- 组件专用几何也必须序列化；完整导出/导入应保留 UI 暴露的行容量、间距、施法条宽度和文字设置。
             if key == "buffs" or key == "debuffs" or key == "cooldowns" then
                 lines[#lines + 1] = "COMPONENT=" .. key .. ":spacing:" .. tostring(component.spacing or 2)
                 lines[#lines + 1] = "COMPONENT=" .. key .. ":maxPerRow:" .. tostring(component.maxPerRow or 8)
@@ -1799,9 +1694,7 @@ function F:SerializeExport(data)
             end
         end
     end
-    -- HUD profile extension is additive to the legacy line format. Older builds
-    -- ignore these unknown records while still reading COMPONENT/SETTING; new
-    -- builds preserve player plate/info/scale and the entire target profile.
+    -- HUD 配置扩展追加到旧行格式；旧版忽略未知记录并仍读 COMPONENT/SETTING，新版保留 player 的 plate/info/scale 和完整 target 配置。
     local hud = type(data.hud) == "table" and data.hud or {}
     local function AppendBool(value) return value == true and "1" or "0" end
     local function AppendHudProfile(scope, profile, includeComponents)
@@ -1846,7 +1739,7 @@ function F:SerializeExport(data)
     return table.concat(lines, "\n")
 end
 
--- Parse full-export text. Returns { data = table, errors = {line:n msg}, warnings = {...} }.
+-- 解析完整导出文本，返回 { data = table, errors = {line:n msg}, warnings = {...} }。
 function F:ParseImportText(text)
     text = tostring(text or "")
     local data = { tracked = { buff = {}, debuff = {} }, components = {}, hud = {}, classification = {}, settings = {}, schemaVersion = 5 }
@@ -1980,16 +1873,14 @@ function F:ParseImportText(text)
     return { data = data, errors = errors, warnings = warnings }
 end
 
--- Apply parsed full-export data. mode "merge" only adds missing tracked ids and
--- applies components/classification that are explicitly present; "overwrite"
--- replaces tracked lists entirely (policy fields always overwrite when present).
+-- 应用解析的完整导出：merge 仅补缺失追踪 ID，并应用显式提供的组件/分类；overwrite 全量替换追踪列表；提供的 policy 字段始终覆盖。
 function F:ImportAll(data, mode)
-    -- 中文维护注释（v2 原子导入）：容量/非法输入/跨桶冲突先整体拒绝，预览绝不调用 Native。
+    -- 容量/非法输入/跨桶冲突先整体拒绝，预览绝不调用 Native。
     -- Legacy HUD 字段仍走下方原有 ApplyRaw 链；所有选择与双 HUD 只提交一个 durable 事务。
     local prepared, prepareErr = self:PrepareTrackingImport(data, mode)
     if prepared == nil then return false, prepareErr end
     local nextClassification = nil
-    -- 中文维护注释（.18.243 完整导入跨域事务）：ImportAll 可能同时改 settings、HUD layout 与
+    -- ImportAll 可能同时改 settings、HUD layout 与
     -- tracking/meta，不能再假装存在一个“单 Store 原子写”。MutateCompositeStores 先提交小 Store，
     -- 最后用 tracking manifest 作为高价值数据的 commit point；失败会恢复内存并尽力回滚已写小 Store。
     -- 旧 monolith 永远不是补偿路径，否则一次导入又会把大数组送回已知不可靠的 RU SaveData 形状。
@@ -2004,19 +1895,14 @@ function F:ImportAll(data, mode)
                 local component = data.components[key]
                 if type(component) == "table" and next(component) ~= nil then
                     for field, value in pairs(component) do
-                        -- Import runs inside one persistence transaction. Keep
-                        -- component writes Domain-only until the transaction
-                        -- commits; publishing per-field events here would expose
-                        -- uncommitted preview state to consumers.
+                        -- 导入处于同一持久化事务内，组件写入在提交前只留于 Domain；禁止逐字段发布事件让消费者看到未提交预览。
                         local ok, err = self:ApplySettingRaw("components." .. key .. "." .. tostring(field), value)
                         if ok ~= true then return false, err end
                     end
                 end
             end
         end
-        -- Apply the optional dual-HUD profile inside this same persistence transaction.
-        -- `COMPONENT=` legacy player fields above have already updated State, so the
-        -- baseline snapshot here includes them before profile-specific plate/info data.
+        -- 双 HUD 配置也必须在同一持久化事务内应用。上方旧 COMPONENT= 字段已更新 State，这里的基线快照先包含它们，再叠加配置专用 plate/info。
         if type(data.hud) == "table" and next(data.hud) ~= nil and type(self.ApplyHudCalibrationSnapshotRaw) == "function" then
             local currentHud = self:GetHudCalibrationSnapshot()
             local function OverlayProfile(base, patch)
@@ -2084,11 +1970,7 @@ end
 
 F.Commands = {
     Refresh = function(_, reason) return F:Refresh(reason or "buff_display_command") end,
-    -- Ground-truth field probe: dump the RAW shapes the live client returns for
-    -- the player's first buff row (UnitBuff row, UnitBuffTooltip row, trailing
-    -- returns, GetBuffTooltip return). Read-only, one-shot, bypasses every
-    -- cache — this is how we settle which field actually carries the name on
-    -- the current RU client instead of guessing at aliases.
+    -- 真实字段一次性探测：输出玩家首个 Buff 的原始 UnitBuff、UnitBuffTooltip、尾部返回值与 GetBuffTooltip 形态。只读、绕过缓存，通过当前 RU 客户端事实确认名称字段，禁止猜别名。
     ProbeAuraFields = function()
         if X2Unit == nil then return false, "X2Unit 不可用" end
         local function ShapeOf(value, limit)
@@ -2142,11 +2024,9 @@ F.Commands = {
         end
         return true, table.concat(lines, " | ")
     end,
-    -- Explicit one-shot equipment probe. This deliberately does not change the production selector or lane:
-    -- the .18.253 selector hypothesis did not restore the user's ranged icon, so we now capture real RU evidence
-    -- before making another behavior change. It compares false/true tooltip calls only as diagnostics, reads
-    -- GetEquippedItemType once, and reports current ranged component/lane state. No scheduler, Store write, or cache
-    -- mutation is introduced. The single chat line remains copyable even when the diagnostic editor itself is broken.
+    -- 装备一次性显式探测不改变生产选择器或通道；必须先收集实机 RU 证据再修改行为。
+    -- false/true tooltip 仅作对比诊断，GetEquippedItemType 只读一次，报告当前 ranged 组件与通道状态；不增加 Scheduler、Store 写入或缓存修改。
+    -- 单条聊天输出保持可复制，诊断编辑器故障时也能取证。
     ProbeEquipmentFields = function()
         local equipment = Global("X2Equipment")
         local api = Api()
@@ -2176,9 +2056,9 @@ F.Commands = {
         end
         local okType, itemType, typeErr = api:CallCapability("X2Equipment:GetEquippedItemType", equipment, "GetEquippedItemType", slot)
         local okFalse, falseTooltip, falseErr = api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", equipment,
-            "GetEquippedItemTooltipInfo", slot, false) -- targetEquippedItem=false: production/self path evidence
+            "GetEquippedItemTooltipInfo", slot, false) -- targetEquippedItem=false：生产/自身路径证据。
         local okTrue, trueTooltip, trueErr = api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", equipment,
-            "GetEquippedItemTooltipInfo", slot, true) -- targetEquippedItem=true: comparison evidence only; never HUD Authority
+            "GetEquippedItemTooltipInfo", slot, true) -- targetEquippedItem=true：仅作对比证据，禁止作为 HUD 权威。
         local lane = F.laneData and F.laneData.player and F.laneData.player.ranged or nil
         local enabled = ComponentEnabled("ranged", "player")
         local function Result(ok, value, err)
@@ -2222,7 +2102,7 @@ F.Commands = {
     end,
     ResetLayoutSettings = function()
         if type(F.PersistResetLayoutSettings) ~= "function" then return false, "布局重置持久化入口不可用" end
-        -- 中文维护注释（.18.241）：Reset 与“保存并退出”共用 HUD Layout 小 Store Authority。
+        -- Reset 与“保存并退出”共用 HUD Layout 小 Store Authority。
         -- 禁止再次通过主 v3.buff_display durable-save，否则用户只改 HUD 也会重写 786 条追踪 ID。
         local marked, markErr = F:PersistResetLayoutSettings("reset_layout_settings")
         if marked ~= true then
@@ -2237,13 +2117,12 @@ F.Commands = {
         Publish("v3.buff_display.settings", "layout_reset")
         return true
     end,
-    -- Backward-compatible command name; semantics are intentionally narrowed to
-    -- Layout Reset so old UI/callers can no longer erase tracked/classification.
+    -- 保留兼容命令名，语义限定为布局重置，禁止旧 UI/调用方删除追踪和分类设置。
     ResetAllSettings = function()
         return F.Commands:ResetLayoutSettings()
     end,
     SetSetting = function(_, key, value)
-        -- 中文维护注释：兼容旧按钮命令，但不再写 freezeEnabled 到永久 Store。
+        -- 兼容旧按钮命令，但不再写 freezeEnabled 到永久 Store。
         if key=="freezeEnabled" then
             if value==true then return F:CaptureManagementFreeze() end
             return F:ClearFrozenRows()
@@ -2252,7 +2131,7 @@ F.Commands = {
         if ok==true then F:ReconcileLanes() end
         return ok,err
     end,
-    -- 中文维护（buff-tracking-ux）：逐行基础开关和全通道取消只重新标记已采集的投影；
+    -- 逐行基础开关和全通道取消只重新标记已采集的投影；
     -- 用户设置不是 Aura 变化，不在点击/失败/功能关闭时额外 Native 扫描。HUD 既有 lane 使用新 index。
     SetTrackedScope = function(_, id, scope, enabled)
         local ok, err = F:SetTrackedScope(id, scope, enabled)
@@ -2265,7 +2144,7 @@ F.Commands = {
         return ok, err
     end,
     SetTrackedChannel = function(_, id, scope, category, enabled)
-        -- 维护（合并残留修复）：这里的 Authority 是六通道 tracking 提交；返回该提交的 ok/err。
+        -- 这里的 Authority 是六通道 tracking 提交；返回该提交的 ok/err。
         -- 旧 SetSetting 结尾误合并至此会再次用未定义 key/value 写设置，掩盖真实提交结果。
         -- Projection 刷新保留原顺序；不增加额外保存，不修改调用者/旧追踪数据的兼容契约。
         local ok, err = F:SetTrackedChannel(id, scope, category, enabled)
@@ -2361,7 +2240,7 @@ F.Commands = {
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
 
--- 中文维护注释（Phase 3 Batch G，2026-09-29，core-feature-decoupling-1）：把本 Feature 的两个诊断
+-- 把本 Feature 的两个诊断
 -- 投影注册到 Core 的取值表。原先 core/rs_diagnostics.lua 直接按 id 读取它们（属 CORE_FEATURE 债务）；
 -- 现在 Core 只按“用途名”取值，业务 Feature id 只出现在本目录。
 -- provider 每次实时调用、不缓存 —— 与旧取值时机和新鲜度一致，不引入第二份事实。
@@ -2376,7 +2255,7 @@ if type(providers) == "table" then
         return type(feature) == "table" and type(feature.GetHudCalibrationSnapshot) == "function"
             and feature:GetHudCalibrationSnapshot() or nil
     end)
-    -- 中文维护注释（Phase 3 Batch M，2026-09-29，core-feature-decoupling-1）：契约版本诊断投影。
+    -- 契约版本诊断投影。
     -- core/rs_foundation_gate.lua 的 buff_display_v3_statusmap_contract 原先在 detail 串里直接复述
     -- 本 Feature 的 20 个契约版本字段；把 Feature 访问搬走之后，那些字段改由本投影提供 ——
     -- 诊断可观察性不降级，而 Core 不再认识这个业务 Feature。

@@ -1,12 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - tools_market_analysis Contract Acceptance
+-- Replicated Suite · 行情分析契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 3 Batch I（2026-09-29，core-feature-decoupling-1）：本文件承载行情分析模块的 Feature 侧契约
--- （原先由 core/rs_foundation_gate.lua 的 v3_auction_query_contract 直接点名实现表检查）。
--- 搬到这里之后 Core 不再认识具体业务 Feature。失败同样是 blocker。
---
--- 边界：同一判定里的 AuctionQueryV3 Service 契约留在 Foundation；本文件只管本 Feature 自己。
--- 判定与旧版**逐条等价**，外加“实现缺失不再静默 return”。
+-- 仅验证行情分析Feature自身契约，保留所有逐项下限；缺实现不得静默返回，失败为blocker。
+-- 同一判定中的AuctionQueryV3服务契约仍归Foundation，Core不直接依赖此Feature实现表。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -16,7 +14,7 @@ local F = S.Features and S.Features.tools_market_analysis or nil
 
 local function Fail(message) return false, tostring(message or "market_analysis_acceptance_failed") end
 
--- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_tools_market_analysis_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.AuctionQueryContractVersion) or 0) < 1 then return Fail("auction_query_contract_version") end

@@ -1,5 +1,11 @@
--- Real API gate / GearV3 / Demand / Scheduler / Events; only Native values are fixtures.
--- Equipment/assignment shapes come from the user's working 1.2 Character service.
+------------------------------------------------------------------------
+-- Replicated Suite · 首页提醒测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用真实 API 门禁、GearV3、Demand、Scheduler 和 Events，仅原生值为测试数据。
+-- 装备与任务参数形状来自用户已正常使用的 1.2 Character 服务。
+------------------------------------------------------------------------
 local passed,total=0,0
 local function Test(name,fn)
  total=total+1;local ok,err=xpcall(fn,debug.traceback)

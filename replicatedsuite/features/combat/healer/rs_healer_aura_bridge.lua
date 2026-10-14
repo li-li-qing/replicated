@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Healer Aura Bridge (Phase 12B)
+-- Replicated Suite · 治疗助手光环适配
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Feature-domain adapter between the legacy Healer status-cache contract and
--- AuraObservationV3. It owns only the Healer Aura consumer lease and normalized
--- status reads. Healing score/rules/distance/priority remain Healer Domain
--- authority. No Tick and no background scan are introduced here.
+-- 旧 Healer status-cache 契约与 AuraObservationV3 之间的 Feature 适配层，仅拥有 Aura 消费租约和归一化状态读取；评分、规则、距离、优先级仍归 Healer Domain。禁止增加 Tick 或后台扫描。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -251,10 +250,7 @@ function B:_ReadDirect(unitToken)
     }, nil
 end
 
--- Accuracy-first Healer read. Shared Aura facts are always attempted first. A
--- degraded shared snapshot is NOT treated as proof of absence; only that case
--- falls back to a full native read. This keeps the duplicate scanner cold on
--- normal paths while preserving the historical recommendation semantics.
+-- 准确性优先：始终先读共享 Aura；共享快照降级不能证明缺失，仅此情况回退完整 Native 读取。正常路径保持重复扫描器冷状态，并保留原有推荐语义。
 function B:ReadAccurate(unitToken, options)
     self.metrics.accurateReads = (tonumber(self.metrics.accurateReads) or 0) + 1
     local statuses, coverage, err = self:Read(unitToken, options)

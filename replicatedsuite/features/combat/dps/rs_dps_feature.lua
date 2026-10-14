@@ -1,11 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - DPS Feature
+-- Replicated Suite · 伤害与治疗统计功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- V3 combat statistics feature. It consumes the shared self/all statistics stream;
--- it owns NO native COMBAT_MSG handler (the bus owns that) and no persistence of
--- running totals. Per-event PVP/PVE classification and accumulation live in the
--- Domain (rs_dps_domain.lua); relation facts live in CombatRelationV3; this file
--- only owns lifecycle, settings, commands and the Projection boundary.
+-- 消费共享 self/all 战斗统计流；Native COMBAT_MSG 处理归 bus，不持久化运行中总量。逐事件 PVP/PVE 分类和累加归 rs_dps_domain.lua，关系事实归 CombatRelationV3；本文件仅拥有生命周期、设置、命令与投影边界。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -20,7 +18,7 @@ F.combatOverviewToken,F.combatOverview=nil,nil
 F.enabled = F.enabled == true
 F.consumers = {}
 F.consumerCount = 0
-F.busSubscribed = false -- direct bus ownership removed in M1.16; retained for compatibility health only
+F.busSubscribed = false -- 不直接拥有 bus；该字段仅用于兼容健康诊断。
 F.analyticsHeld = F.analyticsHeld == true
 F.analyticsMetricRegistered = F.analyticsMetricRegistered == true
 F.relationHeld = false
@@ -220,15 +218,12 @@ function F:Disable(reason)
     return true
 end
 
-------------------------------------------------------------------------
--- Settings
-------------------------------------------------------------------------
+-- 设置。
 local function PublishSettingChanged(key)
     if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.dps.settings", tostring(key or "")) end
 end
 
--- Persistent RSUI bindings own the write-fence + MarkDirty transaction. This
--- path mutates only the Domain setting and publishes the projection change.
+-- RSUI 持久 Binding 拥有写保护和 MarkDirty 事务；本路径只修改 Domain 设置并发布投影变化。
 function F:ApplySettingFromBinding(key, value)
     key = tostring(key or "")
     local ok, err = self:ApplySettingRaw(key, value)
@@ -237,10 +232,7 @@ function F:ApplySettingFromBinding(key, value)
     return true
 end
 
--- Command/non-RSUI callers do not have a PersistentSettingBinding around them,
--- so the Feature must queue persistence itself and roll the scalar back on a
--- write fence/failure. This keeps both entry paths transactional without
--- double-marking the Store from normal UI controls.
+-- Command/非 RSUI 调用没有 PersistentSettingBinding，Feature 必须自行排队持久化，写保护/失败时回滚标量；保证两个入口均事务性，正常 UI 不重复 MarkDirty。
 function F:SetSettingValue(key, value)
     key = tostring(key or "")
     local dirtyOk, dirtyErr = self:MutateStore(function() return self:ApplySettingRaw(key, value) end, 300, "setting_" .. key)
@@ -267,10 +259,7 @@ function F:RemoveBossName(name)
     return ok, err
 end
 
-------------------------------------------------------------------------
--- Clear: statistics only. The combat consumer is owned by the Demand lease and
--- must survive this call.
-------------------------------------------------------------------------
+-- Clear 仅清统计；战斗消费端由 Demand 租约拥有，调用后必须继续存在。
 function F:ClearStats(reason)
     local d = Domain()
     if type(d) ~= "table" or type(d.ClearStats) ~= "function" then return false, "dps domain unavailable" end
@@ -281,10 +270,7 @@ function F:ClearStats(reason)
     return ok
 end
 
-------------------------------------------------------------------------
--- Throttled projection publish (keeps the live meter off the native combat
--- callback hot path).
-------------------------------------------------------------------------
+-- 节流发布投影，让实时统计显示刷新脱离 Native 战斗回调热路径。
 function F:ScheduleProjectionPublish()
     if self.projectionPublishScheduled == true then return true end
     if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then
@@ -335,7 +321,7 @@ function F:CancelPendingReplay()
     return true
 end
 
--- Narrow Presentation read model for the shared RSUI window shell.
+-- 共享 RSUI 窗口壳使用的窄 Presentation 读模型。
 function F:GetWidgetWindowState()
     local value = self.State and self.State.widgetWindow or nil
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
@@ -368,9 +354,7 @@ end
 
 function F:Refresh(reason) return true end
 
-------------------------------------------------------------------------
--- Projection / Commands
-------------------------------------------------------------------------
+-- 投影与命令。
 F.Commands = F.Commands or {}
 function F.Commands:SetEnabled(enabled, reason)
     return S.FeatureRuntime:ApplyPreferenceTargets({combat_stats=enabled==true,combat_analytics=enabled==true}, reason or "dps_command")
@@ -404,9 +388,7 @@ function F:GetActorDetail(request)
         return { actor = nil, abilities = {}, counterparts = {}, revision = 0 }
     end
     local detail = S.Utils.DeepCopy(d:GetActorDetail(request))
-    -- Skill metadata is presentation drill-down enrichment, never combat hot-path
-    -- work. The shared service performs bounded lazy X2Skill resolution and
-    -- caches positive/negative results so repeated detail refreshes stay cheap.
+    -- 技能元数据仅为详情展示补充，禁止战斗热路径执行；共享服务有界惰性解析 X2Skill，并缓存成功/失败结果，降低重复详情刷新成本。
     local metadata = S.Services and S.Services.SkillMetadataV3 or nil
     for _, row in ipairs(type(detail.abilities) == "table" and detail.abilities or {}) do
         row.nativeAbilityName=row.name
@@ -484,7 +466,7 @@ end
 function F:GetCombatOverview()
     local d,a=Domain(),Analytics()
     if not d or not a then return {rows={},revision="unavailable",statsAvailable=false,assistsAvailable=false} end
-    -- 中文维护：先读现有指标版本和开关标量，缓存命中前不得构建/排序击杀列表；缺轻量契约的宿主仍走原投影路径。
+    -- 先读现有指标版本和开关标量，缓存命中前不得构建/排序击杀列表；缺轻量契约的宿主仍走原投影路径。
     local metric=type(a.GetMetric)=="function" and a:GetMetric("kills") or nil
     local analyticsFeature=S.Features and S.Features.CombatAnalytics
     if metric and metric.state and analyticsFeature and type(analyticsFeature.IsMetricPreferenceEnabled)=="function" then
@@ -592,7 +574,7 @@ end
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
 
--- 中文维护注释（Phase 3 Batch P，2026-09-29，core-feature-decoupling-1）：把本 Feature 的健康投影与
+-- 把本 Feature 的健康投影与
 -- 运行期状态投影注册到 Core 的取值表。原先 core/rs_foundation_gate.lua 直接按 id 读取本 Feature 的
 -- 实现表（health、enabled、busSubscribed、Domain 版本），既用于契约 detail 也用于运行期生命周期判定；
 -- 现在 Core 只读投影 —— **契约本身已归位到 rs_dps_acceptance.lua，诊断可观察性不降级**。

@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Ability Catalog
+-- Replicated Suite · 战斗技能目录
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Load-time compiled O(1) combat metadata derived from the already bundled
--- SkillEffects registry. Runtime combat callbacks must never scan SkillEffects
--- or run broad tag/name matching. Classification produced from names is marked
--- inferred; verified Skill/Buff ids remain the identity authority.
+-- 加载时从已打包的 SkillEffects 注册表编译 O(1) 战斗元数据。运行时战斗回调禁止扫描 SkillEffects 或广泛匹配标签/名称；名称分类标记 inferred，已核实的 Skill/Buff ID 才是身份权威。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -135,7 +134,7 @@ function C:GetBuff(id) return self.ByBuffId[tonumber(id)] end
 function C:GetSongSkillForBuff(id) return self.SongSkillByBuffId[tonumber(id)] end
 function C:IsControlSkill(id) local row = self:GetSkill(id); return row ~= nil and #row.controlTypes > 0 end
 function C:IsSongSkill(id) local row = self:GetSkill(id); return row ~= nil and row.songcraft == true end
--- 中文维护（2026-10-05）：参考规则共用静态索引；不合并到已确认分类，
+-- 参考规则共用静态索引；不合并到已确认分类，
 -- 不把参考名称覆盖中文 SkillEffects，不改变原控制/辅助指标的判定。
 function C:GetRecognitionMatches(namespace, id)
     local reference = S.Data.CombatRecognitionCatalog

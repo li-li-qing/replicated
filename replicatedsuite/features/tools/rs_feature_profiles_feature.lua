@@ -1,9 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Feature Profiles
+-- Replicated Suite · 功能方案功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 用户自定义“功能方案”Authority：一个方案只保存“哪些可控业务 Feature 应开启”。
+-- 用户自定义“功能方案”权威边界：一个方案只保存“哪些可控业务 Feature 应开启”。
 -- 应用时当前 Registry 中其它可控业务 Feature 一律关闭；方案本身不硬编码“生活/战斗”等语义。
---
 -- 关键边界：
 -- * FeatureRuntime 是启停/偏好唯一 Authority，本模块绝不直接调用其它 Feature:Enable/Disable。
 -- * 方案只控制 Enabled/PreferredEnabled，不删除任何 Feature 自己的永久配置、窗口位置或业务 Store。
@@ -83,7 +84,7 @@ local function NormalizePlacement(value)
         and (anchorH == "LEFT" or anchorH == "RIGHT") and (anchorV == "TOP" or anchorV == "BOTTOM")
         and offsetX ~= nil and offsetY ~= nil
 
-    -- 维护（2026-09-25，feature-profile-quick-viewport-intent-1）：屏幕快捷按钮除了
+    -- 屏幕快捷按钮除了
     -- “最近边锚点”之外，还必须保留产生该位置的 source viewport identity（逻辑宽高 +
     -- 中心比例 + uiScale）。否则同一个分辨率重登时只能靠边锚点反推，一旦恢复期 viewport
     -- 与保存期不同（登录期临时 canvas / 窗口模式变化），右侧按钮就会被推到真实窗口之外；
@@ -152,7 +153,7 @@ end
 local function NormalizeState(value)
     value = type(value) == "table" and value or {}
     local out, used, maxId = { profiles = {}, nextId = 1, selectedId = nil }, {}, 0
-    out.quickButtonsLocked = value.quickButtonsLocked == true and true or nil -- 中文维护：可选 true 字段；未锁定旧档不增加 canonical 键，保留原 schema1 指纹。
+    out.quickButtonsLocked = value.quickButtonsLocked == true and true or nil -- 可选 true 字段；未锁定旧档不增加 canonical 键，保留原 schema1 指纹。
     for index, raw in ipairs(type(value.profiles) == "table" and value.profiles or {}) do
         if #out.profiles >= MAX_PROFILES then break end
         local profile = NormalizeProfile(raw, index)
@@ -224,7 +225,7 @@ end
 
 local function IsControllable(meta)
     if type(meta) ~= "table" then return false end
-    if meta.navigationVisible == false or meta.category == "system" then return false end -- 中文维护：已从左侧删除的内部 Feature 不再被方案隐式开启/关闭。
+    if meta.navigationVisible == false or meta.category == "system" then return false end -- 已从左侧删除的内部 Feature 不再被方案隐式开启/关闭。
     local id = NormalizeId(meta.id)
     if id == "" or id == F.Id then return false end
     if tostring(meta.lifecycle or "") == "shell" or tostring(meta.controlFeatureId or id) == "" then return false end
@@ -232,17 +233,17 @@ local function IsControllable(meta)
     return Runtime:IsImplemented(id) == true
 end
 
--- 中文维护（2026-10-02）：展示目录使用与左栏相同的 Workspace/Router 投影，
+-- 展示目录使用与左栏相同的 Workspace/Router 投影，
 -- 名称含同一开发态标签，顺序跟随个人重排/隐藏；基础页/本方案仍展示但只读。
 -- 初始化早于 UI 装配时只用 Registry 可见目录降级，不读取游戏 API，不另存名单。
 function F:GetNavigationFeatureRows()
     local rows = {}
     local workspace = S.UIV3 and S.UIV3.Workspace or nil
     local nav = type(workspace) == "table" and type(workspace.GetNavigation) == "function" and workspace:GetNavigation("custom") or nil
-    local catalog = nav or Registry:ListAccessible() -- 中文维护：无工作台的回退目录也遵守手工开放，方案不应列出隐藏模块。
+    local catalog = nav or Registry:ListAccessible() -- 无工作台的回退目录也遵守手工开放，方案不应列出隐藏模块。
     for _, entry in ipairs(catalog) do
         local meta = nav and Registry:Get(entry.featureId) or entry
-        if meta and Registry:IsAccessible(meta.id) and meta.navigationVisible ~= false and meta.category ~= "system" then -- 中文维护：旧导航输入同样不能恢复受限条目。
+        if meta and Registry:IsAccessible(meta.id) and meta.navigationVisible ~= false and meta.category ~= "system" then -- 旧导航输入同样不能恢复受限条目。
             local category = Registry.categories and Registry.categories[meta.category] or nil
             rows[#rows + 1] = {
                 id = meta.id,
@@ -262,7 +263,7 @@ function F:GetControllableFeatureRows()
     return rows
 end
 
--- 中文维护：旧方案只保存团队中心一个开启位，拆分前同时启用职责/视觉。
+-- 旧方案只保存团队中心一个开启位，拆分前同时启用职责/视觉。
 -- 读取时解释历史意图，不改 canonical；用户编辑或捕获时才提交独立链接位，
 -- 使“职责开、牺牲关”可持久表达，且旧指纹无需猜测/批量重写。
 local function ProfileTarget(profile, id)
@@ -423,12 +424,12 @@ function F:GetProjection()
         dirty = self.RuntimeState.dirty == true,
         controllableCount = controllableCount,
         lastOperation = self.Authority.lastOperation,
-        -- 维护（feature-profile-failure-evidence-1）：管理页 ready 不等于上次应用成功；
+        -- 管理页 ready 不等于上次应用成功；
         -- 分开投影最后一次操作结果，且返回分离副本，UI/诊断不能改写 Domain 证据。
         applyStatus = self.applying == true and "applying" or (self.RuntimeState.lastApplyFailure ~= nil and "failed" or (self.RuntimeState.lastAppliedId ~= nil and "applied" or "idle")),
         lastApplyFailure = Copy(self.RuntimeState.lastApplyFailure),
         enabled = self.enabled == true,
-        quickButtonsLocked = self.State.quickButtonsLocked == true, -- 中文维护：按钮和主菜单只读同一 Feature 偏好，不各存锁状态。
+        quickButtonsLocked = self.State.quickButtonsLocked == true, -- 按钮和主菜单只读同一 Feature 偏好，不各存锁状态。
     }
 end
 
@@ -456,7 +457,7 @@ function F:_SubscribeLifecycle()
         F.Authority:Refresh("feature_lifecycle")
     end)
     if ok ~= true then return false, "feature lifecycle subscribe failed" end
-    -- 中文维护：个人导航隐藏/排序修改后立即重建同源目录；只在已启用方案时订阅，
+    -- 个人导航隐藏/排序修改后立即重建同源目录；只在已启用方案时订阅，
     -- 复用现有 owner 清理，不新增轮询或另外一份导航持久事实。
     local navOk = S.Events:SubscribeInternal("v3.workspace.updated", self, function(_, kind)
         if kind == "navigation" then F.Authority:Refresh("navigation_updated") end
@@ -520,7 +521,7 @@ local function NormalizeResponsivePlacement(placement)
         offsetX = math.max(0, math.floor(offsetX + 0.5)), offsetY = math.max(0, math.floor(offsetY + 0.5)) }
 end
 
--- 维护（2026-09-25，feature-profile-quick-viewport-intent-1）：真实拖动提交时由 Widget 传入
+-- 真实拖动提交时由 Widget 传入
 -- 的 source-viewport intent（Layout logical-free-v2 projection 的 Feature 侧镜像）。
 -- 只接受完整、有限、可信的一组值；任何缺失都整体拒绝，避免生成“半套” viewport 身份。
 local function NormalizeViewportIntent(intent)
@@ -541,7 +542,7 @@ end
 
 F.Commands = {}
 function F.Commands:SetQuickButtonsLocked(value)
-    -- 中文维护：沿用方案 Store 的 durable 事务，锁定不改变方案启用状态、快捷位置或应用动作。
+    -- 沿用方案 Store 的 durable 事务，锁定不改变方案启用状态、快捷位置或应用动作。
     local ok, err = F:Persist("feature_profile_quick_lock", function(state) state.quickButtonsLocked = value == true and true or nil; return true end)
     if ok == true then F.Authority:Refresh("profile_quick_lock") end
     return ok, err
@@ -560,7 +561,7 @@ function F.Commands:CreateProfile(name)
     if #(F.State.profiles or {}) >= MAX_PROFILES then return false, "最多创建 " .. tostring(MAX_PROFILES) .. " 个方案" end
     local newId = math.max(1, math.floor(tonumber(F.State.nextId) or 1))
     local ok, err = F:Persist("feature_profile_create", function(state)
-        state.profiles[#state.profiles + 1] = { id = newId, name = name, modules = { team_feature_split_linked = true }, quick = true } -- 中文维护：新方案独立记录两个团队功能，标记不属于可控模块。
+        state.profiles[#state.profiles + 1] = { id = newId, name = name, modules = { team_feature_split_linked = true }, quick = true } -- 新方案独立记录两个团队功能，标记不属于可控模块。
         state.nextId, state.selectedId = newId + 1, newId
         return true
     end)
@@ -606,13 +607,13 @@ function F.Commands:SetModule(profileId, featureId, enabled)
     if IsControllable(meta) ~= true then return false, "该功能不允许加入方案控制：" .. tostring(featureId) end
     local visible = false
     for _, row in ipairs(F:GetControllableFeatureRows()) do if row.id == featureId then visible = true; break end end
-    if not visible then return false, "该功能已从当前左侧导航隐藏" end -- 中文维护：旧页面选择/陈旧调用不得越过当前导航目录。
+    if not visible then return false, "该功能已从当前左侧导航隐藏" end -- 旧页面选择/陈旧调用不得越过当前导航目录。
     local target = enabled == true
     local ok, err = F:Persist("feature_profile_module:" .. featureId, function()
         profile.modules = type(profile.modules) == "table" and profile.modules or {}
         if profile.modules.team_feature_split_linked ~= true then
             if ProfileTarget(profile, "combat_sac_highlight") then profile.modules.combat_sac_highlight = true end
-            profile.modules.team_feature_split_linked = true -- 中文维护：先保留历史双开语义，再修改当前用户指定的单个功能。
+            profile.modules.team_feature_split_linked = true -- 先保留历史双开语义，再修改当前用户指定的单个功能。
         end
         if target then profile.modules[featureId] = true else profile.modules[featureId] = nil end
         return true
@@ -630,7 +631,7 @@ function F.Commands:CaptureCurrent(profileId)
     -- 功能方案仍只捕获 FeatureRuntime 开关，不跨权威读取/写入游戏键位或业务配置。
     local currentRows=F:GetControllableFeatureRows()
     local enabledCount=0
-    local nextModules = { team_feature_split_linked = true } -- 中文维护：捕获真实独立开关，不借旧团队中心位推断视觉开关。
+    local nextModules = { team_feature_split_linked = true } -- 捕获真实独立开关，不借旧团队中心位推断视觉开关。
     for _, row in ipairs(currentRows) do
         if Runtime:IsEnabled(row.id) == true then nextModules[row.id] = true;enabledCount=enabledCount+1 end
     end
@@ -673,7 +674,7 @@ function F.Commands:ApplyProfile(profileId)
     F.applying = false
     if ok ~= true then
         F.Stats.applyFailures = (tonumber(F.Stats.applyFailures) or 0) + 1
-        -- 维护（feature-profile-failure-evidence-1）：失败目标由 Runtime 的结构化结果给出，
+        -- 失败目标由 Runtime 的结构化结果给出，
         -- 不从错误字符串猜 id，不忽略故障模块，也不偷偷取消用户的方案勾选。
         failure = type(failure) == "table" and Copy(failure) or { stage = "unknown" }
         failure.profileId, failure.profileName = profile.id, profile.name
@@ -729,7 +730,7 @@ function F.Commands:SetQuickPosition(profileId, x, y, placement, viewportIntent)
         profile.quickAnchorV = responsive and responsive.anchorV or nil
         profile.quickOffsetX = responsive and responsive.offsetX or nil
         profile.quickOffsetY = responsive and responsive.offsetY or nil
-        -- 维护：viewport intent 只能来自真实拖动提交。旧 edge-only 行保持 nil，绝不在启动/重排时补写。
+        -- viewport intent 只能来自真实拖动提交。旧 edge-only 行保持 nil，绝不在启动/重排时补写。
         profile.quickSavedLogicalWidth = intent and intent.savedLogicalWidth or nil
         profile.quickSavedLogicalHeight = intent and intent.savedLogicalHeight or nil
         profile.quickSavedUiScale = intent and intent.savedUiScale or nil
@@ -774,14 +775,14 @@ function F:GetHealth()
     }
 end
 
--- 中文维护注释（2026-09-25，feature-profile-diagnostics-1）：模块诊断 Provider 只读取已经存在的
+-- 模块诊断 Provider 只读取已经存在的
 -- Store/Runtime 投影，不主动 LoadStore、不切 Feature、不创建 UI。这样方案应用失败时可以从模块右上角
 -- 诊断直接区分“存档未加载 / 最近方案已偏离 / 正在批量切换”等状态，而不会让诊断本身成为第二 Authority。
 if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
     S.ModuleDiagnosticsHub:RegisterProvider(F.Id, "feature_profile_state", function()
         local profileStore = type(P.GetStore) == "function" and P:GetStore(F.storeId) or nil
         local preferenceStore = type(P.GetStore) == "function" and P:GetStore(Runtime.preferenceStoreId) or nil
-        -- 维护（2026-09-25，feature-profile-store-evidence-1）：方案 Store 是否真的落到
+        -- 方案 Store 是否真的落到
         -- SaveData 必须可直接从诊断读出，而不是靠“重启后按钮没了”反推。这里只读已存在的
         -- Persistence Store 元数据（key/loadStatus/dirty/revision/lastError），不 LoadStore、
         -- 不 MarkDirty、不写任何存档。
@@ -831,7 +832,7 @@ if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.Regis
             controllableCount = #(F:GetControllableFeatureRows()),
             applies = tonumber(F.Stats.applies) or 0,
             applyFailures = tonumber(F.Stats.applyFailures) or 0,
-            -- 维护（feature-profile-failure-evidence-1）：只读本次会话已有证据；不为收集
+            -- 只读本次会话已有证据；不为收集
             -- 失败目标而 GetHealth/LoadStore/Initialize，也不把本模块正常 Store 当作故障来源。
             applyStatus = F.RuntimeState.lastApplyFailure ~= nil and "failed" or (F.RuntimeState.lastAppliedId ~= nil and "applied" or "idle"),
             lastApplyFailure = Copy(F.RuntimeState.lastApplyFailure),

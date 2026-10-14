@@ -1,13 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - DPS Store
+-- Replicated Suite · 伤害与治疗统计设置存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Account-scoped permanent storage for DPS settings, manual Boss names, the
--- FloatingSurface window state, and the user-controlled HUD visibility preference. No combat statistics are persisted here: the live meter is session-only
--- by design, exactly like the legacy behaviour evidence (the old Professional
--- DPS kept its running totals in memory and only persisted user preferences).
---
--- Persistence boundary is S.Persistence only; the Feature/Domain never call
--- LoadData/SaveData/ClearData directly.
+-- 账号永久存储仅保存 DPS 设置、手工首领名、FloatingSurface 窗口状态和用户 HUD 可见偏好；战斗统计按原有行为仅驻会话内存。
+-- 持久化必须走 S.Persistence，Feature/Domain 禁止直接调用 LoadData/SaveData/ClearData。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -24,7 +21,7 @@ local SCHEMA = 4
 local MAX_BOSS_NAMES = 64
 local MAX_DISPLAY_ROWS = 150
 
--- 中文维护注释：DPS Window policy 必须只有一个 Authority。过去 Feature 使用
+-- DPS Window policy 必须只有一个 Authority。过去 Feature 使用
 -- 470x330/min1，而 Floating Widget 使用 560x410/min430x250，Reload 后同一存档
 -- 会被两个 canonicalizer 反复解释，表现为尺寸/位置恢复后再次跳回。Store 暴露
 -- 只读 policy 给 Feature/Presentation 共用；这里不持久化 policy 本身。
@@ -95,14 +92,9 @@ local function NormalizeState(value)
     return {
         settings = NormalizeSettings(value.settings),
         bossNames = bossNames,
-        -- Visibility is a durable presentation preference, not an implication of
-        -- the DPS Feature enable state.  Schema <=3 stores do not contain this
-        -- field and therefore migrate fail-closed to hidden instead of reopening
-        -- the meter after every reload.
+        -- 可见性是持久表现偏好，不由 DPS Feature 启用状态隐含决定。schema≤3 缺此字段，升级默认隐藏，避免每次重载自动打开。
         widgetVisible = value.widgetVisible == true,
-        -- FloatingSurface owns the concrete schema below this table. Keep the
-        -- state opaque here so window geometry/lock/minimize/opacity survives
-        -- store normalization and future FloatingSurface migrations.
+        -- 嵌套具体 schema 归 FloatingSurface；本处保持不透明，确保窗口几何、锁定、最小化和透明度经 Store 归一化及未来迁移仍保留。
         widgetWindow = type(value.widgetWindow) == "table" and DeepCopy(value.widgetWindow) or {},
     }
 end
@@ -196,7 +188,7 @@ function F:EnsureStoreLoaded()
 end
 
 function F:MarkStoreDirty(delayMs, reason)
-    -- 中文维护（2026-10-04）：拖动后立即重载不能只留下 dirty；失败交给 Floating 事务回滚。
+    -- 拖动后立即重载不能只留下 dirty；失败交给 Floating 事务回滚。
     if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" then
         return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason })
     end

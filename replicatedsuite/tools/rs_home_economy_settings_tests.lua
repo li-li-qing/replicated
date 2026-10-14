@@ -1,5 +1,11 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 首页经济设置测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 真实首页/RSUI 控件及 Command 绑定；仅替换顶层 Surface 与 RU 屏幕定位边界。
 -- 不加载游戏，不将离线布局和点击链验收冒充 RU 实测。
+------------------------------------------------------------------------
 local Host=dofile('tools/rs_workspace_home_test_host.lua')
 local pass,fail=0,0
 local function Test(name,fn)
@@ -156,7 +162,7 @@ Test('real FloatingSurface and WindowShell build, show, minimize and dispose the
  UI.EnsureAlpha=function(_,native,value)native.alpha=value;return true,false end
  UI.InvalidateNativeState=function()return true end
  R.ApplyOpacityChannels=function()return true end;R.ApplyFontScale=function()return true end
- -- 中文维护：此宿主只替代存档边界；小锁沿用窗口偏好接口，真实磁盘回读另由 lock-store 套件验收。
+ -- 此宿主只替代存档边界；小锁沿用窗口偏好接口，真实磁盘回读另由 lock-store 套件验收。
  local sessionLocks={}
  R.WindowPreferences={
   GetTopmost=function()return false end,SetTopmost=function()return true end,

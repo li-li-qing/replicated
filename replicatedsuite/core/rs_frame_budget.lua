@@ -1,21 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Frame Budget Broker
+-- Replicated Suite · 共享帧预算
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Central soft-budget policy for Suite-owned periodic work.
---
--- The broker does NOT replace Domain runtimes and does NOT own an OnUpdate.
--- In v1 the Suite scheduler is the active budget execution Authority. The
--- broker API is intentionally reusable by professional runtimes, but those
--- independent native OnUpdate hosts are migrated incrementally rather than
--- being force-wired here. Critical/user-action work (P0/P1)
--- is never dropped. Lower-priority work may be deferred, with bounded
--- starvation protection so background maintenance cannot remain stuck.
---
--- Hot-path rules:
---   * no diagnostic log writes per Request(); only bounded counters;
---   * no full-table scans per frame;
---   * no wall-clock dependency; native frame delta is the pressure signal;
---   * no task callback is executed here.
+-- 帧预算协调器集中管理 Suite 周期工作软预算，不替代 Domain 运行体，也不持有 OnUpdate。当前 Suite Scheduler
+-- 是预算执行权威；接口可供专业运行体复用，独立原生 OnUpdate 宿主逐步迁移，不能在此强行接线。P0/P1 关键或用
+-- 户动作工作绝不丢弃；低优先级可延后，但有界饥饿保护确保后台维护不会永久停滞。热路径仅使用有界计数：每次
+-- Request() 不写诊断日志、不逐帧全表扫描、不依赖墙上时钟，以原生帧 delta 表示压力；这里不执行任务回调。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -26,10 +17,8 @@ local BACKLOG_PRESSURE = {
     Normal="Normal", Delayed="Busy", ["Heavy Backlog"]="Heavy", Critical="Critical",
 }
 
--- Credits are intentionally conservative and measured in abstract work units,
--- not milliseconds. This keeps the policy deterministic on RU clients where a
--- reliable Lua execution timer is not guaranteed. A task may later declare a
--- higher cost via Scheduler:SetCost without changing its business behavior.
+-- 额度采用保守的抽象工作单位而非毫秒，保证缺少可靠 Lua 执行计时器的 RU 客户端上策略仍确定。任务可通过
+-- Scheduler:SetCost 声明更高成本，不改变业务行为。
 local PROFILE = {
     Normal   = { credits=10, maxExecutions=10 },
     Busy     = { credits=8,  maxExecutions=8  },
@@ -157,7 +146,7 @@ function B:_OwnerStats(owner)
     return stats, owner
 end
 
--- 中文维护（2026-10-03，scheduler-starvation-fairness）：饥饿阈值只归预算 Broker；Scheduler 排序和 Request
+-- （2026-10-03，scheduler-starvation-fairness）饥饿阈值只归预算 Broker；Scheduler 排序和 Request
 -- 必须用同一判定，否则 P2 长期抢走唯一 starvation escape，P3 候选/P4 高亮永远等待。纯函数不记统计/不分配表。
 function B:IsStarving(priority, deferCount, lateRatio)
     local p=NormalizePriority(priority)
@@ -171,9 +160,7 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio, lane)
     local cost = NormalizeCost(costUnits)
     local current = self.current
     local stats = self:_OwnerStats(owner)
-    -- Accept the early table form for compatibility, but the scheduler uses
-    -- direct scalar arguments so the per-frame hot path allocates no options
-    -- table.
+    -- 保留早期表参数形式的兼容性；Scheduler 使用直接标量参数，逐帧热路径不分配选项表。
     if type(deferCount) == "table" then
         local options = deferCount
         deferCount = options.deferCount
@@ -183,13 +170,11 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio, lane)
     self.totals.requests = (tonumber(self.totals.requests) or 0) + 1
     stats.requests = (tonumber(stats.requests) or 0) + 1
 
-    -- P0/P1 are correctness/user-action lanes. They are accounted but never
-    -- denied by the soft budget. If they exceed the remaining credits, the
-    -- deficit is visible in diagnostics instead of changing game behavior.
+    -- P0/P1 属于正确性或用户动作通道，计入预算但绝不被软预算拒绝。超出剩余额度时在诊断中显示亏欠，不改变游戏行为。
     if p <= 1 then
         current.granted = current.granted + 1
         current.criticalGranted = current.criticalGranted + 1
-        -- 中文维护（performance-hotpath-1）：P1连续视觉由HF车道保证每帧最多一次。
+        -- P1连续视觉由HF车道保证每帧最多一次。
         -- 旧账本把4个HF的执行量扣进Critical的3credits/4slots，后台只剩1个饥饿逃生，
         -- 单次停顿即可让lateRatio长期Critical。视觉与普通工作分账，用于下方有限预留；
         -- 所有工作仍扣原总credits。普通P0/P1动作也占后台账，缺lane的旧调用不改变行为。
@@ -214,7 +199,7 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio, lane)
 
     local executionRoom = current.granted < current.maxExecutions
     local creditRoom = current.creditsRemaining >= cost
-    -- 中文维护：仅原生帧已恢复（<40ms）但后台lateRatio仍高时，确保最多2个普通
+    -- 仅原生帧已恢复（<40ms）但后台lateRatio仍高时，确保最多2个普通
     -- slots/credits可运行。已执行的普通工作（包括P0/P1）抵扣预留，不能额外叠加2次。
     -- 原生长帧保持旧总预算/饥饿保护，不把全部后台配额叠在视觉之后，不新增追赶循环。
     local reserveRoom = current.visualGranted > 0 and current.frameDtMs < 40
@@ -234,10 +219,9 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio, lane)
         return true, "budget"
     end
 
-    -- One starvation escape per rendered frame. This is deliberately bounded:
-    -- allowing every old task to escape together would recreate the hitch the
-    -- broker exists to prevent.
-    local starving = self:IsStarving(p,deferCount,lateRatio) -- 中文维护：只轮转“已达旧阈值”的任务；仍严格每帧最多一个 escape，不放宽 credits/maxExecutions。
+    -- 每个渲染帧仅允许一次饥饿逃逸；若所有旧任务同时逃逸，会重新造成预算协调器要避免的卡顿。
+    local starving = self:IsStarving(p,deferCount,lateRatio) -- 只轮转“已达旧阈值”的任务；仍严格每帧最多一个 escape，不放宽
+                                                             -- credits/maxExecutions。
     if starving and current.starvationRuns < 1 then
         current.granted = current.granted + 1
         current.budgetedGranted = current.budgetedGranted + 1

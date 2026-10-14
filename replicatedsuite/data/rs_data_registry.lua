@@ -1,15 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Shared Game Data Registry
+-- Replicated Suite · 共享游戏数据注册表
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Authority boundary:
---   * Registry owns reusable game-data identity/indexing only.
---   * Domain modules still own business policy and mutable runtime state.
---   * Relationship files may reference Registry IDs, but Registry must not
---     decide quest completion, healer priority, DPS classification, etc.
---
--- Performance rule:
---   All indexes are built at addon load/registration time. Hot paths query
---   prebuilt tables by id/key/tag/family and never scan the full catalog.
+-- 权威边界：Registry 仅拥有共享游戏数据身份和索引；业务策略与可变运行时状态仍归 Domain。关系文件可引用 Registry ID，但 Registry 不判定任务完成、治疗优先级或 DPS 分类。
+-- 所有索引在加载/注册时建立；热路径按 ID、key、tag、family 查询预建表，禁止扫描完整目录。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -201,9 +196,7 @@ local function CreateGeneratedRecord(owner, bucket, kind, id, metadata)
     local existing = bucket.byId[id]
     local meta = CopyMetadata(metadata)
     if existing ~= nil then
-        -- Generated set members can be discovered by a curated set before a
-        -- database-verified set. Verification is monotonic: a later stronger
-        -- source may promote the placeholder, but a weaker set never demotes it.
+        -- 人工整理集合可能先于数据库已验证集合发现自动生成成员。验证强度只能提高：更强来源可以提升占位记录，更弱集合不能降级它。
         if existing.generated == true and meta.verified == true and existing.verified ~= true then
             existing.source = meta.source or existing.source
             existing.confidence = meta.confidence or existing.confidence
@@ -259,10 +252,7 @@ function R:Register(kind, key, id, metadata)
     local existingById = bucket.byId[id]
     if existingById ~= nil then
         if existingById.generated == true then
-            -- A set may introduce an ID before a richer semantic record is
-            -- loaded. Promote that placeholder in place so every relationship
-            -- keeps the same record identity and no false duplicate warning is
-            -- emitted.
+            -- 集合可能在完整语义记录加载前引入 ID；原地提升占位记录，保证所有关系指向同一记录身份，并避免误报重复注册。
             local generatedKey = existingById.key
             existingById.aliases = existingById.aliases or {}
             if generatedKey ~= key then existingById.aliases[#existingById.aliases + 1] = generatedKey end
@@ -282,8 +272,7 @@ function R:Register(kind, key, id, metadata)
             return existingById
         end
 
-        -- Multiple semantic names may intentionally point at one server ID.
-        -- Preserve a single record Authority and make the additional key an alias.
+        -- 多个语义名称可以有意指向同一服务器 ID；保持唯一记录权威，新增名称作为别名。
         existingById.aliases = existingById.aliases or {}
         existingById.aliases[#existingById.aliases + 1] = key
         bucket.byKey[key] = existingById
@@ -315,11 +304,8 @@ function R:Register(kind, key, id, metadata)
     return record
 end
 
--- Register an intentional semantic alias for an already-known server ID.
--- Unlike Register(kind,key,sameId), this path does NOT emit duplicate-ID
--- warnings: callers are explicitly declaring that both keys are one identity.
--- This keeps accidental duplicate registration diagnosable while allowing
--- shared static catalogs (Trade/Bond/etc.) to converge on one item record.
+-- 为已知服务器 ID 注册显式语义别名。与 Register(kind,key,sameId) 不同，此路径不报 duplicate-ID：调用方明确声明两个键是同一身份。
+-- 这样既能诊断意外重复注册，也允许 Trade/Bond 等共享静态目录汇合到同一物品记录。
 function R:RegisterAlias(kind, key, id)
     kind = NormalizeKind(kind)
     key = NormalizeKey(key)
@@ -431,7 +417,7 @@ function R:FindSetsById(kind, id)
     return bucket.setMembership[tonumber(id)] or {}
 end
 
--- Intended for setup/import/diagnostics paths, not per-frame hot loops.
+-- 仅供初始化、导入和诊断使用，禁止放入逐帧热循环。
 function R:List(kind)
     local bucket = self.types[NormalizeKind(kind)]
     if bucket == nil then return {} end

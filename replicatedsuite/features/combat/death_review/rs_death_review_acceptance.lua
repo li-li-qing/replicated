@@ -1,13 +1,17 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Death Review Acceptance
+-- Replicated Suite · 死亡复盘契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 死亡复盘契约验收。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 中文维护注释（Phase 3 Batch B，2026-09-29，core-feature-decoupling-1）：本文件是 DeathReview 的
+-- 本文件是 DeathReview 的
 -- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
--- 断言兜底；Phase 3 正在删掉那处硬编码，所以这里必须**无条件注册** case，并在实现缺失时明确失败。
+-- 独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败。
 local F = S.Features and S.Features.DeathReview or nil
 
 local function Fail(message) return false, tostring(message or "death_review_acceptance_failed") end
@@ -22,37 +26,37 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function(runtimeOnly)
     if meta.defaultEnabled == true then return Fail("quiet_default_contract") end
     if S.FeatureRuntime == nil or S.FeatureRuntime:IsImplemented("combat_death_review") ~= true then return Fail("implementation_missing") end
 
-    local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.death_review") or nil -- 中文维护注释：Acceptance 读取唯一 Index Store 注册事实，不读取 record 分片、不改变死亡回顾 Runtime Authority。
-    if store == nil or tostring(store.owner or "") ~= "v3.death_review" -- 中文维护注释：Index Store owner 必须继续归 DeathReview，禁止 UI/公共 Foundation 接管业务存档。
-        or tostring(store.scope or "") ~= tostring(S.Persistence.Scope.Account) -- 中文维护注释：死亡回顾 Index 继续账号级永久偏好/摘要，不因 schema bump 改作用域。
-        or tostring(store.lifetime or "") ~= tostring(S.Persistence.Lifetime.Permanent) -- 中文维护注释：升级不能把已有永久历史误降为临时 Store。
-        or tonumber(store.schemaVersion) ~= 2 -- 中文维护注释：`.18.193` 将 codec1 + FloatingSurface v11 canonical generation 正式划入 schema2，旧 schema1 只读迁移。
-        or (tonumber(F.PersistenceIndexSchemaContractVersion) or 0) < 2 then -- 中文维护注释：要求 Feature 同步声明 schema2，防止注册与 Acceptance 版本漂移。
-        return Fail("store_contract") -- 中文维护注释：Index schema/owner/scope 任一漂移都必须 fail-closed，不能靠页面默认值继续运行。
-    end -- 中文维护注释：结束 DeathReview Index 基础 Store 契约。
-    local normalizedWindow = type(store.migrate) == "function" and store.migrate({ widgetWindow = { width = 470, height = 330 } }) or nil -- 中文维护注释：只执行纯 migrate normalizer 验证当前 canonical 形状，不触发 Native/UI 或磁盘写入。
-    normalizedWindow = type(normalizedWindow) == "table" and normalizedWindow.widgetWindow or nil -- 中文维护注释：只抽取当前窗口投影用于契约检查，settings/history 不在此测试中改写。
-    if (tonumber(F.PersistenceCanonicalWindowContractVersion) or 0) < 7 -- 中文维护注释：v7 表示 DeathReview Store 已冻结自己的窗口字段白名单，未来 Foundation 演进必须再升 schema。
-        or (tonumber(F.PersistenceKnownLegacyRecoveryContractVersion) or 0) < 5 -- 中文维护注释：v5 必须把 Framework2/schema2 与 Transport v1 的合法 0 省略统一到 shared exact solver，并组合 history sequence/map 恢复；禁止回退到内容相关 Hash 白名单。
-        or (tonumber(F.PersistenceSchema2Framework2RecoveryContractVersion) or 0) < 2 -- 中文维护注释：Framework2/schema2 的 sequence/map + 数值 0 结构化恢复继续作为独立兼容能力；`.18.200` 实机已证明 73DF7418 属于 schema1，因此这里禁止再把该 known pair 当作 schema2 契约依据。
-        or (tonumber(F.PersistenceTransportV1ZeroOmissionRecoveryContractVersion) or 0) < 2 -- 中文维护注释：v2 要求零值候选位剔除 canonical 无影响的 offsetX/offsetY，使最大搜索固定 2^10，并与 history 表形恢复组合。
-        or (tonumber(F.PersistenceIndexCodecVersion) or 0) < 1 -- 中文维护注释：物理 codec 仍保持 v1，schema2 只划分 canonical generation，不制造无必要的数据格式升级。
-        or (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) < 3 -- 中文维护注释：Core 必须继续支持 Store-owned exact historical canonical 验证。
-        or (tonumber(S.Persistence.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 1 -- 中文维护注释：Core known-stamp 通道只提供安全框架，具体 fingerprint Authority 仍在 Store。
-        or type(store.rebuildCanonicalForIntegrity) ~= "function" -- 中文维护注释：schema1 codec1 必须先尝试历史窗口投影的 exact Hash 证明。
-        or type(store.recoverKnownLegacyCanonical) ~= "function" -- 中文维护注释：只有 exact reconstruction 失败后才允许 Store 识别实机 old/new pair。
-        or type(F.WidgetWindowSizePolicy) ~= "table" or type(normalizedWindow) ~= "table" -- 中文维护注释：窗口策略与归一结果必须存在，防止 Persistence 绑定在页面构建时返回 nil。
-        or normalizedWindow.width ~= 470 or normalizedWindow.height ~= 330 -- 中文维护注释：本轮持久化修复不改变 DeathReview HUD 默认尺寸，避免把 UI 变化混入 migration。
-        or normalizedWindow.minimized ~= false or normalizedWindow.locked ~= false -- 中文维护注释：false 默认必须由 canonical normalizer 稳定恢复，RU 省略 false 不能改变逻辑值。
-        or normalizedWindow.userMoved ~= false or tonumber(normalizedWindow.overallOpacity) ~= 0.96 then -- 中文维护注释：用户移动标记与透明度仍按既有 Store policy 规范化。
-        return Fail("widget_window_canonical_contract") -- 中文维护注释：窗口 canonical/recovery 任一契约缺失都阻断，避免再次演化为 Toggle binding/page transaction 故障。
-    end -- 中文维护注释：结束 DeathReview schema2 canonical/recovery Acceptance 门禁。
+    local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.death_review") or nil -- Acceptance 读取唯一 Index Store 注册事实，不读取 record 分片、不改变死亡回顾 Runtime Authority。
+    if store == nil or tostring(store.owner or "") ~= "v3.death_review" -- Index Store owner 必须继续归 DeathReview，禁止 UI/公共 Foundation 接管业务存档。
+        or tostring(store.scope or "") ~= tostring(S.Persistence.Scope.Account) -- 死亡回顾 Index 继续账号级永久偏好/摘要，不因 schema bump 改作用域。
+        or tostring(store.lifetime or "") ~= tostring(S.Persistence.Lifetime.Permanent) -- 升级不能把已有永久历史误降为临时 Store。
+        or tonumber(store.schemaVersion) ~= 2 -- `.18.193` 将 codec1 + FloatingSurface v11 canonical generation 正式划入 schema2，旧 schema1 只读迁移。
+        or (tonumber(F.PersistenceIndexSchemaContractVersion) or 0) < 2 then -- 要求 Feature 同步声明 schema2，防止注册与 Acceptance 版本漂移。
+        return Fail("store_contract") -- Index schema/owner/scope 任一漂移都必须 fail-closed，不能靠页面默认值继续运行。
+    end -- 结束 DeathReview Index 基础 Store 契约。
+    local normalizedWindow = type(store.migrate) == "function" and store.migrate({ widgetWindow = { width = 470, height = 330 } }) or nil -- 只执行纯 migrate normalizer 验证当前 canonical 形状，不触发 Native/UI 或磁盘写入。
+    normalizedWindow = type(normalizedWindow) == "table" and normalizedWindow.widgetWindow or nil -- 只抽取当前窗口投影用于契约检查，settings/history 不在此测试中改写。
+    if (tonumber(F.PersistenceCanonicalWindowContractVersion) or 0) < 7 -- v7 表示 DeathReview Store 已冻结自己的窗口字段白名单，未来 Foundation 演进必须再升 schema。
+        or (tonumber(F.PersistenceKnownLegacyRecoveryContractVersion) or 0) < 5 -- v5 必须把 Framework2/schema2 与 Transport v1 的合法 0 省略统一到 shared exact solver，并组合 history sequence/map 恢复；禁止回退到内容相关 Hash 白名单。
+        or (tonumber(F.PersistenceSchema2Framework2RecoveryContractVersion) or 0) < 2 -- Framework2/schema2 的 sequence/map + 数值 0 结构化恢复继续作为独立兼容能力；`.18.200` 实机已证明 73DF7418 属于 schema1，因此这里禁止再把该 known pair 当作 schema2 契约依据。
+        or (tonumber(F.PersistenceTransportV1ZeroOmissionRecoveryContractVersion) or 0) < 2 -- v2 要求零值候选位剔除 canonical 无影响的 offsetX/offsetY，使最大搜索固定 2^10，并与 history 表形恢复组合。
+        or (tonumber(F.PersistenceIndexCodecVersion) or 0) < 1 -- 物理 codec 仍保持 v1，schema2 只划分 canonical generation，不制造无必要的数据格式升级。
+        or (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) < 3 -- Core 必须继续支持 Store-owned exact historical canonical 验证。
+        or (tonumber(S.Persistence.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 1 -- Core known-stamp 通道只提供安全框架，具体 fingerprint Authority 仍在 Store。
+        or type(store.rebuildCanonicalForIntegrity) ~= "function" -- schema1 codec1 必须先尝试历史窗口投影的 exact Hash 证明。
+        or type(store.recoverKnownLegacyCanonical) ~= "function" -- 只有 exact reconstruction 失败后才允许 Store 识别实机 old/new pair。
+        or type(F.WidgetWindowSizePolicy) ~= "table" or type(normalizedWindow) ~= "table" -- 窗口策略与归一结果必须存在，防止 Persistence 绑定在页面构建时返回 nil。
+        or normalizedWindow.width ~= 470 or normalizedWindow.height ~= 330 -- 当前持久化修复不改变 DeathReview HUD 默认尺寸，避免把 UI 变化混入 migration。
+        or normalizedWindow.minimized ~= false or normalizedWindow.locked ~= false -- false 默认必须由 canonical normalizer 稳定恢复，RU 省略 false 不能改变逻辑值。
+        or normalizedWindow.userMoved ~= false or tonumber(normalizedWindow.overallOpacity) ~= 0.96 then -- 用户移动标记与透明度仍按既有 Store policy 规范化。
+        return Fail("widget_window_canonical_contract") -- 窗口 canonical/recovery 任一契约缺失都阻断，避免再次演化为 Toggle binding/page transaction 故障。
+    end -- 结束 DeathReview schema2 canonical/recovery Acceptance 门禁。
 
-    -- 中文维护注释：`.18.199` 增加真正执行恢复 hook 的合成契约，而不只检查版本号。
+    -- `.18.199` 增加真正执行恢复 hook 的合成契约，而不只检查版本号。
     -- 场景模拟 Framework2/schema2 在 RU SaveData 往返后吞掉 free 布局的 x=0 与 normalizedCenterX=0：
     -- 旧盖章来自完整 canonical，磁盘 raw 缺这两个字段；恢复器必须先保留/恢复 history 表形，再枚举合法 0，
     -- 最终候选 Hash 必须逐字等于旧盖章。测试只用本地纯表，不写 SaveData、不 Apply F.State、不创建 Native UI。
-    -- 维护（2026-09-30）：恢复 hook 合成探针只离线运行，保留真实故障诊断。
+    -- 恢复 hook 合成探针只离线运行，保留真实故障诊断。
     if runtimeOnly ~= true then
         local syntheticDomain = {
             settings = { autoShow = true, windowMs = 10000, maxHistory = 10, minDamage = 0, showDebuffs = true },
@@ -81,9 +85,9 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function(runtimeOnly)
             return Fail("framework2_zero_probe_not_divergent")
         end
 
-        local previousProbe = store.lastHistoricalRecoveryProbe -- 中文维护注释：Acceptance 不得污染用户可复制诊断，只临时借用 runtime-only probe。
+        local previousProbe = store.lastHistoricalRecoveryProbe -- Acceptance 不得污染用户可复制诊断，只临时借用 仅会话运行时探测。
         local rebuildOk, rebuilt, recovered = pcall(store.rebuildCanonicalForIntegrity, decodedProbe, stamped, currentProbe, rawProbe)
-        store.lastHistoricalRecoveryProbe = previousProbe -- 中文维护注释：即使 hook 抛错也先恢复诊断状态，再由本契约返回明确 blocker。
+        store.lastHistoricalRecoveryProbe = previousProbe -- 即使 hook 抛错也先恢复诊断状态，再由本契约返回明确 blocker。
         local rebuiltFingerprint = rebuildOk == true and type(rebuilt) == "table" and S.Persistence:FingerprintCanonicalValue(store, rebuilt) or nil
         local recoveredWindow = rebuildOk == true and type(recovered) == "table" and recovered.widgetWindow or nil
         if rebuildOk ~= true or rebuiltFingerprint == nil or tostring(rebuiltFingerprint) ~= tostring(stamped)
@@ -91,7 +95,7 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function(runtimeOnly)
             or tostring(recoveredWindow.coordinateSpace or "") ~= "logical-free-v2" then
             return Fail("framework2_zero_exact_recovery")
         end
-    end -- 中文维护注释：结束 Framework2/schema2 合法 0 exact-recovery 合成验收。
+    end -- 结束 Framework2/schema2 合法 0 exact-recovery 合成验收。
 
     if F.Demand == nil or type(F.Demand.Acquire) ~= "function" or type(F.Demand.Release) ~= "function"
         or type(F.ReconcileDemand) ~= "function" or type(F.GetSettings) ~= "function" or type(F.SetMaxHistory) ~= "function"
@@ -121,7 +125,7 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function(runtimeOnly)
         return Fail("settings_range")
     end
 
-    -- 维护（2026-09-30）：预算压力样本留在完整序列，玩家诊断不构造合成死亡记录。
+    -- 预算压力样本留在完整序列，玩家诊断不构造合成死亡记录。
     if runtimeOnly ~= true then
         local syntheticEvents = {}
         for index = 1, 96 do
@@ -141,7 +145,7 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function(runtimeOnly)
             summaries[index] = { serial = index, storageId = index, time = index, clock = "12:34:56", windowMs = 10000, totalDamage = 999999, lethalSource = "预算测试来源", lethalAbility = "预算测试技能", lethalAmount = 9999, eventCount = 96, debuffCount = 10 }
         end
         local syntheticIndex = { settings = settings, history = { serial = 30, entries = summaries }, widgetWindow = { x = 100, y = 100, width = 470, height = 330 } }
-        local indexProbe = S.Persistence:InspectPayload({ payload = syntheticIndex, __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.death_review", owner = "v3.death_review", contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 2 } }, F.IndexBudget) -- 中文维护注释：当前 Index 预算样本使用 schema2 元数据；record 分片仍保持 schema1，二者升级边界必须严格区分。
+        local indexProbe = S.Persistence:InspectPayload({ payload = syntheticIndex, __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.death_review", owner = "v3.death_review", contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 2 } }, F.IndexBudget) -- 当前 Index 预算样本使用 schema2 元数据；record 分片仍保持 schema1，二者升级边界必须严格区分。
         if type(indexProbe) ~= "table" or indexProbe.ok ~= true then return Fail("index_budget:" .. tostring(indexProbe and indexProbe.reason)) end
 
     end
@@ -197,9 +201,7 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_widget_close", function()
         Restore()
         return Fail("widget_instance_missing")
     end
-    -- The Surface and the Host must agree with the native window after a close;
-    -- a stale `visible=true` would make ResetLayout/responsive reflow drive a
-    -- window that is no longer on screen.
+    -- 关闭后 Surface 与 Host 的可见状态必须和 Native 窗口一致；陈旧 visible=true 会让 ResetLayout/响应式重排驱动已不在屏幕的窗口。
     if type(instance.surface) ~= "table" or type(instance.surface.Close) ~= "function" then
         Restore()
         return Fail("floating_surface_close_missing")
@@ -209,8 +211,7 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_widget_close", function()
         return Fail("floating_surface_not_visible_before_close")
     end
 
-    -- One close must produce exactly one onClosed trip: no Shell→Feature→Host
-    -- →Widget→Shell recursion.
+    -- 一次关闭只触发一次 onClosed，禁止 Shell→Feature→Host→Widget→Shell 递归。
     local beforeNotifications = tonumber(host.stats and host.stats.nativeCloseNotifications) or 0
 
     local closed = instance.shell:Close("sequence_probe")

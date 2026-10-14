@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Trade material recipe reference
--- Adapted from the user-provided 货率2.5 addon material table.
--- This file is data-only: no API calls, no timers, no global mutable state.
+-- Replicated Suite · 贸易材料与配方数据
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 来源：用户提供的货率2.5材料表。本文件仅数据，禁止API调用、定时器或全局可变状态。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -85,10 +87,7 @@ S.Data.TradeMaterialResources = {
 }
 
 
--- ArcheRage/legacy specialty packs that are returned by the live specialty
--- ratio API but are not part of the compact standard/fertilizer/larder tables.
--- Keep the server-provided English name as the canonical key; localization is
--- presentation-only in TradeService/TradeMaterials.
+-- 实时特产比价 API 返回但不属于标准/肥料/储藏紧凑表的 ArcheRage 历史货包；以服务器英文名称作为标准 key，本地化仅用于 TradeService/TradeMaterials 展示。
 S.Data.TradeMaterialCustom = {
     -- Craft 5400: 特产：[古代森林]糖醋泡蒜
     -- 特产品质认证书 x1、杉树粗木 x1、大蒜 x150.
@@ -103,7 +102,7 @@ S.Data.TradeMaterialNuia = {
     ["Airain Commercial Local Specialty"] = { {150, 5},{1, 30} },
     ["Airain Commercial Specialty"] = { {180, 15},{3, 26} },
     ["Aubre Commercial Gilda Specialty"] = { {300, 15, 2},{3, 27, 7} },
-    ["Aubre Commercial Local Specialty"] = { {150, 10}, {6, 8} }, -- RU Craft 9337: Ground Spices x150 + Egg x10
+    ["Aubre Commercial Local Specialty"] = { {150, 10}, {6, 8} }, -- RU Craft 9337：研磨香料 ×150 + 鸡蛋 ×10。
     ["Aubre Commercial Specialty"] = { {180, 15}, {16, 28} },
     ["Cinderstone Luxury Gilda Specialty"] = { {300, 5, 2},{4, 11, 7} },
     ["Cinderstone Luxury Local Specialty"] = { {150, 15}, {16, 34} },
@@ -151,7 +150,7 @@ S.Data.TradeMaterialHaranya = {
     ["Falcorth Fine Local Specialty"] = { {150, 15},{4, 33} },
     ["Falcorth Fine Specialty"] = { {180, 5},{2, 11}  },
     ["Hasla Preserved Gilda Specialty"] = { {10, 300, 2},{17, 16, 7}  },
-    ["Hasla Preserved Local Specialty"] = { {160, 5}, {5, 29} }, -- RU Craft 6270: Orchard Puree x160 + Cornflower x5
+    ["Hasla Preserved Local Specialty"] = { {160, 5}, {5, 29} }, -- RU Craft 6270：果园果泥 ×160 + 矢车菊 ×5。
     ["Hasla Preserved Specialty"] = { {180, 5},{6, 35} },
     ["Mahadevi Fine Gilda Specialty"] = { {300, 5, 2},{1, 22, 7}  },
     ["Mahadevi Fine Local Specialty"] = { {150, 15},{6, 37}  },
@@ -205,13 +204,8 @@ S.Data.TradeMaterialAuroria = {
 
 S.Data.TradeMaterialFertilizer = { {50 , 50, 50, 50}, {1, 2, 3, 4} }
 
--- ArcheRage zone "Space-Time Fragment" packs (十字星平原/伊尼斯泰尔时空碎片).
--- Verified against the official ArcheRage wiki craft DB (e.g. crafts 10319/10314):
--- 2x Time-Space Rift Shard + 100x Iron Ingot; identical in every zone.
+-- 十字星平原/伊尼斯泰尔时空碎片货包已按官方Wiki配方10319/10314等核实；各地区均为时空裂缝碎片×2、铁锭×100。
 S.Data.TradeMaterialFragment = { {2, 100}, {69, 70} }
 
--- ArcheRage "Blue Salt Brotherhood transport" packs (蓝盐商会运输品<zone>).
--- Verified against the official ArcheRage wiki craft DB (e.g. crafts 11043/11035/
--- 11042/11044): 1x Blue Salt Bond + 1x Small Root Pigment + 1x Small Seed Oil +
--- 1x Opaque Polish; identical in every zone.
+-- 蓝盐商会运输品各地区已按官方Wiki配方11043/11035/11042/11044等核实；均为蓝盐债券×1、小根颜料×1、小种子油×1、不透明抛光剂×1。
 S.Data.TradeMaterialTransport = { {1, 1, 1, 1}, {71, 72, 73, 74} }

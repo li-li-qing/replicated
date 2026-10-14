@@ -1,9 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Gear / Title Service
+-- Replicated Suite · 装备与称号操作
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Explicit user-action service. No equipment/bag scan runs in Tick or during
--- passive page refresh. A bounded Scheduler transaction is created only while a
--- user-authorized loadout is being applied, then removed immediately.
+-- 装备/称号服务仅响应显式用户动作，Tick 和被动页面刷新不扫描装备或背包。只有应用用户授权套装时建立有界
+-- Scheduler 事务，结束立即移除。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -182,7 +183,7 @@ end
 
 function G:TitleText(title)
     if type(title) ~= "table" then return "未读取称号" end
-    -- 中文维护注释（20260921 称号 Effect Authority）：
+    --
     -- 方案中的称号业务含义是“切换效果”，不是恢复保存瞬间的展示称号。旧版本的 displayName
     -- 通常也来自 effect，但历史 payload 可能同时保存了 showing；展示层必须优先展示 effect
     -- 自身名称，避免用户误以为方案会把“名字称号”一起切回去。showing 继续保留为旧配置/诊断快照，
@@ -204,12 +205,10 @@ end
 
 function G:GetEquipped(slot)
     if X2Equipment == nil then return nil, "X2Equipment unavailable" end
-    -- 中文维护注释（.18.263 HUD / 换装读取 Authority 隔离）：
-    -- GetEquipped 是状态显示等“轻量自身 HUD 读取”的公开路径，保留 .18.253 以来的 false
-    -- 选择器，不因换装修复再次改变 HUD 行为。RU 不同构建对 targetEquippedItem 的实现存在
-    -- 历史差异，因此不能再让 HUD 与换装事务共享同一个未经区分的布尔假设。
-    -- Authority/数据流：BuffDisplay(player scope) -> GearV3:GetEquipped -> X2Equipment；
-    -- target HUD 仍禁止把该 API 当目标装备 Authority。
+    -- GetEquipped 是轻量自身 HUD 公开读取路径，使用 false 选择器。
+    -- RU 各构建的 targetEquippedItem 语义有差异，HUD 与换装事务不能共用未经区分的布尔假设。
+    -- 数据流：BuffDisplay(player scope) -> GearV3:GetEquipped -> X2Equipment；
+    -- target HUD 不得将此 API 视为目标装备权威。
     local ok, value, err = S.Api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", X2Equipment, "GetEquippedItemTooltipInfo", slot, false)
     if ok ~= true then return nil, err end
     return value, nil
@@ -217,16 +216,10 @@ end
 
 function G:GetLoadoutEquipped(slot)
     if X2Equipment == nil then return nil, "X2Equipment unavailable" end
-    -- 中文维护注释（.18.263 时装/称号换装回归修复）：
-    -- 问题原因：旧换装长期使用 true 读取自身装备；.18.253 为排查远程 HUD 将共享的
-    -- GetEquipped 改成 false 后，换装 Capture/Validate/Verify 也被一起改变。后续实机诊断
-    -- 证明远程 HUD 的根因是 ranged.enabled=false，并未证明换装选择器应改变。对受影响的
-    -- RU 客户端/封装，false 会使已经穿着的装备被误判为 mismatch；时装槽 28 位于队列尾部，
-    -- 称号又必须等装备队列结束才执行，因此最明显的症状就是“时装/称号不换”。
-    -- Authority/数据流：只有 Gear 换装事务（获取当前/匹配/验证）调用本方法；HUD 继续走
-    -- GetEquipped(false)。这样修复换装时不会再次碰状态显示的读取语义。
-    -- 兼容边界：不增加被动扫描，不改装备槽位/存档；若未来 RU 明确统一参数语义，必须以
-    -- 实机换装事务 + HUD 两套探针同时验收后才能合并这两个读取入口。
+    -- Gear Capture/Validate/Verify 换装事务使用自身装备选择器 true，HUD 继续 GetEquipped(false)。受影响 RU
+    -- 封装的 false 会把已穿装备判 mismatch，队尾时装槽 28 和等待装备完成的称号因此受阻；远程 HUD 的
+    -- ranged.enabled=false 证据不能证明换装选择器应改变。没有新增被动扫描，不改槽位或存档；未来统一参数语义
+    -- 须同时通过实机换装事务与 HUD 两套 probe。
     local ok, value, err = S.Api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", X2Equipment, "GetEquippedItemTooltipInfo", slot, true)
     if ok ~= true then return nil, err end
     return value, nil
@@ -253,15 +246,10 @@ end
 
 function G:CaptureTitle()
     if X2Player == nil then return nil, "X2Player unavailable" end
-    -- 中文维护注释（20260921 称号 Effect Authority / 保存边界）：
-    -- 问题原因：ArcheAge 把“展示称号(nameType)”与“效果称号(effectType)”分开；用户可以合法地
-    -- 让二者不同。换装方案真正要持久化的是 effectType。旧实现同时把 showing 保存进 payload，
-    -- 后续 ApplyTitle 在当前展示读取为空/0 时还会退回这个历史 showing，导致保存时 A 名称 + B 效果
-    -- 被错误重新拼成一对参数，甚至把合法 nameType=0 当成“缺失”。
-    -- Authority/数据流：GetEffectAppellation -> payload.title.effect 是唯一业务 Authority；
-    -- GetShowingAppellation -> payload.title.showing 只作为兼容/诊断快照。执行时绝不从该快照恢复名字。
-    -- 兼容边界：保留 showing 字段与现有 Store schema，旧方案无需迁移；即使展示称号读取暂时失败，
-    -- 只要 effect 可读仍允许“获取当前”，因为保存方案不应依赖非 Authority 的展示状态。
+    -- ArcheAge 展示称号 nameType 与效果称号 effectType 可合法不同。GetEffectAppellation ->
+    -- payload.title.effect 是换装持久化唯一业务权威；GetShowingAppellation -> payload.title.showing 仅兼容
+    -- 或诊断快照，执行时不能据此恢复名称，也不能把合法 nameType=0 当缺失。保留 showing 与 Store schema，旧
+    -- 方案不迁移；展示读暂失败但 effect 可读时仍允许获取当前，不依赖非权威展示状态。
     local okEffect, effectRaw, effectErr = S.Api:CallCapability("X2Player:GetEffectAppellation", X2Player, "GetEffectAppellation")
     if okEffect ~= true then return nil, "读取当前效果称号失败：" .. tostring(effectErr) end
     local effect = self:PackAppellation(effectRaw)
@@ -277,7 +265,7 @@ end
 function G:CapturePayload(previous)
     previous = type(previous) == "table" and previous or {}
     local previousUnchecked = {}
-    -- 中文维护注释（2026-10-08，旧方案副手重新获取）：旧方案的空槽会以 managed=false 保存。
+    -- （2026-10-08，旧方案副手重新获取）旧方案的空槽会以 managed=false 保存。
     -- 后来穿上副手再点“获取当前”时，不能把这个由空槽产生的 false 当作用户主动取消勾选，
     -- 否则新读取到的副手仍被排除在换装方案外。只继承“原来有装备且主动取消”的选择。
     if previous.configured == true then
@@ -316,7 +304,7 @@ function G:SavedItemMatchesTooltip(saved, tooltip)
     if self:RequiresRingIdentity(saved) and self:SavedRingIdentityError(saved)~=nil then return false end
     local wantedName, currentName = self:NormalizeItemName(saved.name), self:NormalizeItemName(tooltip.name)
     if wantedName == "" or currentName == "" or wantedName ~= currentName then return false end
-    -- 维护（2026-09-30）：稳定ID都存在时冲突必须失败，不能只因同名同品质判定已匹配。
+    -- （2026-09-30）稳定ID都存在时冲突必须失败，不能只因同名同品质判定已匹配。
     -- 旧方案未保存ID时保留原有名称/品质/属性指纹兼容，不回写用户配置。
     local currentType = self:ExtractBagType(tooltip)
     if saved.itemType ~= nil and currentType ~= nil and tostring(saved.itemType) ~= tostring(currentType) then return false end
@@ -335,7 +323,7 @@ end
 
 function G:CurrentItemMatches(saved)
     if type(saved) ~= "table" or saved.empty == true then return false end
-    -- 维护（2026-09-30，gear-partial-continuation-1）：读取失败不是普通“不匹配”。
+    -- （2026-09-30，gear-partial-continuation-1）读取失败不是普通“不匹配”。
     -- 保留第二返回值给显式换装事务：该槽不可验证时跳过，不能用未知状态授权装备动作。
     local tooltip, err = self:GetLoadoutEquipped(saved.slot)
     if err ~= nil then return false, err end
@@ -350,9 +338,8 @@ function G:CurrentItemMatches(saved)
     return self:SavedItemMatchesTooltip(saved, tooltip), nil
 end
 
--- One 19-slot read can evaluate every quick loadout in memory. This avoids the
--- O(setCount * slotCount) native-call pattern that a HUD-side per-set Validate
--- would otherwise create after UNIT_EQUIPMENT_CHANGED.
+-- 一次 19 槽读取可在内存评估全部快捷套装，避免 UNIT_EQUIPMENT_CHANGED 后 HUD 为每个套装 Validate 形成 O(
+-- setCount*slotCount) 原生调用。
 function G:CaptureEquippedSnapshot(wantedSlots, needTitle)
     local snapshot = { items = {}, titleEffectId = nil, capturedAt = S.NowMs and S.NowMs() or 0 }
     for _, def in ipairs(self.EquipmentSlots) do
@@ -409,7 +396,7 @@ function G:GetCurrentShowingAppellationType()
     local ok, raw, err = S.Api:CallCapability("X2Player:GetShowingAppellation", X2Player, "GetShowingAppellation")
     if ok ~= true then return nil, "读取当前称号展示类型失败：" .. tostring(err) end
 
-    -- 中文维护注释（20260921 nameType=0 合法值）：
+    --
     -- 公开 titleswap 的成熟调用约定是：执行前读取 GetShowingAppellation()[1]；当当前没有展示称号
     -- 或 getter 返回 nil 时，向 ChangeAppellation 传 0。这里不能复用通用 MeaningfulId()，因为
     -- MeaningfulId 为装备/效果身份设计，会把 0 过滤掉；但对 ChangeAppellation 的 nameType 来说
@@ -429,7 +416,7 @@ function G:ApplyTitle(payload)
     local title = type(payload) == "table" and payload.title or nil
     if type(title) ~= "table" or title.apply ~= true then return true, "SKIPPED" end
     local matched, reason = self:CurrentTitleMatches(payload); if matched then return true, "ALREADY" end
-    if reason ~= nil and reason ~= "SKIPPED" then -- still continue only when current effect state was readable
+    if reason ~= nil and reason ~= "SKIPPED" then -- 只有当前效果状态可读时才继续。
         if tostring(reason):find("读取当前称号失败", 1, true) then return false, reason end
     end
     local effect = title.effect and MeaningfulId(title.effect.id) or nil
@@ -503,13 +490,8 @@ function G:CandidateFingerprint(candidate)
     }, "|")
 end
 
--- EquipBagItem consumes only a physical slot. The RU gearswap/fast-swap
--- implementations that actually equip from the bag use bagId 1 for the
--- inventory view, so GearV3 treats that view as its transaction authority.
--- bagId 0 remains a bounded fallback only when bagId 1 is completely unreadable
--- or empty; comparing both views and cancelling on any disagreement caused a
--- false-positive hard block on clients where the two logical views legitimately
--- expose different content.
+-- EquipBagItem 只消费物理槽；RU gearswap/fast-swap 真实装备实现使用 bagId=1 的 inventory 视图，GearV3 以其
+-- 为事务权威。仅视图 1 全不可读或为空时有界兜底 bagId=0；两逻辑视图可合法不同，不能比较后因任何分歧硬阻断。
 function G:BuildBagSnapshot()
     local preferredId = tonumber(self.PreferredBagId) or 1
     local preferred = self:BuildBagView(preferredId)
@@ -588,8 +570,7 @@ function G:FindCandidate(saved, snapshot, reserved)
     for index = 2, #top do
         if self:CandidateFingerprint(top[index]) ~= fingerprint then return nil, "存在多个不同候选，无法安全判断", "ambiguous" end
     end
-    -- Exact-identical copies are interchangeable for the saved fingerprint.
-    -- Pick the lowest physical slot deterministically and reserve it.
+    -- 已保存指纹完全一致的副本可互换；确定性选择并预留最小物理槽。
     table.sort(top, function(a, b) return tonumber(a.slot) < tonumber(b.slot) end)
     return top[1], nil, nil
 end
@@ -619,8 +600,7 @@ function G:BuildSession(setId, payload, mismatchRows, options)
         end
     end
 
-    -- A title-only loadout, or a loadout whose gear is already correct, must
-    -- not scan 300 bag slots just because the title still needs changing.
+    -- 仅称号套装或装备已正确的套装，不能因称号仍需改变就扫描 300 背包槽。
     if #pendingSaved == 0 then
         return {
             setId = tostring(setId), payload = payload, queue = {}, blocked = {}, reserved = {},
@@ -637,7 +617,7 @@ function G:BuildSession(setId, payload, mismatchRows, options)
         if uniqueConflict and self:IsRingSlot(saved.slot) and self:IsSingleWearRing(saved.itemType) then
             reason,reasonCode='充盈的拉玛哈的戒指只能佩戴一枚，请重新获取当前并保存方案','ring_unique_conflict'
         else candidate,reason,reasonCode=self:FindCandidate(saved,snapshot,reserved) end
-        -- 中文维护（gear-hand-dependency）：目标副手可能正装在主手；只有主手已有可执行替换步骤，且当前主手身份可验证时，
+        -- 目标副手可能正装在主手；只有主手已有可执行替换步骤，且当前主手身份可验证时，
         -- 才延后解析副手。它仍只能从动作前真实背包快照装备，不能直接操作装备槽，也不能把普通缺失/歧义放宽为重试。
         local deferred = false
         if candidate == nil and reasonCode == "not_found" and tonumber(saved.slot) == 17 then
@@ -685,13 +665,13 @@ function G:RefreshStepCandidate(step, session)
 end
 
 function G:ValidateStepCandidate(step, session)
-    -- 中文维护：前项真实回读成功后再解析延后副手；重新扫描失败仍走原跳过反馈，不向 nil/旧物理槽发起写入。
+    -- 前项真实回读成功后再解析延后副手；重新扫描失败仍走原跳过反馈，不向 nil/旧物理槽发起写入。
     if step.deferredCandidate == true then
         local ok, reason, code = self:RefreshStepCandidate(step, session)
         if ok == true then step.deferredCandidate = nil end
         return ok, reason, code
     end
-    -- 维护（2026-09-30，gear-partial-continuation-1）：前项换装/背包操作可能改变物理槽。
+    -- （2026-09-30，gear-partial-continuation-1）前项换装/背包操作可能改变物理槽。
     -- 动作前只回读当前候选的一个槽；指纹变化才进入现有有界扫描，不对旧槽盲目 Equip。
     -- 继续后项不等于放宽身份校验；歧义、缺失、读错仍交给 SkipRuntimeStep 留证后跳过。
     local info = self:GetBagItem(step.bagId, step.bagSlot)
@@ -791,9 +771,8 @@ function G:FinishRuntime(ok, message)
     self.runtime.session = nil
     Publish("runtime_finished")
 
-    -- Service publishes completion only. The Feature owns its own transient
-    -- lifecycle and may react through EventBus; Service must never reach upward
-    -- into S.Features or invoke Feature methods directly.
+    -- Service 只发布完成，Feature 自有瞬态生命周期并可响应 EventBus；Service 不得向上访问 S.Features 或直接
+    -- 调用 Feature 方法。
     return ok
 end
 
@@ -811,7 +790,7 @@ function G:RuntimeTick()
     if (S.NowMs and S.NowMs() or 0) - (session.startedAt or 0) > 60000 then return self:FinishRuntime(false, "换装总超时，已停止") end
 
     local step = session.queue[r.index]
-    -- 维护（2026-10-04）：真实装备回读确认后，同一拍进入下一项；旧流程每件
+    -- （2026-10-04）真实装备回读确认后，同一拍进入下一项；旧流程每件
     -- 都单独空等一个 220ms 拍。循环只消费已匹配项目，动作分支仍立即 return，
     -- 每拍最多一次原生写入；候选指纹、战斗门和未生效的验证预算均保留。
     while step ~= nil do
@@ -914,7 +893,7 @@ function G:Start(setId, payload)
         Publish("combat_non_weapon_deferred")
         return true
     end
-    -- 维护（2026-09-30，gear-partial-continuation-1）：预检只生成可明确定位的动作。
+    -- （2026-09-30，gear-partial-continuation-1）预检只生成可明确定位的动作。
     -- not_found/read_error/ambiguous 全部保留为跳过证据，不能因一件无法识别阻断其它项目。
     self.runtime.skipped = DeepCopy(session.blocked or {})
     if #session.queue == 0 and session.titlePending ~= true then

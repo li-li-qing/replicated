@@ -1,24 +1,21 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Target Alias Store (schema 2)
+-- Replicated Suite · 状态显示目标别名存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 中文维护注释（2026-09-27，target-alias-hud-2）：
--- 问题原因：目标“自定义名字”既包含“真实名字 -> 本地备注”的业务映射，也包含该备注在目标
+-- 目标“自定义名字”既包含“真实名字 -> 本地备注”的业务映射，也包含该备注在目标
 -- HUD 上的显示开关/位置/字号/透明度。名字映射仍然必须独立于 BuffDisplay 大 Store 与 Aura
 -- 事实，但 HUD 校准需要有一个可持久化、可撤销的独立几何 Authority；因此 schema2 在同一
 -- 小 Store 中增加 hud 配置，不触碰 v3.buff_display / layout / tracking 的历史 canonical。
---
--- Authority：
---   * entries：真实 UnitName -> 本地 alias，账户级永久数据；
---   * enabled/hud：目标自定义名字这一独立 HUD 组件的显示与几何；
---   * Feature 只在 TARGET_CHANGED / 显式编辑边读取 UnitName，并把已解析字符串与 HUD 配置投影
---     给 Presentation；Renderer 不直接访问 Store，也不修改真实角色名。
---
+-- 权威边界：
+-- * entries：真实 UnitName -> 本地 alias，账户级永久数据；
+-- * enabled/hud：目标自定义名字这一独立 HUD 组件的显示与几何；
+-- * Feature 只在 TARGET_CHANGED / 显式编辑边读取 UnitName，并把已解析字符串与 HUD 配置投影
+-- 给 Presentation；Renderer 不直接访问 Store，也不修改真实角色名。
 -- 数据流：UnitName(target) -> O(1) TargetAliasIndex -> lane targetAlias -> ProjectPlates
---       + TargetAliasState.hud -> target alias projection -> BuffHeadMarkers。
---
+-- + TargetAliasState.hud -> 目标别名投影 -> BuffHeadMarkers。
 -- 性能边界：最多 256 条，索引只在 Load/显式保存删除时重建；任何 PositionTick / VisualTick /
 -- Aura 高频路径禁止遍历 entries 或调用 UnitName。HUD 配置是 4 个标量，投影仅做 O(1) 拷贝。
---
 -- 兼容边界：schema1 只有 { enabled, entries }。schema2 通过冻结的 schema1 normalizer 重建旧
 -- canonical，并且只有旧 fingerprint 精确命中才允许升级；升级后 hud 取当前发布默认值，既不删除
 -- 用户备注也不改变原 enabled。Store 故障只禁用别名编辑/显示，不得阻断状态显示本体。

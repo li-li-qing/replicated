@@ -1,6 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Analytics Built-in Metrics
--- Independent bounded plugins. Direct/observed/inferred evidence stays explicit.
+-- Replicated Suite · 战斗分析内置指标
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 独立且有界的指标插件；明确区分 direct、observed、inferred 证据。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -48,9 +51,7 @@ local function Rank(metric,key,fields,limit,options)
 end
 local function ResetActor(metric) metric.state=C:NewActorState(MAX_ACTORS); return true end
 
-------------------------------------------------------------------------
--- 1. Encounter / history / bounded timeline
-------------------------------------------------------------------------
+-- 1. 战斗场次、历史与有界时间线。
 do
     local metric={state={history=C:NewBoundedQueue(20),current=nil,nextId=0,closeTask="v3_combat_encounter_idle"}}
     local function IsAnchor(fact) local c=tostring(fact and fact.category or ""); return c=="damage" or c=="heal" or c=="death" end
@@ -79,9 +80,7 @@ do
         OnFact=function(self,fact)
             local anchor=IsAnchor(fact); if anchor~=true and fact.category~="aura" then return false end
             local now=At(fact); local cur=self.state.current
-            -- Scheduler starvation or a long frame must not merge two encounters.
-            -- The event itself is the final authority for the idle-gap boundary; the
-            -- one-shot task is only a timely close helper.
+            -- Scheduler 饥饿或长帧不能合并两场战斗；事件本身决定空闲间隔边界，一次性任务只协助及时关闭场次。
             if cur~=nil and anchor==true and now-(tonumber(cur.combatLastAt) or now)>=8000 then
                 Close("gap_8s")
                 cur=nil
@@ -118,7 +117,7 @@ end
 ------------------------------------------------------------------------
 do
     local metric={state=C:NewActorState(MAX_ACTORS)}
-    -- 中文维护（2026-10-06）：漏记击杀需要死亡原文与判定证据，errors=0 不能说明已计数。
+    -- 漏记击杀需要死亡原文与判定证据，errors=0 不能说明已计数。
     -- 只在死亡/通知分支保留32条标量记录；普通伤害不建诊断快照，不开全场桥/新任务。
     -- 证据属于本次加载，停用或清空实时计数不抹掉它；导出时才复制，不能触发结算。
     local evidence={events=C:NewBoundedQueue(32),counters={}}
@@ -346,9 +345,7 @@ do
         GetHealth=function(self) return {actors=self.state.actorCount,recentTargets=self.state.targetCount,pendingDeathNotices=self.state.noticeCount,actorOverflow=self.state.actorOverflow} end})
 end
 
-------------------------------------------------------------------------
--- 3. Skill activity / exact SELF native casts / opener
-------------------------------------------------------------------------
+-- 3. 技能活动、SELF 原生精确施法与起手序列。
 do
     local metric={state=C:NewActorState(MAX_ACTORS)}
     local function Activity(self,fact,exact)
@@ -360,8 +357,7 @@ do
         local openerConfidence=exact and "self_native_catalog_match" or "inferred_combat_activity"
         local lastOpener=C:QueueLast(actor.opener)
         if lastOpener and lastOpener.skill==skill.name and now-(tonumber(lastOpener.at) or -999999)<250 then
-            -- Native START may arrive just after the inferred combat activity for
-            -- the same cast. Upgrade the evidence instead of duplicating opener.
+            -- 同次施法的 Native START 可能略晚于推断的战斗活动；应提升证据等级，不能重复添加起手记录。
             if exact==true then lastOpener.confidence=openerConfidence;lastOpener.exact=true end
         elseif actor.opener.count<12 then
             C:QueuePush(actor.opener,{at=now,skill=skill.name,confidence=openerConfidence,exact=exact==true})
@@ -376,9 +372,7 @@ do
         Reset=function(self) return ResetActor(self) end,GetHealth=function(self) return {actors=self.state.actorCount} end})
 end
 
-------------------------------------------------------------------------
--- 4. Burst / highest hit / survival observation
-------------------------------------------------------------------------
+-- 4. 爆发、最高单次命中与生存观察。
 do
     local metric={state=C:NewActorState(MAX_ACTORS)}
     metric.state.deathOrder=C:NewBoundedQueue(512)
@@ -411,9 +405,7 @@ do
         Reset=ResetState,GetHealth=function(self) return {actors=self.state.actorCount,deathDedupe=self.state.deathOrder.count} end})
 end
 
-------------------------------------------------------------------------
--- 5. Crowd control activity / observed hit and duration
-------------------------------------------------------------------------
+-- 5. 控制活动、观察到的命中与持续时长。
 do
     local metric={state=C:NewActorState(MAX_ACTORS)};metric.state.activeAuras={};metric.state.activeAuraCount=0;metric.state.activeAuraOverflow=0
     local function SkillActivity(self,fact)
@@ -455,9 +447,7 @@ do
         GetHealth=function(self) return {actors=self.state.actorCount,activeAuras=self.state.activeAuraCount,auraOverflow=self.state.activeAuraOverflow} end})
 end
 
-------------------------------------------------------------------------
--- 6. Songcraft / instrument duration / observed coverage
-------------------------------------------------------------------------
+-- 6. 吟游、乐器持续时长与观察覆盖。
 do
     local metric={state=C:NewActorState(MAX_ACTORS)};metric.state.selfActiveSong=nil;metric.state.activeBuffs={};metric.state.activeBuffCount=0;metric.state.activeBuffOverflow=0
     local function Song(id) local r=type(AbilityCatalog)=="table" and AbilityCatalog:GetSkill(id) or nil;return r and r.songcraft==true and r or nil end
@@ -485,8 +475,7 @@ do
                     else self.state.selfActiveSong=nil end
                 end
                 C:Touch(actor,now);C:AddCounter(actor,"songStarts",1);AddDetail(actor,"nativeSongs",song.name,1)
-                -- START without STOP proves a cast, not its duration. Never infer
-                -- song uptime merely from the next START or wall-clock passage.
+                -- 有 START 无 STOP 只能证明施法，不能证明时长；禁止依据下一次 START 或墙钟经过推断歌曲覆盖时间。
                 if durationReliable then self.state.selfActiveSong={actorKey=actor.key,skillId=song.id,name=song.name,at=now} end
                 return true
             elseif fact.kind=="cast_stop" and self.state.selfActiveSong~=nil then
@@ -500,9 +489,7 @@ do
         GetHealth=function(self) return {actors=self.state.actorCount,selfSongOpen=self.state.selfActiveSong~=nil,activeBuffs=self.state.activeBuffCount,activeBuffOverflow=self.state.activeBuffOverflow} end})
 end
 
-------------------------------------------------------------------------
--- 7. Utility: interrupt/dispel/cleanse/resurrection/defensive activity
-------------------------------------------------------------------------
+-- 7. 辅助活动：打断、驱散、净化、复活与防御。
 do
     local metric={state=C:NewActorState(MAX_ACTORS)}
     local function Apply(self,fact,exact)
@@ -516,9 +503,7 @@ do
         Reset=function(self) return ResetActor(self) end,GetHealth=function(self) return {actors=self.state.actorCount} end})
 end
 
-------------------------------------------------------------------------
--- 8. Observed Buff/Debuff uptime
-------------------------------------------------------------------------
+-- 8. 观察到的 Buff/Debuff 覆盖时长。
 do
     local metric={state=C:NewActorState(MAX_ACTORS)};metric.state.active={};metric.state.activeCount=0;metric.state.activeOverflow=0
     Analytics:RegisterMetric({id="aura",suspended=true,title="Buff / Debuff 覆盖",category="support",order=80,factCategories={"aura"},state=metric.state,
@@ -544,9 +529,7 @@ do
         GetHealth=function(self) return {actors=self.state.actorCount,active=self.state.activeCount,overflow=self.state.activeOverflow} end})
 end
 
-------------------------------------------------------------------------
--- 9. Boss mechanics: exact static catalog observations only
-------------------------------------------------------------------------
+-- 9. 首领机制：仅使用静态目录精确观察。
 do
     local metric={state=C:NewActorState(MAX_ACTORS)};metric.state.total=0;metric.state.byMechanic={};metric.state.mechanicCount=0;metric.state.mechanicOverflow=0
     local function Credit(self,fact,mechanic,confidence)

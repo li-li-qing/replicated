@@ -1,20 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Activity Authority
+-- Replicated Suite · 活动追踪业务权威
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- First migrated gameplay Authority in the V3 rebuild.
---
--- Authority boundaries:
---   * Curated schedule: data/rs_event_data.lua
---   * Server wall clock: UIParent:GetServerTimeTable() sampled at low frequency
---   * Live region phase: X2Map:GetZoneStateInfoByZoneId() every 5s while there
---     is an active Activity consumer (page/widget)
---   * Quest/instance progress: explicit future provider contracts; this file
---     never revives Legacy QuestService or Legacy State.
---
--- Performance:
---   * No independent OnUpdate.
---   * 1s projection; clock re-sampling is throttled to 15s (including failures).
---   * Static schedule is grouped to one visible row per semantic activity.
+-- 活动权威边界：日程归 data/rs_event_data.lua；服务器墙钟低频采样 UIParent:GetServerTimeTable()；有活动页面/Widget 消费端时每5s读 X2Map:GetZoneStateInfoByZoneId()。
+-- 任务/副本进度通过明确 Provider 契约接入，禁止复活旧 QuestService 或旧 State。
+-- 不使用独立 OnUpdate，投影节奏1s；时钟重采（包括失败）节流15s；静态日程按语义活动合并为一个可见行。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -49,7 +40,7 @@ local CLOCK_STALE_MS = 120000
 local ZONE_STALE_MS = 20000
 local TIMELINE_URGENT_SECONDS = 10 * 60
 
--- 中文维护注释（2026-09-19，活动临近开始红色提醒）：
+--
 -- 用户需要在活动密集列表中优先看到“10 分钟内即将开始”的项目，因此 timeline 颜色由 Authority 统一投影。
 -- active 始终 red；upcoming 仅在 0 < secondsUntilStart <= 600 时 red，超过 10 分钟保持 default。
 -- Presentation 不重复判断阈值，首页/活动页/悬浮窗消费同一个 row.tone；实时区域 ZONE_VIEW 的战争/纷争/和平配色完全独立。
@@ -60,7 +51,7 @@ local function TimelineTone(active, secondsUntilStart)
     if seconds ~= nil and seconds > 0 and seconds <= TIMELINE_URGENT_SECONDS then return "red" end
     return "default"
 end
--- 维护（activity-time-audit）：Native 样本有精度/有效期，不是无条件的事实。
+-- Native 样本有精度/有效期，不是无条件的事实。
 -- 本 Authority 独占瞬态时钟与区域样本；所有界面只消费投影，不写业务存档。
 -- 分钟精度的值代表一个 60 秒区间，不能每 15 秒重新当作 :00，否则 JMG 等所有活动倒计时回跳。
 -- 只读诊断不采样；失败同样限流。保留现有采样频率，不增加 Tick/高频 API/持久化字段。
@@ -71,7 +62,7 @@ local function Integer(value, lo, hi)
 end
 A.ActivityTimelineSortContractVersion = 2
 A.PriorityStageSortContractVersion = 1 -- 兼容只读标记：旧 v1 分带已经退役，保留字段仅防止历史诊断/脚本因 nil 误判。
--- 中文维护注释（2026-09-18，Activity Timeline v2）：
+--
 -- 原 v1 把“计划活动时间”和“实时区域阶段”塞进同一 comparator，再用 <=3h / 鲸鱼烛台 / >3h 的业务分带补偿，
 -- 结果虽然可控，却不是玩家理解的时间线：一个“危险3阶段”没有可比较的开始时间，却会插进 2h40m 与 3h10m 之间。
 -- v2 的 Authority 边界改为两类投影：
@@ -279,7 +270,7 @@ function A:GetTimingDiagnostics()
 end
 
 local function TimelineSortParts(row)
-    -- 中文维护注释（Activity Timeline v2）：timelineState 是时间排序的唯一语义 Authority。
+    -- timelineState 是时间排序的唯一语义 Authority。
     -- active 使用 secondsUntilEnd，upcoming 使用 secondsUntilStart；兼容旧/测试行时才回退 active/seconds/sortSeconds。
     -- 不读取 zoneState/tone/name 来推导时间状态，避免 Presentation 语义反向污染 Domain 排序。
     local active = type(row) == "table" and (row.timelineState == "active" or row.active == true) or false
@@ -320,7 +311,7 @@ function A:AttachProgress(row)
     return row
 end
 
--- 中文维护（performance-cache-1）：静态发生时间/计划文案只随目录或 Generation 改变。
+-- 静态发生时间/计划文案只随目录或 Generation 改变。
 -- 缓存归 Activity Authority 的会话生命周期，ResetTransient 同时释放；日期有效期、
 -- 当前活动/倒计时/颜色与进度仍每轮从真实钟和 provider 求值，绝不缓存这些动态结论。
 local function CompiledSchedules(self)
@@ -354,14 +345,14 @@ function A:BuildStaticRows()
     local grouped = {}
 
     for _, schedule in ipairs(CompiledSchedules(self)) do
-        local event = schedule.event -- 中文维护：日期约束仍来自当前静态目录，不复制一份业务 Authority。
+        local event = schedule.event -- 日期约束仍来自当前静态目录，不复制一份业务 Authority。
         if EventDateEnabled(event, currentDateSerial) then
             local best = nil
             local duration = schedule.duration
-            -- 中文维护：时间列只由日程和服务器钟决定。未交任务不能延长计划窗口，
+            -- 时间列只由日程和服务器钟决定。未交任务不能延长计划窗口，
             -- 也不能覆盖下一场开场倒计时；任务进度由 AttachProgress 独立投影。
             for _, occurrence in ipairs(schedule.occurrences) do
-                local day, start = occurrence.day, occurrence.start -- 中文维护：复用预编译周时间，动态窗口算法保持不变。
+                local day, start = occurrence.day, occurrence.start -- 复用预编译周时间，动态窗口算法保持不变。
                 local elapsed = NormalizeWeekSeconds(now - start)
                 local active = duration > 0 and elapsed < duration
                 local seconds
@@ -376,7 +367,7 @@ function A:BuildStaticRows()
                 local occurrenceDate = currentDateSerial and (currentDateSerial+math.floor((daySeconds+(active and -elapsed or seconds))/DAY_SECONDS)) or nil
                 local confidence = event.scheduleConfidence or "curated"
                 local minutePrecision = self.clockAnchor and self.clockAnchor.precision == "minute"
-                -- 中文维护注释（2026-09-18，活动时间文案可读性）：
+                --
                 -- Authority 仍然只投影“静态日程 + 当前服务器钟”得到的计划窗口，不能把计划结束误写成首领实际存活时间。
                 -- 旧“计划余1分”属于内部术语，玩家无法判断是开始还是结束；因此 Presentation 字段改为方向明确的自然语言：
                 -- 秒级服务器钟使用“预计X后结束”，分钟级服务器钟使用“约X后结束”；尚未开始统一写“X后开始”。
@@ -405,20 +396,20 @@ function A:BuildStaticRows()
                     secondsUntilEnd = active and seconds or nil,
                     -- sortSeconds 仅作为旧 Presentation/诊断兼容字段；v2 comparator 不再把 live 状态和它比较。
                     sortSeconds = active and 0 or seconds,
-                    -- 中文维护注释（2026-09-18，活动进行中视觉状态）：
+                    --
                     -- 用户需要在密集时间线里一眼识别“当前正在进行”的计划活动，因此 timeline active 统一使用 red。
-                    -- Authority：颜色只由本 Activity Authority 根据现有 active 事实投影；Presentation 仅消费 row.tone，
+                    -- 权威边界：颜色只由本 Activity Authority 根据现有 active 事实投影；Presentation 仅消费 row.tone，
                     -- 不重复判断时间窗口。数据流仍为日程/服务器钟 -> active -> tone，不新增 Tick、Native 查询或持久化字段。
                     -- 兼容边界：upcoming 仅在 10 分钟内切 red，超过 10 分钟仍为 default；实时区域仍由 ZONE_VIEW 自己决定红/橙/蓝，不复用 timeline 规则；
                     -- Store 和实时区域状态保持独立，任务进度不参与活动颜色判断。
                     tone = TimelineTone(active, active and 0 or seconds),
-                    -- 中文维护注释（2026-09-19，隐藏内部可信度标签）：
+                    --
                     -- scheduleConfidence / scheduleEvidence 是维护与诊断 Authority，不是玩家活动状态。旧版把 reference
                     -- 直接拼成“参考·X后开始 / ·参考”，普通用户无法理解，还会误把来源可信度当成活动阶段。
                     -- 因此 Presentation 字段只保留“何时开始/结束”及计划窗口；可信度元数据继续独立保存，供诊断和核对使用。
                     -- 主页面/首页/悬浮窗共用此投影；可信度标签不改变日程、Store 或诊断证据。
                     status = stateText,
-                    scheduleText = occurrence.scheduleText, -- 中文维护：固定文本不再每秒为每个周发生点重新格式化。
+                    scheduleText = occurrence.scheduleText, -- 固定文本不再每秒为每个周发生点重新格式化。
                     scheduleConfidence = confidence,
                     scheduleEvidence = event.scheduleEvidence or "existing RU curated table",
                     plannedDurationSeconds = duration,
@@ -513,7 +504,7 @@ function A:ScanTrackedZones()
 end
 
 function A:BuildZoneRows()
-    -- 中文维护注释（2026-09-18，Activity Timeline v2 / Live Authority）：
+    --
     -- 这里的 row 只描述“区域现在是什么状态”，不再承载 Boss/活动开始时间。旧实现会把 102/103 的 Boss 文案写回 zone row，
     -- 然后再拿 remainTime 与计划活动排序，造成 live state 与 timeline 语义混用。现在战争/纷争/和平/危险阶段永远留在 live section；
     -- 能从这些状态确定性推导出来的活动时间由 BuildDynamicTimelineRows 另建 occurrence。这样同一 Native 事实可以有两个只读投影，
@@ -557,7 +548,7 @@ function A:BuildZoneRows()
         rows[#rows + 1] = row
     end
 
-    -- 中文维护注释（2026-09-19，Garden phase migration）：庭院是“同一事实、两个互斥投影”。
+    -- 庭院是“同一事实、两个互斥投影”。
     -- WAR 之前，BuildDynamicTimelineRows 用 Native 区域 remainTime 投影“距离战争开始”的倒计时，方便玩家提前去庭院准备四个 Boss；
     -- 一旦 Native 明确进入 WAR，这条倒计时必须从 timeline 消失，并且这里只生成 live row。禁止同时保留两条“庭院”，否则小窗口会重复占位。
     -- Authority 仍然只有 zone 133 的 5s transient snapshot；这里不新增扫描、不本地制造 1h50m 计时，也不持久化区域阶段。
@@ -581,7 +572,7 @@ function A:BuildZoneRows()
                 seconds = untimed and nil or remain, sortSeconds = untimed and math.huge or remain,
                 tone = tone, status = status, scheduleText = "实时区域", untimed = untimed,
             }
-            -- 中文维护注释（2026-09-22，Garden score quest projection）：live 庭院行过去硬编码 progress=--，
+            -- live 庭院行过去硬编码 progress=--，
             -- 导致即使 EventData 提供 Quest 映射，战争阶段也无法显示/点击“精灵的委托”。这里与其他活动
             -- 统一走 AttachProgress，只消费 QuestProgress detached snapshot；区域阶段和 Quest 状态仍是两个 Authority。
             self:AttachProgress(row)
@@ -614,13 +605,13 @@ local function MakeDynamicOccurrence(options)
         secondsUntilStart = active and 0 or seconds,
         secondsUntilEnd = active and seconds or nil,
         sortSeconds = active and 0 or seconds,
-        -- 中文维护注释（2026-09-18，动态时间线进行中颜色）：
+        --
         -- live-derived occurrence 虽由区域事实推导，但进入 timeline 后仍遵循统一的“进行中=红色”视觉规则。
         -- 这里只消费已经计算出的 active/seconds，不把 live 区域的原始 tone 传播进来；upcoming 在 10 分钟内由统一 TimelineTone 标红，
         -- live 区域本身继续由 ZONE_VIEW 独立着色；不改变区域 Authority、扫描频率、排序或存档。
         tone = TimelineTone(active, active and 0 or seconds),
         -- 区域推导倒计时仍需明确方向；不将 Boss/战争计划窗口声称为存活事实。
-        -- 中文维护：区域推导活动与固定日程采用同样的开始/结束方向；不把计划结束声明为首领死亡时间。
+        -- 区域推导活动与固定日程采用同样的开始/结束方向；不把计划结束声明为首领死亡时间。
         status = active and ("预计"..FormatCountdown(seconds).."后结束") or (FormatCountdown(seconds).."后开始"),
         scheduleText = "实时推导",
         occurrenceKey = tostring(options.key or "dynamic:unknown") .. ":" .. tostring(options.phase or "derived"),
@@ -628,7 +619,7 @@ local function MakeDynamicOccurrence(options)
 end
 
 function A:BuildDynamicTimelineRows()
-    -- 中文维护注释（Activity Timeline v2，动态 occurrence）：只使用已经由 X2Map Authority 采样并缓存的 zoneStates/remainTime，
+    -- 只使用已经由 X2Map Authority 采样并缓存的 zoneStates/remainTime，
     -- 本函数禁止再调用 Native API。只有“能由当前已知规则得到唯一秒数”的状态才进入 timeline；危险阶段等无确定时间的信息留在 live section。
     -- 未来新增规则必须把时间来源/阈值写进 data/rs_event_data.lua，禁止从 UI 文案或名称猜测。
     local rows = {}
@@ -640,7 +631,7 @@ function A:BuildDynamicTimelineRows()
         rows[#rows + 1] = row
     end
 
-    -- 中文维护注释（十字星/伊尼斯净化）：RU 客户端在 BATTLE 阶段提供 remainTime，参考 timeUntil 也把该冲突窗口结束
+    -- RU 客户端在 BATTLE 阶段提供 remainTime，参考 timeUntil 也把该冲突窗口结束
     -- 视为净化开始；本项目只借鉴这个“可确定开始时间”的事实，用现有 5s Zone snapshot 构造 upcoming occurrence。
     -- 一旦进入 WAR，本 Authority 不凭观察时刻再制造“15分钟进行中”计时，因为那会把插件启动/事件到达时间错误提升为服务器 Authority。
     -- 若未来拿到官方/Native 的活动结束时间，再把 active 时长写入 data Authority；在此之前必须 fail-closed。
@@ -685,7 +676,7 @@ function A:BuildDynamicTimelineRows()
 
     local whalesong = S.Data and S.Data.DynamicEventZones and S.Data.DynamicEventZones[103] or nil
     if whalesong ~= nil then
-        -- 中文维护注释（2026-09-19）：鲸鱼 Boss 的刷新点必须只来自 data Authority 中的战争剩余阈值。
+        -- 鲸鱼 Boss 的刷新点必须只来自 data Authority 中的战争剩余阈值。
         -- 旧 76m 在 RU 实机晚约 1 分钟，现校正为 77m；本层不再叠加额外“经验补偿”，
         -- 避免以后数据阈值与 Presentation 各自补偿造成双重偏移。
         local state, remain = tonumber(self.zoneStates[103]), self:GetZoneRemainSeconds(103)
@@ -720,7 +711,7 @@ function A:BuildDynamicTimelineRows()
             phase = "peace_to_war"
         elseif remain ~= nil and remain > 0 and state == ZONE_STATE.BATTLE then
             seconds, phase = remain, "battle_to_war"
-        -- 中文维护注释（2026-09-19，Garden phase migration）：WAR 已经是实时事实，不能再生成 active timeline occurrence。
+        -- WAR 已经是实时事实，不能再生成 active timeline occurrence。
         -- 进入 WAR 后由 BuildZoneRows 独占显示；只有 PEACE/BATTLE 才保留“多久后进入战争”的活动时间倒计时。
         end
         if seconds ~= nil then
@@ -760,7 +751,7 @@ end
 function A:Refresh(reason)
     self:SyncClock(false)
 
-    -- 中文维护注释（Activity Timeline v2 projection transaction）：一次 Refresh 内分别构建 timeline/live，
+    -- 一次 Refresh 内分别构建 timeline/live，
     -- 各自完成排序后再拼接，最后一次性替换 rows/rowByKey/revision。Presentation 因此永远看到同一 revision 的完整快照，
     -- 不会在 1s timer 中先看到新 timeline、后看到旧 live。动态 occurrence 只复用前一次 5s zone scan 的 transient facts，
     -- 区域 Native 读取只在 5s 采样；SyncClock 每 15s 最多读取一次时钟，失败也受同一限流。
@@ -873,7 +864,7 @@ function A:RestoreHiddenEvents()
 end
 
 function A:ResetTransient()
-    self.compiledSchedules = nil -- 中文维护：进入世界/重置释放静态编译缓存，允许同代目录原地调整后显式重建。
+    self.compiledSchedules = nil -- 进入世界/重置释放静态编译缓存，允许同代目录原地调整后显式重建。
     self.zoneStates, self.zoneRemainSeconds, self.zoneObservedAtMs = {}, {}, {}
     self.clockAnchor = nil
     self.lastClockSampleAtMs = -1

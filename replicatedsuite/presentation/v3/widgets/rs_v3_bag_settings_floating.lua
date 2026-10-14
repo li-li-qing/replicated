@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 背包设置悬浮窗口
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 整理背包设置：只展示 Feature 的背包快照与持久黑名单，不拥有搬运队列。
 -- 窗口布局/筛选是当代 Session 状态；黑名单写入唯一 tools_bag Store。
 -- 无定时扫描；打开或显式刷新才取得 InventorySnapshot，隐藏后释放自身 Consumer。
@@ -84,7 +88,7 @@ function M:EnsureCreated()
     if self.surface then return true end
     local surface,err=R.FloatingSurface:Create({
         id="v3_bag_settings_floating",owner="v3:bag_settings:floating",title="整理背包设置",footer=true,
-        persistSessionLock=true, -- 中文维护：窗口会话几何沿用原设计，小锁复用统一 Chrome 偏好并在重载后恢复。
+        persistSessionLock=true, -- 窗口会话几何沿用原设计，小锁复用统一 Chrome 偏好并在重载后恢复。
         movable=true,resizable=true,minimizeMode="compact",boundaryMode="free",defaultPlacement="center",
         statePolicy={defaultWidth=530,defaultHeight=430,minWidth=410,minHeight=300},
         getState=function()return self.windowState end,

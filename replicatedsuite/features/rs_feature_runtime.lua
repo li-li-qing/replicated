@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Feature Runtime
+-- Replicated Suite · 功能生命周期管理
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Lifecycle Authority for migrated V3 Features. Planned features may exist in
--- FeatureRegistry without an implementation; they remain unavailable and cost
--- zero runtime work. This manager never starts Legacy ModuleManager entries.
+-- 功能生命周期权威：未实现的计划功能可存在于 FeatureRegistry，但保持不可用且零运行工作量；本管理器禁止启动旧 ModuleManager 条目。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -12,7 +12,7 @@ local P = S.Persistence
 if type(Registry) ~= "table" or type(P) ~= "table" then return end
 
 S.FeatureRuntime = {
-    version = 5, -- 2026-09-25: add atomic ApplyPreferenceTargets batch lifecycle/preference transaction.
+    version = 5, -- ApplyPreferenceTargets 原子提交批量生命周期与偏好事务。
     implementations = {},
     state = {},
     order = {},
@@ -30,9 +30,7 @@ local function Emit(level, code, message, context)
     if type(d) == "table" and type(d.Emit) == "function" then d:Emit(level, "feature_v3", code, message, context) end
 end
 
--- Shared lifecycle topic. Domain publishes facts only; Presentation decides
--- whether a floating widget follows. This is what keeps Feature code from
--- reaching into WidgetHost (and keeps the coupling one-way).
+-- 共享生命周期 topic：Domain 仅发布事实，Presentation 决定浮窗是否跟随；Feature 禁止访问 WidgetHost，依赖保持单向。
 local FEATURE_LIFECYCLE_TOPIC = "v3.feature.lifecycle"
 local function PublishLifecycle(id, state, reason)
     if S.Events ~= nil and type(S.Events.Publish) == "function" then
@@ -62,7 +60,7 @@ local function ApplyPreferences(value)
     F.preferences = NormalizePreferences(value)
 end
 
--- 中文维护注释（Framework2 功能总开关兼容）：`v3.features` 是动态 key map，Store
+-- `v3.features` 是动态 key map，Store
 -- default 必须保持空表，因此 Core 无法从 default 推导“哪个 feature=false 被 RU 吞掉”。
 -- 对默认开启 Feature，这个 false 会改变下一次登录的真实生命周期，必须单独恢复。
 -- 这里最多枚举当前 Registry 中 defaultEnabled=true 且磁盘缺失的子集；候选只有在
@@ -183,16 +181,13 @@ function F:SetPreferredEnabled(id, enabled, reason)
     else ok, err = self:Disable(id, reason or "user_disable") end
     if ok ~= true then return false, err end
 
-    -- Preference table mutation is transactional (MutateStore snapshot/rollback
-    -- covers the explicit-preference write); the lifecycle transition above is
-    -- rolled back manually below because Enable/Disable side effects cannot be
-    -- captured by a persistence snapshot.
+    -- 偏好表修改由 MutateStore 快照/回滚事务覆盖；Enable/Disable 副作用无法被持久快照捕获，上方生命周期转换必须在下方手动回滚。
     local persisted, persistErr
     if type(P.MutateStore) == "function" then
         persisted, persistErr = P:MutateStore(self.preferenceStoreId, function()
             self.preferences[id] = target
             return true
-        -- 中文维护（2026-10-03）：单个开关与批量方案采用同一耐久事务。旧 350ms
+        -- 单个开关与批量方案采用同一耐久事务。旧 350ms
         -- 延迟只代表已排期，点击后马上下线/重载可能尚未写入；成功必须已保存并回读验证。
         end, { durable = true, reason = "feature_preference:" .. id })
     else
@@ -205,10 +200,7 @@ function F:SetPreferredEnabled(id, enabled, reason)
     end
     if persisted == true then return true end
 
-    -- Persistence intent failed after the lifecycle transition. MutateStore has
-    -- already restored the explicit preference; restore runtime state so UI can
-    -- never report success for a setting that will silently revert on
-    -- ReloadAddon.
+    -- 生命周期转换后持久意图失败时，MutateStore 已恢复显式偏好；还必须恢复运行状态，不能让 UI 报告成功却在 ReloadAddon 静默还原。
     local rollbackOk, rollbackErr = true, nil
     if previousEnabled ~= target then
         if previousEnabled then rollbackOk, rollbackErr = self:Enable(id, "preference_persist_rollback")
@@ -223,14 +215,14 @@ function F:SetPreferredEnabled(id, enabled, reason)
     return false, persistErr or "feature preference persistence failed"
 end
 
--- 中文维护注释（2026-09-25，feature-preference-batch-transaction-1）：功能方案需要一次切换多个
+-- 功能方案需要一次切换多个
 -- Feature。逐项调用 SetPreferredEnabled 会在中途失败时留下“前半已经保存、后半未执行”的混合状态，
 -- 也会把恢复动作拆成多次磁盘提交。这里由 FeatureRuntime（唯一生命周期 Authority）提供受控批量事务：
 -- 先验证全部目标 -> 仅改变 Runtime 生命周期 -> 单次 durable 保存 v3.features；任一步失败都按反向顺序
 -- 恢复已经发生的生命周期变化。Persistence.MutateStore 自己负责 preferences RAM/dirty metadata 回滚。
 -- 该接口只接受明确 boolean target；调用者决定哪些业务 Feature 参与，Runtime 不推断“生活/战斗”等语义。
 function F:ApplyPreferenceTargets(targets, reason)
-    -- 维护（2026-09-30，feature-profile-failure-evidence-1）：前两个返回值保持兼容；第三值
+    -- 前两个返回值保持兼容；第三值
     -- 提供真实失败阶段/目标/回滚结果。调用者不得解析本地化错误文本判断失败模块，
     -- 也不能在 rollback 失败时声称“已负责回滚”。只创建本次调用结果，不持久化或扫描 Store。
     local function Failed(message, stage, id, target, rollbackOk, rollbackErr, changed, cause)
@@ -280,7 +272,7 @@ function F:ApplyPreferenceTargets(targets, reason)
         if id == "" or Registry:Get(id) == nil then return Failed("unknown feature: " .. tostring(rawId), "preflight", id, rawTarget, true) end
         if self.implementations[id] == nil then return Failed("feature not implemented: " .. id, "preflight", id, rawTarget, true) end
         if type(rawTarget) ~= "boolean" then return Failed("feature target must be boolean: " .. id, "preflight", id, rawTarget, true) end
-        -- 中文维护：方案事务在任何生命周期变化/持久化前检查手工开放；拒绝整批，不能留下半应用状态。
+        -- 方案事务在任何生命周期变化/持久化前检查手工开放；拒绝整批，不能留下半应用状态。
         if rawTarget == true and Registry:IsAccessible(id) ~= true then return Failed("功能未在手动配置中开放：" .. id, "preflight", id, rawTarget, true) end
         if normalizedTargets[id] ~= nil then return Failed("duplicate normalized feature target: " .. id, "preflight", id, rawTarget, true) end
         normalizedTargets[id] = rawTarget
@@ -387,9 +379,7 @@ function F:Initialize(id)
     if impl == nil or row == nil then return false, "feature not implemented" end
     if row.initialized == true then return true end
 
-    -- Business APIs are imported lazily with the Feature that owns them. The
-    -- Foundation never pays for every legacy domain simply because the addon
-    -- loaded. Implementations may override metadata with ApiDependencies.
+    -- 业务 API 随所属 Feature 惰性导入，Foundation 不能因插件加载就支付所有旧业务导入成本；实现可用 ApiDependencies 覆盖元数据。
     local meta = Registry:Get(id)
     local dependencies = type(impl.ApiDependencies) == "table" and impl.ApiDependencies
         or (meta and meta.apiDependencies) or {}
@@ -414,7 +404,7 @@ end
 
 function F:Enable(id, reason)
     id = NormalizeId(id)
-    -- 中文维护：唯一 Runtime 启动边界先拒绝受限功能，禁止收藏、旧存档、批量方案绕过菜单隐藏。
+    -- 唯一 Runtime 启动边界先拒绝受限功能，禁止收藏、旧存档、批量方案绕过菜单隐藏。
     -- 在 Initialize/API Acquire 前检查，正常限制不是 fault；Disable 仍可用于可靠清理。
     if Registry:IsAccessible(id) ~= true then return false, "功能未在手动配置中开放：" .. id end
     local impl, row = self.implementations[id], self.state[id]
@@ -433,9 +423,7 @@ function F:Disable(id, reason)
     id = NormalizeId(id)
     local impl, row = self.implementations[id], self.state[id]
     if impl == nil or row == nil then return false, "feature not implemented" end
-    -- The row is the public projection, but a previous fault can leave an
-    -- implementation-local enabled flag ahead of it. Shutdown must still run
-    -- the implementation teardown in that split-brain state.
+    -- 公共投影行与实现局部 enabled 可能因故障不一致；关闭仍必须执行实现清理，不能只看投影跳过。
     if row.enabled ~= true and impl.enabled ~= true then return true end
     local ok, err = Invoke(id, impl, "Disable", reason or "user")
     if ok ~= true then row.faulted = true; row.lastError = tostring(err); return false, err end
@@ -451,9 +439,7 @@ local function ForceFeatureDemand(id, reason, cause)
     if type(lease) ~= "table" or (tonumber(lease.count) or 0) <= 0 or type(lease.ForceQuiesce) ~= "function" then return true, nil, false end
     local ok, err = lease:ForceQuiesce(reason or "feature_shutdown", cause)
     if ok == true then
-        -- A forced quiesce is a terminal shutdown fence. Keep the runtime
-        -- projection and implementation-local flag aligned even when the
-        -- normal Feature:Disable() path failed before reaching them.
+        -- 强制静默是最终关闭保护；普通 Feature:Disable() 在到达状态更新前失败时，也必须让运行投影与实现局部标志一致。
         local normalizedId = NormalizeId(id)
         local impl, row = F.implementations[normalizedId], F.state[normalizedId]
         if type(impl) == "table" then impl.enabled = false end
@@ -481,16 +467,12 @@ function F:DisableAll(reason)
             end
         end
 
-        -- A failed Feature Disable must not leave its downstream lease alive.
-        -- ForceQuiesce is deliberately a last-resort path: normal Disable keeps
-        -- transactional rollback semantics, while this fence makes shutdown and
-        -- recovery deterministic even when a native release call fails.
+        -- Feature Disable 失败不能留下下游租约。ForceQuiesce 仅为最终回退，正常 Disable 保持事务回滚；Native 释放失败时此保护仍让关闭/恢复确定。
         local quiet, quietErr, hadResidualDemand = ForceFeatureDemand(id, shutdownReason, disableErr)
         if quiet ~= true then
             failures[#failures + 1] = tostring(id) .. ":quiesce:" .. tostring(quietErr or "failed")
         elseif hadResidualDemand == true and disabled == true then
-            -- Forced cleanup keeps shutdown safe, but a stale lease is still a
-            -- lifecycle failure and must not be reported as a green shutdown.
+            -- 强制清理保证关闭安全，但陈旧租约仍是生命周期失败，禁止报告关闭成功。
             failures[#failures + 1] = tostring(id) .. ":stale_demand:forced_quiesce"
         end
     end
@@ -511,16 +493,12 @@ function F:EnableDefaults(reason)
     local failures = {}
     for _, id in ipairs(self.order) do
         local impl = self.implementations[id]
-        -- 中文维护：启动跳过受限模块，保留磁盘偏好；正常隐藏不能制造启动失败或触发旧启用意图修复。
+        -- 启动跳过受限模块，保留磁盘偏好；正常隐藏不能制造启动失败或触发旧启用意图修复。
         if impl ~= nil and Registry:IsAccessible(id) then
             local preferred, explicit = self:GetPreferredEnabled(id)
 
-            -- Some persistent screen surfaces predate the Feature preference
-            -- linkage contract. A Feature may expose a bounded, store-backed
-            -- one-time startup intent repair. The generic Runtime owns the
-            -- preference transaction; the Feature only proves whether a
-            -- historical persistent intent exists. No Feature may silently
-            -- override an already-linked explicit user disable on later reloads.
+            -- 早于偏好链接契约的持久屏幕表现可提供 Store 支撑的有界一次性启动修复；Runtime 拥有偏好事务，Feature 只证明历史持久意图。
+            -- 已链接用户显式禁用后，任何 Feature 禁止在后续重载静默覆盖它。
             if preferred ~= true and type(impl.GetStartupEnableIntent) == "function" then
                 local intentOk, wanted, intentReason = xpcall(function()
                     return impl:GetStartupEnableIntent(preferred, explicit)
@@ -591,7 +569,7 @@ function F:GetSnapshot(id)
     }
 end
 
--- 维护（module-controls-diag-2）：导航/工具条只读运行时薄状态，不触发 GetHealth/Store Load。
+-- 导航/工具条只读运行时薄状态，不触发 GetHealth/Store Load。
 -- preferred 不是当前运行态；初始化失败或停用回滚必须以 enabled 的实际值着色。
 function F:GetControlState(id)
     id = NormalizeId(id)

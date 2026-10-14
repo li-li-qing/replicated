@@ -1,4 +1,10 @@
--- Actual Shell/RSUI/Router/Workspace layout; only Native and page payloads are controlled.
+------------------------------------------------------------------------
+-- Replicated Suite · 工作区外壳测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用实际 Shell、RSUI、Router 和 Workspace 布局，仅原生边界及页面内容受控。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS workspace-shell '..name)else failed=failed+1;print('FAIL workspace-shell '..name..': '..tostring(err))end end
 local function Boot(options)
@@ -42,7 +48,7 @@ local function Boot(options)
  V.PageHost.SetVisible=function()return true end;V.PageHost.RefreshData=function()return true end
  V.ModalHost={Attach=function()return true end,Clear=function()end};V.ToastHost={Attach=function()return true end,Clear=function()end}
  if options.actualWorkspaceHost then
-  -- 中文维护：Shell 在加载时绑定 PageHost，按真实 TOC 顺序先加载实际宿主，不能建好 Shell 后替换成另一实例。
+  -- Shell 在加载时绑定 PageHost，按真实 TOC 顺序先加载实际宿主，不能建好 Shell 后替换成另一实例。
   dofile('presentation/v3/shell/rs_v3_page_host.lua');dofile('presentation/v3/pages/rs_v3_workspace_page.lua')
   V.PageHost:RegisterFactory('home',function(p)return S.RSUI:VerticalBox({id='appearance_home_test',parent=p})end)
  end
@@ -165,7 +171,7 @@ Test('first appearance click arranges four nonoverlapping slider rows before ret
  end
 end)
 Test('first appearance tab switch arranges lazy slider rows without waiting for scheduler',function()
- -- 中文维护：已经打开工作台后首次切页走 SetTab，不经过 Shell:Navigate 的额外布局；必须覆盖真实的第二条打开路径。
+ -- 已经打开工作台后首次切页走 SetTab，不经过 Shell:Navigate 的额外布局；必须覆盖真实的第二条打开路径。
  local shell,S,h=Boot({actualWorkspaceHost=true,mainAppearance=true})
  assert(shell:Navigate('system.workspace'));local page=S.UIV3.PageHost.pages['system.workspace']
  assert(page:SetTab('appearance'));local bottom=nil

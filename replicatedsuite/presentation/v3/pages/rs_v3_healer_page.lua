@@ -1,12 +1,13 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Healer Page (M1.16.0.18)
+-- Replicated Suite · 治疗辅助页面
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation-only consumer of the V3 Healer Feature projection.
--- No X2Unit/X2Team access is allowed here. Runtime facts stay in
--- TeamRosterV3/AuraObservationV3/Healer Domain; this page owns only UI state.
-------------------------------------------------------------------------
--- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 仅消费 V3 Healer Feature 投影；禁止访问 X2Unit/X2Team。
+-- 运行事实保留在 TeamRosterV3/AuraObservationV3/Healer Domain，页面仅持有 UI 状态。
+-- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
 -- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -30,7 +31,7 @@ local function RunAction(id, button, execute, busyText)
 end
 
 local function AdvancedRowsRevision(prefix,rows,fields)
-    -- 中文维护：行数不变时规则/追踪仍可修改；虚拟表格必须按实际显示字段重绑，未变化时继续复用池。
+    -- 行数不变时规则/追踪仍可修改；虚拟表格必须按实际显示字段重绑，未变化时继续复用池。
     -- 长度前缀避免名称含分隔符时碰撞；签名只属于 Presentation，不写配置、不依赖运行时扫描 revision。
     local parts={prefix,tostring(#rows)}
     for _,row in ipairs(rows) do
@@ -101,7 +102,7 @@ local function BuildPage(parent, route)
     local root, rootErr = D:PageRoot(parent, "v3_page_healer")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
     root.consumerHeld = false
-    -- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：页面 Consumer 只是一条 Presentation lease；
+    -- 约束（2026-09-25，feature-profile-lifecycle-1）：页面 Consumer 只是一条 Presentation lease；
     -- FeatureRuntime 仍是启停 Authority。功能方案 Disable 会先 Demand:Clear，因此页面必须以真实 token 为准，
     -- 不能把本地 boolean 当 Authority；再次 Enable 时由 PageHost 生命周期桥在当前页面自动恢复同一 token。
     local consumerBinding = { feature = Feature, featureId = FEATURE_ID, token = CONSUMER,
@@ -111,8 +112,8 @@ local function BuildPage(parent, route)
         "以团队色块显示治疗优先级；页面只负责校准与规则设置，不再显示推荐列表悬浮窗/成员明细表。")
 
     local summaryGrid = RSUI:UniformGrid({
-        id = "v3_healer_summary_grid", parent = root, minCellWidth = 190, minCellHeight = 56, maxColumns = 3, gap = 6, -- 中文维护注释：摘要卡压缩垂直预算但保留三列自适应规则，避免 1080p 页面被状态区占用过多高度。
-        slot = { size = "auto", minHeight = 58, hAlign = "fill" }, -- 中文维护注释：摘要区按内容自动高度，不参与剩余空间填充，保证核心设置始终靠上。
+        id = "v3_healer_summary_grid", parent = root, minCellWidth = 190, minCellHeight = 56, maxColumns = 3, gap = 6, -- 摘要卡压缩垂直预算但保留三列自适应规则，避免 1080p 页面被状态区占用过多高度。
+        slot = { size = "auto", minHeight = 58, hAlign = "fill" }, -- 摘要区按内容自动高度，不参与剩余空间填充，保证核心设置始终靠上。
     })
     local runtimeCard = D:InfoCard(summaryGrid, { id = "v3_healer_runtime_card", title = "运行状态", value = "已关闭", detail = "--", detailMaxLines = 2 })
     local recommendationCard = D:InfoCard(summaryGrid, { id = "v3_healer_recommend_card", title = "颜色判定", value = "0 人", detail = "后台候选仅用于团队色块，不在页面展示名单。", detailMaxLines = 2 })
@@ -143,7 +144,7 @@ local function BuildPage(parent, route)
 
     local settingsPanel = RSUI:GroupBox({ id = "v3_healer_settings_panel", parent = root, title = "核心治疗策略",
         variant = "card", gradient = true, padding = 5,
-        slot = { size = "auto", minHeight = 104, hAlign = "fill" } }) -- 中文维护注释：核心策略区仅收紧最小高度，不改变任何治疗阈值、绑定或持久化字段。
+        slot = { size = "auto", minHeight = 104, hAlign = "fill" } }) -- 核心策略区仅收紧最小高度，不改变任何治疗阈值、绑定或持久化字段。
     local settingsStack = RSUI:VerticalBox({ id = "v3_healer_settings_stack", parent = settingsPanel, gap = 4 })
     local settingGrid = RSUI:UniformGrid({ id = "v3_healer_setting_grid", parent = settingsStack,
         minCellWidth = 250, minCellHeight = 32, maxColumns = 2, gap = 5,
@@ -184,11 +185,11 @@ local function BuildPage(parent, route)
 
     local visualPanel = RSUI:GroupBox({ id = "v3_healer_visual_panel", parent = root, title = "战斗显示层",
         variant = "card", gradient = true, padding = 5, visible = false,
-        slot = { size = "auto", minHeight = 132, hAlign = "fill" } }) -- 中文维护注释：显示设置网格只调整布局预算，不增加扫描、事件订阅或高频刷新。 -- 中文维护注释：战斗显示层保持 auto 高度并压缩留白，隐藏/显示生命周期与原实现一致。
+        slot = { size = "auto", minHeight = 132, hAlign = "fill" } }) -- 显示设置网格只调整布局预算，不增加扫描、事件订阅或高频刷新。 -- 战斗显示层保持 auto 高度并压缩留白，隐藏/显示生命周期与原实现一致。
     local visualStack = RSUI:VerticalBox({ id = "v3_healer_visual_stack", parent = visualPanel, gap = 4 })
     local visualGrid = RSUI:UniformGrid({ id = "v3_healer_visual_grid", parent = visualStack,
         minCellWidth = 205, minCellHeight = 31, maxColumns = 3, gap = 5,
-        slot = { size = "auto", minHeight = 132, hAlign = "fill" } }) -- 中文维护注释：显示设置网格只调整布局预算，不增加扫描、事件订阅或高频刷新。
+        slot = { size = "auto", minHeight = 132, hAlign = "fill" } }) -- 显示设置网格只调整布局预算，不增加扫描、事件订阅或高频刷新。
     local visualRowA, visualRowB, visualRowC = visualGrid, visualGrid, visualGrid
     local presentationFields = {}
     local function AddPresentationNumeric(parentBox, id, label, hint, scope, key, minimum, maximum, step, unit)
@@ -243,10 +244,8 @@ local function BuildPage(parent, route)
     AddPresentationNumeric(visualRowC, "v3_healer_raid_effect", "覆盖效果", "1=静态无动画任务，2=呼吸，3=闪烁。", "raid", "effectMode", 1, 3, 1, "")
     AddPresentationToggle(visualRowC, "v3_healer_raid_proximity", "范围底色：开", "范围底色：关", "raid", "proximityMode", 0.9)
 
-    -- Team roster / calibration model (Refactor: RaidTeam != RaidPanel != Calibration).
-    -- Panel A/B are independent screen containers; their bound team can change at
-    -- runtime without moving geometry. Modes: auto (derive from TeamRosterV3),
-    -- single (one list, team follows native/manual), dual (A + B side by side).
+    -- 团队名单与校准模型：RaidTeam、RaidPanel、Calibration 分离。Panel A/B 是独立屏幕容器，绑定团队可在运行时变化而不移动几何；
+    -- auto 从 TeamRosterV3 推导，single 使用一个列表并跟随原生/手动团队，dual 并排显示 A/B。
     local raidTeamPanel = RSUI:GroupBox({ id = "v3_healer_raid_team_panel", parent = visualStack, title = "团队名单与校准模式",
         variant = "card", gradient = true, padding = 5,
         slot = { size = "auto", minHeight = 120, hAlign = "fill" } })
@@ -558,23 +557,20 @@ local function BuildPage(parent, route)
         end
     end
 
-    -- Product decision M1.16.0.18.43: treatment assistance is a screen-color
-    -- aid, not another ranking UI. Keep the recommendation domain because the
-    -- Raid Overlay consumes its committed color/priority facts, but do not
-    -- allocate a duplicate member list/detail table in Presentation.
+    -- 治疗辅助通过屏幕颜色提供帮助；Raid Overlay 使用推荐领域已提交的颜色与优先级事实，因此保留该领域，但表现层不创建重复的成员列表或详情表。
     local body = RSUI:GroupBox({ id = "v3_healer_calibration_panel", parent = root, title = "团队色块校准",
-        variant = "card", gradient = true, padding = 6, -- 中文维护注释：校准说明卡减少内边距以降低视觉体积；校准 Authority 与四区域拖拽逻辑不在此处修改。
-        -- 中文维护注释：该卡片只有状态/帮助文本，必须按内容自动高度；禁止恢复 fill，否则高分辨率会再次产生大面积空白并挤压插件式交互。
-        slot = { size = "auto", minHeight = 88, hAlign = "fill", vAlign = "top" } }) -- 中文维护注释：明确顶部对齐并退出剩余空间竞争，保证 1024×768 到 1920×1080 都保持紧凑。
+        variant = "card", gradient = true, padding = 6, -- 校准说明卡减少内边距以降低视觉体积；校准 Authority 与四区域拖拽逻辑不在此处修改。
+        -- 该卡片只有状态/帮助文本，必须按内容自动高度；禁止恢复 fill，否则高分辨率会再次产生大面积空白并挤压插件式交互。
+        slot = { size = "auto", minHeight = 88, hAlign = "fill", vAlign = "top" } }) -- 明确顶部对齐并退出剩余空间竞争，保证 1024×768 到 1920×1080 都保持紧凑。
     local bodyStack = RSUI:VerticalBox({ id = "v3_healer_calibration_stack", parent = body, gap = 6 })
     local calibrationState = RSUI:Text({ id = "v3_healer_calibration_state", parent = bodyStack,
         text = "点击上方“校准团队色块”后，单个团队按“上方1-25 + 下方26-50”两个5×5区域校准。自动模式跟随游戏原生1团/2团标签；只有启用额外友军团队列表时才使用双列表(A+B)。校准模式不启动治疗扫描。",
         fontSize = 9, tone = "accent", overflow = "wrap", maxLines = 3,
-        slot = { size = "auto", minHeight = 32, hAlign = "fill" } }) -- 中文维护注释：校准状态文本只保留三行所需高度，内容与校准模式语义不变。
+        slot = { size = "auto", minHeight = 32, hAlign = "fill" } }) -- 校准状态文本只保留三行所需高度，内容与校准模式语义不变。
     RSUI:Text({ id = "v3_healer_calibration_help", parent = bodyStack,
         text = "拖动四个区域与游戏团队框对齐；颜色、低血/紧急阈值、显示效果在“战斗显示”和“高级编辑”中设置。真正运行时只显示团队颜色模块，不创建推荐名单悬浮窗。",
         fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 4,
-        slot = { size = "auto", minHeight = 40, hAlign = "fill" } }) -- 中文维护注释：帮助文本按四行预算收紧，避免说明区成为页面主视觉。
+        slot = { size = "auto", minHeight = 40, hAlign = "fill" } }) -- 帮助文本按四行预算收紧，避免说明区成为页面主视觉。
 
     local function SetAdvancedVisibility(component, visible)
         if component ~= nil and type(component.SetVisibility) == "function" then component:SetVisibility(visible and "visible" or "collapsed") end
@@ -771,7 +767,7 @@ local function BuildPage(parent, route)
         S.Events:UnsubscribeInternalOwner(self)
         local topics = { "v3.healer.updated", "v3.healer.settings", "v3.healer.presentation", "v3.team_roster.updated" }
         for _, topic in ipairs(topics) do
-            local topicRef = topic -- Lua 5.1: bind each generic-for value.
+            local topicRef = topic -- Lua 5.1：为每个 generic-for 值绑定独立局部变量。
             local ok = S.Events:SubscribeInternal(topicRef, self, function()
                 root:Refresh(topicRef == "v3.healer.settings" or topicRef == "v3.healer.presentation")
             end)

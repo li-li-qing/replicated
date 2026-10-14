@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 实时契约状态测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 2026-09-30，live-contract-state-1：实机两个误报的真实状态回归。
 -- 只在 tools 运行，不进入 TOC。加载真实 Boss Feature、Buff Store/Feature/目录、
 -- UI 声明和 FoundationGate；仅 Native、磁盘、宿主时钟与观察事实使用离线替身。

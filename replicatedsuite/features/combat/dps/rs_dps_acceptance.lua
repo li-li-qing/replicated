@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - DPS Acceptance
+-- Replicated Suite · 伤害与治疗统计契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- DPS 契约验收。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -9,7 +13,7 @@ if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return 
 
 local function Fail(message) return false, tostring(message or "dps_acceptance_failed") end
 
--- 维护（2026-09-30）：缺失实现也必须注册失败证据；仅这一只读声明/健康检查进入玩家诊断。
+-- 缺失实现也必须注册失败证据；仅这一只读声明/健康检查进入玩家诊断。
 -- 后续技能归属等序列会清空统计，保持未声明 runtime，绝不能混入诊断。
 G:RegisterSequenceCase("v3_m16_dps_shared_analytics_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
@@ -137,8 +141,7 @@ G:RegisterSequenceCase("v3_m16_dps_skill_proxy_source", function()
         local h = F2.Domain:GetHealth()
         if tonumber(h.proxySourceHeals) ~= 1 or tonumber(h.proxySourceHealAmount) ~= 1500000 then return Fail("proxy_diagnostic_missing") end
         if fake.kinds["治愈之泉"] ~= nil or fake.records ~= 0 then return Fail("proxy_polluted_relation") end
-        -- A real player-source heal that uses the same verified ability remains a
-        -- normal player contribution; only the proxy source identity is filtered.
+        -- 使用同一已核实 ability 的真实玩家治疗仍计入正常玩家贡献；仅过滤代理来源身份。
         F2.Domain:OnCombatFact({sequence=9002,receivedAt=1001,category="heal",kind="heal",amount=321,sourceName="MePlayer",targetName="TeamMate",sourceKind="PLAYER",targetKind="PLAYER",abilityName="治愈之泉",rawAbilityId=11948,environmental=false,transport="private"})
         p = F2.Domain:GetProjection({mode="PVE",side="friendly",metric="heal",displayRows=150})
         local playerSeen = false
@@ -194,10 +197,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
     local liveRelation = S.Services and S.Services.CombatRelationV3 or nil
     if type(F2) ~= "table" or type(F2.Domain) ~= "table" or type(liveRelation) ~= "table" then return Fail("precondition") end
 
-    -- Classification acceptance must be hermetic. Earlier versions seeded manual
-    -- marks and kinds into the live CombatRelation service; any failed assertion
-    -- could leak test identities into the running session. Swap in a tiny fake
-    -- relation Authority for the duration of this case and restore unconditionally.
+    -- 分类验收必须隔离；本场景暂换为小型虚假 CombatRelation 权威，并无条件恢复，防止失败断言把测试身份泄漏到实机会话。
     local fake = { relations = {}, kinds = {}, nextRelationChanged = false }
     function fake:ApplyManual(name, relation) self.relations[tostring(name or "")] = tostring(relation or "UNKNOWN"); return true end
     function fake:ClearManual(name) self.relations[tostring(name or "")] = nil; return true end
@@ -230,7 +230,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
     end
 
     S.Services.CombatRelationV3 = fake
-    F2.enabled = true -- Domain unit test only; do not acquire the live bus.
+    F2.enabled = true -- 仅做 Domain 单元测试，禁止获取实时 bus。
     F2.Domain:ClearStats("acceptance")
 
     local function Run()
@@ -255,9 +255,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
             }
         end
 
-        -- Outgoing PVE, outgoing/incoming PVP, and friendly healing are independent
-        -- contributions. Incoming damage must land in target.taken rather than being
-        -- accidentally folded into the source's outgoing damage.
+        -- 输出 PVE、输出/承受 PVP 和友方治疗独立计贡献；承受伤害必须进入 target.taken，不能归入来源输出伤害。
         F2.Domain:OnCombatFact(Fact("MePlayer", "OrcMob", "damage", 1100, "PLAYER", "NPC"))
         F2.Domain:OnCombatFact(Fact("MePlayer", "RivalPlayer", "damage", 50, "PLAYER", "PLAYER"))
         F2.Domain:OnCombatFact(Fact("RivalPlayer", "MePlayer", "damage", 30, "PLAYER", "PLAYER"))
@@ -280,9 +278,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
         if (pvpFriendly.totals and tonumber(pvpFriendly.totals.taken) or 0) ~= 30 then return Fail("incoming_taken_missing") end
         if (pvpEnemy.totals and tonumber(pvpEnemy.totals.damage) or 0) ~= 30 then return Fail("enemy_damage_missing") end
 
-        -- An inferred OPPONENT is not a trusted anchor for assigning the other
-        -- endpoint to friendly. Enemy -> neutral/NPC traffic is common in the
-        -- global stream and must not manufacture fake friendly taken rows.
+        -- 推断 OPPONENT 不能作为给另一端判友方的可信锚点；全局流常见敌人攻击中立/NPC，禁止制造虚假友方承伤记录。
         fake:ApplyKind("NeutralVictim", "NPC")
         F2.Domain:OnCombatFact(Fact("RivalPlayer", "NeutralVictim", "damage", 41, "PLAYER", "NPC", "旁观攻击", 8001))
         local neutralFriendly = F2.Domain:GetProjection({ mode = "PVE", side = "friendly", metric = "taken", displayRows = 150 })
@@ -290,9 +286,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
         if (neutralFriendly.totals and tonumber(neutralFriendly.totals.taken) or 0) ~= 0 then return Fail("opponent_inferred_fake_friendly") end
         if (neutralUnknown.totals and tonumber(neutralUnknown.totals.taken) or 0) < 41 then return Fail("neutral_target_not_retained") end
 
-        -- Relation evidence established by a later combat row must request a
-        -- safe-point replay of older pending facts. The hot callback only returns
-        -- metadata; the Feature's 160ms one-shot performs the bounded replay.
+        -- 后续战斗行建立关系证据时，应请求在安全点重放旧 pending 事实；热回调只返回元数据，由 Feature 的 160ms 一次性任务有界重放。
         fake:ApplyKind("LateEnemy", "PLAYER")
         fake:ApplyKind("LateNeutral", "NPC")
         F2.Domain:OnCombatFact(Fact("LateEnemy", "LateNeutral", "damage", 19, "PLAYER", "NPC", "迟到证据", 8002))
@@ -310,9 +304,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
         end
         if lateSeen ~= true then return Fail("relation_change_old_fact_not_reclassified") end
 
-        -- Cross-world identities are distinct Authorities. Two explicitly
-        -- qualified players with the same base name must never collapse into one
-        -- ranking row; short-name ambiguity may remain separate until verified.
+        -- 跨服身份独立；同基本名但明确带不同服限定的玩家不能合并排行，短名歧义核实前可以分开保留。
         fake:ApplyManual("Twin@WorldA", "OPPONENT")
         fake:ApplyManual("Twin@WorldB", "OPPONENT")
         fake:ApplyKind("Twin@WorldA", "PLAYER")
@@ -326,9 +318,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
         end
         if crossSeen["Twin@WorldA"] ~= 11 or crossSeen["Twin@WorldB"] ~= 13 then return Fail("cross_world_actor_collision") end
 
-        -- Regression: Lua `a and b or c` is not a nil-safe ternary. SELF attacking
-        -- a relation-known but kind-unknown target must be immediate provisional
-        -- PVE, never fall back to sourceKind=PLAYER and become false PVP.
+        -- 回归约束：Lua a and b or c 不是 nil 安全三元式。SELF 攻击关系已知、kind 未知目标应立即暂定 PVE，禁止回退到 sourceKind=PLAYER 误判 PVP。
         fake:ApplyManual("FirstHitNpc", "OPPONENT")
         F2.Domain:OnCombatFact(Fact("MePlayer", "FirstHitNpc", "damage", 88, "PLAYER", nil, "首击测试", 9001))
         local firstHitPVE = F2.Domain:GetProjection({ mode = "PVE", side = "friendly", metric = "damage", displayRows = 150 })
@@ -343,8 +333,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
         local firstHitAfter = F2.Domain:GetProjection({ mode = "PVE", side = "friendly", metric = "damage", displayRows = 150 })
         if (firstHitAfter.totals and tonumber(firstHitAfter.totals.damage) or 0) ~= 1188 then return Fail("first_unknown_npc_replay_changed_total") end
 
-        -- Detail ledger must follow the same contribution/replay authority as the
-        -- ranking. It is bounded per actor and contains no borrowed CombatFact.
+        -- 详情账本与排行共用贡献/重放权威；每角色有界，禁止持有借用 CombatFact。
         fake:ApplyManual("DetailNpc", "OPPONENT")
         fake:ApplyKind("DetailNpc", "NPC")
         F2.Domain:OnCombatFact(Fact("MePlayer", "DetailNpc", "damage", 120, "PLAYER", "NPC", "烈焰斩", 9101))
@@ -363,8 +352,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
         if skillIds["烈焰斩"] ~= 9101 or skillIds["穿刺"] ~= 9102 then return Fail("detail_skill_id") end
         if counterpartAmounts["DetailNpc"] ~= 240 then return Fail("detail_counterpart_amount") end
 
-        -- MELEE_DAMAGE reuses rawAbilityId as amount on RU and must never expose
-        -- that value as a fake skill id in player drill-down.
+        -- RU MELEE_DAMAGE 将 rawAbilityId 复用于伤害量，玩家技能详情不能将其当作技能 ID。
         fake:ApplyManual("MeleeNpc", "OPPONENT");fake:ApplyKind("MeleeNpc", "NPC")
         F2.Domain:OnCombatFact(Fact("MePlayer", "MeleeNpc", "damage", 17, "PLAYER", "NPC", "普通攻击", 777777, "melee_damage"))
         local meleeDetail=F2.Domain:GetActorDetail({mode="PVE",side="friendly",metric="damage",actorKey=selfKey,limit=100})
@@ -377,8 +365,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
         if tostring(takenProjection.metric) ~= "taken" or #takenProjection.rows < 1
             or (tonumber(takenProjection.rows[1].metricValue) or 0) < 1100 then return Fail("metric_taken_projection") end
 
-        -- Display cap is projection-only. Give each NPC a verified kind so every row
-        -- is authoritative PVE and the underlying enemy actor count must exceed 3.
+        -- 显示上限仅用于投影；各 NPC 有核实 kind，均为权威 PVE，底层敌方角色数应超过 3。
         for index = 1, 200 do
             local name = "OrcMob_" .. tostring(index)
             fake:ApplyManual(name, "OPPONENT")
@@ -389,15 +376,14 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
         if #capped.rows > 3 then return Fail("display_cap_violated") end
         if (capped.totals and capped.totals.actorCount or 0) <= 3 then return Fail("accumulation_capped") end
 
-        -- Unknown facts are retained rather than silently discarded.
+        -- 未知事实必须保留，禁止静默丢弃。
         F2.Domain:OnCombatFact(Fact("MysteryA", "MysteryB", "damage", 77, nil, nil))
         local unresolved = F2.Domain:GetProjection({ mode = "PVE", side = "friendly", displayRows = 150 }).unresolved
         if type(unresolved) ~= "table" or (unresolved.totals and unresolved.totals.damage or 0) < 77 then
             return Fail("unresolved_data_dropped")
         end
 
-        -- Resolved PVE with no side evidence must stay visible in the side-unknown
-        -- bucket instead of disappearing between the friendly/enemy projections.
+        -- 已解析 PVE 但无阵营证据时，保留在 side-unknown 桶，不能在友方/敌方投影间消失。
         fake:ApplyKind("SideUnknownNpcA", "NPC")
         fake:ApplyKind("SideUnknownNpcB", "NPC")
         F2.Domain:OnCombatFact(Fact("SideUnknownNpcA", "SideUnknownNpcB", "damage", 33, "NPC", "NPC"))
@@ -407,17 +393,14 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
             return Fail("side_unknown_inspection_events_missing")
         end
 
-        -- Enabled/Demand lifetime and statistics lifetime are separate. Stopping
-        -- collection releases replay/segment state but must not erase the session.
+        -- Enabled/Demand 生命周期与统计生命周期独立；停止采集释放 replay/segment 状态，但不能清除会话统计。
         local beforeReset = F2.Domain:GetProjection({ mode = "PVE", side = "friendly", metric = "damage", displayRows = 150 })
         local beforeResetDamage = beforeReset.totals and tonumber(beforeReset.totals.damage) or 0
         F2.Domain:ResetTransient("acceptance_preserve")
         local afterReset = F2.Domain:GetProjection({ mode = "PVE", side = "friendly", metric = "damage", displayRows = 150 })
         if (afterReset.totals and tonumber(afterReset.totals.damage) or 0) ~= beforeResetDamage then return Fail("transient_reset_erased_stats") end
 
-        -- Replay ledger is truly bounded: stale array slots may not grow forever
-        -- after the 512 active-row cap is reached. Repeated unknown events use the
-        -- same actors so the stress case measures replay storage rather than rows.
+        -- 重放账本必须真实有界：达到 512 活动行后，陈旧数组槽不能持续增长；压力用例复用角色，以衡量重放存储而非排行行数。
         for index = 1, 520 do
             F2.Domain:OnCombatFact(Fact("StressUnknownA", "StressUnknownB", "damage", 1, nil, nil, "未知技能", 0))
         end
@@ -429,10 +412,7 @@ G:RegisterSequenceCase("v3_m15_3_dps_classification", function()
             if row.fact ~= nil then return Fail("borrowed_fact_retained") end
         end
 
-        -- Provisional rows are visible immediately but must not mutate the
-        -- committed DPS activity clock before classification is final. Otherwise
-        -- moving a late-known player hit from PVE to PVP leaves ghost time in PVE
-        -- and permanently depresses DPS even though the damage was rolled back.
+        -- 暂定行立即可见，但分类确定前不能修改已提交 DPS 活动时钟；否则后续玩家命中从 PVE 转 PVP 时，伤害回滚仍留下 PVE 幽灵时长，永久压低 DPS。
         F2.Domain:ClearStats("acceptance_replay_clock")
         fake:ApplyManual("ClockNpc", "OPPONENT")
         fake:ApplyKind("ClockNpc", "NPC")

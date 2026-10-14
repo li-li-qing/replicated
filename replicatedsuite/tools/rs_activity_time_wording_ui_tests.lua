@@ -1,4 +1,10 @@
--- Offline presentation contract: player-facing activity copy must not leak internal schedule terminology.
+------------------------------------------------------------------------
+-- Replicated Suite · 活动时间文案界面测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 离线表现契约：玩家看到的活动文案不能泄露内部调度术语。
+------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, why = xpcall(fn, debug.traceback)

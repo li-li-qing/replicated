@@ -1,5 +1,7 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Presentation Host Adapter
+-- Replicated Suite · 应用宿主适配
+-- 作者：Replicated
+-- QQ群：1104129461
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -7,10 +9,7 @@ local H = S.UIHostManager
 local Shell = S.UIV3 and S.UIV3.Shell or nil
 if type(H) ~= "table" or type(H.Register) ~= "function" or type(Shell) ~= "table" then return end
 
--- Keep the V3 adapter available even when a hot-reload generation finds the
--- host already registered. Sequence/diagnostic modules load after this file and
--- must not lose their runtime adapter merely because HostManager preserved the
--- existing registration.
+-- 热重载发现宿主已注册时仍须保留 V3 适配器；序列/诊断模块稍后加载，不能因为 HostManager 保留注册而丢失运行适配器。
 S.UIV3Host = S.UIV3Host or { version = 1, shell = Shell }
 S.UIV3Host.version = 1
 S.UIV3Host.shell = Shell
@@ -30,8 +29,7 @@ function V:ApplyLayout(fromMetricsChange) return self.shell:ApplyLayout(fromMetr
 function V:RefreshData(dirty) return self.shell:RefreshData(dirty) end
 function V:HideAll() return self:Close() end
 
--- A preserved HostManager registration already points at the same Shell
--- contract. Do not register a duplicate, but keep S.UIV3Host above alive.
+-- 保留的 HostManager 注册已指向相同 Shell 契约；不重复注册，但须保留上方 S.UIV3Host。
 if H:IsRegistered("v3") then return end
 
 local host, err = H:Register("v3", {

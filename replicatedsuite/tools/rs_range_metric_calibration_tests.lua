@@ -1,6 +1,12 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 距离度量校准测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 中文维护回归（2026-09-15）：范围辅助的“米”必须以 X2Unit:UnitDistance 为事实 Authority，
 -- 世界坐标仅作为几何载体；EasyPull Camera fallback 若与 Native Screen 的焦距尺度不一致，
 -- 只能在玩家 Native 锚点周围做整批等比校准，禁止写死倍率或逐点猜测。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = pcall(fn)
@@ -17,7 +23,7 @@ local nowMs = 1000
 local screenW, screenH = 1920, 1080
 local targetWorldX = 60
 local targetDistanceMeters = 30
-local nativeTargetX = 1365 -- Camera math gives 1284, so Native vector is exactly 1.25x.
+local nativeTargetX = 1365 -- 相机计算结果为 1284，原生向量恰为其 1.25 倍。
 local callCounts = {}
 
 X2Unit = {
@@ -96,16 +102,16 @@ Test('stable calibration is throttled and keeps bounded samples',function()
     nowMs=2600
     local b=P:GetRangeMetricCalibration({anchorUnit='player',targetUnit='target',anchorWorld={x=0,y=0,z=0},worldZOffset=0.25,intervalMs=500})
     assert(b.worldSampleCount==2,'second world sample missing')
-    -- bounded median/average-of-middle for [2.0, 2.2]
+    -- 对 [2.0, 2.2] 求有界中位数，偶数样本取中间两值平均。
     Near(b.worldUnitsPerMeter,2.1,0.0001,'stable world median')
 end)
 
 Test('projection context change invalidates screen scale but not world scale',function()
     nowMs=3200; screenW=1280; screenH=768
-    -- Camera projected lateral delta = 230.4 for x=60 at this viewport; Native delta 253.44 => 1.1x.
+    -- 当前视口下 x=60 的相机横向投影差为 230.4；原生差值 253.44 对应 1.1 倍。
     nativeTargetX=640+253.44
     targetWorldX=60; targetDistanceMeters=30
-    -- Native player coordinate must follow viewport too.
+    -- 原生玩家坐标也必须随视口变化。
     X2Unit.GetUnitScreenPosition=function(self,token)
         if token=='player' then return 640,384,1 end
         if token=='target' then return nativeTargetX,384,1 end
@@ -155,8 +161,8 @@ Test('aspect-safe camera normalizes non-unit camera direction before range calib
     Near(sample.projectionScale,1.2,0.0001,'aspect-safe projection scale')
 
     local projected,source,facts=P:ProjectWorldBatch({
-        {x=10,y=0,z=0.25}, -- camera-right offset
-        {x=0,y=0,z=10.25}, -- camera-up offset
+        {x=10,y=0,z=0.25}, -- 沿相机右向偏移。
+        {x=0,y=0,z=10.25}, -- 沿相机上向偏移。
     },{easyPullCompat=true,rigidBatch=true,aspectSafeCamera=true,anchorUnit='player',anchorWorld={x=0,y=0,z=0.25}})
     assert(source=='easypull_camera','expected camera fallback, got '..tostring(source))
     assert(facts.aspectSafeCamera==true,'batch did not report aspect-safe camera')
@@ -185,7 +191,7 @@ Test('missing target fails closed to existing calibrated/default values without 
     local result=P:GetRangeMetricCalibration({anchorUnit='player',targetUnit='target',anchorWorld={x=0,y=0,z=0},worldZOffset=0.25,intervalMs=250,forceSample=true})
     Near(result.worldUnitsPerMeter,before,0.0001,'missing-target retained world scale')
     assert(result.lastSample and result.lastSample.worldScaleStatus~='accepted','missing target invented an accepted world sample')
-    -- restore stubs for following projection test
+    -- 恢复测试替身，供后续投影用例使用。
     targetWorldX=oldWorld or 60; targetDistanceMeters=targetDistanceOld or 30; nativeTargetX=nativeOld or 1365
     X2Unit.GetUnitWorldPositionByTarget=function(self,token,isLocal)
         if token=='player' then return 0,0,0,0 end
@@ -209,7 +215,7 @@ Test('camera fallback applies one rigid metric screen scale around native player
     })
     assert(source=='easypull_camera','expected camera fallback, got '..tostring(source))
     assert(type(projected[1])=='table' and projected[1].visible==true,'point not visible')
-    -- Raw camera delta is 54 px at 1920x1080/FOV90. Translation aligns player, then 2x scale => 108 px.
+    -- 1920×1080、FOV90 时，相机原始差值为 54px；平移对齐玩家后再按 2 倍缩放，应得到 108px。
     Near(projected[1].x,1068,0.01,'scaled screen x')
     Near(projected[1].y,540,0.02,'scaled screen y')
     assert(facts.metricScreenScaleStatus=='applied','metric screen scale not reported applied: '..tostring(facts.metricScreenScaleStatus))

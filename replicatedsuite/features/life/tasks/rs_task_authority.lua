@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Task Tracker Authority
+-- Replicated Suite · 任务追踪业务权威
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation projection for curated daily/weekly quest groups. It owns no
--- gameplay truth: QuestProgressService V3 is the only quest-state reader, while
--- Task Store owns the user's tracking choices.
+-- 为人工整理日常/周常组提供表现投影；不拥有 Gameplay 事实。QuestProgressService 是唯一任务状态读取者，Task Store 拥有用户追踪选择。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -38,7 +38,7 @@ local function CurrentServerDateKey()
         local value = IsoDateKey(S.Utils.ServerDateKey())
         if value ~= nil then return value end
     end
-    -- 中文维护注释：优先使用统一的 S.Utils.GetServerTime() 回退，保持全插件时钟采样口径一致。
+    -- 优先使用统一的 S.Utils.GetServerTime() 回退，保持全插件时钟采样口径一致。
     if S.Utils ~= nil and type(S.Utils.GetServerTime) == "function" then
         local t = S.Utils.GetServerTime()
         if type(t) == "table" then

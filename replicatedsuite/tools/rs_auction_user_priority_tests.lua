@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 拍卖用户优先级测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 维护（2026-09-30，auction-user-priority-1）：实际加载共享服务，不模拟修复逻辑。
 -- Native 窗口/网络回包/时钟只作为外部边界替身；同一套用例必须先在旧基线失败。
 -- 不进入 toc.g；离线通过不能证明 RU 服务器已发送请求可以撤回。
@@ -90,7 +94,7 @@ local function Boot()
         end,
     }
     _G.X2Auction = {}
-    -- toc.g order: Query and Queue load BEFORE Surface. Guard lookups must be runtime-local, not captured nil.
+    -- toc.g 中 Query 和 Queue 先于 Surface 加载；保护条件必须在运行时读取对象，不能捕获加载期的 nil。
     dofile("services/rs_auction_query_v3.lua")
     dofile("services/rs_price_quote_queue_v3.lua")
     dofile("services/rs_auction_surface_v3.lua")
@@ -311,7 +315,7 @@ end)
 
 Test("cancel before takeover cannot resurrect a watcherless fallback", function()
     local h = Boot(); assert(h:quote("trade:1", 101)); h:untilSearch()
-    h.queue:CancelRequester("trade:1") -- in-flight owner must initially stay until settlement
+    h.queue:CancelRequester("trade:1") -- 请求尚未结束时必须保留其 owner，直至结算完成。
     h:open(); h:advance(20000)
     Eq(h.queue.running, false, "watcherless pause releases recurring lane")
     Eq(h.queue.pending, nil); Eq(#h.deliveries, 0)

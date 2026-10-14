@@ -1,19 +1,18 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Utilities
--- Author: Replicated
+-- Replicated Suite · 通用安全工具
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 通用工具。
 ------------------------------------------------------------------------
-
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.Utils = {}
 local U = S.Utils
 
--- SafeNumber/FormatMoney/... below are rs_utils-owned helpers. Clamp/Trim/
--- DeepCopy/TableCount were historically defined here too, but core/rs_reuse.lua
--- (loaded right after this file in toc.g) re-exports its authoritative
--- implementations onto S.Utils.*, so the local copies were dead code and have
--- been physically removed.
+-- 下方 SafeNumber/FormatMoney 等归 rs_utils；Clamp/Trim/DeepCopy/TableCount 的权威实现由紧接加载的
+-- core/rs_reuse.lua 重新导出到 S.Utils.*，本地死副本已物理移除。
 
 function U.SafeNumber(value, fallback)
     local n = tonumber(value)
@@ -21,14 +20,10 @@ function U.SafeNumber(value, fallback)
     return n
 end
 
--- 中文维护注释（统一装备分数解析，2026-09-11）：
--- 问题原因：RU API UnitGearScore(unit, comma) 的第二参数控制千分位显示，不是 target 标志。
--- 本周更新后格式化返回可能成为 "12,345"；旧调用直接 tonumber 会得到 nil。
--- Authority/数据流：此 helper 不读取 API、不缓存业务状态，只把 X2Unit 已返回的事实规范成
--- number；BuffDisplay / RaidReadiness 共用它，避免两个模块的地区格式规则漂移。
--- 兼容边界：支持 number、逗号、ASCII 空白、UTF-8 NBSP 与 thin-space；未知 table/object
--- fail-closed 返回 nil。不能从字符串中“猜”非数字内容，也不能把 0/负数视为有效装分。
--- 性能：只做短字符串替换，由已有低频 equipment/readiness 读取路径调用，禁止放入 Tick 新循环。
+-- UnitGearScore(unit,comma) 第二参控制千分位，不是 target 标志；格式化返回如 "12,345" 不能直接 tonumber。此
+-- 辅助不读 API、不缓存业务状态，只归一化 X2Unit 返回事实为 number，BuffDisplay/RaidReadiness 共用同一地区格
+-- 式规则。支持数字、逗号、ASCII 空白、UTF-8 NBSP/thin-space，未知 table/object 返回 nil，不猜非数字内容，0/
+-- 负数不是有效装分。仅短字符串替换，由既有低频装备/就绪路径调用，不新建 Tick 循环。
 U.GearScoreParseContractVersion = 1
 function U.ParseGearScore(raw)
     local rawType = type(raw)
@@ -92,11 +87,8 @@ function U.ServerDateKey()
     local year = U.SafeNumber(t.year, 0)
     local month = U.SafeNumber(t.month, 0)
     local day = U.SafeNumber(t.day, 0)
-    -- A partially-initialized server-time table (visible right after login or
-    -- during a UI reload) can carry zeroed/out-of-range fields. Fabricating a
-    -- date from them ("0000-00-00", "2026-00-00", "9999-12-31") would let a
-    -- daily-rollover decision fire on a key it cannot trust. Treat them as
-    -- "unknown" instead; the same range rule is used by quest IsoDateKey.
+    -- 登录或 UI 重载中的服务器时间表可能部分初始化，含零或越界字段。不能制造 0000-00-00、2026-00-00、
+    -- 9999-12-31 等不可信日期触发日切，须视为未知；quest IsoDateKey 使用同一范围规则。
     if year < 2000 or year > 2100 or month < 1 or month > 12 or day < 1 or day > 31 then
         return "unknown"
     end
@@ -116,9 +108,7 @@ function U.DayOfWeek(year, month, day)
     local k = year % 100
     local j = math.floor(year / 100)
     local h = (day + math.floor((13 * (month + 1)) / 5) + k + math.floor(k / 4) + math.floor(j / 4) + 5 * j) % 7
-    -- Keep the exact weekday convention used by the supplied RU TimeUntil
-    -- schedule: Sunday=1, Monday=2, ... Saturday=7.  The previous Suite
-    -- conversion used Monday=1 and shifted every weekday-only event.
+    -- 沿用 RU TimeUntil 调度的星期约定：周日=1、周一=2、...、周六=7，不能按周一=1 转换而偏移仅工作日事件。
     return (h + 6) % 7 + 1
 end
 
@@ -130,10 +120,8 @@ function U.ParseProgress(text)
     return nil, nil
 end
 
--- Canonical unit-name normalizer: trims whitespace, lowercases, and strips the
--- world-qualified suffix ("Name@World" -> "name") plus any second-@ segment.
--- Every identity matcher (DPS/plates/roster/healer rebuilds) must use this ONE
--- implementation instead of rolling private copies that drift apart.
+-- 统一单位名归一化：去首尾空白、转小写、移除世界名后缀及第二个 @ 段（Name@World -> name）。
+-- DPS/plates/roster/healer 重建等身份匹配共用唯一实现，不能私建漂移副本。
 function U.NormalizeUnitName(name)
     local text = tostring(name or "")
     text = text:gsub("^%s+", ""):gsub("%s+$", ""):lower()

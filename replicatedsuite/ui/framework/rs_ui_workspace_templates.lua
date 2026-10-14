@@ -1,15 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Workspace Composition Templates v5
+-- Replicated Suite · 工作台组合模板
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Page-level composition helpers built exclusively from existing RSUI
--- primitives. These helpers do NOT become a second layout authority: all
--- geometry is still owned by Horizontal/VerticalBox, UniformGrid and SplitView.
---
--- Goals:
---   * eliminate page-owned copies of the same master/detail/editor scaffolds;
---   * make dense game-addon pages align predictably and share breakpoint math;
---   * preserve strict BuildScope / Diff / lifecycle / persistence boundaries;
---   * stay event/layout driven: zero Tick / OnUpdate / polling.
+-- 页级组合仅用现有原语，几何仍归 Horizontal/VerticalBox、UniformGrid、SplitView，不新增权威。
+-- 消除重复主从/编辑脚手架；密集页共用对齐/断点数学；保留严格 BuildScope/Diff/生命周期/持久边界；事件/布局驱动，无 Tick/OnUpdate/轮询。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -60,8 +55,7 @@ function T.BreakpointPolicy:Resolve(width, spec)
     return "ultrawide", compact, regular, wide
 end
 
--- Shared density policy. Pages may choose a density explicitly, but when they
--- derive it from available width they should all make the same decision.
+-- 统一密度策略；页面可显式选择密度，按宽度推导时应共用决策。
 T.DensityPolicy = { version = 1 }
 function T.DensityPolicy:Resolve(width, requested)
     requested = tostring(requested or "auto"):lower()
@@ -74,15 +68,11 @@ function T.DensityPolicy:Resolve(width, requested)
     return "normal"
 end
 
--- MasterDetail
+-- MasterDetail 主从布局。
 --
--- Returned zones:
---   root   : draggable SplitView
---   master : VerticalBox, filters/list/navigation
---   detail : VerticalBox, selected entity details / inspector
+-- 返回 root：可拖 SplitView；master：筛选/列表/导航 VerticalBox；detail：实体详情/检查器 VerticalBox。
 --
--- The template intentionally does not decide what data is shown. It only owns
--- repeatable Presentation composition and pane geometry.
+-- 模板不决定数据显示，仅负责重复表现组合与分栏几何。
 function T:MasterDetail(spec)
     local ok, err = RequireSpec(spec, { "id", "parent" })
     if not ok then return nil, err end
@@ -129,13 +119,11 @@ function T:MasterDetail(spec)
     }
 end
 
--- InspectorWorkbench
+-- InspectorWorkbench 检查工作台。
 --
--- Desktop composition:
---   [ navigation/tree ] | [ live preview / main canvas ] | [ inspector ]
+-- 桌面布局：导航/树 | 实时预览/主画布 | 检查器。
 --
--- Implemented as two nested SplitViews, so resize behavior, Native geometry
--- writes and divider interaction remain inside existing SplitView Authority.
+-- 两层 SplitView 组合，缩放、Native 几何写和分隔交互均留在既有权威内。
 function T:InspectorWorkbench(spec)
     local ok, err = RequireSpec(spec, { "id", "parent" })
     if not ok then return nil, err end
@@ -204,13 +192,9 @@ function T:InspectorWorkbench(spec)
     }
 end
 
--- ResponsiveInspectorWorkspace
+-- ResponsiveInspectorWorkspace 响应式编辑工作台。
 --
--- Two-zone editor workspace whose content + inspector remain under one stable
--- native parent for their whole lifetime. Wide layouts arrange them side by
--- side; compact layouts keep content full-size and expose the SAME inspector as
--- a right drawer. No Release/rebuild/reparent is performed on breakpoint
--- changes, preserving focus, selection and component identity.
+-- 内容与 Inspector 整个寿命共用稳定 Native 父，宽布局并排，紧凑布局内容全尺寸且同一 Inspector 作右抽屉；断点不 Release/重建/换父，保留焦点、选择、身份。
 function T:ResponsiveInspector(spec)
     local ok, err = RequireSpec(spec, { "id", "parent" })
     if not ok then return nil, err end
@@ -265,12 +249,8 @@ function T:ResponsiveInspector(spec)
     }
 end
 
--- SettingsWorkbench is a semantic MasterDetail preset. The rail is intended for
--- categories/element lists; the detail pane is the sole property editor.
-
--- Pure preflight for the optional durable edit-session boundary. Keeping this
--- validation outside widget construction lets Acceptance/Sequence verify the
--- contract without creating Native widgets.
+-- SettingsWorkbench 是 MasterDetail 语义预设，侧栏放分类/元素列表，详情为唯一属性编辑器；
+-- 可选耐久编辑会话的纯预检独立于构造，使 Acceptance/Sequence 不建 Native 也可验证。
 function T:ValidateLayoutEditorEditSessionSpec(editSessionSpec)
     if editSessionSpec == nil then return true, nil end
     if type(editSessionSpec) ~= "table" then return false, "layout_editor_workspace_edit_session_invalid" end
@@ -288,18 +268,12 @@ function T:ValidateLayoutEditorEditSessionSpec(editSessionSpec)
     return true, nil
 end
 
--- LayoutEditorWorkspace
+-- LayoutEditorWorkspace 布局编辑工作台。
 --
--- Stable-host editor composition:
---   ResponsiveInspector
---   ├─ content: toolbar + Overlay canvas
---   │           ├─ previewHost (caller content)
---   │           └─ LayoutEditorOverlay (selection/guides/gesture)
---   └─ inspector: ScrollBox -> ONE TransformInspector instance
+-- 稳定宿主组合：ResponsiveInspector 下 content 为工具条 + Overlay 画布（previewHost 调用方内容、LayoutEditorOverlay 选择/引导/手势）；
+-- inspector 为 ScrollBox 下唯一 TransformInspector。
 --
--- Single/multi selection never creates two competing inspectors. The same
--- TransformInspector swaps its rect/anchor model binding; anchor fields collapse
--- in multi-select mode while shared SnapSettings remain the same Authority.
+-- 单/多选共用同一 TransformInspector，切换 rect/anchor 绑定；多选折叠锚字段，SnapSettings 仍共用权威。
 function T:LayoutEditor(spec)
     local ok, err = RequireSpec(spec, { "id", "parent" })
     if not ok then return nil, err end
@@ -323,11 +297,7 @@ function T:LayoutEditor(spec)
         return nil, "layout_editor_workspace_component_api_contract_required"
     end
 
-    -- Persistence remains a caller/Feature responsibility. The Workspace only
-    -- creates the Session Authority when the caller supplies the complete
-    -- durable boundary. Supplying no editSession keeps a valid history-only
-    -- editor (Revert/Reset/Apply fail closed); supplying a partial contract is a
-    -- hard error so no page can accidentally invent half-persistent semantics.
+    -- 持久化归调用方/Feature；完整耐久边界才建 Session。无 editSession 为有效仅历史编辑器，Revert/Reset/Apply 拒绝；部分契约硬错误，防止半持久语义。
     local editSessionSpec = spec.editSession
     local editSessionOk, editSessionErr = self:ValidateLayoutEditorEditSessionSpec(editSessionSpec)
     if editSessionOk ~= true then return nil, editSessionErr end
@@ -418,8 +388,7 @@ function T:LayoutEditor(spec)
         padding = spec.toolbarPadding or { left = 6, top = 4, right = 6, bottom = 4 },
         slot = { size = "auto", hAlign = "fill", vAlign = "top" },
     })
-    -- The host is created before the canvas so the command bar keeps a stable
-    -- vertical slot without reparenting when the Workspace changes breakpoint.
+    -- 先宿主后画布，断点变化时命令条保留稳定纵向槽，无需换父。
     local commandHost = RSUI:VerticalBox({
         id = id .. "_command_host", parent = content, gap = 0,
         padding = spec.commandPadding or { left = 6, top = 0, right = 6, bottom = 2 },
@@ -619,9 +588,7 @@ function T:LayoutEditor(spec)
         return true
     end
 
-    -- History replay already passes through Adapter:ApplyHistoryState, so the
-    -- Adapter is current by the time this event fires. Refresh presentation from
-    -- Adapter only; do not re-read Feature state or create another history entry.
+    -- 历史回放已经过 Adapter:ApplyHistoryState，事件时 Adapter 已更新；仅从 Adapter 刷表现，不重读 Feature 或再入历史。
     local historySubscribed = historyModel:Subscribe(historyToken, function(_, reason)
         if workspace == nil or workspace.released == true then return end
         reason = tostring(reason or "changed")
@@ -636,9 +603,7 @@ function T:LayoutEditor(spec)
         local sessionSubscribed = sessionModel:Subscribe(sessionToken, function(_, reason, snapshot, detail)
             if workspace == nil or workspace.released == true then return end
             reason = tostring(reason or "changed")
-            -- Reset/Revert (and their rollback/failure paths) mutate Feature
-            -- Working through the caller callback, bypassing the Adapter by
-            -- design. Re-read source exactly at those explicit command edges.
+            -- Reset/Revert 与回滚/失败通过回调直接改 Feature Working，有意绕 Adapter；仅这些明确命令边界重新读源。
             if reason == "command:revert" or reason == "command:reset"
                 or reason == "command_failed:revert" or reason == "command_failed:reset"
                 or reason == "rebase" then
@@ -698,9 +663,7 @@ function T:LayoutEditor(spec)
         return true
     end
 
-    -- The returned workspace is a semantic facade, while root is the actual
-    -- component lifetime owner. Hook root teardown so callers that release only
-    -- the component tree cannot leak Session/History listeners or model state.
+    -- 返回 Workspace 为语义 facade，root 才是生命周期 owner；挂 root 拆除，防仅释放组件树时泄漏 Session/History 监听器或模型。
     local BaseRootRelease = root.Release
     function root:Release()
         if self.released == true then return 0 end
@@ -731,16 +694,11 @@ function T:SettingsWorkbench(spec)
     return view
 end
 
--- CommandCenter
+-- CommandCenter 命令中心。
 --
--- Structure:
---   header (fixed)
---   status strip / KPIs (auto)
---   situation overview | exception / priority queue (fill)
---   evidence / timeline (optional fixed/auto)
+-- 结构：固定 header；自动状态条/KPI；填充态势概览 | 异常/优先队列；可选固定/自动证据时间线。
 --
--- This template is useful for Raid Readiness, Activities overview and combat
--- mechanic monitoring. It keeps exception-first pages visually consistent.
+-- 供 Raid Readiness、活动概览、战斗机制监控使用，使异常优先页面视觉一致。
 function T:CommandCenter(spec)
     local ok, err = RequireSpec(spec, { "id", "parent" })
     if not ok then return nil, err end

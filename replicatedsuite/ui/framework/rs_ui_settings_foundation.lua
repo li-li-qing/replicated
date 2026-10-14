@@ -1,18 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Settings Page Foundation v3
+-- Replicated Suite · 设置页面组合基础
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Standard composition layer for dense feature settings pages.  It owns no
--- business state and introduces no second layout authority: every surface is
--- built from existing RSUI Vertical/Horizontal/UniformGrid/FormRow/GroupBox/
--- CollapsibleGroup primitives and therefore inherits Measure/Arrange,
--- invalidation, build transactions and Native ownership fences.
---
--- Goals:
---   * consistent feature header / section / style-card / diagnostics hierarchy;
---   * width-driven 1/2-column grids without resolution-specific literals;
---   * responsive setting rows and numeric rows that stack instead of crushing;
---   * diagnostics hidden by default, but still available without a second page;
---   * zero Tick / OnUpdate / polling.
+-- 密集设置页标准组合，无业务状态/第二布局权威；
+-- 复用 Vertical/Horizontal/UniformGrid/FormRow/GroupBox/CollapsibleGroup，继承 Measure/Arrange、失效、构建事务与 Native 所有权边界。
+-- 统一功能表头/区域/样式卡/诊断层级；宽度驱动一/双列，不写分辨率常量；窄设置/数值行堆叠而不挤压；诊断默认隐藏但同页可用；无 Tick/OnUpdate/轮询。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -155,9 +148,7 @@ function F:CreateToggleGrid(spec)
         toggleSpec.parent = self
         if self.settingsCompactToggles == true then
             toggleSpec.width = tonumber(toggleSpec.width) or self.settingsToggleWidth
-            -- UniformGrid owns row/column placement, but the Toggle itself must
-            -- keep its compact desired width. `fill` here recreates the giant
-            -- full-cell bars that SettingsFoundation was introduced to remove.
+            -- UniformGrid 负责位置，但 Toggle 保持紧凑期望宽；不能 fill 成占满单元格的巨大条。
             toggleSpec.slot = toggleSpec.slot or { size = "auto", hAlign = "left", vAlign = "center" }
         else
             toggleSpec.slot = toggleSpec.slot or { size = "fill", fill = 1, hAlign = "fill" }
@@ -169,10 +160,7 @@ end
 
 function F:CreateSection(spec)
     spec = type(spec) == "table" and spec or {}
-    -- Settings sections are hierarchy/layout containers, not nested cards.  The
-    -- old card-inside-card composition produced bright double borders and spent
-    -- scarce 768p height on decoration.  A flat title + optional divider keeps
-    -- the visual hierarchy while StyleCards remain the actual grouped surfaces.
+    -- 设置区为层级/布局容器，不嵌套卡片；平标题与可选分隔保留层级，StyleCard 为实际分组表面，避免双亮边和浪费 768p 高度。
     local root = RSUI:VerticalBox({
         id = Id(spec, "_section"), parent = spec.parent,
         gap = tonumber(spec.gap) or Token("settings.sectionInnerGap", Token("spacing.xs", 4)),
@@ -349,12 +337,8 @@ function F:CreateNumericSetting(spec)
     return RSUI:NumericField(fieldSpec)
 end
 
--- Explicit standard setting used by feature pages whenever the user should get
--- the full slider + exact edit box + Apply affordance. Numeric Slider Contract
--- v2 treats min/max as recommended presentation bounds: an accepted exact value
--- outside that window expands the slider and NumericRangeStore remembers the
--- outward expansion. fixedRange/hard bounds remain explicit safety exceptions.
--- Binding, draft fences and persistence remain single-authority below this layer.
+-- 完整数值设置提供滑块、精确输入、Apply；v2 的 min/max 为推荐表现边界，接受范围外精确值后扩展并由 NumericRangeStore 记忆向外扩展；fixedRange/硬边界须明确。
+-- Binding、草稿、持久化仍归下层单一权威。
 function F:CreateNumericSliderSetting(spec)
     spec = Copy(type(spec) == "table" and spec or {})
     spec.slider = true

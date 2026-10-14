@@ -1,18 +1,10 @@
-
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Trade 详情/收藏契约 Acceptance
+-- Replicated Suite · 贸易助手契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 3 Batch Q（2026-09-29，core-feature-decoupling-1）：本文件承载交易模块的 Feature 侧契约
---（Authority 与自身的多个契约版本下限 + 命令面 + 两个读取函数），原先由
--- core/rs_foundation_gate.lua 的 v3_trade_detail_favorites_contract 直接点名实现表逐条检查；
--- 搬到这里之后 Core 不再认识具体业务 Feature。失败同样是 blocker
---（sequence case 失败 → sequence_harness 检查）。
---
--- 边界：**同一条判定里的 Service / UIV3 契约留在 Foundation**（TradePayoutV3 /
--- MaterialPriceServiceV3 / PriceQuoteQueueV3 / TradeDetailFloatingV3 / LifeM16PagesContract）
--- —— 它们不是 Feature 债。判定与旧版**逐条等价**（下限照搬），外加实现缺失不再静默 return。
---
--- 本文件由脚本从 Foundation 机械生成（避免手抄遗漏），生成后已通过 luac 语法检查。
+-- 验证贸易Feature自身Authority、契约版本下限、命令面及两个读接口；实现缺失不得静默返回，失败为blocker，由sequence_harness报告。
+-- TradePayoutV3、MaterialPriceServiceV3、PriceQuoteQueueV3、TradeDetailFloatingV3、LifeM16PagesContract等Service/UI契约仍归Foundation，不得耦合进Feature检查。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -22,7 +14,7 @@ local F = S.Features and S.Features.Trade or nil
 
 local function Fail(message) return false, tostring(message or "trade_acceptance_failed") end
 
--- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_life_trade_detail_favorites_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if type(F.Authority) ~= "table" then return Fail("authority_missing") end

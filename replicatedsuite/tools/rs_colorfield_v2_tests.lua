@@ -1,5 +1,7 @@
 ------------------------------------------------------------------------
--- Replicated Suite - ColorField V2 regression contracts
+-- Replicated Suite · 颜色输入框测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
 -- 维护说明（2026-09-13）：本组测试固定用户实机暴露出的共享颜色选择器故障：
 -- 1) 顶层 transient Window 跨父级相对锚到页面 Button，在 RU 客户端可能落到 (0,0)；

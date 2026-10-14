@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native Adapter Boundary
+-- Replicated Suite · 原生窗口适配器
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- V3 Presentation must not call Native Geometry directly.  This adapter is the
--- only shell-level creation boundary; all post-creation state is written through
--- DiffRenderer under strict v3:* authority.
+-- V3 表现层不能直接调用原生几何 API；此适配器是 Shell 层唯一创建边界，创建后的全部状态由 DiffRenderer 在严格 v3:* 权威约束下写入。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -36,10 +36,8 @@ local function OptionalNativeAccepted(widget, methodName, ...)
     local args, argc = { ... }, select("#", ...)
     local ok, result = pcall(function() return fn(widget, unpack(args, 1, argc)) end)
     if ok ~= true then return false, true, tostring(result) end
-    -- SetCloseOnEscape(false) / SetWindowModal(false) may return the applied
-    -- boolean state on RU clients. A false return is therefore not proof of
-    -- rejection. Only those boolean false-state policy calls are ambiguous;
-    -- SetUILayer and any future non-boolean policy still fail closed on false.
+    -- RU 的 SetCloseOnEscape(false)/SetWindowModal(false) 可能返回已应用的布尔状态，false 不能证明拒绝；
+    -- 仅这些 false 状态策略调用存在歧义，SetUILayer 及未来非布尔策略返回 false 仍须拒绝。
     if result == false then
         local falseStateSetter = FALSE_STATE_POLICY_SETTERS[tostring(methodName or "")] == true
             and argc >= 1 and args[1] == false
@@ -88,7 +86,7 @@ function A:CreateRootWindow(logicalId, owner, requestedLayer, options)
 
     -- 维护（2026-09-16，v3-root-layer-policy-3）：主 Shell 现在可由 WindowPreferences
     -- 请求 normal/system；其它既有调用若不传 requestedLayer 仍默认 system，避免 Healer overlay
-    -- 等特殊根窗口在本轮被意外降层。Native Escape/Modal 仍由 Adapter 统一治理。
+    -- 等特殊根窗口被意外降层。Native Escape/Modal 仍由 Adapter 统一治理。
     local layerName = tostring(requestedLayer or "system") == "normal" and "normal" or "system"
     local layerOk, layerPresent = OptionalNativeAccepted(window, "SetUILayer", layerName)
     if layerOk ~= true then return RejectRoot(window, owner, "v3 root layer policy rejected:" .. layerName) end
@@ -96,7 +94,7 @@ function A:CreateRootWindow(logicalId, owner, requestedLayer, options)
         if layerName == "normal" then self.metrics.normalLayerApplied = (tonumber(self.metrics.normalLayerApplied) or 0) + 1
         else self.metrics.systemLayerApplied = (tonumber(self.metrics.systemLayerApplied) or 0) + 1 end
     end
-    -- 中文维护：只有主菜单等明确接入 OnHide 清理的根窗口选择 Esc；其它调用保持原策略，不改变战斗/HUD输入层级。
+    -- 只有主菜单等明确接入 OnHide 清理的根窗口选择 Esc；其它调用保持原策略，不改变战斗/HUD输入层级。
     local closeOnEscape=type(options)=="table"and options.closeOnEscape==true
     local escapeOk, escapePresent = OptionalNativeAccepted(window, "SetCloseOnEscape", closeOnEscape)
     if escapeOk ~= true or (closeOnEscape and not escapePresent)then return RejectRoot(window, owner, "v3 root escape policy rejected") end

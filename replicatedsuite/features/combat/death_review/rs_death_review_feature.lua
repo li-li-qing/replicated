@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Death Review Feature
+-- Replicated Suite · 死亡复盘功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Low-cost independent CombatEventBus consumer. Feature Enabled owns the
--- background recording lifecycle; HUD/page visibility never starts DPS or any
--- scope=all combat transport.
+-- 独立低成本 CombatEventBus 消费端。Feature Enabled 控制后台记录生命周期；HUD/页面可见性不能启动 DPS 或 scope=all 战斗传输。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -161,7 +161,7 @@ function F:SetSettingValue(key, value)
     return true
 end
 
--- Persistent Binding uses these Domain-only setters; the Binding owns dirty/save.
+-- 持久化 Binding 使用这些仅 Domain 设置器；dirty/save 归 Binding。
 function F:ApplyAutoShow(value) return self:SetSettingValue("autoShow", value) end
 function F:ApplyWindowMs(value) return self:SetSettingValue("windowMs", value) end
 function F:SetMaxHistory(value)
@@ -176,7 +176,7 @@ function F:DeleteRecord(serial) return self.Authority:DeleteRecord(serial) end
 function F:ClearHistory() return self.Authority:ClearHistory() end
 function F:Refresh(reason) return true end
 
--- Narrow Presentation read model for the shared RSUI window shell.
+-- 共享 RSUI 窗口壳使用的窄 Presentation 读模型。
 function F:GetWidgetWindowState()
     local value = self.State and self.State.widgetWindow or nil
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
@@ -223,7 +223,7 @@ function F:GetProjection(request)
         enabled = runtime ~= nil and runtime.enabled == true or false,
         settings = S.Utils.DeepCopy(self:GetSettings()),
         health = S.Utils.DeepCopy(self:GetHealth()),
-        -- 中文维护：Authority每次创建列表，record由LoadRecord/volatile分支隔离；只转交本次独立投影，避免三遍复制记录。
+        -- Authority每次创建列表，record由LoadRecord/volatile分支隔离；只转交本次独立投影，避免三遍复制记录。
         historyRows = historyRows,
         timelineRows = timelineRows,
         record = record,
@@ -263,7 +263,7 @@ end
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
 
--- 中文维护注释（Phase 3 Batch G，2026-09-29，core-feature-decoupling-1）：把死亡回顾的 health 投影
+-- 把死亡回顾的 health 投影
 -- 注册到 Core 的取值表。原先 core/rs_diagnostics.lua 直接按 id 读取它（属 CORE_FEATURE 债务）；
 -- 现在 Core 只按“用途名”取值，业务 Feature id 只出现在本目录。provider 每次实时调用、不缓存。
 local providers = S.FeatureHealthProviders

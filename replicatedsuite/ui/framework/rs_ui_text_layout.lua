@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Text Layout / Measurement v1
+-- Replicated Suite · 文字尺寸与换行
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- UMG-like text sizing authority for RSUI. This code is only used when text
--- or layout changes; it must never be called from a per-frame Tick loop.
+-- RSUI 文本尺寸权威，仅文本/布局变化时使用，绝不能逐帧 Tick 调用。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -57,11 +58,8 @@ function TextLayout:MeasureWidth(label, text, fontSize)
         local ok, measured = pcall(function() return label.style:GetTextWidth(value) end)
         if ok and tonumber(measured) ~= nil then
             local width = math.max(0, tonumber(measured))
-            -- TextStyle measures the *currently applied native* font. RSUI specs
-            -- store design/base font sizes, while Theme resolves them through the
-            -- active addon/font scale. Compare native-to-native sizes so normal
-            -- Measure sees the real physical text width and ShrinkToFit can probe
-            -- another base size without mutating the widget first.
+            -- TextStyle 测当前已应用 Native 字体；spec 存设计/基础字号，Theme 解析 addon/font scale。
+            -- 按原生字号比较，Measure 获取真实字宽，ShrinkToFit 可试基础字号而不先改控件。
             local applied = tonumber(label.rsAppliedFontSize)
             local requested = tonumber(fontSize) or tonumber(label.rsBaseFontSize)
             local target = ResolveNativeFont(label, requested)
@@ -145,10 +143,7 @@ function TextLayout:Wrap(label, text, width, fontSize, maxLines)
             end
             if best < cursor then best = cursor end
 
-            -- Prefer a natural word boundary for Latin/Cyrillic text. Chinese
-            -- and other scripts without spaces fall back to the exact UTF-8
-            -- character boundary found above, so no language needs a special
-            -- business-level wrapper.
+            -- 拉丁/西里尔文本优先自然词界；中文等无空格文字用精确 UTF-8 字符边界，无需业务语言特例。
             local lineEnd, nextCursor = best, best + 1
             if best < #chars and best > cursor then
                 local breakAt = nil

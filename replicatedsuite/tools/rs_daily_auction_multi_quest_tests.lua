@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Daily Auction multi-quest localized zone regression
+-- Replicated Suite · 每日拍卖多任务测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Self-contained: validates the real Zone static file plus
--- DailyAuctionMaterialsV3 without the heavyweight workspace UI test host.
+-- 每日拍卖多任务与本地化区域回归，自包含加载真实区域静态数据和 DailyAuctionMaterialsV3，不依赖大型工作区 UI 测试宿主。
 ------------------------------------------------------------------------
 local ROOT = "./"
 

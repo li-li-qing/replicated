@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native Object Factory
+-- Replicated Suite · 原生对象构造工厂
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Only Suite-owned widget construction boundary for active V3 code. Visual
--- styling/layout remain RSUI responsibilities; this layer owns raw client
--- object creation and constructor compatibility only.
+-- 活动 V3 的唯一 Suite 控件构造边界；视觉样式和布局归 RSUI，本层只拥有原始客户端对象创建及构造兼容。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite
@@ -34,10 +34,8 @@ local KIND_TO_OBJECT = {
 }
 
 local function ParentOrRoot(parent)
-    -- ArcheRage RU accepts the literal root token reliably, while some builds
-    -- reject the UIParent userdata/object when it is passed back as the parent
-    -- argument to UIParent:CreateWidget(). Normalize both root representations
-    -- here so every top-level primitive gets the same constructor contract.
+    -- ArcheRage RU 可可靠接受字面根 token，但部分版本拒绝 UIParent userdata/object 作为
+    -- UIParent:CreateWidget() parent 参数。此处统一两种根表示，使顶层原语共用构造契约。
     if parent == nil or parent == UIParent or parent == "UIParent" then return "UIParent" end
     return parent
 end
@@ -68,10 +66,8 @@ end
 
 function F:ValidateParent(parent)
     if parent == nil or parent == "UIParent" then return true end
-    -- Never cross into a C++ constructor with an object we already know belongs
-    -- to a rejected component or a previous hot-reload generation.  A Lua pcall
-    -- around CreateChildWidget cannot be relied on to recover from a native
-    -- access violation, so the fence must run before the native call.
+    -- 已知属于被拒组件或旧热重载代际的对象，不能进入 C++ 构造器。CreateChildWidget 的原生访问违规不能依赖
+    -- Lua pcall 恢复，隔离必须在原生调用前执行。
     local okRejected, rejected = pcall(function() return parent.rsUiRegistrationRejected end)
     if okRejected == true and rejected == true then return false, "parent_registration_rejected" end
     local okGeneration, generation = pcall(function() return parent.rsNativeGeneration end)
@@ -110,9 +106,7 @@ function F:ReservePhysicalId(physicalId, kind)
         RecordFactoryFailure("NATIVE_ID_DUPLICATE", physicalId, detail)
         return false, "duplicate native widget identity: " .. tostring(physicalId)
     end
-    -- Reserve before touching the C++ UI registry. If the constructor re-enters
-    -- Suite code, a second attempt still fails closed instead of asking the
-    -- client to resolve duplicate ownership.
+    -- 触碰 C++ UI 登记表前先预留所有权；构造器重入 Suite 时第二次尝试仍失败封闭，不要求客户端解决重复所有权。
     self.liveByPhysical[physicalId] = { kind = tostring(kind or ""), pending = true }
     return true
 end

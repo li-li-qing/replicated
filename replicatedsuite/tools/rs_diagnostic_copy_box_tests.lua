@@ -1,4 +1,10 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 诊断复制框测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 诊断专用复制框契约：验证它不复用普通 Draft/Input LostFocus 生命周期；离线模型不声称 RU 剪贴板 API 存在。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS diagnostic-copy-box '..name)else failed=failed+1;print('FAIL diagnostic-copy-box '..name..': '..tostring(err))end end
 local function Boot()
@@ -63,8 +69,7 @@ Test('telemetry never includes report body',function()
     local S,UI,box,c=Boot();box:SetPageText('SECRET_REPORT_BODY');c.edit.handlers.OnClick();c.edit.handlers.OnLostFocus();local d=box:GetDiagnostics()
     assert(d.text==nil and d.report==nil and d.body==nil and d.textWrites==1 and d.lostFocusNotifications==1)
 end)
--- Native boundary deliberately collapses selection on SetFocus, like the existing
--- ordinary report host. This proves we do not depend on redundant focus being harmless.
+-- 原生边界在 SetFocus 时主动收起选区，与普通报告宿主一致；验证逻辑不依赖重复获取焦点恰好无害。
 Test('repeat click does not replay focus or keyboard while selection belongs to this box',function()
     local S,UI,box,c=Boot();box:SetPageText('PERSIST_SELECTION');box:Activate('page_ready');c.edit:SelectForTest()
     local f,k=c.focus,c.keyboard;assert(c.edit.handlers.OnClick())

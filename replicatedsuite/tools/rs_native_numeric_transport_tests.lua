@@ -1,11 +1,17 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 1 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · 原生数值传输测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 维护（2026-09-12）：Core已支持物理4，未知版本拒绝样本改5；旧精度/破损拒绝断言保持。
 -- 维护：真实取证 fixture + 独立构造的 Native 数值降精度测试。此工具不进 TOC。
 -- Authority：生产 Store/Persistence/API 原样加载；仅存储为内存盘，不代表 RU 客户端实测。
 -- 原始 fixture 没有修改指纹；数值转换模型是对证据的可复现实验，非客户端源码结论。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=pcall(fn)
@@ -30,7 +36,7 @@ local function F32(v)
     local n=v/step;local f=math.floor(n);local r=n-f
     if r>0.5 or (r==0.5 and f%2==1) then f=f+1 end
     local result=sign*f*step
-    -- Lua5.4 harness: Native small integer metadata must print like Lua5.1, not "3.0".
+    -- Lua 5.4 宿主中，原生小整数元数据也必须按 Lua 5.1 输出，不能产生 3.0。
     if result==math.floor(result) then return math.floor(result) end
     return result
 end

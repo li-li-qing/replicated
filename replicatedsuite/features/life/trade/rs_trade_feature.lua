@@ -1,18 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - life_trade Feature Authority
+-- Replicated Suite · 贸易助手功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 2 Step 4（2026-09-28，§24.1 固定顺序第四步）：从 features/life/rs_life_m16_bundle.lua
--- 机械搬迁。只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、UpdateTopic、Demand owner、
--- Commands、Projection shape、ApiDependencies、Scheduler 任务名、Event topic、悬浮窗窗口策略
--- 全部与被搬迁前逐字一致。
---
--- §24.3 红线（随文件搬走，不得借拆分改动）：
---   * 货率 / freshness / payout / MaterialPrice SWR 逻辑冻结；
---   * Store v3.life.trade schema1 与 v3.trade_preferences schema1 冻结；
---   * 售价公式仍唯一由 TradePayoutV3、材料身份由 TradeMaterialIdentityV3、材料报价串行由
---     PriceQuoteQueueV3、材料价格缓存由 MaterialPriceServiceV3 负责，本文件不重新实现它们；
---   * `if ok ~= true then error(err) end` 的注册失败语义保持原样，不顺手重写。
--- 共享装配 helper 来自 features/life/shared/rs_life_slice_factory.lua（toc.g 已保证先加载）。
+-- 独立源码单元保留Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection、ApiDependencies、Scheduler任务名、Event topic与浮窗策略契约。
+-- v3.life.trade与v3.trade_preferences保持schema1；货率、新鲜度、售价及MaterialPrice SWR策略不能借源码整理改变。
+-- 售价唯一由TradePayoutV3、材料身份由TradeMaterialIdentityV3、串行报价由PriceQuoteQueueV3、价格缓存由MaterialPriceServiceV3负责，本文件禁止重新实现。
+-- 注册失败保持if ok ~= true then error(err) end语义；共享装配来自features/life/shared/rs_life_slice_factory.lua，由toc.g保证先加载。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -31,38 +25,36 @@ local Number, Text, Money = LF.Number, LF.Text, LF.Money
 local InstallLifeWidgetContract, PublishFeatureUpdate = LF.InstallLifeWidgetContract, LF.PublishFeatureUpdate
 local RegisterStore, LoadStore, PersistLifeMutation = LF.RegisterStore, LF.LoadStore, LF.PersistLifeMutation
 
--- 中文维护注释：Feature 注册表在更早的 Feature 文件里已经建立；这里保持与搬迁前 bundle 头部
+-- Feature 注册表在更早的 Feature 文件里已经建立；这里保持与搬迁前 bundle 头部
 -- 相同的防御语义，避免本文件被单独加载时因为 S.Features 缺失而中断整个 chunk。
 S.Features = S.Features or {}
-------------------------------------------------------------------------
--- Trade
-------------------------------------------------------------------------
+-- 贸易。
 local Trade = { Id = "life_trade", storeId = "v3.life.trade", preferenceStoreId = "v3.trade_preferences", enabled = false, storeLoaded = false, preferenceStoreLoaded = false }
 S.Features.Trade = Trade
 Trade.UpdateTopic = "v3.life.trade.updated"
 Trade.State = { fromZone = nil, toZone = nil, favorites = {}, sortMode = "ratio", ratioMode = "current", commerceMode = "observe", widgetVisible = false, widgetWindow = nil }
--- 维护（2026-09-23，trade-preferences-split-1）：关注货物/显示模式/自动刷新是新能力，禁止直接扩展
+-- 关注货物/显示模式/自动刷新是新能力，禁止直接扩展
 -- 历史 v3.life.trade schema1。旧 Store 曾有实档指纹恢复桥；把新字段塞进去会让升级用户重新走完整性迁移。
 -- 因此使用独立 schema1 Store，业务路线/收藏/悬浮窗继续由旧 Store Authority 管理。
 Trade.Preferences = { viewMode = "all", trackedProducts = {}, autoRefresh = true, cargoScan = true }
 Trade.Authority = { version = 9, revision = 0, zones = {}, sellableZones = {}, rows = {}, rawRows = {}, selectedKey = nil, status = "idle", error = nil, inFlight = nil, zoneFallback = false, sellableFallback = false, sellableError = nil, commerceSkill = nil, commerceStatus = "idle", commerceName = nil, commerceError = nil }
-InstallLifeWidgetContract(Trade, { defaultWidth = 410, defaultHeight = 306, minWidth = 320, minHeight = 228, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 }) -- 中文维护注释：跑商悬浮窗默认尺寸收敛到紧凑 HUD；只改变 Window policy，货率 Authority/请求生命周期不受影响。
-local TradeWidgetWindowStateBase = Trade.GetWidgetWindowState -- 中文维护注释：保留统一 FloatingSurface 状态读取入口，只在展示边界兼容旧默认尺寸，不改写持久化权威。
-function Trade:GetWidgetWindowState() -- 中文维护注释：跑商悬浮窗使用只读兼容投影，避免为纯 UI 紧凑化引入 Store schema/fingerprint 迁移风险。
-    local state = TradeWidgetWindowStateBase(self) -- 中文维护注释：先交给统一 FloatingSurface policy 归一化位置、透明度、锁定与当前尺寸。
-    if type(state) == "table" and Number(state.width) == 470 and Number(state.height) == 374 then -- 中文维护注释：仅识别历史版本精确默认 470x374，绝不压缩玩家主动保存的其他自定义尺寸。
-        state.width, state.height = 410, 306 -- 中文维护注释：把旧默认展示为新版紧凑尺寸；这里不修改 Trade.State，因此旧存档完整性指纹保持原样。
-    end -- 中文维护注释：结束历史默认尺寸兼容分支。
-    return state -- 中文维护注释：Presentation 只消费兼容后的副本；后续用户真实拖拽/缩放仍由统一 SetWidgetWindowState 持久化。
-end -- 中文维护注释：结束跑商悬浮窗兼容状态读取。
+InstallLifeWidgetContract(Trade, { defaultWidth = 410, defaultHeight = 306, minWidth = 320, minHeight = 228, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 }) -- 跑商悬浮窗默认尺寸收敛到紧凑 HUD；只改变 Window policy，货率 Authority/请求生命周期不受影响。
+local TradeWidgetWindowStateBase = Trade.GetWidgetWindowState -- 保留统一 FloatingSurface 状态读取入口，只在展示边界兼容旧默认尺寸，不改写持久化权威。
+function Trade:GetWidgetWindowState() -- 跑商悬浮窗使用只读兼容投影，避免为纯 UI 紧凑化引入 Store schema/fingerprint 迁移风险。
+    local state = TradeWidgetWindowStateBase(self) -- 先交给统一 FloatingSurface policy 归一化位置、透明度、锁定与当前尺寸。
+    if type(state) == "table" and Number(state.width) == 470 and Number(state.height) == 374 then -- 仅识别历史版本精确默认 470x374，绝不压缩玩家主动保存的其他自定义尺寸。
+        state.width, state.height = 410, 306 -- 把旧默认展示为新版紧凑尺寸；这里不修改 Trade.State，因此旧存档完整性指纹保持原样。
+    end -- 结束历史默认尺寸兼容分支。
+    return state -- Presentation 只消费兼容后的副本；后续用户真实拖拽/缩放仍由统一 SetWidgetWindowState 持久化。
+end -- 结束跑商悬浮窗兼容状态读取。
 local TA = Trade.Authority
--- 维护（2026-09-24，trade-native-callback-lease-1）：SPECIALTY_RATIO_BETWEEN_INFO 是已发 Native 请求的回执，
+-- SPECIALTY_RATIO_BETWEEN_INFO 是已发 Native 请求的回执，
 -- 生命周期不能跟瞬时 UI Consumer 完全绑定。页面切换时 Demand 可能短暂 1->0；旧版此时立即 Unsubscribe + 清 inFlight，
 -- 已被 X2Store 接受的请求随后回调无人接收，下一次打开只能再等一个 Native 窗口。单独的轻量 owner 只持有这一条回执事件；
 -- 装备/跨区等观察事件仍严格随 Consumer 释放。它不主动发请求，不形成后台扫描。
 Trade.nativeRatioEventOwner = { Id = "life_trade.native_ratio_callback" }
 Trade.nativeRatioSubscribed = false
-local TraceInit -- forward declaration: diagnostics ring is used by cargo/equipment helpers defined before its implementation.
+local TraceInit -- 前置声明：cargo/装备助手定义早于诊断环实现，需要先引用它。
 TA.RouteRefreshRetryContractVersion = 3
 TA.SingleFlightLatestRouteContractVersion = 1
 TA.RequestTimeoutContractVersion = 3
@@ -71,7 +63,7 @@ TA.QuerySchedulerContractVersion = 2
 TA.AutoRefreshContractVersion = 3
 TA.AutoRefreshWatchdogContractVersion = 3
 TA.RatioFastPublishContractVersion = 2
--- 中文维护注释（2026-09-26，trade-auto-refresh-runtime-split-1）：自动货率刷新不再伪装成普通页面 Consumer。
+-- 自动货率刷新不再伪装成普通页面 Consumer。
 -- 旧版 auto:trade_ratio 塞进 Trade.Demand 后，会让页面关闭时 consumerCount 永远不归零，连带保活报价订阅、装备观察、
 -- LiveIdentity 等本应属于可见页面的资源；同时 no_consumers 清理边沿也失去真实语义。现在拆成独立轻量 Runtime Owner：
 -- 只持有 1 个低频 Scheduler watchdog、SPECIALTY_RATIO_BETWEEN_INFO 回执和可选跨区事件。Native 查询仍只有 TA:Request
@@ -96,8 +88,7 @@ TA.pendingRoute = nil
 TA.pendingRetryCount = nil
 TA.timedOutFlight = nil
 TA.responseSlaMs = 6500
--- A callback carries no request-id. After a timeout, keep the lane empty briefly so a late callback
--- can be consumed as the timed-out flight instead of being misattributed to the next request.
+-- 回调无 request ID；超时后短暂保持通道空置，让迟到回调归于超时请求，不能误归下一个请求。
 TA.timeoutDrainMs = 2000
 TA.timeoutDrainUntil = tonumber(TA.timeoutDrainUntil) or 0
 TA.lastNativeCooldownMs = tonumber(TA.lastNativeCooldownMs) or 0
@@ -106,14 +97,14 @@ TA.lastResponseTimeoutMs = tonumber(TA.lastResponseTimeoutMs) or 6500
 TA.sellableCache = {}
 TA.lastCompletedRoute = nil
 TA.lastRatioAt = tonumber(TA.lastRatioAt) or 0
--- 维护（2026-09-23，trade-route-session-cache-1）：路线切换受 RU Native 查询冷却限制，且回调没有 request-id，
+-- 路线切换受 RU Native 查询冷却限制，且回调没有 request-id，
 -- 因此不能靠并发“抢跑”来消除等待。这里增加仅本次插件加载有效的路线快照缓存：已经成功查过的路线再次
 -- 选中时立即恢复上一份真实货率，并在后台等合法 Native 窗口刷新。缓存不是服务器 Authority、不写存档，
 -- UI 会继续按 lastRatioAt 显示数据年龄；最多保留 12 条路线，避免长期会话无界增长。
 TA.routeCache = {}
 TA.routeCacheOrder = {}
 TA.routeCacheMax = 12
--- 维护（2026-09-24，trade-auto-refresh-headroom-1）：RU Native 当前实机返回 5000ms 查询窗口。旧版自动刷新也按 5 秒
+-- RU Native 当前实机返回 5000ms 查询窗口。旧版自动刷新也按 5 秒
 -- 紧贴窗口执行，等价于几乎永久占满下一次合法请求机会；用户切收藏/目的地时自然总撞 cooldown。自动刷新仍保持
 -- 足够实时，但至少预留一个完整 Native cooldown 的交互空窗：默认 10 秒，且不低于最近 Native cooldown 的 2 倍。
 -- 用户手动路线/跨区刷新仍是高优先级；这里只调整低优先级后台刷新，不改变服务器 Authority。
@@ -121,12 +112,12 @@ TA.autoRefreshTargetMs = 10000
 TA.autoRefreshCooldownFactor = 2
 TA.autoRefreshWatchIntervalMs = 1000
 TA.autoRefreshDiagnostics = { watchStarts = 0, watchRestarts = 0, staleRestarts = 0, checks = 0, triggered = 0, skippedBusy = 0, skippedFresh = 0, lastCheckAt = 0, lastCheckGapMs = 0, maxCheckGapMs = 0, lastTriggerAt = 0, lastDecision = "idle", lastReason = "" }
--- 维护（2026-09-27，trade-profit-swr-carry-forward-1）：货率 fast-publish 与材料派生 one-shot 分离后，
+-- 货率 fast-publish 与材料派生 one-shot 分离后，
 -- 必须单独观察“是否排上/是否真正执行”。旧诊断只有 fastPublishes/deferredRebuilds，无法区分 no_consumer、
 -- Scheduler 拒绝、任务被替换或预算延迟；本结构只记录 O(1) 调度事实，不扫描任务表、不触发业务读取。
 TA.materialProjectionDiagnostics = { scheduleAttempts = 0, scheduleAccepted = 0, scheduleFailures = 0, runs = 0, lastScheduledAt = 0, lastRunAt = 0, lastReason = "", lastError = nil }
 TA.cargoRescanIntervalMs = 15000
--- 维护（2026-09-23，trade-cargo-native-budget-1）：随身扫描是低优先级后台消费者。即使某个 RU 客户端
+-- 随身扫描是低优先级后台消费者。即使某个 RU 客户端
 -- 对 GetSpecialtyRatioBetween 的数值返回语义发生变化，也至少保持 1 秒 Native 间隔；正常情况下更大的
 -- 服务器返回节流仍优先生效。这样不会因错误把 0/小数值解释成 cooldown 而对几十个目的地形成短时请求风暴。
 TA.cargoMinIntervalMs = 1000
@@ -158,15 +149,11 @@ end
 local TRADE_CONTINENT_ORDER = { west = 1, east = 2, auroria = 3, other = 4 }
 local TRADE_ANCHORS_W = { [1] = true, [5] = true, [8] = true, [20] = true }
 local TRADE_ANCHORS_E = { [4] = true, [12] = true, [17] = true }
--- Official ArcheAge trade-pack demand caps at 130%. Current/full ratio remains
--- a local comparison mode. Commerce proficiency and pack-category multipliers
--- are now restored through TradePayoutV3 from the supplied working implementation;
--- X2Store/X2Ability remain the live fact Authorities.
+-- 官方货包需求上限130%；当前/满比价仅为本地比较模式。Commerce 熟练度与货包分类乘数通过 TradePayoutV3 读取已验证实现；X2Store/X2Ability 仍拥有实时事实。
 local TRADE_FULL_RATIO = 130
 local TRADE_RATIO_MODES = { current = true, full = true }
 local TRADE_COMMERCE_MODES = { observe = true, off = true }
--- Sort modes are a closed set shared by Authority normalization and the
--- page/widget selectors: ratio (default), price, name ([]-prefixed first).
+-- 排序模式为 Authority 与页面/Widget 共用封闭集合：ratio默认、price、name（[]前缀优先）。
 local TRADE_SORT_MODES = { ratio = true, price = true, name = true }
 local TRADE_VIEW_MODES = { all = true, tracked = true, cargo = true }
 local TRADE_COMMERCE_NAMES = { ["Commerce"] = true, ["经商"] = true, ["贸易"] = true, ["Торговля"] = true }
@@ -193,8 +180,7 @@ local function NormalizeTradeZones(value)
             name = row.zoneGroupName or row.name or row[2]
             continent = row.continentName or row.continent
         elseif row == true then
-            -- ArcheRage RU can expose zone groups as a set: { [zoneGroupId] = true }.
-            -- Treat the numeric key as the identity; `true` is membership, never a name.
+            -- RU 地区组可能是 {[zoneGroupId]=true} 集合；数值键才是身份，true 只表示成员，禁止当作名称。
             id = Number(key)
         elseif type(row) == "number" then id = row
         elseif type(row) == "string" then
@@ -234,10 +220,7 @@ local function TradeZoneName(id)
     return id and tostring(id) or "--"
 end
 
--- Route favorites are a local/persisted user preference only.  X2Store remains
--- the sole Authority for whether a route is actually valid and for its live
--- specialty ratio.  Keep the list bounded and store only numeric route ids so
--- localized display names can change without corrupting identity.
+-- 路线收藏仅为本地持久偏好；路线真实有效性与实时特产比价以 X2Store 为唯一权威。列表有界且仅存数值路线 ID，名称本地化变化不能破坏身份。
 function Trade:NormalizeFavorites(value)
     local result, seen = {}, {}
     for _, favorite in ipairs(type(value) == "table" and value or {}) do
@@ -288,7 +271,7 @@ function Trade:GetFavoriteItems()
     return result
 end
 
--- 维护（2026-09-23，trade-focus-mode-1）：服务器 GetSpecialtyRatioBetween 只能按路线整包返回，
+-- 服务器 GetSpecialtyRatioBetween 只能按路线整包返回，
 -- “关注货物”不能伪装成服务端单品查询。这里仅持久化经过核验的 product itemType，随后在本地 Projection
 -- 过滤并只对可见/关注行执行材料身份与成本重投影，从而减少 Live Craft/报价相关工作。最大 128 项，禁止
 -- 把 localized name 当稳定身份；itemType 缺失的行仍可在“全部”查看，但不能写入关注 Store。
@@ -348,26 +331,14 @@ local function TradePrice(destination, name, ratio, commerceSkill, originZoneNam
     })
 end
 
--- Trade material projection is deliberately bounded because the route event is
--- user-triggered but can contain static/custom recipes of arbitrary size.  The
--- same bounded rows are used for the visible summary, per-material quote data,
--- and total cost; a truncated recipe never reports its subtotal as a complete
--- cost.
+-- 用户触发路线事件仍可能含任意大小静态/自定义配方，材料投影必须有界；可见摘要、逐材料报价和总成本共用同一有界行，截断配方不能将小计宣称完整成本。
 local TRADE_MATERIAL_MAX_ROWS = 32
--- 维护（2026-09-25，trade-multi-row-quote-budget-1）：每个 RowJob 可以覆盖该货物全部已解析材料，
+-- 每个 RowJob 可以覆盖该货物全部已解析材料，
 -- 但材料数仍受 32 项硬上限保护；“多个货物同时询价”只增加业务任务/watcher，不增加 Native 并发。
 -- 总同时 RowJob 与批量列表行数在后面的 QuoteJob Orchestrator 继续有界，PriceQuoteQueueV3 还保留 64 项共享队列上限。
 local TRADE_ROW_QUOTE_BATCH_MAX = TRADE_MATERIAL_MAX_ROWS
--- Player-facing Chinese name for an itemType, via the shared Localization
--- Authority. Internal identifiers (English data keys, compact ids, craftType
--- numbers, English legacy recipe names) must never be rendered as a row label:
--- the Suite's users are players on a Chinese RU client. Returns nil only when
--- no localized fact exists, so callers can choose an honest generic wording.
---
--- MAINTENANCE: this helper is file-local by design. `.18.180` accidentally
--- declared it as a global function, which polluted the addon namespace and made
--- Foundation Audit fail even though every caller lives in this bundle. Keep it
--- local; cross-module name resolution belongs to Localization/Identity services.
+-- itemType 中文名来自共享 Localization。英文数据 key、compact ID、craftType 数值与旧英文配方名都是内部标识，禁止作为中文 RU 客户端玩家行标签；无本地化事实才返回nil供调用方诚实降级。
+-- 本助手必须文件局部，避免污染插件全局命名空间；跨模块名称解析归 Localization/Identity 服务。
 local function LocalizedTradeItemName(itemType, fallbackText)
     local id = tonumber(itemType)
     if id ~= nil and S.Localization ~= nil and type(S.Localization.GetName) == "function" then
@@ -375,20 +346,18 @@ local function LocalizedTradeItemName(itemType, fallbackText)
         if type(name) == "string" and name ~= "" and not name:match("^ID%s+%d+$") then return name end
     end
     local text = tostring(fallbackText or "")
-    -- Reject ASCII-only leftovers ("Ground Grain", "Halcyona Preserved Specialty",
-    -- "3") which are internal identifiers rather than player-readable names.
+    -- 拒绝纯 ASCII 残留，例如 Ground Grain、Halcyona Preserved Specialty、3，它们是内部标识，不是玩家可读名。
     if text ~= "" and not text:match("^[A-Za-z0-9_ .%-%+%%:/]+$") then return text end
     return nil
 end
 
 local TRADE_MATERIAL_KEY_MAX_BYTES = 48
--- Table cells hold "name×count" only. These limits are byte budgets because Lua 5.1
--- strings are byte arrays; never cut a localized UTF-8 code point in the middle.
+-- 表格单元格仅放 名称×数量；Lua5.1字符串是字节数组，限制按字节预算，但禁止从中间切断 UTF-8 码点。
 local TRADE_MATERIAL_CELL_MAX_BYTES = 26
 local TRADE_MATERIAL_SUMMARY_ROW_MAX_BYTES = 120
 local TRADE_MATERIAL_SUMMARY_MAX_BYTES = 4096
 
--- 维护（2026-09-23，trade-utf8-boundary-1）：旧 BoundedTradeText 直接 string.sub(text, 1, limit)，
+-- 旧 BoundedTradeText 直接 string.sub(text, 1, limit)，
 -- 中文 3-byte UTF-8 在边界处会被切出无效字节，轻则显示乱码，重则污染原生编辑框/列表文本。Authority 仍只
 -- 负责有界 Projection，不扩大缓存预算；这里按“字节上限”扫描完整 code point，非法/不完整序列直接停在其前。
 -- 该逻辑只在构建材料显示文本时执行，最多扫描 120 bytes，不进入 Tick/高频 Native 查询。
@@ -425,11 +394,7 @@ local function BoundedTradeText(value, fallback, maxBytes)
     return #text > limit and TradeUtf8Prefix(text, limit) or text
 end
 
--- Ingredient identity comes from the curated trade_material record (resolved by
--- EN key or compactId), falling back to what the ingredient row itself carries
--- (live craft rows). The legacy recipe tables store "material.xxx" registry
--- keys while the auction meta table is EN-name keyed — resolve through the
--- record instead of trusting the raw key.
+-- 材料身份优先由整理的 trade_material 记录解析英文 key/compactId，再回退材料行自身事实。旧配方用 material.xxx 注册键，拍卖元表按英文名索引，必须通过记录解析，不能信任裸 key。
 local function ResolveTradeIngredient(static, meta, ingredient)
     local record = nil
     if type(static) == "table" then
@@ -439,8 +404,7 @@ local function ResolveTradeIngredient(static, meta, ingredient)
         if record == nil and type(static.GetMaterialByCompactId) == "function" and tonumber(ingredient.compactId) ~= nil then
             record = static:GetMaterialByCompactId(ingredient.compactId)
         end
-        -- X2Craft fallback material rows can be detached from English/compact keys. ItemID remains the stable
-        -- Authority for curated cost policy, especially bound resources such as Gilda Star (23633).
+        -- X2Craft 回退材料行可不带英文/compact key；整理成本策略仍以 ItemID 为稳定权威，尤其绑定资源 Gilda Star(23633)。
         if record == nil and type(static.GetMaterialByItemId) == "function" and tonumber(ingredient.itemType) ~= nil then
             record = static:GetMaterialByItemId(ingredient.itemType)
         end
@@ -463,15 +427,14 @@ local function BuildTradeMaterialProjection(row)
     row = type(row) == "table" and row or {}
     local name = tostring(row.sourceName or row.name or "")
     local identity = S.Services and S.Services.TradeMaterialIdentityV3 or nil
-    -- 中文维护（222712）：材料记录 accessor 与注册器是两张表，投影必须明确读取前者。
+    -- 材料记录 accessor 与注册器是两张表，投影必须明确读取前者。
     -- 此前 static 未定义，统一资源规则被跳过，绑定货币错误标成可拍卖；所有静态/Live 材料按
     -- EN/compactId/ItemID 共用同一 COST_POLICY，不能只凭 includeInCost 或搜索空结果猜交易性。
     local static = S.Data and S.Data.TradeStaticV2 or nil
-    -- 中文维护注释（2026-10-02）：配方证明统一交给 Identity 服务，避免本层按名字直接取材料
+    -- 配方证明统一交给 Identity 服务，避免本层按名字直接取材料
     -- 绕过商品 ItemID、地区冲突与材料完整性检查；读取仍是静态 O(1)，不增加 Native 扫描。
     local ingredients, recipeLabel
-    -- Diagnostics-only trace (source ids / craftType). Kept off every rendered
-    -- row so pages show Chinese product wording and nothing else.
+    -- 来源 ID/craftType 仅保留诊断追踪，禁止放入渲染行；页面只展示中文产品描述。
     local identityDetail = nil
     local identitySource = nil
     local result = {
@@ -481,18 +444,14 @@ local function BuildTradeMaterialProjection(row)
         boundResourceCount = 0, nonMarketResourceCount = 0, hasUnpricedNonMarket = false,
         identityStatus = "unresolved", recipeLabel = nil, identitySource = nil,
     }
-    -- Layer 2/3 of the identity chain: shared static families and the
-    -- originZone Authority + localized family tail (pure data, no native calls),
-    -- then the live craft cache (read-only peek; native reads run only in the
-    -- identity service's bounded queue).
+    -- 身份链第二/三层：共享静态 family、originZone 权威与本地化家族后缀，均为纯数据；再只读查看实时 craft 缓存，Native 读取仅在身份服务有界队列运行。
     if type(ingredients) ~= "table" and type(identity) == "table" and type(identity.ResolveStatic) == "function" then
         local resolved = identity:ResolveStatic(name, row.originZone, row.itemType)
         if type(resolved) == "table" and type(resolved.rows) == "table" and #resolved.rows > 0 then
             ingredients = resolved.rows
             recipeLabel, identitySource = tostring(resolved.label or "?"), tostring(resolved.source or "static")
             identityDetail = tostring(resolved.source or "static") .. ":" .. tostring(resolved.label or "?")
-            -- The static table is keyed by English legacy recipe names ("Halcyona
-            -- Preserved Specialty"). Prefer the localized product name for display.
+            -- 静态表按旧英文配方名如 Halcyona Preserved Specialty 索引；展示优先本地化产物名。
             recipeLabel = LocalizedTradeItemName(row.itemType, recipeLabel) or recipeLabel
         end
     end
@@ -500,17 +459,15 @@ local function BuildTradeMaterialProjection(row)
         local live = identity:GetCachedLive(row.itemType)
         if type(live) == "table" and type(live.rows) == "table" and #live.rows > 0 then
             ingredients = live.rows
-            -- A craftType number is an internal identifier, never a label. The
-            -- product's own localized name is the only honest player-facing text;
-            -- craftType stays on the diagnostics-only identityDetail field.
+            -- craftType 数值为内部标识，不能作标签；仅产物自身本地化名可展示，craftType 只留诊断 identityDetail。
             recipeLabel = LocalizedTradeItemName(row.itemType, nil) or "配方已识别"
             identitySource = "live"
             identityDetail = "live craftType=" .. tostring(live.craftType or "?")
         end
     end
     if type(ingredients) ~= "table" then
-        -- "解析中" only while the live attempt is still queued/in flight; once
-        -- the attempt terminated (ready-but-empty or failed), say 未匹配.
+        -- 只有实时解析尝试仍在排队/在途时才显示解析中；
+        -- 解析结束（ready但为空或失败）后显示未匹配。
         local liveAttempted = row.itemType ~= nil and type(identity) == "table"
             and type(identity.HasLiveAttempt) == "function" and identity:HasLiveAttempt(row.itemType) or false
         result.identityStatus = (row.itemType ~= nil and not liveAttempted) and "live_pending" or "unresolved"
@@ -536,20 +493,12 @@ local function BuildTradeMaterialProjection(row)
         local materialKey, itemType, itemGrade, includeInCost, auctionable, costKind, materialNote = ResolveTradeIngredient(static, meta, ingredient)
         local unitCost, totalCost, status = nil, nil, "price_pending"
         local quoteState, quoteError = nil, nil
-        -- Provenance is rendered after the pricing branch below, so its lifetime
-        -- must cover the whole ingredient iteration. Do NOT redeclare it inside
-        -- the `itemType ~= nil` branch: Lua block scope would end at `end`, and
-        -- the later detailText read would silently resolve a global named
-        -- `priceProvenance` instead. That exact leak was caught by the full
-        -- Foundation Audit while sealing `.18.188`.
-        -- 修复（2026-09-30，trade-selected-economics-1）：priceMeta 同样必须属于整个材料迭代。
-        -- 旧声明位于 else 子块，构造 materialRows 时已经越过作用域，读到的是同名全局；
-        -- 单价仍参与计算，但来源/缓存年龄/刷新状态全丢失，无法核实可疑毛利。只修复来源投影，
-        -- 不改币值单位、材料数量、缓存策略或售价/毛利公式。
+        -- priceProvenance和priceMeta作用域必须覆盖完整材料迭代：后面的来源/detailText/materialRows读取需要它们。
+-- 禁止仅在itemType分支/else内声明，否则越过end读取同名全局，丢来源、缓存年龄和刷新状态。此处只投影证据，不改币值、材料数量、缓存策略或售价/毛利公式。
         local priceProvenance, priceMeta = nil, nil
 
         if not includeInCost then
-            -- 维护（2026-09-23，trade-bound-resource-cost-1）：绑定资源/非市场凭证仍是配方真实需求，
+            -- 绑定资源/非市场凭证仍是配方真实需求，
             -- 不能因为“不进入金币成本”就被表现成“识别不到材料”。金币小计为 0，但保留 itemType/count/资源类型，
             -- 并禁止进入拍卖询价队列。利润仍可给出“金币口径”，详情明确提示存在未折价资源。
             totalCost = 0
@@ -559,27 +508,16 @@ local function BuildTradeMaterialProjection(row)
         elseif auctionable ~= true then
             complete, status = false, "non_market_unpriced"
         else
-            -- Material identity is a local fact. Price is not: GetLowestPrice is
-            -- cooldown-bound and must never fan out from an ordinary route refresh.
-            -- Instead read the shared PriceQuoteQueueV3 read model: a completed
-            -- quote resolves the unit cost here; an in-flight request renders
-            -- quote_pending; a failed one renders quote_failed with its real
-            -- error instead of an endless 待询价. No server request is issued.
-            -- Three-tier price resolution (user-requested design):
-            --   1. a live quote completed this session        -> "quoted"
-            --   2. otherwise the persisted reference table    -> "quoted_reference"
-            --   3. otherwise pending / failed / never queried -> honest states
-            -- A reference value still costs into the margin (the player asked for a
-            -- usable number immediately), but it is labelled separately everywhere:
-            -- auction listings are manipulable, so an old sample must never be
-            -- presented as current market data.
+            -- 材料身份是本地事实，价格必须从共享PriceQuoteQueueV3读模型获取，普通路线刷新禁止批量GetLowestPrice；完成报价提供单价，在途quote_pending，失败quote_failed带真实error，不能永远待询价。
+-- 价格优先级：本会话已完成报价→quoted；否则持久参考表→quoted_reference；否则明确pending/failed/未查询。
+-- 参考值可参与毛利以立即提供可用估算，但所有展示明确标为参考，旧可操纵拍卖样本不能宣称当前市场数据；此处不发服务器请求。
             local quoteQueue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
             local materialPrices = S.Services ~= nil and S.Services.MaterialPriceServiceV3 or nil
             local quotedPrice = nil
             if type(quoteQueue) == "table" and type(quoteQueue.GetQuoteStateByItemType) == "function" then
                 quoteState = quoteQueue:GetQuoteStateByItemType(itemType, itemGrade)
             end
-            -- 维护（trade-single-quote-1）：七天内已接受单价直接算成本；更旧/无年龄记录为缺价。
+            -- 七天内已接受单价直接算成本；更旧/无年龄记录为缺价。
             -- 正式新服务存在时不回退无年龄 legacy reference，避免将过期价格重新当 fresh。
             if type(materialPrices) == "table" and type(materialPrices.GetTradePrice) == "function" then
                 quotedPrice, priceMeta = materialPrices:GetTradePrice(itemType, itemGrade)
@@ -597,7 +535,7 @@ local function BuildTradeMaterialProjection(row)
             elseif quoteState ~= nil and (quoteState.status == "queued" or quoteState.status == "inflight") then
                 complete, status = false, "quote_pending"
             elseif quoteState ~= nil and (quoteState.status == "failed" or quoteState.status == "blocked") then
-                -- 维护（2026-10-01，auction-full-lane-safety-1）：受阻是明确终态，不回退成无记录/待询价。
+                -- 受阻是明确终态，不回退成无记录/待询价。
                 quoteError = type(quoteState.error) == "string" and quoteState.error or tostring(quoteState.code or "暂未取到报价")
                 complete, status = false, quoteState.status == "blocked" and "quote_blocked" or "quote_failed"
             else
@@ -606,11 +544,7 @@ local function BuildTradeMaterialProjection(row)
         end
         if totalCost ~= nil then total = total + totalCost end
 
-        -- Player-facing text only. `materialKey` is the canonical English data
-        -- key ("Chopped Produce"); showing it to a player on a Chinese client is
-        -- unreadable noise. Resolve through the identity service's display
-        -- resolver (Localization Authority first) and keep the internal key on a
-        -- diagnostics-only field instead of the rendered name.
+        -- 玩家只看可读文本。materialKey 如 Chopped Produce 是标准英文 key，禁止渲染；经身份服务 display resolver 解析，优先 Localization，内部 key 留诊断字段。
         local identityService = S.Services and S.Services.TradeMaterialIdentityV3 or nil
         local displayName = (type(identityService) == "table" and type(identityService.ResolveMaterialDisplayName) == "function"
             and identityService:ResolveMaterialDisplayName({
@@ -623,7 +557,7 @@ local function BuildTradeMaterialProjection(row)
             index = index,
             materialKey = materialKey,
             compactId = tonumber(ingredient.compactId),
-            -- Diagnostics-only: never rendered on a page/HUD row.
+            -- 仅供诊断，禁止在页面/HUD 行渲染。
             internalKey = BoundedTradeText(materialKey, "?", TRADE_MATERIAL_KEY_MAX_BYTES),
             name = BoundedTradeText(displayName or "材料", "材料", TRADE_MATERIAL_KEY_MAX_BYTES),
             count = count,
@@ -648,9 +582,7 @@ local function BuildTradeMaterialProjection(row)
             priceCandidateCount = type(priceMeta) == "table" and tonumber(priceMeta.candidateCount) or nil,
             priceSortUnverified = type(priceMeta) == "table" and priceMeta.sortUnverified == true,
         }
-        -- Compact cell text: name × count only. Per-material price/status detail
-        -- lives on the row fields below (consumed by the detail window and the
-        -- diagnostics panel), not in the scanned table cell.
+        -- 紧凑单元格仅 名称×数量；逐材料价格/状态详情保存在下方行字段，由详情窗/诊断消费，禁止塞入扫描表格单元格。
         row.detailText = row.name .. "×" .. tostring(row.count)
         if status == "bound_resource" then
             row.detailText = row.detailText .. "（绑定资源，不计金币成本）"
@@ -698,8 +630,7 @@ local function BuildTradeMaterialProjection(row)
         local part = row.cellText or row.summaryText
         local nextChars = summaryChars + #part + (#summaryParts > 0 and 3 or 0)
         if nextChars > TRADE_MATERIAL_SUMMARY_MAX_BYTES then
-            -- Keep the collection/cost contract explicit even if a future
-            -- localized material name makes the bounded display too long.
+            -- 未来本地化材料名超出有界展示长度时，仍须明确保留采集/成本契约。
             result.summaryDisplayTruncated = true
             break
         end
@@ -725,7 +656,7 @@ local function BuildTradeMaterialProjection(row)
     return result
 end
 
--- 维护（trade-requote-2）：完整材料投影与货率 fast-publish 共用任务展示，避免10秒货率刷新擦掉本次询价终态。
+-- 完整材料投影与货率 fast-publish 共用任务展示，避免10秒货率刷新擦掉本次询价终态。
 local function ApplyTradeQuoteJobProjection(row)
     -- RowJob 元数据只用于 Presentation 展示进度/按钮状态；材料价格本身由 MaterialPriceServiceV3 Authority 提供。
     local displayJob = type(Trade.quoteJobsByRowKey) == "table" and Trade.quoteJobsByRowKey[tostring(row.key or "")] or nil
@@ -736,14 +667,14 @@ local function ApplyTradeQuoteJobProjection(row)
     row.quoteJobReady = type(displayJob) == "table" and (tonumber(displayJob.ready) or 0) or 0
     row.quoteJobFailed = type(displayJob) == "table" and (tonumber(displayJob.failed) or 0) or 0
     row.quoteJobReason = type(displayJob) == "table" and displayJob.reason or nil
-    -- 维护（trade-requote-2）：已有部分价格不代表全部材料已报价。保留数字，但不能把 active/blocked/failed
+    -- 已有部分价格不代表全部材料已报价。保留数字，但不能把 active/blocked/failed
     -- 隐藏在 profit~=nil 的 ready 分支。所有视图共用本行状态，不清旧价、不伪造0或正利润。
     if row.quoteJobActive then
         if row.profitCopper ~= nil then row.profitStatus = "revalidating" end
         row.profitNote = "正在查询缺失材料价 " .. tostring(row.quoteJobCompleted) .. "/" .. tostring(row.quoteJobTotal)
             .. (row.profitCopper ~= nil and "；当前毛利暂按旧价" or "")
     elseif row.quoteJobState == "blocked" or row.quoteJobState == "failed" or row.quoteJobState == "partial" then
-        -- 维护（auction-full-lane-safety-1）：缺少蓝盐债券等任一材料价时 profitCopper=nil，
+        -- 缺少蓝盐债券等任一材料价时 profitCopper=nil，
         -- 旧代码漏掉该分支，已失败的货物仍显示后台询价。保留未知成本，不把缺价当0或删除真实材料。
         row.profitStatus = row.quoteJobState == "blocked" and "revalidate_blocked" or "revalidate_failed"
         if row.profitCopper == nil then row.profit = row.quoteJobState == "blocked" and "询价受阻" or "部分材料价未知" end
@@ -804,20 +735,16 @@ local function ApplyTradeMaterialProjectionToRow(row)
     row.materialIdentityPending = materialProjection.identityStatus == "live_pending"
     -- 每次投影先清掉上一轮的展示附注，避免 ready -> pending/failed 时复用同一个 row table 留下旧“仅金币成本”提示。
     row.profitNote = nil
-    -- .18.176 RU evidence: GetLowestPrice returns nil for every grade on every
-    -- control itemType (oats/hay/egg included), so a material cost is currently
-    -- unobtainable on this client. "待材料价格" used to imply the number was merely
-    -- pending; say what is actually missing and where the player can still get a
-    -- usable estimate (the sell price and 货率 columns remain real facts).
+    -- RU实机证据：GetLowestPrice对燕麦/干草/鸡蛋等控制itemType所有grade均nil，材料成本无法获得。提示必须说明真实缺口及可估算途径，售价和货率仍是真实事实，不能用待材料价格暗示仅需等待。
     if profit then
         row.profitStatus = "ready"
-        -- 维护（2026-09-25，trade-profit-resource-label-1）：旧版在毛利后追加“*”表示仍有绑定/非市场
+        -- 旧版在毛利后追加“*”表示仍有绑定/非市场
         -- 制作资源未折算金币，但列表没有脚注，用户会误以为是货币/公式异常。紧凑列只显示真实金币口径数字；
         -- 是否“仅金币成本”由结构化 materialCostBasis/profitNote 投影，并在选中提示/详情明确说明。
         row.profit = Money(profit)
         row.profitNote = TradeProfitNote(row)
     else
-        -- 维护（2026-09-23，trade-row-actionable-profit-1）：紧凑列表中的毛利列必须告诉玩家“下一步做什么”。
+        -- 紧凑列表中的毛利列必须告诉玩家“下一步做什么”。
         -- 旧文案“缺材料价（拍卖行无返回）”既过长又像永久故障，且无法解释显式询价模型。这里仅消费已经
         -- 解析好的材料状态，不发 Native 请求；双击行为仍由 Presentation -> QuoteRowMaterials 明确触发。
         local hasQuotePending, hasQuoteFailed, hasQuoteRequired, hasBackgroundPending = false, false, false, false
@@ -829,7 +756,7 @@ local function ApplyTradeMaterialProjectionToRow(row)
             elseif material.costStatus == "explicit_quote_required" then hasQuoteRequired = true end
             if material.priceRefreshing == true then hasBackgroundPending = true end
         end
-        -- 维护（2026-09-25，trade-multi-row-quote-visual-1）：共享 QuoteQueue 的 queued/inflight 是材料事实，
+        -- 共享 QuoteQueue 的 queued/inflight 是材料事实，
         -- 但“询价中”属于 RowJob 用户意图。多货物并行后不能再用一个全局 quoteBatch.rowKey 判断；只有当前行
         -- 自己存在 active RowJob 时才显示询价中。其它行即使共享同一个正在查询的红薯/鸡蛋，也只显示“可询价”，
         -- 直到用户把该行加入任务；底层请求仍会自动合并，不会重复访问服务器。
@@ -867,7 +794,7 @@ local function ApplyTradeMaterialProjectionToRow(row)
     return true
 end
 
--- 维护（2026-09-27，trade-profit-swr-carry-forward-1）：ratio fast-publish 只更新服务器货率/售价事实，
+-- ratio fast-publish 只更新服务器货率/售价事实，
 -- 不得把已经可用的材料成本和毛利清成 nil。材料价格是独立 Authority，上一帧同一路线/同一货物的
 -- 已投影材料快照在新货率到达时仍然有效；这里仅复用当前 Display ReadModel 中的稳定派生字段，并用
 -- 新 priceCopper 重新计算毛利。整个快路径不读取 MaterialPriceService、不发 Auction Native，也不保留
@@ -925,9 +852,7 @@ local function ApplyTradeFastMaterialCarryForward(row, previous)
     return true
 end
 
--- Actionable quote backlog: never-quoted materials plus failed ones the user can
--- retry. In-flight (queued/inflight) materials are NOT counted here; they have
--- their own counter so the button reflects only what a click would submit.
+-- 可提交报价积压包含未报价与用户可重试失败材料；queued/inflight 有独立计数，不计入此处，按钮仅反映本次点击会提交的目标。
 local function PendingTradeQuoteCount(rows)
     local seen, count = {}, 0
     for _, row in ipairs(type(rows) == "table" and rows or {}) do
@@ -965,12 +890,7 @@ local function UnresolvedTradeIdentityCount(rows)
     return count
 end
 
--- Name sort puts bracket-prefixed goods ("[xxx]…") first, then orders by the
--- localized display name.  The byte order of "[" (0x5B) is above digits and
--- ASCII letters but below CJK UTF-8 lead bytes, so a plain byte compare would
--- sink [黄金] rows behind Chinese names on this client; the prefix flag is
--- therefore compared explicitly.  Tie-break falls back to ratio so two rows
--- with an identical name never swap between rebuilds.
+-- 名称排序显式优先[]前缀商品，再按本地化名排序。字节[为0x5B，高于数字/ASCII却低于中文UTF-8首字节，纯字节比较会改变预期优先序；同名用ratio决胜，重建不能换位。
 local function TradeNameSortKey(row)
     local name = tostring(row.name or row.sourceName or "")
     return (name:find("^%[") ~= nil) and 1 or 0, name
@@ -1041,7 +961,7 @@ local function ApplyTradeDisplayModeToRow(row, options)
     if options.includeMaterials ~= false then
         ApplyTradeMaterialProjectionToRow(row)
     else
-        -- 维护（2026-09-27，trade-profit-swr-carry-forward-1）：fast-publish 仍禁止同步读取材料价格服务，
+        -- fast-publish 仍禁止同步读取材料价格服务，
         -- 但同一货物上一帧已经确认的材料快照不能被清空。优先用旧材料成本配合新售价重算毛利；只有
         -- 首次出现/路线身份改变且没有可继承快照时才进入 deferred 占位。这样自动刷新不会把金币毛利
         -- 瞬间或永久改回“--”，QuoteQueue 后续完成事件也仍能按 materialRows 命中当前行。
@@ -1057,7 +977,7 @@ local function ApplyTradeDisplayModeToRow(row, options)
 end
 
 local function CopyTradeRouteRow(raw)
-    -- 维护（2026-09-23，trade-raw-projection-split-1）：RawRatioSnapshot 只保存服务器货率事实，
+    -- RawRatioSnapshot 只保存服务器货率事实，
     -- Display Projection 才挂售价/材料/利润。浅拷贝足够，因为 raw 行全部是标量；避免对几十行反复 DeepCopy。
     return {
         key = raw.key, name = raw.name, sourceName = raw.sourceName, currentRatio = raw.currentRatio, ratio = raw.ratio,
@@ -1093,7 +1013,7 @@ function TA:BuildCargoDisplayRows(options)
 end
 
 function TA:QueueBackgroundMaterialRevalidation(reason)
-    -- 维护（2026-09-25，material-price-swr-1）：普通路线刷新先用本地价完成毛利，再把当前可见行中
+    -- 普通路线刷新先用本地价完成毛利，再把当前可见行中
     -- Warm/Stale 缓存材料交给独立 TradeMaterialQuoteServiceV3；缺价仅由主动操作处理。Native 仍由
     -- PriceQuoteQueueV3 单通道串行；fresh 材料不会重复查，服务还会按 itemType+grade 去重/节流。
     if Trade.enabled ~= true or (tonumber(Trade.consumerCount) or 0) <= 0 then return false, "no_consumers" end
@@ -1110,7 +1030,7 @@ function TA:QueueBackgroundMaterialRevalidation(reason)
             end
         end
     end
-    -- 维护（auction-full-lane-safety-1）：后台 SWR 属于本 Feature 的可见需求，不能成为无主后台任务。
+    -- 后台 SWR 属于本 Feature 的可见需求，不能成为无主后台任务。
     local ok, result = service:QueueRefresh(materials, { owner = "life_trade", reason = tostring(reason or "trade_visible_rows"), maxItems = 12 })
     self.materialRevalidateDiagnostics = type(result) == "table" and Copy(result) or { error = tostring(result or "unknown") }
     self.materialRevalidateDiagnostics.reason = tostring(reason or "trade_visible_rows")
@@ -1128,9 +1048,7 @@ function TA:RebuildDisplayRows(reason, options)
     local mode = Trade:GetViewMode()
     local previousRowsByKey = {}
     if includeMaterials ~= true then
-        -- Fast path only: index the currently visible read-model once. This is O(visible rows), normally eight,
-        -- and prevents a 10s auto-refresh from destroying already-known material/profit state. Full rebuilds always
-        -- go back to the real MaterialPrice/Identity Authorities and never consume this carry-forward map.
+        -- 快路径仅索引当前可见读模型一次，复杂度 O(可见行)，通常8行，避免10s自动刷新清除已知材料/利润状态。完整重建仍读取 MaterialPrice/Identity 真权威，禁止消费此延续 map。
         for _, previous in ipairs(type(self.rows) == "table" and self.rows or {}) do
             if type(previous) == "table" and previous.key ~= nil then previousRowsByKey[tostring(previous.key)] = previous end
         end
@@ -1212,7 +1130,7 @@ function TA:ScheduleDeferredMaterialProjection(reason, delayMs)
     self:CancelDeferredMaterialProjection()
     local delay = math.max(30, tonumber(delayMs) or 60)
     local sourceReason = tostring(reason or "ratio_result")
-    -- 维护（2026-09-27，trade-profit-swr-carry-forward-1）：货率 callback 先发布 server facts；材料重投影
+    -- 货率 callback 先发布 server facts；材料重投影
     -- 仍走共享 Scheduler，但提升到 P2 的有界 one-shot，避免在后台拍卖任务繁忙时长期压住可见页面的毛利收敛。
     -- 即使该 one-shot 被延迟，fast-publish 已 carry-forward 上一份稳定材料成本，UI 也不会退回“--”。
     local added = scheduler:AddOneShot(self.materialProjectionTask, delay, function()
@@ -1271,7 +1189,7 @@ function TA:RefreshCommerceSkill()
     return true, changed
 end
 
--- 维护（2026-09-25，trade-cargo-slot-authority-1）：X2Equipment:GetEquippedItemType 接收的是实际装备槽
+-- X2Equipment:GetEquippedItemType 接收的是实际装备槽
 -- （ES_*），不是装备槽类型（EST_*）。18.307 把 EST_BACKPACK 直接传入后，RU 客户端调用本身成功但返回 nil，
 -- 因而随身模式长期落到 cargo.status=empty。现有 Gear/HUD 同样以 ES 槽位 16/17/18/27 读取装备；历史客户端
 -- 常量表也明确 ES_BACKPACK=27。Authority 优先读取运行时 ES_BACKPACK；若该全局未导出，使用已验证槽位 27。
@@ -1297,10 +1215,8 @@ local function TradeEquipmentName(value)
     return name ~= "" and name or nil
 end
 
--- Read order is deliberately bounded and event-driven: one GetEquippedItemType attempt first, then at most two
--- local tooltip reads only when the direct ItemType is empty. No Tick/loop polling is introduced. Some RU builds have
--- historically differed on targetEquippedItem semantics, so false is the normal self path and true is a read-only
--- compatibility fallback. Stable numeric ItemType remains the only business identity; tooltip name is diagnostics only.
+-- 读取有界且事件驱动：先尝试一次 GetEquippedItemType，仅直接 ItemType 为空时最多读两次本地 tooltip。禁止 Tick/轮询。
+-- RU targetEquippedItem 语义曾有差异，false 为正常自身路径，true 仅只读兼容回退；业务身份只用数值 ItemType，tooltip 名称仅供诊断。
 local function ReadTradeBackpackIdentity(slot)
     local errors = {}
     local okType, directType, typeErr = Call("X2Equipment:GetEquippedItemType", EquipmentApi, "GetEquippedItemType", slot)
@@ -1324,7 +1240,7 @@ local function ReadTradeBackpackIdentity(slot)
     end
     if okTrue ~= true and trueErr ~= nil then errors[#errors + 1] = tostring(trueErr) end
 
-    -- At least one API call succeeded: an empty/nil identity is truthful "nothing equipped" evidence, not API failure.
+    -- 至少一次 API 调用成功时，空/nil 身份表示真实未装备，不能算 API 失败。
     if okType == true or okFalse == true or okTrue == true then
         return true, nil, okType == true and "GetEquippedItemType(empty)" or (okFalse == true and "Tooltip(false,empty)" or "Tooltip(true,empty)"), nil,
             TradeEquipmentName(falseTooltip) or TradeEquipmentName(trueTooltip)
@@ -1358,7 +1274,7 @@ function TA:RefreshCargoObservation(reason)
     local ok, itemType, readSource, err, tooltipName = ReadTradeBackpackIdentity(slot)
     cargo.identityReadSource, cargo.rawItemType, cargo.tooltipName = readSource, itemType, tooltipName
     if ok ~= true then
-        -- 维护（2026-09-23，trade-cargo-observation-state-1）：API 短暂不可读时保留上一次 ItemID/结果，
+        -- API 短暂不可读时保留上一次 ItemID/结果，
         -- 但必须把 unavailable/error 作为一次可观察状态变化发布；否则 UI 会继续显示“随身扫描正常”。
         cargo.status, cargo.error = "unavailable", err or "背部装备读取失败"
         return true, ObservationChanged()
@@ -1391,7 +1307,7 @@ function TA:RefreshCargoObservation(reason)
     cargo.itemType, cargo.legacyName = itemType, legacyName
     cargo.name = LocalizedTradeItemName(itemType, legacyName) or legacyName
     cargo.originZone = originZone
-    -- 维护（trade-cargo-observation-state-1）：仅观察背包不能把同一货物正在进行的扫描状态从 scanning/complete
+    -- 仅观察背包不能把同一货物正在进行的扫描状态从 scanning/complete
     -- 强行降回 ready。只有身份变化才重建扫描世代；普通武器/经商装变化不应重启整条目的地队列。
     if originZone == nil then
         cargo.status, cargo.error = "unknown_origin", "贸易品来源地区尚未映射"
@@ -1429,7 +1345,7 @@ function TA:ScheduleEquipmentRefresh(reason)
 end
 
 function TA:RefreshQuotedMaterial(materialKey)
-    -- 维护：100ms合并器传入受影响key集合；一条货物最多重建一次，不能只刷新首个材料。
+    -- 100ms合并器传入受影响key集合；一条货物最多重建一次，不能只刷新首个材料。
     local keys=type(materialKey)=="table" and materialKey or {[materialKey]=true}
     local changed = false
     for _, row in ipairs(self.rows or {}) do
@@ -1444,7 +1360,7 @@ function TA:RefreshQuotedMaterial(materialKey)
     return changed
 end
 
--- 维护（2026-09-25，trade-quote-readmodel-sync-1）：PriceQuoteQueueV3 是跨 Feature 共享报价 Authority。
+-- PriceQuoteQueueV3 是跨 Feature 共享报价 Authority。
 -- Trade 自己的 batch callback 只能覆盖“当前 generation 且仍持有 watcher”的请求；当用户切换货物、取消上一批，
 -- 或另一个模块共享同 itemType 时，报价可能在 Trade callback 之外进入 ready/failed。旧版没有消费 Queue Topic，
 -- self.rows 会继续保存旧 quote_pending，导致 batch 已 1/1 ready 但 UI 永久“询价中”。这里按稳定 itemType/itemGrade
@@ -1494,9 +1410,7 @@ function TA:RefreshQuotedItemType(itemType,itemGrade,status,reason)
     return false,0,0
 end
 
--- Live identity fill-in: after a route result, rows the static chain could not
--- name submit ONE bounded service request per distinct product itemType; the
--- identity service serializes the X2Craft reads and calls back here.
+-- 路线结果后，静态链无法命名的产物按不同 itemType 各提交一次有界身份请求；服务串行读取 X2Craft 后回调此处。
 function TA:RequestPendingLiveIdentities()
     -- 页面关闭但货率后台 Runtime 仍运行时，不得因此保活制作/材料身份扫描；重新打开页面会通过
     -- demand_start_projection 再次调用本函数并按当前可见行补齐。
@@ -1555,10 +1469,7 @@ function TA:DescribeIdentityState()
     }
 end
 
--- Bounded init/refresh milestone ring. The user-facing reload symptom "很多东
--- 西没有初始化成功" cannot be reproduced statically; this trace records what
--- actually happened during demand 0->1 (store restore, zones, commerce, route)
--- so the diagnostics panel answers it with facts on the next repro.
+-- 有界初始化/刷新里程碑环记录Demand0→1的Store恢复、地区、经商和路线真实过程；静态无法复现加载失败，诊断应让下次实机复现有事实证据。
 TraceInit = function(event, detail)
     TA.initTrace = type(TA.initTrace) == "table" and TA.initTrace or {}
     TA.initTrace[#TA.initTrace + 1] = {
@@ -1589,11 +1500,7 @@ function TA:RefreshZones()
     self.zones = ok == true and NormalizeTradeZones(value) or {}
     self.zoneFallback = false
     if #self.zones == 0 then
-        -- RU builds can transiently reject or shape-shift the production-zone
-        -- getter.  The curated Zone table is already an accepted candidate
-        -- fallback; use it on API failure as well as empty responses so the
-        -- dropdown remains selectable. GetSpecialtyRatioBetween is still the
-        -- server Authority that accepts/rejects the final route.
+        -- RU 产地 getter 可能临时拒绝或改变形态；整理 Zone 表是已接受的候选回退，API失败/空返回都用它保持下拉可选；最终路线接受/拒绝仍由服务器 GetSpecialtyRatioBetween 决定。
         self.zones = NormalizeTradeZones(StaticTradeZones())
         self.zoneFallback = #self.zones > 0
     end
@@ -1618,9 +1525,7 @@ end
 function TA:RefreshSellable(force)
     local from = Number(Trade.State.fromZone)
     if from == nil then self.sellableZones, Trade.State.toZone = {}, nil; return true end
-    -- Session cache: cycling routes re-reads the same small zone list many
-    -- times; skip the per-click GetSellableZoneGroups round trip unless the
-    -- caller explicitly forces a refresh.
+    -- 会话缓存：反复切换路线会重复读取小地区表，除显式强制刷新，跳过每次点击 GetSellableZoneGroups 往返。
     local cached = force ~= true and self.sellableCache[from] or nil
     if cached ~= nil then
         self.sellableZones, self.sellableFallback, self.sellableError = cached.list, cached.fallback, cached.error
@@ -1635,10 +1540,7 @@ function TA:RefreshSellable(force)
     local list = ok and NormalizeTradeZones(value) or {}
     self.sellableFallback, self.sellableError = false, nil
     if #list == 0 then
-        -- Some RU builds expose production groups but return an empty/shape-variant
-        -- sellable list. Offer the bounded production-group set as candidate UI
-        -- choices; the server's GetSpecialtyRatioBetween remains the authority
-        -- that accepts/rejects the selected route.
+        -- RU 可能有生产地区组但销售列表为空/形态变化；提供有界生产组作为 UI 候选，路线接受/拒绝仍以 GetSpecialtyRatioBetween 为权威。
         for _, row in ipairs(self.zones or {}) do if row.id ~= from then list[#list + 1] = Copy(row) end end
         self.sellableFallback = #list > 0
         self.sellableError = sellableErr or (ok and "可售地区列表为空，已使用生产地区候选" or "可售地区 API 不可用，已使用生产地区候选")
@@ -1682,7 +1584,7 @@ function TA:GetTimeoutDrainRemaining()
     return math.max(0, (tonumber(self.timeoutDrainUntil) or 0) - now)
 end
 
--- 维护（2026-09-23，trade-timeout-drain-1）：SPECIALTY_RATIO_BETWEEN_INFO 没有 request-id。旧代码在
+-- SPECIALTY_RATIO_BETWEEN_INFO 没有 request-id。旧代码在
 -- 6.5s 超时后立刻释放 SingleFlight 并发起下一条路线/目的地；若旧回调随后迟到，它会被误认成“当前 inFlight”，
 -- 把 A→B 的 payload 写进 C→D。这里仅在“已超时”冷路径保留 2s drain 窗口：正常路线切换零额外延迟；
 -- 迟到回调先按 timedOutFlight 消费，若窗口内始终无回调，再恢复最新 pendingRoute/cargo 队列。
@@ -1703,9 +1605,7 @@ function TA:ArmTimeoutDrain(flight)
         if TA.inFlight ~= nil then return true end
         TA.timedOutFlight = nil
         if type(timedOut) == "table" then TA:TraceRequest("timeout_drain_expired", timedOut, "") end
-        -- A cargo timeout is only committed after the drain window expires. If a late callback arrived, OnRatio
-        -- cancelled this task and OnCargoRatio advanced queueIndex exactly once. Advancing at the original timeout
-        -- would make a late callback advance it a second time and silently skip the next destination.
+        -- cargo 超时仅在排空窗口结束后提交。迟到回调会由 OnRatio 取消此任务，OnCargoRatio 仅推进 queueIndex 一次；禁止原超时时刻提前推进，避免迟到回调二次推进跳过下一目的地。
         if type(timedOut) == "table" and tostring(timedOut.kind or "route") == "cargo" then
             local cargo = TA.cargo
             if cargo.scanning == true and tonumber(cargo.generation) == tonumber(timedOut.cargoGeneration)
@@ -1748,7 +1648,7 @@ function TA:CancelCargoTasks()
     end
 end
 
--- 维护（2026-09-23，trade-cargo-generation-stop-1）：停止随身扫描不能只把 scanning=false。Native 回调没有
+-- 停止随身扫描不能只把 scanning=false。Native 回调没有
 -- request-id，已经发出的 cargo 请求仍可能迟到；若不推进 generation，旧回调会重新写 results/lastScanAt，甚至把
 -- “已关闭/已卸货”的状态重新推进为 complete。这里保留 inFlight 直到真实回调释放 SingleFlight，但使其结果世代失效。
 -- Presentation 只读取 cargo Projection，不拥有取消语义；重新启用扫描会创建新 generation 并在旧 lane 释放后继续。
@@ -1761,8 +1661,7 @@ function TA:StopCargoScan(reason, preserveStatus)
     cargo.generation = (tonumber(cargo.generation) or 0) + 1
 
     local itemType, originZone = Number(cargo.itemType), Number(cargo.originZone)
-    -- Observation failures (API unavailable / unknown origin / non-trade item) already carry the truthful status/error.
-    -- Stopping the scan must invalidate its generation without rewriting that evidence back to ready/complete.
+    -- API不可用、产地未知、非贸易物品等观察失败已带真实 status/error；停止扫描只作废 Generation，禁止重写为 ready/complete。
     if preserveStatus ~= true then
         if itemType ~= nil and originZone ~= nil then
             local hasResults = false
@@ -1777,7 +1676,7 @@ function TA:StopCargoScan(reason, preserveStatus)
     return true
 end
 
--- 维护（2026-09-23，trade-native-cooldown-4）：实机已经证明该数值必须作为 Native 查询窗口处理。
+-- 实机已经证明该数值必须作为 Native 查询窗口处理。
 -- SPECIALTY_RATIO_BETWEEN_INFO 又没有 request-id，因此路线切换不能在冷却内并发/抢跑；否则可能得到
 -- “函数调用成功但没有本路线回调”，最后进入超时恢复。现在统一由 Scheduler 等窗口到期，已查过路线则
 -- 先恢复会话缓存，保证交互有即时反馈；所有 Native 调用仍只有一条 SingleFlight lane。
@@ -1877,7 +1776,7 @@ function TA:ArmDeferredRequest(delayMs, reason)
     end, Trade, "P2", 1)
 end
 
--- 中文维护注释（2026-09-26，trade-auto-refresh-runtime-split-1）：货率自动刷新继续使用一个低频 watchdog，
+-- 货率自动刷新继续使用一个低频 watchdog，
 -- 但后台运行资格不再由 Trade.consumerCount 决定。页面/悬浮窗 Consumer 只拥有可见业务资源；自动刷新由
 -- Trade.AutoRefreshRuntime 独立拥有 Scheduler + Native ratio callback + 可选跨区事件。这样主页面关闭后仍能维护当前路线，
 -- 同时不会把拍卖报价、装备观察、LiveIdentity 等页面资源一起保活。真正 Native 查询仍全部经过 TA:Request 的
@@ -1957,7 +1856,7 @@ function TA:ScheduleNextAutoRefresh(reason)
         and (now - watchLivenessAt) > math.max(5000, interval * 5)
     if type(taskState) == "table" and taskState.registered == true and taskState.enabled == true and staleRegisteredTask ~= true then return true end
 
-    -- 维护（2026-09-27，trade-auto-watchdog-self-heal-1）：18.324 实机出现 watchActive=true 但 135s 内
+    -- 18.324 实机出现 watchActive=true 但 135s 内
     -- checks 不再增长。旧 IsAutoRefreshWatchActive 只看“任务表里有没有名字”，即使任务已禁用/僵住也阻止重建。
     -- 每次成功货率 callback/Runtime reconcile 都会经过这里，因此把 disabled 或超过 5 个周期未检查的旧实例撤销并
     -- 重建；正常 pending/运行中的实例不动。Native 请求仍全部经过 TA:Request SingleFlight，不会因此并发。
@@ -2050,7 +1949,7 @@ function TA:StartCargoScan(reason)
         self:StopCargoScan("scan_disabled")
         return true
     end
-    -- 维护（2026-09-23，trade-cargo-restart-lifecycle-1）：开始一轮新扫描先撤销上一轮 pump/rescan one-shot。
+    -- 开始一轮新扫描先撤销上一轮 pump/rescan one-shot。
     -- 否则“上一轮 complete 后已排的 rescan”可能在新货物扫描中途触发 StartCargoScan，再次推进 generation/重置队列。
     -- Native inFlight 不在这里强行清除；它仍由 generation + SingleFlight 正确归属/淘汰。
     self:CancelCargoTasks()
@@ -2079,7 +1978,7 @@ function TA:StartCargoScan(reason)
     cargo.error = #cargo.queue == 0 and (sellableErr or "没有可扫描的目的地") or nil
     cargo.sellableFallback = fallback == true
     cargo.scanStartedAt = S.NowMs and tonumber(S.NowMs()) or 0
-    -- 维护（trade-cargo-stale-while-refresh-1）：周期刷新期间继续显示上一轮结果，但只保留仍在当前可售集合中的目的地；
+    -- 周期刷新期间继续显示上一轮结果，但只保留仍在当前可售集合中的目的地；
     -- lastScanAt 代表“最后一份真实结果/完整扫描”的时间，不能在仅开始新扫描时伪装成刚更新。
     local keepResults, validDestination = {}, {}
     for _, to in ipairs(cargo.queue or {}) do validDestination[Number(to)] = true end
@@ -2101,10 +2000,9 @@ function TA:PumpCargoQueue()
         self:StopCargoScan("pump_inactive")
         return true
     end
-    -- A stale callback/task from an invalidated generation must never resurrect an empty/disabled cargo state.
+    -- 失效 Generation 的陈旧回调/任务禁止复活空或禁用 cargo 状态。
     if cargo.scanning ~= true then return true end
-    -- Gate on the ownership token, not wall-clock remaining. The scheduler may run late under backlog; once a timed-out
-    -- callback owns quarantine, no newer Native request may start until the drain callback explicitly releases it.
+    -- 门槛按所有权 token，不能按墙钟剩余时间。Scheduler 积压可能延迟执行；超时回调拥有隔离区后，排空回调明确释放前禁止发起新 Native 请求。
     if type(self.timedOutFlight) == "table" then return true end
     if type(self.pendingRoute) == "table" then
         if self.inFlight == nil then return self:Request(true, self.pendingRoute.reason or "route_change") end
@@ -2212,8 +2110,7 @@ function TA:ArmRequestTimeout(serial, delayMs)
             return TA:ArmTimeoutDrain(flight)
         end
 
-        -- If the selection changed while the timed-out request was in flight, keep the latest user route even when
-        -- pendingRoute was lost/replaced by another maintenance action. It will start after the drain window.
+        -- 超时请求在途期间选择变更，即使 pendingRoute 被其他维护动作丢失/替换，也保留最新用户路线，排空后启动。
         if currentFrom ~= nil and currentTo ~= nil and (currentFrom ~= Number(flight.from) or currentTo ~= Number(flight.to)) then
             TA.pendingRoute = { from = currentFrom, to = currentTo, reason = "route_change", force = true }
             TA.pendingRetryCount = 0
@@ -2255,9 +2152,7 @@ function TA:Request(force, reason)
     end
 
     local timeoutDrainRemaining = self:GetTimeoutDrainRemaining()
-    -- timedOutFlight is the quarantine ownership token. Do not rely on remaining>0: a scheduler backlog can make
-    -- the deadline pass before the drain task executes, and reopening the lane in that gap would reintroduce
-    -- late-callback misattribution. The drain callback clears timedOutFlight before resuming the latest request.
+    -- timedOutFlight 是隔离区所有权 token，不能依赖 remaining>0；截止时间已过而排空任务未运行时也禁止重开通道。排空回调先清 timedOutFlight，再恢复最新请求。
     if self.inFlight == nil and type(self.timedOutFlight) == "table" then
         self.pendingRoute = { from = from, to = to, reason = reason, force = force == true }
         if not self:HasRawRowsForRoute(from, to) and Trade:GetViewMode() ~= "cargo" then self:RestoreRouteCache(from, to, "route_cache_timeout_drain") end
@@ -2277,7 +2172,7 @@ function TA:Request(force, reason)
             PublishFeatureUpdate(Trade, self.revision, "route_request_still_inflight")
             return true
         end
-        -- 维护（trade-singleflight-latest-2）：无 native request-id 时绝不并发；任何用户路线都只保留最后一次选择。
+        -- 无 native request-id 时绝不并发；任何用户路线都只保留最后一次选择。
         -- cargo 扫描属于低优先级后台消费者，当前 Native 回调结束后必须先让 pendingRoute 取得通道。
         self.pendingRoute = { from = from, to = to, reason = reason, force = force == true }
         if Trade:GetViewMode() ~= "cargo" and not self:HasRawRowsForRoute(from, to) then
@@ -2291,7 +2186,7 @@ function TA:Request(force, reason)
     end
 
     local cooldownRemaining = self:GetNativeCooldownRemaining()
-    -- 维护（2026-09-23，trade-native-cooldown-4）：实机确认路线切换在 Native 冷却窗口内“先调用再说”并不会
+    -- 实机确认路线切换在 Native 冷却窗口内“先调用再说”并不会
     -- 更快得到新路线；调用可能只返回剩余时间而不产生对应回调，随后反而要等响应超时/迟到回调隔离，形成
     -- “第一次失败，再等很久”的体验。回调又没有 request-id，因此不能并发第二条路线。正确做法是：路线选择
     -- 立即生效，若有会话缓存就先显示缓存；Native 查询统一在 nextNativeRequestAt 到期后单通道执行。
@@ -2315,7 +2210,7 @@ function TA:Request(force, reason)
     end
 
     self:CancelDeferredRequest()
-    -- 中文维护注释（2026-09-25，trade-auto-refresh-watchdog-1）：请求开始不能再取消自动刷新 watchdog。
+    -- 请求开始不能再取消自动刷新 watchdog。
     -- Watchdog 自身会在 inFlight/pending/timedOut 时 O(1) 跳过；若这里移除它，就重新回到“必须依赖 callback 重挂”的脆弱链。
     self:CancelTimeoutDrain()
     self.timedOutFlight = nil
@@ -2405,8 +2300,7 @@ function TA:OnRatio(info)
     local flight = self.inFlight
     local acceptedLate = false
     if type(flight) ~= "table" and type(self.timedOutFlight) == "table" then
-        -- During the drain window the only callback that can legally arrive belongs to the timed-out lane, regardless
-        -- of whether the user already selected a new route. Route staleness is handled below after the callback is consumed.
+        -- 排空窗口内合法回调只属于超时通道，与用户是否已选新路线无关；先消费回调，再在下方处理路线陈旧性。
         flight = self.timedOutFlight
         acceptedLate = true
     end
@@ -2453,7 +2347,7 @@ function TA:OnRatio(info)
             self.status, self.error = "loading", nil
             self.revision = self.revision + 1
             PublishFeatureUpdate(Trade, self.revision, "route_result_superseded")
-            -- 维护（trade-route-switch-priority-2）：旧路线回调释放 SingleFlight 后立即追最新用户选择；
+            -- 旧路线回调释放 SingleFlight 后立即追最新用户选择；
             -- 若 Native 冷却尚未结束，Request 会直接按剩余时间延迟，不再先制造一次无回调的抢跑请求。
             return self:Request(true, type(pending) == "table" and pending.reason or "route_change")
         end
@@ -2511,7 +2405,7 @@ function TA:OnRatio(info)
     self.lastRatioAt = now
     if #rows > 0 then self:StoreRouteCache(flight.from, flight.to, rows, now) end
     self.status, self.error = (#rows > 0 and "ready" or "error"), (#rows > 0 and nil or "服务器返回的货率列表为空")
-    -- 维护（trade-ratio-fast-publish-1）：先提交服务器货率事实，再异步补材料/毛利。Native 回调不再同步穿过
+    -- 先提交服务器货率事实，再异步补材料/毛利。Native 回调不再同步穿过
     -- MaterialPriceService/PriceQuoteQueue；诊断同时记录 payload/解析行数/首批货率样本，下一次无需再猜服务器到底返回了什么。
     self:RebuildDisplayRows("ratio_result", { includeMaterials = false })
     self.diag.lastRatioPayloadTopLevelCount = payloadTopLevelCount
@@ -2593,7 +2487,7 @@ function TA:GetProjection()
     local now = S.NowMs and tonumber(S.NowMs()) or 0
     local dataAt = tonumber(self.lastRatioAt) or 0
     local displayStatus, displayError = self.status, self.error
-    -- 中文维护（performance-cache-1）：货物扫描 results/queue 只属于 Authority；UI 仅需摘要。
+    -- 货物扫描 results/queue 只属于 Authority；UI 仅需摘要。
     -- 在复制前排除它们，避免遍历整套路线/材料结果后立即丢弃；其余字段仍逐项深拷贝，
     -- 不把优化变成共享可变引用，也不缓存 cooldown/age/报价新旧状态。
     local cargoProjection = {}
@@ -2615,7 +2509,7 @@ function TA:GetProjection()
     end
     local ratioAgeMs = dataAt > 0 and math.max(0, now - dataAt) or nil
     local trackedCount = #(Trade.Preferences.trackedProducts or {})
-    -- 维护（2026-09-23，trade-commerce-projection-authority-1）：Presentation 不得复制经商倍率公式。
+    -- Presentation 不得复制经商倍率公式。
     -- 售价与状态栏必须共享 TradePayoutV3 Authority，否则服务公式/校准一旦变化，列表售价与“熟练度×倍率”会分叉。
     -- 这里只投影已计算倍率；换装仍由 UNIT_EQUIPMENT_CHANGED -> RefreshCommerceSkill -> RebuildDisplayRows 驱动。
     local payoutService = S.Services and S.Services.TradePayoutV3 or nil
@@ -2675,17 +2569,17 @@ local function NormalizeTradePreferences(value)
     }
 end
 
--- 中文维护注释（2026-09-12 实档）：只还原 widgetWindow.normalizedCenterX 的旧 six-significant
+-- 只还原 widgetWindow.normalizedCenterX 的旧 six-significant
 -- token 0.0903896 就把整张跑商 canonical 从 48B0E072 精确还原为存档自带的 6BE9E557。
 -- 该样本可由“固定6位小数 + binary32 回读”逐字段复现，但我们没有客户端 serializer 源码。
 -- 不硬编码上述 Hash/坐标：只允许旧 schema1/Framework3/Transport2 的两个既有中心比例字段，
 -- 每次只改变一个叶子，枚举与同一固定6位小数表示相容的有限6位有效数字 token（总计<=32）。
--- Authority：Trade 选择可恢复字段，Core 再验完整旧指纹/metadata/预算并 Apply；不改路线、收藏、
+-- 权威边界：Trade 选择可恢复字段，Core 再验完整旧指纹/metadata/预算并 Apply；不改路线、收藏、
 -- 开关/宽高，不清档。唯一整表命中才返回；零/极小值、跨数量级、多字段变化和不匹配继续保护。
 -- 这只能恢复旧指纹所表达的有效数字，无法声称找回已经丢失的全部17位原值。新写由 Transport3 防损。
 -- 此桥只在加载失败冷路径执行；不要扩成任意字段搜索，也不要扩大枚举预算以“凑 Hash”。
 local function RebuildTradeWindowDecimalCanonical(decoded, stampedFingerprint, canonical, raw)
-    -- 维护：三个Store使用同一32候选算法，防止复制出三套不同安全边界；既有实档回归不变。
+    -- 三个Store使用同一32候选算法，防止复制出三套不同安全边界；既有实档回归不变。
     local st = P:GetStore(Trade.storeId)
     if type(st) ~= "table" or type(P.RebuildFixed6WindowCanonical) ~= "function" then return nil end
     local candidate, domain = P:RebuildFixed6WindowCanonical(st, decoded, stampedFingerprint, canonical, raw, 1, nil)
@@ -2708,9 +2602,9 @@ RegisterStore(Trade.storeId, "v3.life.trade", function() return NormalizeTradeSt
         Trade.State.commerceMode = TRADE_COMMERCE_MODES[value.commerceMode] and value.commerceMode or "observe"
         Trade.State.widgetVisible = value.widgetVisible == true
         Trade.State.widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil
-    end, NormalizeTradeState, nil, RebuildTradeWindowDecimalCanonical) -- 维护：schema1 不变，先精确验旧章才应用恢复。
+    end, NormalizeTradeState, nil, RebuildTradeWindowDecimalCanonical) -- schema1 不变，先精确验旧章才应用恢复。
 
--- 维护（2026-09-23，trade-preferences-store-1）：新显示/刷新策略使用独立 Store，避免改变历史
+-- 新显示/刷新策略使用独立 Store，避免改变历史
 -- v3.life.trade 的 schema1 canonical。trackedProducts 只保存 itemType，禁止保存本地化货物名。
 RegisterStore(Trade.preferenceStoreId, "v3.life.trade.preferences", function() return NormalizeTradePreferences(nil) end,
     function() return Copy(Trade.Preferences) end,
@@ -2720,7 +2614,7 @@ RegisterStore(Trade.preferenceStoreId, "v3.life.trade.preferences", function() r
     end, NormalizeTradePreferences, { maxDepth = 4, maxNodes = 192, maxStringBytes = 1024, maxEntriesPerTable = 144 })
 
 Trade.ApiDependencies = {
-    -- 维护（2026-09-28，trade-native-dependency-ownership-1）：Trade 的材料身份与材料报价不能借用
+    -- Trade 的材料身份与材料报价不能借用
     -- tools_craft/tools_auction 是否恰好启用来获得 X2Craft/X2Auction namespace。FeatureRuntime 以实现层
     -- ApiDependencies 为导入 Authority，所以这里必须声明 Trade 实际调用链的完整 Native 依赖。只导入 namespace，
     -- 不新增轮询/事件；QuoteQueue 仍是拍卖服务器查询的唯一串行 Authority。
@@ -2778,7 +2672,7 @@ function TA:HandleWorldBoundary(reason)
 end
 
 
--- 中文维护注释（2026-09-26，trade-auto-refresh-runtime-split-1）：后台跨区刷新不能复用完整页面 HandleWorldBoundary。
+-- 后台跨区刷新不能复用完整页面 HandleWorldBoundary。
 -- 后者会读取背包/随身货物并可能启动 cargo 扫描，这些都不属于普通路线后台刷新权限。独立 Runtime 只提高当前路线
 -- 货率请求优先级；若 Native lane 正在忙，TA:Request 仍只记录 latest pending，不产生并发。
 function TA:HandleAutoRefreshBoundary(reason)
@@ -2802,7 +2696,7 @@ function Trade:EnsurePriceQuoteSubscription()
         return TA:RefreshQuotedItemType(itemType,itemGrade,status,reason)
     end)
     if ok~=true then return false,"报价完成事件订阅失败" end
-    -- 维护（auction-user-priority-1）：活动变化只通知已有 UI 重新读投影；绝不走上面的材料终态对账。
+    -- 活动变化只通知已有 UI 重新读投影；绝不走上面的材料终态对账。
     if type(queue.ActivityTopic)=="string" then
         local activityOk=S.Events:SubscribeInternal(queue.ActivityTopic,self,function()
             if Trade.enabled~=true or (tonumber(Trade.consumerCount) or 0)<=0 then return true end
@@ -2833,8 +2727,8 @@ function Trade:ReleasePriceQuoteSubscription()
     return true
 end
 
--- 中文维护注释（2026-09-26，trade-auto-refresh-runtime-split-1）：自动货率刷新与页面 Consumer 生命周期严格分离。
--- Authority：Trade.enabled + 已保存 autoRefresh 偏好 + 当前完整路线 + 非 cargo 模式共同决定后台 Runtime 是否存在；
+-- 自动货率刷新与页面 Consumer 生命周期严格分离。
+-- 权威边界：Trade.enabled + 已保存 autoRefresh 偏好 + 当前完整路线 + 非 cargo 模式共同决定后台 Runtime 是否存在；
 -- Runtime 只持有 watchdog、SPECIALTY_RATIO_BETWEEN_INFO 回执、ENTER_ANOTHER_ZONEGROUP 三种轻量资源。
 -- 页面 Demand 归零后必须释放 QuoteQueue 订阅、装备观察、LiveIdentity/询价任务等页面资源，但不能因此停止当前路线货率更新。
 -- 反过来，关闭自动刷新/Feature 或进入 cargo 时，后台 Runtime 必须立即静默；若已有 Native flight 被服务器接受，
@@ -2933,7 +2827,7 @@ function Trade:ReconcileDemand(_, before, after)
                 TraceInit("event_subscribe_failed", "SPECIALTY_RATIO_BETWEEN_INFO")
                 return false, nativeSubscribeErr or "SPECIALTY_RATIO_BETWEEN_INFO 订阅失败"
             end
-            -- 维护（2026-09-23，trade-event-refresh-1）：换装/跨区都由事件驱动，禁止 Tick 轮询。
+            -- 换装/跨区都由事件驱动，禁止 Tick 轮询。
             -- UNIT_EQUIPMENT_CHANGED 可能一次换装连续触发，Authority 内 220ms debounce 后只读取一次熟练度/背包槽；
             -- ENTER_ANOTHER_ZONEGROUP 只提高一次刷新优先级，不绕开 SingleFlight。
             S.Events:SubscribeOptional("UNIT_EQUIPMENT_CHANGED", self, function() return TA:ScheduleEquipmentRefresh("UNIT_EQUIPMENT_CHANGED") end)
@@ -2977,7 +2871,7 @@ function Trade:ReconcileDemand(_, before, after)
             .. " fallback=" .. tostring(TA.zoneFallback == true) .. "/" .. tostring(TA.sellableFallback == true)
             .. " commerce=" .. tostring(TA.commerceStatus or "-") .. " cargo=" .. tostring(TA.cargo.status or "-"))
     elseif beforeCount > 0 and afterCount <= 0 then
-        -- 维护（2026-09-26，trade-auto-refresh-runtime-split-1）：页面 Demand 归零必须真实释放页面资源。
+        -- 页面 Demand 归零必须真实释放页面资源。
         -- 自动货率刷新若仍开启，只保留独立 Runtime owner；不能再借一个伪 Consumer 让 QuoteQueue/装备观察/LiveIdentity
         -- 永久存活。已被服务器接受的无 request-id Native flight 仍保留 callback ownership 到自然结算。
         if S.Events ~= nil then S.Events:UnsubscribeOwner(self) end
@@ -3017,7 +2911,7 @@ end
 
 function Trade:Enable()
     self.enabled = true
-    -- 维护（trade-auto-refresh-runtime-split-1）：Feature 启用后按已保存偏好恢复独立后台 Runtime。
+    -- Feature 启用后按已保存偏好恢复独立后台 Runtime。
     -- 路线未完整时 Reconcile 只保持静默，不创建伪 Consumer；一旦用户/旧配置提供完整路线，SetTo/收藏切换会重新接通。
     local autoOk, autoErr = self:ReconcileAutoRefreshRuntime("feature_enable")
     if autoOk ~= true then self.enabled = false; self:StopAutoRefreshRuntime("feature_enable_failed"); return false, autoErr or "自动刷新后台 Runtime 启动失败" end
@@ -3059,7 +2953,7 @@ function Trade:GetProjection()
     local projection=TA:GetProjection()
     projection.quoteBatch=self:GetQuoteBatch() -- 兼容旧 UI/诊断的聚合只读快照。
     projection.quoteJobs=self:GetQuoteJobs()
-    -- 维护（2026-09-30，auction-user-priority-1）：仅投影共享队列活动状态，不把暂停写进价格/RowJob 终态。
+    -- 仅投影共享队列活动状态，不把暂停写进价格/RowJob 终态。
     local queue=S.Services and S.Services.PriceQuoteQueueV3 or nil
     projection.quoteActivity=type(queue)=="table" and type(queue.GetActivitySnapshot)=="function" and queue:GetActivitySnapshot() or nil
     return projection
@@ -3073,7 +2967,7 @@ function Trade:SetViewMode(mode)
     local persisted, persistErr = PersistTradePreference("trade_view_mode", function(state) state.viewMode = mode; return true end)
     if persisted ~= true then return false, persistErr or "显示模式保存失败" end
     self:RefreshTrackedProductSet()
-    -- 维护（2026-09-25，trade-view-quote-lifetime-1）：all/tracked/cargo 是 Display Projection 选择，
+    -- all/tracked/cargo 是 Display Projection 选择，
     -- 不是材料报价 Authority，也不会改变已经双击选中的货物身份。18.307 在这里无条件 CancelQuoteBatch，
     -- 会把刚进入 PriceQuoteQueueV3 的第一项 pending 与后续 queued 材料一起撤销；更严重的是旧 Queue
     -- 对 pending 取消没有收敛 itemType 生命周期，列表随后会永久显示“询价中…”。显示模式切换现在只重建
@@ -3186,7 +3080,7 @@ function Trade:SelectFavorite(key)
     end
     if selected == nil then return false, "收藏路线不存在" end
 
-    -- 维护（2026-09-23，trade-favorite-route-atomic-1）：收藏路线是一次“from+to”用户意图，不能继续拆成
+    -- 收藏路线是一次“from+to”用户意图，不能继续拆成
     -- SetFrom -> SetTo 两次持久化/两次 UI 发布。旧流程会先把 to 清空，再刷新可售地区，再提交第二次请求；
     -- 如果此时正处 Native 冷却或旧请求回调，用户会看到一次中间失败/空表。这里一次事务写入完整路线，
     -- 再刷新 sellable 候选、恢复会话缓存并交给同一 SingleFlight Scheduler；不新增第二 Authority。
@@ -3241,7 +3135,7 @@ function Trade:SetCommerceMode(mode)
     return TA:RebuildDisplayRows("trade_commerce_mode")
 end
 function Trade:SetFrom(id)
-    -- 维护：路线变更先取消旧批次，旧结果只能进入共享缓存，不能更新新路线。
+    -- 路线变更先取消旧批次，旧结果只能进入共享缓存，不能更新新路线。
     self:CancelQuoteBatch("route_changed")
     local nextFrom = Number(id)
     local persisted, persistErr = PersistLifeMutation(self, "trade_from", function(state)
@@ -3252,11 +3146,7 @@ function Trade:SetFrom(id)
     if persisted ~= true then return false, persistErr or "起点保存失败" end
     -- 起点变化会清空目的地；此时后台 Runtime 必须立即静默，避免旧完整路线 watchdog 继续提交请求。
     self:ReconcileAutoRefreshRuntime("trade_from_changed")
-    -- Keep the latest desired route alive across a mid-flight origin switch.
-    -- The old form cleared pendingRoute AND reset to idle, so the sequence
-    -- A->B in flight, SetTo(C), SetFrom(D) left the UI empty with no queued
-    -- request: the in-flight callback then found no pending route and nothing
-    -- re-armed -- exactly the reported "快速切起点后没有数据" dead corner.
+    -- 在途切换产地时保留最新期望路线；A→B在途、SetTo(C)、SetFrom(D)不能同时清pendingRoute并退idle，否则旧回调返回后无任务重启，UI永久空数据。
     TA:RefreshSellable()
     local currentTo = Number(Trade.State.toZone)
     if TA.inFlight ~= nil or currentTo ~= nil then
@@ -3284,7 +3174,7 @@ function Trade:SetTo(id)
             if persisted ~= true then return false, persistErr end
             local autoOk, autoErr = self:ReconcileAutoRefreshRuntime("trade_to_changed")
             if autoOk ~= true then return false, autoErr or "自动刷新后台 Runtime 启动失败" end
-            -- 维护（trade-route-session-cache-1）：已查过的路线先恢复会话快照，让列表立即可见；Native 刷新仍由
+            -- 已查过的路线先恢复会话快照，让列表立即可见；Native 刷新仍由
             -- SingleFlight/cooldown Scheduler 串行执行。未命中缓存时保持原来的 loading/cooldown 空态提示。
             TA:RestoreRouteCache(Trade.State.fromZone, row.id, "route_cache_manual_select")
             return TA:Request(true, "route_change")
@@ -3311,7 +3201,7 @@ function Trade:CycleTo(delta)
     if id == nil then return false, "没有可用目的地" end
     return self:SetTo(id)
 end
--- 维护（2026-09-25，trade-multi-row-quote-jobs-1）：用户层“同时询价多个货物”与 Native 层并发必须严格分离。
+-- 用户层“同时询价多个货物”与 Native 层并发必须严格分离。
 -- 业务层允许多个 RowJob 同时存在；每个 RowJob 只描述一个货物需要哪些材料、各自进度和取消身份。
 -- 真正的拍卖 Native 请求仍全部进入 PriceQuoteQueueV3 单通道，由其 requestKey 去重并把同一材料的完成结果
 -- fan-out 给多个 requester。也就是说 8 个货物可以同时处于“询价中”，但服务器侧仍严格一次只处理一个材料；
@@ -3529,7 +3419,7 @@ local function ResolveTradeQuoteIdentity(material)
     if type(meta)=="table" then
         itemType=itemType or tonumber(meta.itemType);itemGrade=itemGrade or tonumber(meta.itemGrade)
     end
-    -- 中文维护：只消费材料元数据或配方的明确 Native 品质；显示偏移不是品质 Authority。
+    -- 只消费材料元数据或配方的明确 Native 品质；显示偏移不是品质 Authority。
     -- 未知或损坏身份交给报价服务保持未知，不做取整/夹紧伪造另一份有效身份。
     if itemType==nil or itemType~=itemType or itemType==math.huge or itemType<=0 or itemType~=math.floor(itemType) then return materialKey,nil,nil end
     if itemGrade==nil or itemGrade~=itemGrade or itemGrade<0 or itemGrade>20 or itemGrade~=math.floor(itemGrade) then itemGrade=nil end
@@ -3561,7 +3451,7 @@ function Trade:_CompleteQuoteJobMaterial(job,quoteKey,status,reason)
     return true,terminal,item.materialKey
 end
 
--- 维护（trade-single-quote-1）：一行操作由业务服务统一决策缓存/缺价/截止时间。
+-- 一行操作由业务服务统一决策缓存/缺价/截止时间。
 -- 已替换 identity-only 全局终态对账和逐材料 force/grade ladder 重验路径。
 function Trade:QuoteMaterial(material,mode,job)
     if not self.enabled or type(job)~="table" or job.active~=true then return false,"货物询价任务已失效" end
@@ -3647,7 +3537,7 @@ function Trade:QuotePendingMaterials(mode)
     end
     self:_RefreshQuoteAggregate("bulk_submit")
     if started>0 then
-        -- 维护（2026-09-25，trade-multi-row-bulk-projection-1）：批量按钮是显式低频动作，但仍只在所有
+        -- 批量按钮是显式低频动作，但仍只在所有
         -- RowJob 注册完成后做一次 bounded 全表重投影；禁止每创建一个任务就重复重建整张列表。
         for _,displayRow in ipairs(TA.rows or {}) do ApplyTradeMaterialProjectionToRow(displayRow) end
         TA.revision=TA.revision+1;PublishFeatureUpdate(self,TA.revision,"quote_bulk_jobs_started")
@@ -3670,14 +3560,10 @@ function Trade:QuoteRowMaterials(rowKey,mode)
 end
 
 
--- Diagnostics reads describe helpers off the Feature table (S.Features.Trade),
--- but the request/identity state lives on the Authority. Bonds defines its
--- describe helpers directly on the feature table, which is why its row always
--- rendered; expose the same reachability here or the 跑商 row degrades to
--- "状态机诊断不可用" forever.
+-- 诊断从S.Features.Trade访问describe助手，请求/身份状态归Authority；助手必须在Feature可达，避免跑商行持续降级为状态机诊断不可用。
 function Trade:DescribeRequestState() return TA:DescribeRequestState() end
 function Trade:DescribeIdentityState() return TA:DescribeIdentityState() end
--- 维护（2026-09-30，trade-selected-economics-1）：模块诊断需要“具体哪一行扣了哪些成本”，
+-- 模块诊断需要“具体哪一行扣了哪些成本”，
 -- 不能用全局最后一次报价代替所选货物。只读当前 Display ReadModel，不重算/重询价、不取得
 -- Consumer、不读 Native/Store，分页由 Hub 冻结。金额全部用铜，避免 UI 金/银省略铜位掩盖差额。
 -- 每个材料投影为有界标量证据行（最多与展示相同的 32 行），避免嵌套字段耗尽 Hub 节点预算。
@@ -3759,7 +3645,7 @@ function Trade:DescribeDiagnosticDetail()
         quoteJobs=self:GetQuoteJobs(), quoteBatch=self:GetQuoteBatch(),
         queue=ReadService('PriceQuoteQueueV3','Describe'),
         materialOperations=ReadService('TradeMaterialQuoteServiceV3','DescribeDiagnostics'),
-        -- 中文维护：原始挂单独立延后输出；关键任务/货物不能被历史 raw 字段挤掉单来源预算。
+        -- 原始挂单独立延后输出；关键任务/货物不能被历史 raw 字段挤掉单来源预算。
         auctionRequests=ReadService('AuctionQueryV3','DescribePriceEvidenceOverview'),
         readModelSync=Copy(TA.quoteReadModelSync or {}), economics=Copy(TA.economics or {}),
         materialRevalidate=Copy(TA.materialRevalidateDiagnostics or {}),
@@ -3767,7 +3653,7 @@ function Trade:DescribeDiagnosticDetail()
     }
 end
 
--- 中文维护：只导出已采集的 Native 证据，新请求优先；不查询、不延长缓存或改变队列生命周期。
+-- 只导出已采集的 Native 证据，新请求优先；不查询、不延长缓存或改变队列生命周期。
 function Trade:DescribeAuctionListingDetail()
     local query=S.Services and S.Services.AuctionQueryV3
     if type(query)~='table' or type(query.DescribePriceEvidenceDetail)~='function' then return {available=false} end
@@ -3779,7 +3665,7 @@ function Trade:DescribeAuctionListingDetail()
 end
 
 function Trade:DescribeQuoteState()
-    -- 维护（2026-09-24，trade-quote-diagnostics-2）：模块诊断必须能直接回答“询价为什么失败”，但不能把
+    -- 模块诊断必须能直接回答“询价为什么失败”，但不能把
     -- AuctionQueryV3 最多 20 条搜索结果和 QuoteQueue 全部历史原样塞进报告。这里仅读取两个共享 Authority 的
     -- detached Describe/Snapshot，并压缩成“最近完成/原生返回/fallback 匹配/最多3条候选”证据；不获取 Consumer、
     -- 不触发 Native API、不改变缓存/存档。完整搜索结果仍由 AuctionQueryV3 自己持有，不复制成第二 Authority。
@@ -3795,7 +3681,7 @@ function Trade:DescribeQuoteState()
         end
         queueSummary = {
             version = health.version, priceSafetyPatch = health.priceSafetyPatch, running = health.running, pending = health.pending,
-            -- 维护（auction-full-lane-safety-1）：模块诊断必须保留队列保护证据；仅读取缓存，不触发新探针。
+            -- 模块诊断必须保留队列保护证据；仅读取缓存，不触发新探针。
             nativeInteractionPatch = health.nativeInteractionPatch, nativeAdmission = Copy(health.nativeAdmission),
             queueLength = health.queueLength, maxQueue = health.maxQueue, intervalMs = health.intervalMs,
             stats = Copy(health.stats), lastRawReturn = health.lastRawReturn,

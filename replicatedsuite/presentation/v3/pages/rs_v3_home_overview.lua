@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 首页概览
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 今日总览 / personal-workspace-1（2026-09-18）。
 -- 首页只组织 Feature/Shared Service 的投影，不拥有进度/货率/提醒事实；Workspace 拥有卡片偏好。
 -- 所有卡片固定 Native parent，按整卡视口显示；只有已排列且可见的卡片申请自己的 lease。
@@ -20,7 +24,7 @@ if Reminders and S.ModuleDiagnosticsHub and type(S.ModuleDiagnosticsHub.Register
 end
 local function Enabled(id)return S.FeatureRuntime and S.FeatureRuntime:IsEnabled(id)==true end
 local function Open(route)
-    -- 中文维护注释（2026-09-15，今日总览管理按钮）：UIV3 本身从未拥有 Navigate；
+    -- 约束（2026-09-15，今日总览管理按钮）：UIV3 本身从未拥有 Navigate；
     -- 统一导航 Authority 是 UIV3.Shell，UIV3Host 只是宿主适配器。旧代码调用不存在的
     -- S.UIV3:Navigate() 导致按钮静默失败。这里只走既有 Shell/Host，不直接构建页面、
     -- 不改变 Router/PageHost 数据流，旧路由字符串完全兼容。
@@ -36,7 +40,7 @@ local function Open(route)
 end
 
 local function ToggleFloating(featureId, widgetId)
-    -- 中文维护注释（2026-09-15，首页快捷悬浮）：Presentation 只发显式用户动作。WidgetHost 仍是
+    -- 约束（2026-09-15，首页快捷悬浮）：Presentation 只发显式用户动作。WidgetHost 仍是
     -- 窗口生命周期 Authority，FeatureRuntime 仍是功能启停 Authority；首页绝不直接 Create/Destroy Native。
     -- 若功能原本关闭，用户点“悬浮”即明确要求启用；若窗口构建失败则回滚本次启用，避免半启用状态。
     -- 兼容边界：Feature 自己的 widgetVisible/window placement Store 仍由原 Commands 持久化。
@@ -64,7 +68,7 @@ local function Text(parent,id,text,size,tone,slot)
         overflow="ellipsis",slot=slot or {size="fixed",height=22,hAlign="fill"}})
 end
 local function Amount(row)
-    -- 中文维护（2026-10-04）：统计符号使用 ASCII；金币曾独用 U+2212 减号，
+    -- 约束（2026-10-04）：统计符号使用 ASCII；金币曾独用 U+2212 减号，
     -- 未采集占位用 U+2014，部分客户端字体可能显示缺字方框。未知仍不伪造为零。
     if type(row.value) ~= "number" then return "--" end
     local n = math.abs(row.value)
@@ -394,7 +398,7 @@ function Home:Build(parent,route)
     function grid:Layout(x,y,w,h)
         w,h=math.max(1,w or 1),math.max(1,h or 1);self:SetBounds(x,y,w,h)
         local definitions=root.visibleDefinitions or W:GetCards();local columns=self:ResolveColumns(w)
-        -- 中文维护（2026-10-04，用户截图反馈）：固定轨道/跨行导致短列表也占满大框。
+        -- 约束（2026-10-04，用户截图反馈）：固定轨道/跨行导致短列表也占满大框。
         -- 现在按本地投影行数计算有界高度，每列接着上张卡排；不拉伸短卡、不删数据。
         -- 滚动停靠到卡片起点及末屏，只有完全进入视口的卡申请 lease；Native parent 始终固定。
         local bottoms,positions,starts,columnCards,totalHeight={},{},{},{},0

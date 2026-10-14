@@ -1,31 +1,16 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Trade Material Identity V3
+-- Replicated Suite · 贸易材料身份
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Resolves which materials a specialty pack needs, from the localized ratio
--- row. Semantics recovered from the legacy TradeMaterials service; ownership
--- follows the current V3 boundaries: this service owns the identity fact and
--- the only X2Craft access, Presentation/Feature never call X2Craft.
---
--- Resolution layers, in priority order:
---   1. Live craft facts: X2Craft:GetCraftTypeByItemType + GetCraftProductInfo
---      + GetCraftMaterialInfo keyed by the ratio row's product itemType. The
---      craft is trusted only after its product side names the queried itemType.
---      On-demand, serialized at 250ms, cached per itemType for the session.
---   2. Verified product ItemID, then exact legacy name, select a complete static
---      recipe; a conflicting origin or database signature rejects that recipe.
---   3. Shared static families by localized keyword (larder 发酵/陈化蜂蜜/奶酪/药材,
---      肥料/时空碎片/蓝盐运输) — recipes identical in every zone.
---   4. Region Authority + localized family tail: originZoneId picks the zone
---      (nameEn + tradeQuality from the shared zone catalog); localized text
---      only selects the family tail (特制特产=Gilda / 传统特产=Local /
---      保存/标准/新鲜/特供特产=Specialty). Localized text must NEVER choose the region — the
---      legacy "[十字星]→Hasla" hard-map once made Cinderstone packs display
---      Hasla's recipe.
---
--- Everything fails closed: no recipe and no live data yields no identity, and
--- the projection keeps an honest "配方未匹配/解析中" state. No fabricated
--- materials, no background scanning; live reads run only while a Feature
--- explicitly requests identities and stop when its queue is drained/cancelled.
+-- 依据本地化货率行解析特产材料；服务拥有身份事实及唯一 X2Craft 访问，Presentation/Feature 不调用 X2Craft。
+-- 优先层次：①按产品 itemType 读取 GetCraftTypeByItemType/GetCraftProductInfo/GetCraftMaterialInfo，产品侧证
+-- 明查询 itemType 后才信任；按需 250ms 串行，会话按 itemType 缓存。②已验证 Product ItemID，再精确旧名选完整
+-- 静态配方；地区或数据库签名冲突则拒绝。③按本地化关键词共享全区相同配方，如发酵/陈化蜂蜜、奶酪、药材、肥料
+-- 、时空碎片、蓝盐运输。④originZoneId 从共享目录 nameEn+tradeQuality 决定地区，文本只选 family 尾部：特制特
+-- 产=Gilda、传统特产=Local、保存/标准/新鲜/特供特产=Specialty。不能用本地化文本选地区，避免 [十字星] 错映
+-- Hasla。无配方且无实况则无身份，显示配方未匹配/解析中；不造材料、不后台扫描，Feature 显式请求期间读取，队
+-- 列耗尽或取消即停止。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -34,8 +19,7 @@ local M = {
     version = 1,
     IdentityContractVersion = 1,
     presentationBoundary = "service_only",
-    -- Native spacing: craft getters are SideEffectFree, but one chain per tick
-    -- keeps a route batch bounded and off the fast lanes.
+    -- craft getter 虽 SideEffectFree，每 tick 只做一条链，使路线批次有界且不占快速通道。
     intervalMs = 250,
     maxQueue = 64,
     maxCacheEntries = 128,
@@ -47,15 +31,14 @@ local M = {
     owner = {},
     lastError = nil,
     liveReads = 0,
-    recentFailed = {}, -- newest-first bounded ring of failed live attempts
+    recentFailed = {}, -- 失败实时尝试采用最新优先有界环。
     recentFailedMax = 8,
 }
 S.Services.TradeMaterialIdentityV3 = M
 
--- Two different tables live here: S.StaticDataV2 is the REGISTRY (GetCatalog/
--- Register), while S.Data.TradeStaticV2 is the ACCESSOR FACADE carrying
--- GetRecipeByLegacyName / GetMaterialByLegacyName / GetMaterialByCompactId.
--- Resolving through the registry silently yields nil for every lookup.
+-- S.StaticDataV2 是 GetCatalog/Register 登记表；S.Data.TradeStaticV2 才是包含
+-- GetRecipeByLegacyName/GetMaterialByLegacyName/GetMaterialByCompactId 的访问门面。不能误通过登记表查询，否
+-- 则每次均静默 nil。
 local StaticRegistry = S.StaticDataV2
 local StaticFacade = S.Data and S.Data.TradeStaticV2 or nil
 local function NowMs()
@@ -66,9 +49,8 @@ local function Contains(text, token)
     return type(text) == "string" and string.find(text, token, 1, true) ~= nil
 end
 
--- Canonical English material key -> item identity. The static trade_material
--- catalog is the curated Authority; Gilda Star is recipe currency without a
--- catalog entry of its own and is added explicitly.
+-- 标准英文材料键映射物品身份；静态 trade_material 目录是精选权威。Gilda Star 是配方货币、无自有目录项，须显
+-- 式补入。
 local RESOURCE_BY_EN, GILDA_STAR_ITEM_TYPE = {}, 23633
 do
     local meta = S.Data and S.Data.TradeMaterialAuctionMeta or nil
@@ -81,12 +63,10 @@ do
     RESOURCE_BY_EN["Gilda Star"] = { itemType = GILDA_STAR_ITEM_TYPE, includeInCost = false }
 end
 
--- Shared-family recipes recovered verbatim from the supplied working legacy
--- implementation (counts × compact resource ids; compact numbering matches the
--- current S.Data.TradeMaterialResources table).
+-- 共享 family 配方沿用已提供可工作旧实现的数量×紧凑资源 ID，编号与 S.Data.TradeMaterialResources 一致。
 local FAMILY_TABLES = {
     { token = "肥料特产", fallback = "Fertilizer Specialty", template = "template.fertilizer", label = "肥料特产" },
-    -- 中文维护注释（2026-10-02）：蜂蜜/奶酪/药材是材料名称，不是任意货物属于发酵货的证据。
+    -- （2026-10-02）蜂蜜/奶酪/药材是材料名称，不是任意货物属于发酵货的证据。
     -- 保留已存在的“基本/加工/无添加发酵”和陈化文案，避免未知特产借到整个发酵配方。
     { counts = { 2, 4, 20, 1 }, ids = { 62, 63, 64, 65 }, token = "发酵蜂蜜", alternate = "陈化蜂蜜", fallback = "Aged Honey", label = "陈化蜂蜜" },
     { counts = { 2, 50, 30, 1 }, ids = { 62, 12, 48, 65 }, token = "发酵奶酪", alternate = "陈化奶酪", fallback = "Aged Cheese", label = "陈化奶酪" },
@@ -95,9 +75,7 @@ local FAMILY_TABLES = {
     { token = "蓝盐商会运输品", fallback = "Bluesalt Transport", template = "template.transport", label = "蓝盐商会运输品" },
 }
 
--- Localized tail -> legacy recipe family word. Order matters: 特制特产 must be
--- tested before 特产. These words only pick the FAMILY; the region always comes
--- from originZoneId.
+-- 本地化尾部映射旧配方 family 词，顺序重要：特制特产先于特产。只选择 family，地区始终来自 originZoneId。
 local TAIL_RULES = {
     { token = "特制特产", tail = "Gilda Specialty" },
     { token = "传统特产", tail = "Local Specialty" },
@@ -105,32 +83,21 @@ local TAIL_RULES = {
     { token = "特产", tail = "Specialty" },
 }
 
--- ---------------------------------------------------------------------
--- Player-facing material naming.
---
--- The Suite runs on a Chinese RU client and its users are players, not
--- developers. Every internal identifier (canonical EN key such as
--- "Chopped Produce", a compact id, a craftType number, a static-table
--- legacyName like "Halcyona Preserved Specialty") is a data-layer fact and
--- must never reach a page or HUD row. This resolver is the single place that
--- turns an identity into display text; callers pass what they have and get
--- back official Chinese wording, or an honest generic label -- never a raw key.
---
--- Priority: curated Localization Authority by itemType (the same table the
--- native client name is verified against) -> localized static record name ->
--- supplied fallback label -> neutral "材料"/"贸易品" wording.
--- ---------------------------------------------------------------------
+-- 玩家材料命名统一在此把身份转为官方中文或诚实通用标签。Chopped Produce 等标准英文键、紧凑 ID、craftType、
+-- Halcyona Preserved Specialty 等 legacyName 都是数据层事实，不得进入页面或 HUD。优先顺序：按 itemType 的精
+-- 选 Localization 权威（用于核验原生名的同表）->本地化静态记录名->调用者 fallback->中性材料/贸易品，绝不输
+-- 出原始键。
 local function LocalizedItemName(itemType)
     local id = tonumber(itemType)
     if id == nil or S.Localization == nil or type(S.Localization.GetName) ~= "function" then return nil end
     local name = S.Localization:GetName("item", math.floor(id), nil)
     if type(name) ~= "string" or name == "" then return nil end
-    -- GetName synthesizes "ID <n>" when it has nothing; that is not a name.
+    -- GetName 无名称时合成 ID <n>，该值不能视为名称。
     if name:match("^ID%s+%d+$") then return nil end
     return name
 end
 
--- Resolve one material row to player-readable Chinese text.
+-- 把单材料行解析为玩家可读中文。
 function M:ResolveMaterialDisplayName(row)
     if type(row) ~= "table" then return "材料" end
     local name = LocalizedItemName(row.itemType)
@@ -145,8 +112,7 @@ function M:ResolveMaterialDisplayName(row)
     return "材料"
 end
 
--- Resolve a produced trade good (route row / recipe product) to Chinese text.
--- A craftType number or an English legacy recipe name is never acceptable here.
+-- 把路线行或配方产品解析为中文贸易品名；craftType 数字或英文旧配方名不接受。
 function M:ResolveProductDisplayName(itemType, fallbackLabel)
     local name = LocalizedItemName(itemType)
     if name ~= nil then return name end
@@ -161,7 +127,7 @@ function M:ResolveRecipeDisplayName(legacyName)
     if type(recipe) ~= "table" then return nil, "recipe_unknown" end
     local productName = LocalizedItemName(recipe.productItemId)
     if productName ~= nil then return productName, "native_item_name" end
-    -- 中文维护（2026-10-03）：没有产品 ItemID/客户端名称不等于地区未知。今日任务
+    -- （2026-10-03）没有产品 ItemID/客户端名称不等于地区未知。今日任务
     -- 沿用 1.2 的地区显示思路，只读已核配方的 originZoneId；不输出英文键、不猜物品 ID。
     local zones = S.GameIds and S.GameIds.Zone and S.GameIds.Zone.ById or {}
     local zone = zones[tonumber(recipe.originZoneId)]
@@ -179,8 +145,8 @@ local function GetMaterialRecord(ingredient)
         local byCompact = StaticFacade:GetMaterialByCompactId(compactId)
         if byCompact ~= nil then return byCompact end
     end
-    -- Live craft rows may carry only itemType. Resolve through the same curated material record so cost policy
-    -- (bound/non-market/auctionable) cannot diverge between static recipes and X2Craft fallback identities.
+    -- 实时 craft 行可能只有 itemType，须解析同一精选材料记录，使绑定/非市场/可拍卖成本策略在静态配方和
+    -- X2Craft 兜底间一致。
     local itemType = tonumber(ingredient.itemType)
     if itemType ~= nil and type(StaticFacade.GetMaterialByItemId) == "function" then
         return StaticFacade:GetMaterialByItemId(itemType)
@@ -188,9 +154,8 @@ local function GetMaterialRecord(ingredient)
     return nil
 end
 
--- Normalize one ingredient (from a legacy recipe, a shared family table, or a
--- live craft read) into the projection row shape: canonical EN materialKey for
--- the auction-meta lookup, explicit itemType when the record supplies one.
+-- 把旧配方、共享 family 或实时读取的材料归一化为投影行：标准英文 materialKey 用于拍卖元数据查询，记录提供时
+-- 使用显式 itemType。
 local function BuildIngredientRow(ingredient)
     if type(ingredient) ~= "table" then return nil end
     local count = math.max(0, tonumber(ingredient.count) or 0)
@@ -220,7 +185,7 @@ local function BuildIngredientRow(ingredient)
 end
 
 local function RowsFromIngredients(ingredients)
-    -- 中文维护注释（2026-10-02）：缺一个材料也不能把剩余材料标成完整配方。
+    -- （2026-10-02）缺一个材料也不能把剩余材料标成完整配方。
     -- 静态配方只接受真实 ItemID 与正整数需求；绑定资源仍保留，只禁止询价。
     if type(ingredients) ~= "table" then return {} end
     local rows = {}
@@ -235,7 +200,7 @@ end
 
 local function RowsFromFamilyTable(family)
     local counts, ids = family.counts or {}, family.ids or {}
-    -- 中文维护注释：共享发酵配方同样必须全部材料可证明，不能用 min 静默吃掉未登记尾项。
+    -- 共享发酵配方同样必须全部材料可证明，不能用 min 静默吃掉未登记尾项。
     if #counts ~= #ids then return {} end
     local ingredients = {}
     for index = 1, #counts do
@@ -250,13 +215,13 @@ local function GetTemplateRecord(key)
     return type(catalog) == "table" and type(catalog.records) == "table" and catalog.records[tostring(key)] or nil
 end
 
--- Layer 2 + 3. Pure data: no native calls, safe inside projection builders.
+-- 第 2/3 层为纯数据，无原生调用，可安全用于投影构造。
 function M:ResolveStatic(sourceName, originZoneId, productItemType)
     local raw = tostring(sourceName or "")
     if type(StaticFacade) ~= "table" or type(StaticFacade.GetRecipeByLegacyName) ~= "function" then return nil end
 
     local function RecipeResult(recipe, label)
-        -- 中文维护注释：登记时已发现的数据库签名冲突不得在消费端升级成可信材料。
+        -- 登记时已发现的数据库签名冲突不得在消费端升级成可信材料。
         -- 货物与路由地区相矛盾时也不借用另一区域；让既有 Live/待匹配路径继续取证。
         if type(recipe) ~= "table" or recipe.ingredientStatus == "database_mismatch" then return nil end
         if tonumber(originZoneId) ~= nil and tonumber(recipe.originZoneId) ~= nil
@@ -266,7 +231,7 @@ function M:ResolveStatic(sourceName, originZoneId, productItemType)
         return { rows = rows, label = label, source = "static_recipe" }
     end
 
-    -- 中文维护注释（2026-10-02）：货率回执已提供真实商品 ItemID 时，先查已核 TradeProduct
+    -- （2026-10-02）货率回执已提供真实商品 ItemID 时，先查已核 TradeProduct
     -- 的精确配方身份，不因汉化变更/货物名中的“特产”猜品类。纯任务标题没有 ItemID，仍走地区链。
     local products = S.GameIds and S.GameIds.TradeProduct
     local product = type(products) == "table" and type(products.GetByItemId) == "function"
@@ -278,13 +243,13 @@ function M:ResolveStatic(sourceName, originZoneId, productItemType)
     end
     if raw == "" then return nil end
 
-    -- Direct legacy-name hit (server identity may some day match directly).
+    -- 精确旧名直接命中；服务器身份可能直接匹配。
     local direct = StaticFacade:GetRecipeByLegacyName(raw)
     if direct ~= nil then
         return RecipeResult(direct, tostring(direct.legacyName or raw))
     end
 
-    -- Shared families: keyword only, identical recipe in every zone.
+    -- 共享 family 仅按关键词匹配，各地区配方相同。
     for _, family in ipairs(FAMILY_TABLES) do
         if Contains(raw, family.token) or (family.alternate ~= nil and Contains(raw, family.alternate)) or Contains(raw, family.fallback or "") then
             local rows
@@ -298,7 +263,7 @@ function M:ResolveStatic(sourceName, originZoneId, productItemType)
         end
     end
 
-    -- Region Authority + localized family tail.
+    -- 地区权威配合本地化 family 尾部。
     local zoneId = tonumber(originZoneId)
     local zones = S.GameIds and S.GameIds.Zone and S.GameIds.Zone.ById or nil
     local zone = type(zones) == "table" and zones[zoneId] or nil
@@ -308,7 +273,7 @@ function M:ResolveStatic(sourceName, originZoneId, productItemType)
     local tail = nil
     local suffix = raw:match("^%s*(.-)%s*$") or raw
     for _, rule in ipairs(TAIL_RULES) do
-        -- 中文维护注释（2026-10-02）：日常标题开头的“[特产]”与自定义“皮毯特产”不是标准货物品类。
+        -- （2026-10-02）日常标题开头的“[特产]”与自定义“皮毯特产”不是标准货物品类。
         -- 中文普通特产需证明保存/标准/新鲜/特供后缀；更具体的传统/特制仍优先，英文保持完整词尾匹配。
         local localized = suffix:sub(-#rule.token) == rule.token
         if rule.tail == "Specialty" and localized then
@@ -338,9 +303,7 @@ function M:ResolveStatic(sourceName, originZoneId, productItemType)
     return nil
 end
 
--- ---------------------------------------------------------------------
--- Live craft identity: bounded explicit queue, one X2Craft chain per tick.
--- ---------------------------------------------------------------------
+-- 实时 craft 身份采用有界显式队列，每 tick 一条 X2Craft 链。
 local function CollectNumbers(value, out, seen, depth)
     depth = tonumber(depth) or 0
     if depth > 3 or out == nil or #out >= 16 then return end
@@ -429,18 +392,13 @@ end
 
 local function CallCraft(name, ...)
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return false end
-    -- object=nil: ResolveCapabilityHost resolves the X2Craft global at CALL
-    -- time. A load-time capture missed the namespace entirely on one RU client
-    -- ("X2Craft 不可用"), so never cache the host here.
+    -- object=nil 使 ResolveCapabilityHost 在调用时解析 X2Craft 全局；某 RU 加载时捕获会错过整个命名空间，不
+    -- 能在此缓存 host。
     return S.Api:CallCapability("X2Craft:" .. name, nil, name, ...)
 end
 
--- Explain WHY a capability gate refused, with the underlying host fact. The
--- registry distinguishes "namespace global never built" from "method missing on
--- an existing namespace", but IsAllowed only returns a bare "Unavailable"; the
--- observed StaticState plus a live host probe carries the difference. Without
--- this the report can only say "能力未放行" and the next fix is guesswork
--- (same class of blindness as .18.169's "X2Craft 不可用").
+-- 能力拒绝须结合宿主事实解释：登记表可区分命名空间从未构造与已有命名空间缺方法，但 IsAllowed 仅返
+-- Unavailable。StaticState 加实时 host 探测提供区别，避免报告只有“能力未放行”而让维护靠猜测。
 local function CapabilityBlockReason(capabilityName)
     local allowed, reason = S.Api:IsCapabilityAllowed(capabilityName)
     if allowed == true then return nil end
@@ -462,9 +420,8 @@ local function CapabilityBlockReason(capabilityName)
     return capabilityName .. " 未放行: " .. detail
 end
 
--- Returns V3 ingredient rows for a produced itemType, or nil + reason.
--- Fail-closed: a craft whose product side provably does not name the queried
--- itemType is rejected (stale/colliding craftType guard from the legacy code).
+-- 返回产品 itemType 的 V3 材料行，或 nil+reason；产品侧可证明不对应查询 itemType 的 craft 必须拒绝，防
+-- stale 或碰撞 craftType。
 local function ReadLiveMaterials(itemType)
     if S.Api == nil or type(S.Api.IsCapabilityAllowed) ~= "function" then return nil, "能力边界不可用" end
     for _, required in ipairs({
@@ -496,7 +453,7 @@ local function ReadLiveMaterials(itemType)
                 end
             end
         elseif perr ~= nil then
-            productTrusted = true -- probe unreadable: keep legacy fail-open acceptance
+            productTrusted = true -- 产品探测不可读时保留当前允许继续的兼容行为。
         end
         if productTrusted then
             local mok, ma, merr, mb, mc, md = CallCraft("GetCraftMaterialInfo", craftType, 0)
@@ -529,9 +486,8 @@ function M:GetCachedLive(itemType)
     return entry
 end
 
--- Has a live attempt already TERMINATED for this itemType (ready or failed)?
--- The projection uses this to render 配方未匹配 after a failed attempt instead
--- of an endless 配方解析中 while the request is merely queued/in flight.
+-- 检查 itemType 实时尝试是否已终止（ready/failed）；失败后投影显示配方未匹配，不把已经失败误作仍排队/在途而
+-- 永久解析中。
 function M:HasLiveAttempt(itemType)
     itemType = tonumber(itemType)
     if itemType == nil then return false end
@@ -542,9 +498,7 @@ end
 function M:_StartLane()
     if M.running == true then return end
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return end
-    -- P2: the P3 maintenance lane starves under load (RU evidence .18.168:
-    -- 队列=1 读=0 forever). This is a small explicit-demand lane, same class as
-    -- the price quote drain.
+    -- P2 用于小型显式需求，与报价 drain 同类；RU .18.168 证据显示 P3 在负载下会长期队列=1、读=0 饥饿。
     local added = S.Scheduler:AddTask(M.taskName, M.intervalMs, function() M:_Drain() end, false, M.owner, "P2", 1)
     if added == true then M.running = true end
 end
@@ -555,10 +509,8 @@ function M:_StopLane()
     M.running = false
 end
 
--- 维护（2026-09-23，trade-live-cache-budget-1）：liveCache 以 itemType 为稀疏 key，Lua 5.1 的 # 运算符
--- 对哈希表没有计数语义。旧代码对 liveCache 使用长度运算符判断 128 上限，实际通常一直得到 0，长期切路线/新贸易品时
--- session cache 可以无界增长。预算在写入点统一执行：优先淘汰最老失败项，再淘汰最老 ready 项；不会在查询循环
--- 里反复遍历，也不会驱逐当前 pending（它尚未进入 cache）。
+-- liveCache 按 itemType 使用稀疏键，Lua 5.1 # 不表示哈希表项数，不能用其检查 128 项上限。预算统一在写入点执
+-- 行：先淘汰最旧失败项，再淘汰最旧 ready，不在查询循环反复遍历，不驱逐尚未进入缓存的 pending。
 local function TrimLiveCacheForInsert()
     local maxEntries = math.max(1, math.floor(tonumber(M.maxCacheEntries) or 128))
     local count = 0
@@ -590,8 +542,7 @@ function M:_Drain()
     if rows ~= nil and #rows > 0 then
         M.liveCache[request.itemType] = { status = "ready", rows = rows, craftType = craftType, at = NowMs() }
     else
-        -- An empty ready payload is a terminal failure too: caching it as
-        -- ready would leave the row's projection without rows forever.
+        -- 空 ready payload 也属终态失败；缓存为 ready 会让投影永久无行。
         M.liveCache[request.itemType] = { status = "failed", error = tostring(err or (rows ~= nil and "live material info 为空") or "unknown"), at = NowMs() }
         M.lastError = tostring(err or (rows ~= nil and "live material info 为空") or "unknown")
         table.insert(M.recentFailed, 1, { itemType = request.itemType, error = M.lastError, at = NowMs() })
@@ -605,8 +556,7 @@ function M:_Drain()
     end
 end
 
--- Explicit entry: requester token enables lifecycle cancellation (feature
--- disable / new route request). Cached itemTypes fire the callback inline.
+-- 显式 requester token 支持功能禁用或新路线请求时生命周期取消；itemType 缓存命中立即同步回调。
 function M:RequestLive(requester, itemType, callback)
     requester = tostring(requester or "")
     itemType = tonumber(itemType)

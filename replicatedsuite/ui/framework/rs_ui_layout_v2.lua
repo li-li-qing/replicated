@@ -1,5 +1,7 @@
 ------------------------------------------------------------------------
--- Replicated Suite - UI Layout Primitives v2
+-- Replicated Suite · 响应式布局辅助
+-- 作者：Replicated
+-- QQ群：1104129461
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -93,10 +95,7 @@ function Layout:Grid(parent, spec)
     return self
 end
 
--- Resolve a stable responsive column count without coupling LayoutV2 to any
--- specific page.  The caller supplies the available logical width and the
--- smallest usable card width.  This is intentionally pure math: screen-safe
--- clamping and addon scale remain S.Layout Authority.
+-- 纯计算稳定响应列数，不耦合页面；调用方提供逻辑宽和最小可用卡宽，屏幕安全限制/addon scale 仍归 S.Layout。
 function Layout:ResolveResponsiveColumns(availableWidth, spec)
     spec = type(spec) == "table" and spec or {}
     local width = math.max(1, N(availableWidth, 1))
@@ -106,8 +105,7 @@ function Layout:ResolveResponsiveColumns(availableWidth, spec)
     local maxColumns = math.max(minColumns, math.floor(N(spec.maxColumns, 3)))
     local columns = math.floor((width + gap) / (minCellWidth + gap))
     columns = math.max(minColumns, math.min(maxColumns, columns))
-    -- If the requested minimum cannot physically fit, degrade to one column
-    -- instead of producing negative/overlapping card extents.
+    -- 请求最小值物理放不下时降为一列，避免负/重叠卡片 extent。
     if columns > 1 and ((width - gap * (columns - 1)) / columns) < minCellWidth then
         columns = math.max(1, columns - 1)
     end

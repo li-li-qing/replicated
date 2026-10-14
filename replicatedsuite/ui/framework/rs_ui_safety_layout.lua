@@ -1,14 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Layout Safety / Resolution Components v1
+-- Replicated Suite · 视口安全布局
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- UMG-inspired safety layer.  Everything here is explicit/event driven:
--- there is no Tick registration and no hidden polling loop.
---
--- Authority:
---   * S.Api:GetUiMetrics() is the logical viewport Authority.
---   * ResolutionRoot owns viewport-sized composition, not business state.
---   * SafeZone owns edge insets / screen-safe arrangement.
---   * CanvasPanel is intentionally limited to screen-space/HUD/debug cases.
+-- UMG 风格安全层，全部明确/事件驱动，不注册 Tick 或隐藏轮询。
+-- S.Api:GetUiMetrics() 负责逻辑视口；ResolutionRoot 负责视口尺寸组合而不持业务；SafeZone 负责边距/安全排列；CanvasPanel 限屏幕/HUD/诊断用途。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -75,7 +71,7 @@ local function ClampInsets(inset, width, height)
 end
 
 ------------------------------------------------------------------------
--- ResolutionRoot
+-- ResolutionRoot 分辨率根。
 ------------------------------------------------------------------------
 local ResolutionRoots = setmetatable({}, { __mode = "k" })
 RSUI.ResolutionRoots = ResolutionRoots
@@ -162,7 +158,7 @@ function RSUI:RefreshResolutionRoots(force)
 end
 
 ------------------------------------------------------------------------
--- SafeZone
+-- SafeZone 安全区域。
 ------------------------------------------------------------------------
 RSUI:RegisterType("SafeZone", function(spec)
     local c, err = Host("SafeZone", spec)
@@ -217,7 +213,7 @@ RSUI:RegisterType("SafeZone", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- AspectRatioBox
+-- AspectRatioBox 宽高比容器。
 ------------------------------------------------------------------------
 RSUI:RegisterType("AspectRatioBox", function(spec)
     local c, err = Host("AspectRatioBox", spec)
@@ -273,7 +269,7 @@ RSUI:RegisterType("AspectRatioBox", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- CanvasPanel (restricted absolute layout)
+-- CanvasPanel 受限绝对布局。
 ------------------------------------------------------------------------
 RSUI:RegisterType("CanvasPanel", function(spec)
     local c, err = Host("CanvasPanel", spec)
@@ -330,7 +326,7 @@ RSUI:RegisterType("CanvasPanel", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- Screen-bound helpers (on demand only)
+-- 按需屏幕边界辅助函数。
 ------------------------------------------------------------------------
 function RSUI:GetAbsoluteRect(component)
     if not self:IsComponent(component) then return nil end

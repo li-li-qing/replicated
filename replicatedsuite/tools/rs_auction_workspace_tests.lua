@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Auction Workspace Services Tests
+-- Replicated Suite · 拍卖工作区测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 拍卖工作区共享服务测试。
 ------------------------------------------------------------------------
 unpack = unpack or table.unpack
 local passed, total = 0, 0
@@ -66,7 +70,7 @@ S.Services.TradeMaterialIdentityV3 = {
     ResolveMaterialDisplayName = function(self, row) return tostring(row.displayName or row.materialKey or "材料") end,
 }
 
--- Build representative fixture from real authoritative daily quest table.
+-- 使用真实每日任务权威数据表构造代表性测试数据。
 local single, multi
 for _, entry in ipairs(S.Data.DailyTradePackQuestRecipes or {}) do
     if #entry.recipes == 1 and not single then single = entry end

@@ -1,7 +1,12 @@
--- Replicated Suite status persistence split regression tests (.18.243)
+------------------------------------------------------------------------
+-- Replicated Suite · Buff持久化拆分测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 中文维护注释：这些用例只验证冷启动/持久化 Authority；Native SaveData/LoadData 为内存模拟，
 -- 不宣称可替代 ArcheRage RU 实机。生产目标是证明：旧 v3.buff_display 不再是运行时写 Authority，
 -- tracking 必须通过 inactive A/B + manifest 最终提交，当前已批准的 A 方案只用于首次迁移。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, function(e) return tostring(e) .. '\n' .. debug.traceback() end)
@@ -96,7 +101,7 @@ Test('user-approved A migrates legacy truncated player auto from intact target e
     local last=#player.chunks; for i=3,last do player.chunks[i]=nil end
     player.chunks[2]=assert(player.chunks[2]):sub(1,#player.chunks[2]-2)
 
-    -- Remove all new split stores from fixture disk: the next boot must take the one-time migration path.
+    -- 从测试磁盘移除所有新拆分 Store，确保下一次启动进入一次性迁移路径。
     for k in pairs(io.disk) do if tostring(k):find('buff_display_tracking_',1,true) or tostring(k):find('buff_display_settings',1,true) or tostring(k):find('buff_display_layout',1,true) then io.disk[k]=nil end end
     local _,fresh,_,fio = Boot({disk=io.disk})
     local ok,why = fresh:EnsureStoreLoaded(); assert(ok,why)

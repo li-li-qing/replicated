@@ -1,4 +1,10 @@
--- Native-only host: these assertions load the real Queue, AuctionQuery, Api and Surface.
+------------------------------------------------------------------------
+-- Replicated Suite · 交易单次查询传输测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 仅替代原生边界，断言加载真实 Queue、AuctionQuery、Api 和 Surface。
+------------------------------------------------------------------------
 local Boot = dofile('tools/rs_trade_requote_test_host.lua')
 local passed, total = 0, 0
 local function Eq(a,b,m) assert(a==b,(m or 'value')..': expected='..tostring(b)..' actual='..tostring(a)) end
@@ -409,7 +415,7 @@ Test('unknown-grade row is excluded while a known valid row remains a reference'
  local r=h.query:DescribePriceEvidenceDetail().requests[1]
  Eq(r.searchArguments.exactMatch,false);Eq(r.reasons.grade_missing,1);Eq(r.acceptedIndex,2)
 end)
--- 中文维护：分阶段计时只放宽有限本地排队，不能延长发包后响应、抢占已有 Native 或追加重试。
+-- 分阶段计时只放宽有限本地排队，不能延长发包后响应、抢占已有 Native 或追加重试。
 Test('Trade staged wait survives queue time then retains five-second native response limit',function()
  local h=Boot();local results={}
  assert(Strict(h,'first',101,{},function(r)results.first=r end))

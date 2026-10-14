@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Layout Debug Overlay v1
+-- Replicated Suite · 布局诊断覆盖层
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Explicit diagnostics only.  The overlay never registers Tick/OnUpdate and
--- only scans/refreshes when the developer calls Refresh().  Native widgets are
--- pooled because RU has no validated generic DestroyWidget API.
+-- 仅显式诊断，覆盖层不注册 Tick/OnUpdate；开发者调用 Refresh() 才扫描/刷新。RU 未验证通用 DestroyWidget，因此 Native 使用池。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

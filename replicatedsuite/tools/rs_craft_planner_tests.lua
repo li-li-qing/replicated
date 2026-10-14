@@ -1,19 +1,20 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 13 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Craft Assist Test Suite
+-- Replicated Suite · 制作计划测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Tests Craft Assist (tools_craft) after removal of life_craft_planner:
---   * Metadata contract & capability gating
---   * Recipe resolution & user selection (SelectRecipe)
---   * Backpack held counts & shortage calculation
---   * Price quote queue integration (QuotePendingMaterials)
---   * Native craft surface observation (CraftSurfaceV3) fail-closed geometry
---   * FoundationGate contracts: v3_craft_user_selection_contract and v3_craft_sidecar_contract
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
+-- 停用 life_craft_planner 后，测试当前制作辅助 tools_craft：
+-- 元数据契约和能力门禁；
+-- 配方解析与显式 SelectRecipe 选择；
+-- 背包持有数量及缺口计算；
+-- QuotePendingMaterials 与询价队列集成；
+-- CraftSurfaceV3 原生制作界面观察，未知几何时安全拒绝；
+-- 基础门禁契约 v3_craft_user_selection_contract 和 v3_craft_sidecar_contract。
 ------------------------------------------------------------------------
-
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -50,7 +51,7 @@ dofile("core/rs_constants.lua")
 dofile("core/rs_foundation_gate.lua")
 dofile("features/rs_feature_registry.lua")
 
--- Mock RSUI and UIV3 Host components for Sidecar and Page
+-- 为伴随浮窗和页面提供 RSUI、UIV3 宿主测试替身。
 S.UIV3 = S.UIV3 or {}
 S.UIV3.WidgetHost = {
     Register = function(self, id, spec) return true end,
@@ -107,13 +108,13 @@ S.RSUI.NumericInput = function(spec)
     return num
 end
 
--- Mock FeatureRuntime
+-- 提供 FeatureRuntime 测试替身。
 S.FeatureRuntime = S.FeatureRuntime or {}
 S.FeatureRuntime.IsEnabled = function(_, id) return true end
 S.FeatureRuntime.IsImplemented = function(_, id) return true end
 S.FeatureRuntime.SetPreferredEnabled = function(_, id, v) return true end
 
--- Load craft services and features
+-- 按依赖顺序加载制作服务和功能。
 dofile("services/rs_craft_surface_v3.lua")
 -- 中文维护注释（2026-09-28，Phase 1 Batch A）：复现 toc.g 顺序，先加载通用装配骨架。
 dofile("features/shared/rs_feature_slice_factory.lua")
@@ -161,7 +162,7 @@ Test("C2: Capability permissions & read-only gating", function()
         assert(desc.SideEffectFree == true, capName .. " must be SideEffectFree")
     end
 
-    -- Write mutators must NOT be permitted
+    -- 修改原生状态的写接口必须被拒绝。
     local forbidden = { "X2Craft:Craft", "X2Craft:ExecuteCraft", "X2Craft:StartCraft" }
     for _, capName in ipairs(forbidden) do
         local desc = S.ApiCapabilities:Describe(capName)
@@ -178,7 +179,7 @@ Test("C3: Recipe resolution and user selection", function()
     assert(firstOption.value ~= nil, "option value missing")
     assert(firstOption.craftId ~= nil, "option craftId missing")
 
-    -- Select the first recipe
+    -- 选择第一个制作配方。
     local ok, err = Assist.Commands:SelectRecipe(firstOption.value)
     assert(ok == true, "SelectRecipe failed: " .. tostring(err))
 
@@ -186,7 +187,7 @@ Test("C3: Recipe resolution and user selection", function()
     assert(proj.selectedRecipeKey == firstOption.value, "selectedRecipeKey mismatch")
     assert(Assist.State.craftType == firstOption.craftId, "craftType mismatch")
 
-    -- Invalid recipe key rejected
+    -- 拒绝无效配方键。
     local badOk = Assist.Commands:SelectRecipe("non_existent_recipe_key_99999")
     assert(badOk == false, "invalid recipe key should be rejected")
 end)
@@ -212,7 +213,7 @@ Test("C4: Shared region labels and selected recipe display agree", function()
 end)
 
 Test("C5: Backpack held counts and shortage calculation", function()
-    -- Set mock X2Bag with specific items
+    -- 为 X2Bag 替身配置指定物品。
     local mockBag = {
         [1] = { itemType = 18888, count = 25 },
         [2] = { itemType = 18889, count = 5 },
@@ -224,7 +225,7 @@ Test("C5: Backpack held counts and shortage calculation", function()
         end,
     }
 
-    -- Set mock X2Craft
+    -- 配置 X2Craft 测试替身。
     _G.X2Craft = {
         GetCraftBaseInfo = function(_, craftType)
             return { name = "测试配方", actability = 10 }
@@ -234,9 +235,9 @@ Test("C5: Backpack held counts and shortage calculation", function()
         end,
         GetCraftMaterialInfo = function(_, craftType, doodadId)
             return {
-                { itemType = 18888, count = 30 }, -- held 25 -> shortage 5
-                { itemType = 18889, count = 5 },  -- held 5 -> shortage 0
-                { itemType = 18890, count = 10 }, -- held 0 -> shortage 10
+                { itemType = 18888, count = 30 }, -- 持有 25，缺口应为 5。
+                { itemType = 18889, count = 5 },  -- 持有 5，缺口应为 0。
+                { itemType = 18890, count = 10 }, -- 持有 0，缺口应为 10。
             }
         end,
         GetCraftTypeByItemType = function(_, itemType)
@@ -299,7 +300,7 @@ Test("C8: Explicit material quote queue integration", function()
 end)
 
 Test("C9: CraftSurfaceV3 observation and fail-closed safety", function()
-    -- Mock ADDON
+    -- 提供 ADDON 测试替身。
     local contentVisible = false
     local mainScriptVisible = nil
     local returnContent = true
@@ -320,7 +321,7 @@ Test("C9: CraftSurfaceV3 observation and fail-closed safety", function()
     _G.UIC_CRAFT_ORDER = 8802
     _G.UIC_CRAFT_BOOK = 8803
 
-    -- Case A: Geometry returned, but Content widget is nil and visibility is nil -> must fail closed on geometry-only
+    -- 情形 A：有几何返回，但 Content 和可见性均为 nil；不能仅凭几何判断窗口打开。
     returnContent = false
     contentVisible = false
     mainScriptVisible = nil
@@ -328,20 +329,20 @@ Test("C9: CraftSurfaceV3 observation and fail-closed safety", function()
     assert(snapA.visible == false, "Geometry-only without visibility fact must fail closed")
     assert(snapA.source == "geometry-only" or snapA.status == "unknown", "source should indicate geometry-only, got: " .. tostring(snapA.source))
 
-    -- Case B: Content visible is true -> ready and visible
+    -- 情形 B：Content 明确可见时，状态为已就绪且可见。
     returnContent = true
     contentVisible = true
     local snapB = Surface:_Read()
     assert(snapB.visible == true, "Positive content visibility must yield visible = true")
     assert(snapB.status == "ready", "status should be ready")
 
-    -- Case C: MainScript visible is boolean true -> ready and visible
+    -- 情形 C：MainScript 可见性为布尔 true 时，状态为已就绪且可见。
     contentVisible = false
     mainScriptVisible = true
     local snapC = Surface:_Read()
     assert(snapC.visible == true, "Boolean visible = true from mainscript must yield visible = true")
 
-    -- Case D: MainScript visible is false -> visible is false
+    -- 情形 D：MainScript 可见性为 false 时，visible 必须为 false。
     mainScriptVisible = false
     local snapD = Surface:_Read()
     assert(snapD.visible == false, "MainScript visible = false must yield visible = false")

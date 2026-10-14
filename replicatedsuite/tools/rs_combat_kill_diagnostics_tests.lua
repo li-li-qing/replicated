@@ -1,4 +1,10 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 战斗击杀诊断测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 真实 Bus/Analytics/指标/模块报告；原生启停和磁盘为替身，不代表 RU 已确认击杀 ABI。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)
@@ -318,7 +324,7 @@ Test('native ingress survives self filtering and distinguishes rejected payloads
     local text=ExportReport(h)
     assert(text:find('Untouched',1,true) and text:find('self_scope_filtered',1,true),'merged TXT omitted ingress/filter evidence')
 end)
--- 中文维护：原生明确自身归属无须最近伤害；高密度他人伤害不能挤占死亡入口证据。
+-- 原生明确自身归属无须最近伤害；高密度他人伤害不能挤占死亡入口证据。
 Test('one shot kill with no damage ledger remains accepted after crowd traffic',function()
     local h=Boot()
     for i=1,2000 do h.bus:_OnCombatRaw('private','other-id','SPELL_DAMAGE','Other'..i,'Enemy',11,'Hit',0,100,true) end
@@ -328,7 +334,7 @@ Test('one shot kill with no damage ledger remains accepted after crowd traffic',
     assert(d.ingress.counters.accepted==1 and #d.ingress.events==1,'damage traffic allocated ingress diagnostics')
     assert(#d.bus.killNotifications.events==1)
 end)
--- 中文维护：姓名死亡通知仍无击杀者；原始标量留在入口，超时结算不得据此推断击杀。
+-- 姓名死亡通知仍无击杀者；原始标量留在入口，超时结算不得据此推断击杀。
 Test('missing attribution keeps native death notice parameters at ingress',function()
     local h=Boot();h:Damage(victim);h.bus:_OnDeathNotice(victim,'two',false,17,'five');h:Advance(1800)
     local d=h.F:DescribeDiagnosticDetail()
@@ -336,7 +342,7 @@ Test('missing attribution keeps native death notice parameters at ingress',funct
     assert(row.kind=='death_notice' and row.victim==victim and row.rawNotice2=='two' and row.rawNotice3==false and row.rawNotice5=='five')
     assert(d.kills.counters.missing_killer_source==1 and h.F:GetPersonalHistoryProjection().totals.kills==0,'missing attribution was fabricated')
 end)
--- 中文维护：没有活动死亡指标时必须区分采集关闭和通知未到，原生接收事实仍只读留证。
+-- 没有活动死亡指标时必须区分采集关闭和通知未到，原生接收事实仍只读留证。
 Test('ingress distinguishes inactive metrics without starting collection',function()
     local h=Boot();h.A.factPlans.death={};local writes=h.writes
     h.bus:_OnKillNotice('UNIT_KILL_STREAK',{killerName='Self',victimName='Inactive'})
@@ -344,7 +350,7 @@ Test('ingress distinguishes inactive metrics without starting collection',functi
     assert(d.ingress.counters.no_active_metrics==1 and d.ingress.events[1].victim=='Inactive')
     assert(h.writes==writes and h.F:GetPersonalHistoryProjection().totals.kills==0,'inactive ingress started statistics')
 end)
--- 中文维护：覆盖淘汰和脱离现场的导出副本须可验证；停止业务不得抹掉刚发生的漏记现场。
+-- 覆盖淘汰和脱离现场的导出副本须可验证；停止业务不得抹掉刚发生的漏记现场。
 Test('ingress has bounded detached read only snapshots preserved on stop',function()
     local h=Boot()
     for i=1,80 do h.bus:_OnKillNotice('UNIT_KILL_STREAK',{killerName='Other',victimName='Filtered'..i,killerKillStreak=1,gameType=5}) end

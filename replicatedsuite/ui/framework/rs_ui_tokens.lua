@@ -1,5 +1,7 @@
 ------------------------------------------------------------------------
--- Replicated Suite - UI Design Tokens v2
+-- Replicated Suite · 界面设计常量
+-- 作者：Replicated
+-- QQ群：1104129461
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -19,17 +21,14 @@ local Tokens = {
     -- 共享滚动位置指示：滑块与深色轨道同色系，仅略浅，避免突出的高对比色块。
     -- 保持实色且显式不透明，不依赖客户端渐变的默认 alpha。
     scrollbar = { track = { 0.015, 0.035, 0.042, 1 }, thumb = { 0.065, 0.090, 0.102, 1 } },
-    -- 中文维护：输入及滑杆归主题所有；保留原深色值，浅色切换原位更新。
+    -- 输入及滑杆归主题所有；保留原深色值，浅色切换原位更新。
     input = { background = {0.015,0.022,0.032,0.995}, text = {1,0.96,0.84,1},
         placeholder = {0.61,0.66,0.67,1}, border = {0.34,0.43,0.52,0.98}, focus = {0.88,0.68,0.28,1}, caret = {1,0.82,0.36,1} },
     slider = { track = {0.26,0.31,0.37,0.95}, disabled = {0.16,0.18,0.21,0.55},
         thumbBorder = {0.82,0.68,0.34,1}, thumb = {0.18,0.21,0.25,0.98} },
     resize = { accent = {0.84,0.68,0.28,1} },
     decorations = { separator = {.08,.28,.31,.58}, split = {.08,.28,.31,.72}, hover = {.2,.74,.84,1} },
-    -- Top-level z-order is explicit. All values are within the shared "system"
-    -- UI layer; native Raise() remains the recency tiebreaker inside each role.
-    -- Main application shell must stay below independent HUD windows, while
-    -- transient popup/menu surfaces must stay above both.
+    -- 顶层 z-order 明确声明，值均在共享 system 层，Native Raise() 在角色内按最近使用决胜；主 Shell 在独立 HUD 下，临时弹层/菜单在两者上。
     layer = {
         shellPriority = 100,
         floatingPriority = 1000,
@@ -79,7 +78,7 @@ Tokens.tone.orange = color.orange
 Tokens.tone.red = color.red
 Tokens.tone.blue = color.blue
 
--- Button-state colors are semantic tokens rather than page-owned literals.
+-- 按钮状态色是语义 token，不由页面写颜色常量。
 Tokens.button = {
     normal = { 0.025, 0.065, 0.080, 0.97 },
     active = { 0.035, 0.145, 0.170, 0.99 },

@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - tools_craft Feature Authority
+-- Replicated Suite · 制作台助手功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 1 Batch D（2026-09-28）：从 features/rs_business_bridge.lua 机械搬迁。
--- 只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、UpdateTopic、Demand owner、
--- Commands、Projection shape、ApiDependencies、CraftUserSelectionContractVersion 与
+-- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
 -- 有界提取器上限（CRAFT_MAX_*/CRAFT_GRAPH_*）全部与被搬迁前逐字一致。
---
 -- Authority 边界：制作配方与材料事实来自 X2Craft / X2Bag 只读接口，报价来自共享 PriceQuoteQueueV3；
 -- 本文件只做有界解析与投影整形，普通 Refresh 绝不发起逐行询价。
 ------------------------------------------------------------------------
@@ -17,16 +16,12 @@ local Call, Copy, Number, Scalar, Text, NewFeature = FSF.Call, FSF.Copy, FSF.Num
 local P = S.Persistence
 local BagApi = rawget(_G, "X2Bag")
 local CraftApi = rawget(_G, "X2Craft")
--- 中文维护注释：背包扫描上界是平台级共享值（tools_bag 与 craft 共用），
+-- 背包扫描上界是平台级共享值（tools_bag 与 craft 共用），
 -- 唯一 Authority 是 features/shared/rs_shared_bounds.lua，禁止在本文件另写数字。
 local BAG_SCAN_LIMIT = S.SharedBounds and S.SharedBounds.BagScanLimit
 if type(BAG_SCAN_LIMIT) ~= "number" then error("SharedBounds.BagScanLimit unavailable for tools_craft") end
 
--- Life/tools data reads with an explicit craft context.  The native craft
--- payloads are not a stable Lua schema, so this deliberately keeps a small
--- bounded extractor here instead of presenting an opaque "list returned"
--- string as a completed product capability.  The same read/command/projection
--- objects are registered for both craft features below.
+-- life/tools读模型需要明确制作上下文。Native制作payload不是稳定Lua schema，因此使用小型有界提取器，不能用不透明已返回列表文字宣称能力完成；下方两个制作功能共用read/command/projection对象。
 local CRAFT_MAX_TYPES = 16
 local CRAFT_MAX_ROWS = 64
 local CRAFT_MAX_NODES = 256
@@ -81,8 +76,7 @@ local function CraftRecord(value, inheritedCount)
             grade = grade or CraftNumberField(child, CRAFT_GRADE_KEYS)
         end
     end
-    -- A few native bindings expose { itemType, count } pairs instead of named
-    -- fields.  Accept that shape only when the first scalar is a positive ID.
+    -- 部分Native绑定返回{itemType,count}元组而非命名字段；仅首个标量为正ID时接受。
     if itemType == nil and type(value[1]) ~= "table" then itemType = CraftInteger(value[1], false) end
     if count == nil and type(value[2]) ~= "table" then count = CraftInteger(value[2], true) end
     if itemType == nil and name == nil and count == nil then return nil end
@@ -108,8 +102,7 @@ local function CraftCollectRecords(payload)
             diagnostics.sourceCount = diagnostics.sourceCount + 1
             if #rows < CRAFT_MAX_ROWS then rows[#rows + 1] = record else diagnostics.truncated = true end
         end
-        -- Visit arrays first for deterministic native list order, then named
-        -- children.  Identity wrappers are already folded into this record.
+        -- 先遍历数组保证Native列表确定顺序，再遍历命名子项；身份包装已折叠到当前记录。
         for index, child in ipairs(value) do
             if type(child) == "table" then visit(child, CraftNumberField(value, CRAFT_COUNT_KEYS), depth + 1) end
         end
@@ -128,7 +121,7 @@ local CRAFT_STATUS_ZH = {
     opaque = "字段待核", partial = "部分可用", unavailable = "不可用", resolved = "已匹配",
     missing = "字段不完整", idle = "等待选择",
 }
--- 中文维护注释（2026-10-02）：制作下拉框/当前制作物与拍卖日常共用唯一 Zone 名称 Authority。
+-- 制作下拉框/当前制作物与拍卖日常共用唯一 Zone 名称 Authority。
 -- 此处曾复制同一份错误中文映射，修共享表后仍会把 Perinoor 显示成棋盘；禁止再次内置地区表。
 local function CraftZoneName(zoneId)
     local zones = S.GameIds and S.GameIds.Zone and S.GameIds.Zone.ById
@@ -215,13 +208,8 @@ end
 
 local function CraftQuote(item)
     if item == nil or item.itemType == nil then return nil, "identity_unknown" end
-    -- GetLowestPrice is a cooldown-bound server query. A craft graph can contain
-    -- many materials, so ordinary Refresh must never fan out one request per row.
-    -- Pricing belongs to the explicit, rate-limited PriceQuoteQueueV3 service:
-    -- the user triggers QuoteMaterial per material, the queue serializes + paces
-    -- + async-callbacks the result, and the completed price is exposed through
-    -- the shared itemType read model. Here we only READ that read model — never
-    -- issue a server request from a Refresh.
+    -- GetLowestPrice是有冷却的服务器查询；配方可能材料很多，普通Refresh禁止逐行发请求。
+    -- 报价由显式限频PriceQuoteQueueV3负责，用户逐材料触发QuoteMaterial，队列串行、控节奏并异步回调；结果经共享itemType读模型提供，这里只读，Refresh禁止发服务器请求。
     local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
     local price
     if type(queue) == "table" and type(queue.GetPriceByItemType) == "function" then
@@ -359,9 +347,7 @@ local function CraftCollectTypeIds(value, output, seen, depth)
     end
 end
 
--- Bounded graph projection over records already returned by the verified
--- X2Craft getters. This deliberately does not enumerate the catalog or issue
--- recursive API calls: unknown children remain visible as unresolved leaves.
+-- 仅对已核实X2Craft getter返回的记录做有界图投影；禁止枚举目录或递归API调用，未知子项保留为未解析叶节点。
 local CRAFT_GRAPH_MAX_DEPTH = 6
 local CRAFT_GRAPH_MAX_NODES = 256
 local CRAFT_GRAPH_MAX_QUANTITY = 1000000000
@@ -494,7 +480,7 @@ local function CraftRead(feature, reason)
         feature.State.craftType = math.floor(tonumber(selectedRecipe.craftId))
         feature.State.itemType = nil
     end
-    -- 中文维护（performance-cache-1）：只有“本次报价完成”复用已验证的配方结构。
+    -- 只有“本次报价完成”复用已验证的配方结构。
     -- 缓存归当前 Feature 会话，键覆盖所选配方/物品/制作台/Generation；手工刷新、重开
     -- 与上下文变化都重新采样，失败/空结果不负缓存，绝不冻结 Native 错误或报价状态。
     local cache = feature.CraftRecipeCache
@@ -520,8 +506,8 @@ local function CraftRead(feature, reason)
     end
     rows[#rows + 1] = { key = "craft:resolution", name = "当前制作物", text = selectedRecipe ~= nil and (CraftZoneName(selectedRecipe.originZoneId) .. " · " .. CraftFamilyLabel(selectedRecipe)) or "已读取当前制作上下文", statusText = "已匹配", tone = "default", source = resolution.source, itemType = resolution.itemType, craftTypes = Copy(craftTypes) }
     local anyReadable, anyReady, errors = false, false, {}
-    -- 中文维护：当前 RU 入口没有已证实的完整背包变更事件。数量/缺口仍现场读取，
-    -- 避免为了省扫描把报价期间拿取/消耗的材料冻结；本轮只缓存可证明静态的配方。
+    -- 当前 RU 入口没有已证实的完整背包变更事件。数量/缺口仍现场读取，
+    -- 避免为了省扫描把报价期间拿取/消耗的材料冻结；当前只缓存可证明静态的配方。
     local held, bagDiagnostics = CraftHeldCounts()
     local doodadId = feature.State.doodadId == nil and 0 or CraftInteger(feature.State.doodadId, true)
     if doodadId == nil then doodadId = 0 end
@@ -545,7 +531,7 @@ local function CraftRead(feature, reason)
                     end
                 end
             end
-            -- 中文维护：在价格/数量 enrich 前保存 detached 原始解析；最多 CRAFT_MAX_TYPES 个
+            -- 在价格/数量 enrich 前保存 detached 原始解析；最多 CRAFT_MAX_TYPES 个
             -- 配方，每个材料解析仍受原有行数/节点上界约束，不累计多制作台或历史报价。
             if okBase and okProduct and okMaterial and recipe.base.status == "ready"
                 and recipe.product.status == "ready" and recipe.materials.status == "ready" then
@@ -638,10 +624,7 @@ local function CraftCommands()
             local doodadId = CraftInteger(value, true); if doodadId == nil then return false, "制作台对象编号必须是非负整数" end
             return CraftPersist(feature, "craft_doodad", function() feature.State.doodadId = doodadId end)
         end,
-        -- Explicit single-material lowest-price quote. Ordinary Refresh never
-        -- fans out GetLowestPrice; the user triggers a quote here and the shared
-        -- queue owns pacing. Completion rebuilds this Feature once so the visible
-        -- material unit/subtotal values update without another user refresh.
+        -- 显式单材料最低价报价由用户触发，共享队列控节奏；普通Refresh禁止批量调用GetLowestPrice。完成后重建Feature一次，无需用户再刷新即可显示单价/小计。
         QuoteMaterial = function(feature, itemType, itemGrade)
             local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
             if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
@@ -651,10 +634,7 @@ local function CraftCommands()
             if ok ~= true then return false, status or "报价请求失败" end
             return true, status or "queued"
         end,
-        -- Explicit batch quote for the currently projected recipe only. Targets
-        -- are deduplicated and bounded by the shared queue capacity. To avoid a
-        -- full Bag/Craft rescan every 560ms, callbacks coalesce to ONE refresh
-        -- after the last successfully queued quote completes.
+        -- 显式批量报价仅针对当前投影配方；目标去重并受共享队列容量限制。回调合并为最后成功入队报价完成后的单次刷新，避免每560ms全量Bag/Craft重扫。
         QuotePendingMaterials = function(feature)
             local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
             if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
@@ -696,11 +676,11 @@ local function CraftCommands()
 end
 
 local CRAFT_API_DEPENDENCIES = { "X2Craft:GetCraftBaseInfo", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Craft:GetCraftTypeByItemType", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" }
--- 中文维护注释（2026-09-15，移除 life_craft_planner）：共享 CraftRead/CraftProjection 仍由制作台助手使用，
+-- 共享 CraftRead/CraftProjection 仍由制作台助手使用，
 -- 但不再实例化 life_craft_planner，因此不会注册 v3.business.life_craft_planner Store、Demand 或 Runtime Implementation。
 -- 旧磁盘键保持原样不主动清除，避免“删除功能”变成不可逆用户数据写操作；toc 同时停止加载 Planner extension。
 local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands(),
-    -- 中文维护（performance-cache-1）：最后一个消费端关闭时释放静态工作缓存；重开由
+    -- 最后一个消费端关闭时释放静态工作缓存；重开由
     -- consumer_acquire 完整采样，不让无需求的 Feature 保留配方副本，也不增加任何任务。
     reconcileDemand = function(feature, before, after)
         if (tonumber(after and after.count) or 0) <= 0 then feature.CraftRecipeCache = nil end

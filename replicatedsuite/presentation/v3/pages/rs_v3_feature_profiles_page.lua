@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Feature Profiles Page
+-- Replicated Suite · 功能方案页面
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation Proxy only. The page edits profile intent through
--- FeatureProfiles.Commands; FeatureRuntime remains the only lifecycle writer.
+-- 仅作为表现代理，通过 FeatureProfiles.Commands 编辑方案意图；FeatureRuntime 仍是唯一生命周期写入者。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -13,7 +14,7 @@ if type(RSUI) ~= "table" or type(D) ~= "table" or type(PageHost) ~= "table" or t
 
 local ROUTE = "tools.feature_profiles"
 
--- 中文维护（2026-09-25，feature-profile-input-action-1）：Native EditBox 的 OnLostFocus
+-- 约束（2026-09-25，feature-profile-input-action-1）：Native EditBox 的 OnLostFocus
 -- 可能晚于“新建/改名”按钮 OnClick。这里读取 TextInput 的 action draft，而不是只读已提交
 -- Binding；否则用户已经看到并输入名称，命令仍会收到空字符串。Presentation 只读取草稿并
 -- 提交给 Feature Commands，Store/方案 Authority 仍完全属于 FeatureProfiles。
@@ -44,7 +45,7 @@ local function BuildPage(parent, route)
     })
 
     ------------------------------------------------------------------------
-    -- Left: profile library + profile-level commands.
+    -- 左侧：方案库与方案级命令。
     ------------------------------------------------------------------------
     local left = RSUI:Border({
         id = "v3_feature_profiles_left", parent = body, variant = "card", gradient = true, padding = 6,
@@ -114,7 +115,7 @@ local function BuildPage(parent, route)
         slot = { size = "fill", fill = 1 } })
     local deleteButton = RSUI:Button({ id = "v3_feature_profiles_delete", parent = deleteRow, text = "删除选中", compact = true,
         slot = { size = "fill", fill = 1 } })
-    -- 中文维护：所有功能方案快捷按钮共享一个防误拖偏好；主菜单编辑不依赖当前选中的方案。
+    -- 所有功能方案快捷按钮共享一个防误拖偏好；主菜单编辑不依赖当前选中的方案。
     local quickLock = RSUI:Toggle({ id = "v3_feature_profiles_quick_lock", parent = leftStack, compact = true,
         onText = "快捷按钮：已锁定", offText = "快捷按钮：可拖动", slot = { size = "fixed", height = 27, hAlign = "fill" },
         get = function() return Feature:GetProjection().quickButtonsLocked == true end,
@@ -127,7 +128,7 @@ local function BuildPage(parent, route)
         overflow = "wrap", maxLines = 4, slot = { size = "fill", fill = 1, minHeight = 38, hAlign = "fill", vAlign = "fill" } })
 
     ------------------------------------------------------------------------
-    -- Right: selected profile's complete feature target state.
+    -- 右侧：所选方案的完整功能目标状态。
     ------------------------------------------------------------------------
     local right = RSUI:Border({
         id = "v3_feature_profiles_right", parent = body, variant = "card", gradient = true, padding = 6,
@@ -154,7 +155,7 @@ local function BuildPage(parent, route)
         end,
         onItemActivated = function(item)
             if type(item) ~= "table" or root.selectedProfileId == nil then return false, "请先选择方案" end
-            if item.controllable ~= true then return false, "该页面不参与方案开关" end -- 中文维护：基础页同名展示，但双击不得绕过 Runtime 安全范围。
+            if item.controllable ~= true then return false, "该页面不参与方案开关" end -- 基础页同名展示，但双击不得绕过 Runtime 安全范围。
             local ok, err = Feature.Commands:SetModule(root.selectedProfileId, item.featureId, item.targetEnabled ~= true)
             if ok ~= true then root:SetActionStatus("修改失败：" .. tostring(err or "未执行"), "warn") end
             return ok, err
@@ -198,7 +199,7 @@ local function BuildPage(parent, route)
 
     function root:RefreshEditor(selectionChanged)
         local projection = Feature:GetProjection() or {}
-        quickLock:Render() -- 中文维护：锁设置与方案选择独立，空方案列表也允许调整偏好。
+        quickLock:Render() -- 锁设置与方案选择独立，空方案列表也允许调整偏好。
         if self.selectedProfileId == nil then self.selectedProfileId = tonumber(projection.selectedId) end
         local row, index = ProfileRow(projection, self.selectedProfileId)
         if row == nil then
@@ -230,7 +231,7 @@ local function BuildPage(parent, route)
             for i, module in ipairs(projection.moduleRows or {}) do if tostring(module.featureId) == tostring(self.selectedFeatureId) then selectedIndex = i; break end end
             if selectedIndex ~= nil and moduleTable:GetSelectedKey() ~= self.selectedFeatureId then moduleTable:SetSelectedIndex(selectedIndex) end
         end
-        local hasModule = false -- 中文维护：选择基础页面时禁用开/关按钮，不能以“已有选择”代替控制资格。
+        local hasModule = false -- 选择基础页面时禁用开/关按钮，不能以“已有选择”代替控制资格。
         for _, module in ipairs(projection.moduleRows or {}) do
             if module.featureId == self.selectedFeatureId and module.controllable == true then hasModule = true; break end
         end

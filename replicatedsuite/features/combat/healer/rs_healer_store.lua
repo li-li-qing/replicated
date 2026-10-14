@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Healer Settings Store
+-- Replicated Suite · 治疗助手设置存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Permanent V3 Healer policy + presentation state. The Feature enabled flag is
--- intentionally NOT stored here: FeatureRuntime owns enabled/disabled preference. On first V3
--- load this store imports only known policy fields from the historical Healer
--- account store and never clears or overwrites that legacy source.
+-- 永久 Healer 策略与表现状态；启用/禁用偏好归 FeatureRuntime，不存于此处。首次加载仅导入历史账号 Store 已知策略字段，禁止清理或覆盖旧来源。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -86,10 +85,7 @@ end
 
 
 local function DefaultRaidPanelGeometry(team)
-    -- Native raid geometry: one 50-player team is two stacked 25-player
-    -- sections (1-25 above, 26-50 below), each section 5 columns x 5 rows.
-    -- The second visible team list sits to the right when the client exposes
-    -- the optional extra friendly-roster window.
+    -- Native 团队几何：每支50人分上下两块25人，每块5列×5行，上部1-25、下部26-50。客户端提供额外友方名单窗时，第二团队列表位于右侧。
     return { x = (team == 2) and 360 or 0, y = 140, width = 340, height = 400 }
 end
 
@@ -105,10 +101,7 @@ local function DefaultRaidPanels()
     return { A = DefaultRaidPanel(1), B = DefaultRaidPanel(2) }
 end
 
--- Backward-compatible migration: the legacy model stored 4 team-bound half
--- sections (team1 = sections 1,2 ; team2 = sections 3,4). Collapse each pair
--- into a single rectangular panel bounding box so a user's calibrated layout is
--- preserved as a whole-panel rectangle rather than lost on upgrade.
+-- 旧模型四个绑定团队的半区：team1为1/2区，team2为3/4区；每对合并为完整矩形边界，保证升级保留用户校准布局。
 local function MigrateSectionsToPanels(sections)
     local function num(v, f) return tonumber(v) or tonumber(f) or 0 end
     local function Bound(a, b)
@@ -140,11 +133,7 @@ local function NormalizeRaidPanel(value, fallback)
     value = type(value) == "table" and value or {}
     fallback = type(fallback) == "table" and fallback or DefaultRaidPanel(1)
     local geometry = type(value.geometry) == "table" and DeepCopy(value.geometry) or nil
-    -- Schema 5 (.18.127) temporarily used a 10x5 / 670x180 interpretation of
-    -- one 50-player team.  RU + the reference addon prove the native layout is
-    -- two stacked 25-player sections instead. Repair only that generated size
-    -- while preserving the user's calibrated x/y. Other custom rectangles are
-    -- never rewritten.
+    -- schema5 曾将50人误解为10×5 / 670×180；RU 与参考插件证明应为上下两块25人。仅修复该自动生成尺寸，保留用户 x/y，其他自定义矩形禁止重写。
     if type(geometry) == "table" and math.floor(tonumber(geometry.width) or 0) == 670
         and math.floor(tonumber(geometry.height) or 0) == 180 then
         geometry.width, geometry.height = 340, 400
@@ -197,7 +186,7 @@ local function NormalizePresentation(value)
             showName = head.showName == true,
             showDistance = head.showDistance == true,
             showScore = head.showScore == true,
-            -- 中文维护：头标只控制表现间隔，允许1ms；推荐与健康扫描频率仍由其原有服务决定。
+            -- 头标只控制表现间隔，允许1ms；推荐与健康扫描频率仍由其原有服务决定。
             refreshMs = ClampInt(head.refreshMs, 1, 60000, defaults.head.refreshMs),
         },
         raid = {
@@ -360,9 +349,7 @@ local function NormalizeSettings(value)
     local high = Clamp(level.high, attention + 1, 99, defaults.levelThresholds.high)
     local emergency = Clamp(level.emergency, high + 1, 100, defaults.levelThresholds.emergency)
     local roleScores = type(value.roleScores) == "table" and value.roleScores or {}
-    -- An absent trackedBuffs field falls back to V3 defaults. Do not use Lua's
-    -- `and/or` idiom here: nil would incorrectly fall through and silently
-    -- create tracking the user never configured.
+    -- 缺 trackedBuffs 时使用当前默认；禁止 Lua and/or 惯用式导致 nil 回落并创建用户未配置追踪。
     local trackedSource = value.trackedBuffs
     if trackedSource == nil then trackedSource = defaults.trackedBuffs end
 
@@ -405,9 +392,7 @@ local function NormalizeState(value)
     value = type(value) == "table" and value or {}
     return {
         settings = NormalizeSettings(value.settings or value),
-        -- FloatingSurface owns the nested geometry/appearance schema. Keep it
-        -- opaque here so future shell migrations do not couple Healer Domain
-        -- normalization to Presentation internals.
+        -- 嵌套几何/外观 schema 归 FloatingSurface；本处保持不透明，避免未来 Shell 迁移将 Healer Domain 归一化耦合到 Presentation 内部。
         widgetWindow = type(value.widgetWindow) == "table" and DeepCopy(value.widgetWindow) or {},
         presentation = NormalizePresentation(value.presentation),
     }
@@ -439,9 +424,7 @@ if P:GetStore(STORE_ID) == nil then
     end
 end
 
--- (Old-plugin legacy import bridge removed 2026-09-01 by directive: the old
--- `replicated_healer_recommender_v2` key is reference-only and its settings are
--- never migrated into the V3 store. New-framework stores read their own keys.)
+-- 遵循 2026-09-01 指令，旧 replicated_healer_recommender_v2 key 仅供参考，禁止迁入当前 Store；当前框架各 Store 只读自己的 key。
 
 function F:EnsureStoreLoaded()
     if type(P.IsStoreLoaded) == "function" and P:IsStoreLoaded(STORE_ID) == true then self.StoreLoaded = true; return true end
@@ -455,11 +438,9 @@ function F:EnsureStoreLoaded()
 end
 
 function F:GetSettings() return self.State.settings end
--- Migration metadata no longer exists in State; kept as a stable read model.
+-- State 不再保存迁移元数据，此处仅保留稳定读模型。
 function F:GetMigrationInfo() return { legacyImported = false, visualImported = false, source = "none", legacyVersion = 0, futureLegacy = false } end
--- Presentation-owned window geometry is a detached read model. Mutations return
--- through the Feature Commands facade and the shared FloatingSurface persistence
--- callback; Widget code never receives the live Store table.
+-- Presentation 窗口几何为独立读模型；修改经 Feature Commands 与共享 FloatingSurface 持久回调返回，Widget 禁止获取实时 Store 表。
 function F:GetWidgetWindowState()
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
     local policy = { defaultWidth = 430, defaultHeight = 300, minWidth = 280, minHeight = 150,
@@ -504,10 +485,7 @@ local function PublishSettingChanged(key)
     end
 end
 
--- Raw in-memory mutation for RSUI PersistentSettingBinding. The binding owns
--- the write-fence + MarkDirty transaction, so this path must not queue a second
--- Store write. Normalization still runs across the complete policy to preserve
--- threshold invariants such as exit >= enter and low >= emergency.
+-- RSUI PersistentSettingBinding 的原始内存修改；Binding 拥有写保护/MarkDirty 事务，禁止二次排队 Store 写入。仍归一化完整策略，保持 exit≥enter、low≥emergency 等阈值约束。
 function F:ApplyScalarSettingRaw(key, value)
     key = tostring(key or "")
     if HEALER_SCALAR_SETTINGS[key] ~= true then return false, "unsupported healer scalar setting: " .. key end
@@ -524,9 +502,7 @@ function F:ApplySettingFromBinding(key, value)
     return true
 end
 
--- Command/non-RSUI callers own persistence here. Restore the full normalized
--- settings snapshot if MarkDirty is fenced so the live Domain cannot diverge
--- from the authoritative permanent Store.
+-- Command/非 RSUI 调用在这里拥有持久化；MarkDirty 被写保护时恢复完整归一化设置快照，防止实时 Domain 偏离权威永久 Store。
 function F:SetScalarSetting(key, value)
     key = tostring(key or "")
     local marked, markErr = self:MutateStore(function() return self:ApplyScalarSettingRaw(key, value) end, 350, "healer_scalar:" .. key)
@@ -668,12 +644,7 @@ function F:ApplyPresentationSettingRaw(scope, key, value)
 end
 
 function F:ApplyPresentationSettingFromBinding(scope, key, value)
-    -- .18.131 bugfix: this command mutated State in memory only and NEVER
-    -- marked the store dirty, while SetPresentationSetting persisted. The two
-    -- entry paths (page button vs bound toggle) therefore had different
-    -- durability: a calibration turned OFF through the non-persisting path
-    -- came back after every reload from the stale persisted value ("每次重载
-    -- 都会自动打开校准团队色块"). Both paths now share identical durability.
+    -- 页面按钮和持久Binding开关必须具有相同持久性；本命令必须MarkDirty，不能仅改内存，否则校准关闭后会在重载恢复陈旧已开配置。
     return F:SetPresentationSetting(scope, key, value)
 end
 

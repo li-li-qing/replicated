@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Auxiliary Floating Window Store
+-- Replicated Suite · 辅助窗口位置存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation-only persistence for movable auxiliary surfaces that do not own
--- business data.  The Store is registered at startup but loaded lazily on the
--- first auxiliary-window open, so a hidden detail/diagnostics surface has zero
--- SaveData read cost.  Feature/Service Authorities remain unchanged.
+-- 仅持久化可移动辅助窗口的表现状态，不持有业务数据。Store 启动时注册，首次打开辅助窗口时才延迟加载，使隐藏详情/诊断窗口没有 SaveData 读取成本；Feature/Service 权威层保持原归属。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -17,7 +16,7 @@ local V3 = S.UIV3
 local STORE_ID = "v3.presentation.aux_windows"
 local SCHEMA = 2
 
--- 中文维护注释：只有真实可拖动/缩放、且没有自己 Feature Store 的辅助窗进入此表。
+-- 只有真实可拖动/缩放、且没有自己 Feature Store 的辅助窗进入此表。
 -- 不允许业务字段加入这里，否则会形成 Presentation 与 Feature 的双 Authority。
 local POLICIES = {
     trade_detail = {
@@ -35,7 +34,7 @@ local POLICIES = {
         defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
         defaultFontScale = 1.0, minFontScale = 0.80, maxFontScale = 1.25,
     },
-    -- 中文维护注释（2026-09-18，module-diagnostics-1）：模块诊断窗只有 Presentation 几何进入
+    -- 约束（2026-09-18，module-diagnostics-1）：模块诊断窗只有 Presentation 几何进入
     -- AuxWindow Store；报告正文、页码、moduleId 都是 Session 冷快照，禁止持久化，避免诊断自己污染业务/存档。
     module_diagnostics = {
         defaultWidth = 760, defaultHeight = 590, minWidth = 560, minHeight = 380,
@@ -60,13 +59,13 @@ end
 
 local CURRENT_POLICY_IDS = { "trade_detail", "trade_diagnostics", "quest_detail", "module_diagnostics" }
 local HISTORICAL_POLICY_SETS = {
-    -- 中文维护注释（2026-09-22，aux-window-canonical-recovery-1）：quest_detail 在原 schema1 发布后
+    -- 约束（2026-09-22，aux-window-canonical-recovery-1）：quest_detail 在原 schema1 发布后
     -- 才加入 POLICIES，但旧 NormalizeState 会对“缺失窗口”主动补默认表。于是仅新增一个窗口类型就改变了
     -- 整个 Store canonical，旧用户即使磁盘内容完全健康也会被 Integrity v4 fence。以下历史集合冻结真实
     -- 发布过的 Presentation policy 代际；候选只有重新计算后精确命中旧 stamped fingerprint 才能恢复。
     { id = "pre_quest_detail", policies = { "trade_detail", "trade_diagnostics", "module_diagnostics" } },
     { id = "pre_module_diagnostics", policies = { "trade_detail", "trade_diagnostics" } },
-    -- 中文维护注释（2026-10-02）：实机自检 RS-20261002-195813-365029-1.2 的 schema1
+    -- 约束（2026-10-02）：实机自检 RS-20261002-195813-365029-1.2 的 schema1
     -- 实际已有 quest_detail，却没有 module_diagnostics；旧两个历史集合漏掉此发布形态。
     -- 其三窗 canonical 精确重现旧章 782943CD，而补第四窗后为 188C8DDF，Transport3 数值本身未丢失。
     -- 只补这个有原档证据的 policy 集合，不白名单指纹、不删窗/清档；已有模块窗内容时禁止忽略它求匹配。
@@ -96,7 +95,7 @@ local function RebuildHistoricalCanonical(decoded, stampedFingerprint, _currentC
         return nil
     end
     for _, candidateSpec in ipairs(HISTORICAL_POLICY_SETS) do
-        -- 中文维护注释：缺失窗口是这代结构的前置条件；只在真实缺失时构造历史见证。
+        -- 缺失窗口是这代结构的前置条件；只在真实缺失时构造历史见证。
         -- Core 仍负责整份旧章、身份/envelope/预算校验，匹配后才允许迁移并恢复原有写入生命周期。
         local eligible = candidateSpec.absentWindow == nil or (type(decoded) == "table" and decoded[candidateSpec.absentWindow] == nil)
         local candidate = eligible and NormalizeStateWithPolicies(decoded, candidateSpec.policies) or nil
@@ -178,7 +177,7 @@ function A:SetWindowState(id, value, reason)
     if POLICIES[id] == nil then return false, "unknown auxiliary window: " .. id end
     local ok, err = self:EnsureLoaded()
     if ok ~= true then return false, err end
-    -- 中文维护注释：FloatingSurface 先 Commit state、再调用 Persist；这里只更新
+    -- FloatingSurface 先 Commit state、再调用 Persist；这里只更新
     -- Presentation Domain，不直接 SaveData。若后续 MarkDirty 失败，Floating transaction
     -- 会把 before-state 回滚回来，因此不会出现“视觉位置已变、Store Authority 未提交”。
     self.state[id] = NormalizeWindow(id, value)
@@ -190,7 +189,7 @@ function A:PersistWindow(id, reason, delayMs)
     if POLICIES[id] == nil then return false, "unknown auxiliary window: " .. id end
     local ok, err = self:EnsureLoaded()
     if ok ~= true then return false, err end
-    -- 中文维护（2026-10-04）：详情/诊断窗也必须跨立即重载保留位置；不依赖下一次保存心跳。
+    -- 约束（2026-10-04）：详情/诊断窗也必须跨立即重载保留位置；不依赖下一次保存心跳。
     if reason == "geometry" or reason == "layout_reset" or reason == "minimized" then
         return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason="aux_window:" .. id .. ":" .. reason })
     end

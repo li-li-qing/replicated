@@ -1,6 +1,11 @@
--- Replicated Suite GearV3 regression: a loadout owns only the title EFFECT.
--- Saved showing/name is a historical snapshot and must never be replayed.
--- nameType=0 is a valid "show no title" selector for ChangeAppellation.
+------------------------------------------------------------------------
+-- Replicated Suite · 称号效果归属测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- GearV3 配装方案只管理称号效果。
+-- 存档中的 showing/name 只是历史快照，不能重新应用；ChangeAppellation 的 nameType=0 合法表示不显示称号。
+------------------------------------------------------------------------
 local servicePath = (arg and arg[1]) or 'services/rs_gear_service_v3.lua'
 
 ReplicatedSuite = {
@@ -37,8 +42,8 @@ function X2Player:GetShowingAppellation() return currentShowingRaw end
 function X2Player:GetEffectAppellation() return { currentEffect, '效果' .. tostring(currentEffect) } end
 function X2Player:ChangeAppellation(nameType, effectType)
     lastNameType, lastEffectType = nameType, effectType
-    -- This deliberately rejects the stale save-time display title.  The current
-    -- character is showing no title, represented by the valid selector 0.
+    -- 故意拒绝保存时的过期显示称号；当前角色不显示称号，
+    -- 由合法选择器 0 表示。
     -- 维护（2026-09-30）：每个场景允许“当前”展示名，包括后续456；拒绝保存时12345。
     -- 原替身硬编码只接受0，第二场景实际上拒绝了动作，却被生产层忽略false掩盖。
     local expectedNameType = type(currentShowingRaw) == "table" and tonumber(currentShowingRaw[1]) or 0
@@ -56,14 +61,14 @@ local payload = {
     items = {},
     title = {
         apply = true,
-        -- Intentionally mismatched/stale: this was the visible title at save time.
+        -- 故意提供不一致的旧显示称号，模拟保存时的历史快照。
         showing = { id = 12345, name = '保存时展示称号A', values = { 12345, '保存时展示称号A' } },
         effect = { id = 88, name = '保存的效果称号B', values = { 88, '保存的效果称号B' } },
         displayName = '保存时展示称号A',
     },
 }
 
--- UI text must represent the effect authority, not the saved display title.
+-- UI 文本必须反映称号效果，不能采用存档中的显示称号。
 assert(G:TitleText(payload.title) == '保存的效果称号B', 'FAIL: TitleText still prefers saved display title')
 
 local ok, reason = G:ApplyTitle(payload)
@@ -72,8 +77,7 @@ assert(lastNameType == 0, 'FAIL: valid current nameType=0 was replaced by stale 
 assert(lastEffectType == 88, 'FAIL: wrong target effectType: ' .. tostring(lastEffectType))
 assert(currentEffect == 88, 'FAIL: effect did not change')
 
--- A different current display title must also be preserved at execution time;
--- the saved showing=12345 remains non-authoritative.
+-- 执行时当前显示称号已变化也应保留；存档 showing=12345 不具有覆盖权。
 currentEffect = 88
 currentShowingRaw = { 456, '当前展示称号C' }
 payload.title.effect.id = 99
@@ -85,8 +89,7 @@ assert(lastNameType == 456, 'FAIL: current display title was not preserved: ' ..
 assert(lastEffectType == 99, 'FAIL: second effectType mismatch: ' .. tostring(lastEffectType))
 assert(currentEffect == 99, 'FAIL: second title action did not apply')
 
--- Successful getter returning nil means no visible title; mirror the proven
--- titleswap behavior and use selector 0 instead of replaying saved showing.
+-- Getter 成功返回 nil 表示没有显示称号；按已证明的 titleswap 行为使用选择器 0，不能重放存档 showing。
 currentEffect = 99
 currentShowingRaw = nil
 payload.title.effect.id = 111
@@ -95,8 +98,7 @@ local ok3, reason3 = G:ApplyTitle(payload)
 assert(ok3 == true, 'FAIL: nil showing should map to nameType=0: ' .. tostring(reason3))
 assert(lastNameType == 0 and lastEffectType == 111, 'FAIL: nil showing fallback used stale save-time nameType')
 
--- Saving a scheme must remain possible when the non-authoritative display-title
--- getter is temporarily unavailable.  Effect capture is the only required title read.
+-- 非权威的显示称号 Getter 暂时不可用时仍应允许保存方案；唯一必需的称号读取是效果采集。
 local originalShowing = X2Player.GetShowingAppellation
 X2Player.GetShowingAppellation = function() error('transient showing read failure') end
 currentEffect = 222

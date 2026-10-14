@@ -1,16 +1,17 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 5 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Bonds / Resident Board Test Suite
+-- Replicated Suite · 债券测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Tests Bonds Authority, board reading 1-7, empty/ready/unavailable state,
--- material counts (bagId 1/0), real quest progress (active index),
--- filtering/sorting, row selection, floating detail integration, and
--- v3_m1_bonds sequence case.
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
+-- 覆盖债券业务数据层、公告板 1..7 读取，以及空、就绪和不可用状态，
+-- 材料数量读取的 bagId=1/0 和按激活索引获取的真实任务进度，
+-- 筛选、排序、行选择及悬浮详情集成，
+-- 并覆盖 v3_m1_bonds 顺序用例。
 ------------------------------------------------------------------------
-
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -31,8 +32,8 @@ print("=== Replicated Suite: Bonds / Resident Board Tests ===")
 
 local h = dofile("tools/rs_gear_page_test_host.lua")({})
 local S = h.S
--- 2026-09-30: Native clock is part of the valid-day fixture, not an implicit unknown.
--- Undated startup/rollover paths are exercised separately in rs_bonds_cross_continent_tests.lua.
+-- 有效日期测试数据必须提供明确的原生时钟，不能把日期隐式视为未知。
+-- 无日期启动和跨日路径由 rs_bonds_cross_continent_tests.lua 单独覆盖。
 UIParent = UIParent or {}
 UIParent.GetServerTimeTable = function() return { year = 2026, month = 9, day = 15 } end
 S.UI = S.UI or {}
@@ -71,7 +72,7 @@ dofile("features/rs_feature_registry.lua")
 dofile("services/rs_quest_progress_v3.lua")
 dofile("services/rs_inventory_snapshot_v3.lua")
 
--- Mock RSUI for widgets without wiping existing FloatingSurface
+-- 为控件提供 RSUI 替身，同时保留已有 FloatingSurface。
 S.RSUI = S.RSUI or {}
 S.RSUI.TableView = function(spec)
     local tv = { spec = spec, items = {}, viewState = "ready" }
@@ -104,7 +105,7 @@ S.RSUI.HorizontalBox = function() return {} end
 S.RSUI.Border = function() return {} end
 S.RSUI.WithBuildScope = function(_, fn) return fn() end
 
--- Mock UI Hosts
+-- 提供 UI 宿主测试替身。
 S.UIV3 = S.UIV3 or {}
 S.UIV3.PageHost = { factories = { ["life.bonds"] = function() return {} end } }
 S.UIV3.WidgetHost = {
@@ -123,7 +124,7 @@ S.UIV3.AuxWindowStoreV3 = {
     PersistWindow = function() return true end,
 }
 
--- Mock QuestDetailFloatingV3
+-- 提供 QuestDetailFloatingV3 测试替身。
 local openedFloating = nil
 S.UIV3.QuestDetailFloatingV3 = {
     Open = function(self, scope, key, sourceRow)
@@ -132,11 +133,11 @@ S.UIV3.QuestDetailFloatingV3 = {
     end,
 }
 
--- Ensure FeatureRuntime mock handles implementation checks
+-- FeatureRuntime 替身必须支持实现检查，避免测试绕过注册契约。
 S.FeatureRuntime.IsImplemented = function(_, id) return true end
 S.FeatureRuntime.IsEnabled = function(_, id) return true end
 
--- Helper functions to update mock API objects while keeping UnitNameWithWorld intact
+-- 更新 API 替身时保留 UnitNameWithWorld，维持完整角色身份语义。
 local function SetMockUnit(opts)
     _G.X2Unit = _G.X2Unit or {}
     _G.X2Unit.UnitNameWithWorld = function() return "BondsTest@World" end
@@ -267,7 +268,7 @@ Test("B1c: Persistence LoadStore accepts exact pre-continentOrder envelope and s
 end)
 
 Test("B2: Empty vs Unavailable vs Ready status distinction", function()
-    -- Case 1: readable == 0 -> unavailable
+    -- 情形 1：readable=0 时不可用。
     SetMockResident({
         GetResidentBoardContent = function(_, index) return nil, "cannot read" end
     })
@@ -276,7 +277,7 @@ Test("B2: Empty vs Unavailable vs Ready status distinction", function()
     local proj1 = BA:GetProjection()
     assert(proj1.status == "unavailable", "expected unavailable when readable == 0, got: " .. tostring(proj1.status))
 
-    -- Case 2: readable > 0, but contentCount == 0 -> empty
+    -- 情形 2：readable>0 且 contentCount=0 时为空。
     SetMockResident({
         GetResidentBoardContent = function(_, index) return { contents = {} } end
     })
@@ -284,7 +285,7 @@ Test("B2: Empty vs Unavailable vs Ready status distinction", function()
     local proj2 = BA:GetProjection()
     assert(proj2.status == "empty", "expected empty when readable > 0 and contentCount == 0, got: " .. tostring(proj2.status))
 
-    -- Case 3: readable > 0, contentCount > 0 in West -> ready
+    -- 情形 3：西大陆中 readable>0 且 contentCount>0 时已就绪。
     SetMockResident({
         GetResidentBoardContent = function(_, index)
             if index == 1 then return { contents = { "居民委托：需要布料 20 个" } } end
@@ -293,7 +294,7 @@ Test("B2: Empty vs Unavailable vs Ready status distinction", function()
             return { contents = {} }
         end
     })
-    SetMockUnit({ GetCurrentZoneGroup = function(_) return 1 end }) -- West zone
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 1 end }) -- 西大陆区域。
     Bonds.State.dailySnapshots = {}
     BA:Refresh()
     local proj3 = BA:GetProjection()
@@ -302,7 +303,7 @@ Test("B2: Empty vs Unavailable vs Ready status distinction", function()
 end)
 
 Test("B3: Board 1-7 normalization & continent classification", function()
-    -- Set up boards 1 (fabric), 2 (leather), 3 (lumber), 4 (iron) and 5 (auroria)
+    -- 配置公告板：1 为布料，2 为皮革，3 为木材，4 为铁，5 为原大陆。
     SetMockResident({
         GetResidentBoardContent = function(_, index)
             if index == 1 then return { contents = { "布料 20" } }
@@ -328,9 +329,9 @@ end)
 Test("B4: Real Quest State tracking with activeIndex", function()
     local progress = S.Services.QuestProgressV3
     _G.X2Quest = {
-        IsCompleted = function(_, qid) return qid == 9044 end, -- Fabric 20 is completed
+        IsCompleted = function(_, qid) return qid == 9044 end, -- 20 个布料的任务已完成。
         GetActiveQuestListCount = function(_) return 1 end,
-        GetActiveQuestType = function(_, idx) return 9152 end, -- Leather 60 is active
+        GetActiveQuestType = function(_, idx) return 9152 end, -- 60 个皮革的任务进行中。
         GetQuestContextMainTitle = function(_, qid) return qid == 9152 and "[特产-西部] 黄金平原的保存特产" or ("任务 " .. tostring(qid)) end,
         IsReadyForCompleteQuest = function(_, qid) return false end,
     }
@@ -356,10 +357,10 @@ Test("B4: Real Quest State tracking with activeIndex", function()
     Bonds.State.dailySnapshots = {}
     SetMockResident({
         GetResidentBoardContent = function(_, index)
-            if index == 1 then return { contents = { "布料 20" } } -- quest 9044
-            elseif index == 2 then return { contents = { "皮革 60" } } -- quest 9152
-            elseif index == 3 then return { contents = { "木材 100" } } -- quest 9143
-            elseif index == 4 then return { contents = { "铁锭 20" } } -- board-family evidence
+            if index == 1 then return { contents = { "布料 20" } } -- 任务 9044。
+            elseif index == 2 then return { contents = { "皮革 60" } } -- 任务 9152。
+            elseif index == 3 then return { contents = { "木材 100" } } -- 任务 9143。
+            elseif index == 4 then return { contents = { "铁锭 20" } } -- 提供公告板族的分类证据。
             end
             return { contents = {} }
         end
@@ -380,14 +381,14 @@ Test("B4: Real Quest State tracking with activeIndex", function()
 end)
 
 Test("B5: Bag material count & shortage computation", function()
-    -- Mock BagApi with bagId = 1 preferred
+    -- BagApi 替身优先使用 bagId=1。
     _G.X2Bag = {
         Capacity = function(_) return 100 end,
         GetBagItemInfo = function(_, bagId, slot)
             if bagId == 1 and slot == 1 then
-                return { itemType = 8256, stackCount = 35 } -- Fabric x35
+                return { itemType = 8256, stackCount = 35 } -- 布料数量为 35。
             elseif bagId == 1 and slot == 2 then
-                return { itemType = 16327, stackCount = 5 } -- Leather x5
+                return { itemType = 16327, stackCount = 5 } -- 皮革数量为 5。
             end
             return nil
         end
@@ -421,18 +422,18 @@ Test("B5: Bag material count & shortage computation", function()
 end)
 
 Test("B6: Sorting & filtering options", function()
-    -- Test sorting by quantity
+    -- 验证按数量排序。
     Bonds.Commands:SetSortMode("quantity")
     local proj = BA:GetProjection()
     assert(Bonds:GetSortMode() == "quantity", "sort mode should be quantity")
 
-    -- Test filter toggle
+    -- 验证筛选开关。
     Bonds.Commands:SetBondFilterOption("q20", false)
     assert(Bonds:GetBondFilterOption("q20") == false, "q20 should be false")
     Bonds.Commands:SetBondFilterOption("q20", true)
     assert(Bonds:GetBondFilterOption("q20") == true, "q20 should be true")
 
-    -- Test continent order as an independent sort preference.
+    -- 大陆顺序作为独立排序偏好验证。
     local orderOk, orderErr = Bonds.Commands:SetContinentOrder("east_first")
     assert(orderOk == true, "SetContinentOrder east_first failed: " .. tostring(orderErr))
     assert(Bonds:GetContinentOrder() == "east_first", "continent order should be east_first")
@@ -440,9 +441,7 @@ Test("B6: Sorting & filtering options", function()
     assert(orderOk == true, "SetContinentOrder west_first failed: " .. tostring(orderErr))
     assert(Bonds:GetContinentOrder() == "west_first", "continent order should be west_first")
 
-    -- Duplicate priority only chooses the winner *when merge is enabled*. It must
-    -- not silently enable merging, because that was the UI behavior that made the
-    -- other mainland appear to be missing.
+    -- 重复项优先级仅在启用合并时决定保留项，不能隐式打开合并；否则界面会让另一大陆的行看似消失。
     Bonds.Commands:SetBondFilterOption("excludeSame", false)
     Bonds.Commands:SetDuplicatePriority("east")
     assert(Bonds:GetDuplicatePriority() == "east", "priority should be east")
@@ -490,7 +489,7 @@ Test("B8: Quest detail floating integration (FindGroup)", function()
     assert(detail ~= nil, "GetGroupDetail for bonds returned nil")
     assert(type(detail.children) == "table" and #detail.children > 0, "children missing in bond detail")
 
-    -- Test opening floating detail
+    -- 验证打开悬浮详情窗口。
     openedFloating = nil
     local ok = S.UIV3.QuestDetailFloatingV3:Open("bonds", first.key, first)
     assert(ok == true, "failed to open floating detail")
@@ -502,7 +501,7 @@ Test("B9: Store normalization & daily rollover", function()
     assert(state.sortMode ~= nil)
     assert(state.showCompleted ~= nil)
 
-    -- Test DescribeDailyCache
+    -- 验证 DescribeDailyCache 返回每日缓存状态。
     local desc = Bonds:DescribeDailyCache()
     assert(type(desc) == "table")
     assert(desc.westLoaded ~= nil)
@@ -624,7 +623,7 @@ Test("B14: West and East daily snapshots coexist and sorting never drops a mainl
     Bonds.State.sortMode = "continent"
     Bonds.State.continentOrder = "west_first"
 
-    SetMockUnit({ GetCurrentZoneGroup = function(_) return 1 end }) -- west
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 1 end }) -- 西大陆。
     SetMockResident({
         GetResidentBoardContent = function(_, index)
             if index == 1 then return { contents = { "布料 20" } } end
@@ -640,7 +639,7 @@ Test("B14: West and East daily snapshots coexist and sorting never drops a mainl
     assert(westProjection.boardScope == "west", "west refresh must expose west boardScope")
     assert(type(westProjection.dailySnapshotStatus) == "table" and westProjection.dailySnapshotStatus.west == true, "west daily coverage missing")
 
-    SetMockUnit({ GetCurrentZoneGroup = function(_) return 4 end }) -- east
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 4 end }) -- 东大陆。
     SetMockResident({
         GetResidentBoardContent = function(_, index)
             if index == 1 then return { contents = { "布料 20" } } end
@@ -669,8 +668,7 @@ Test("B14: West and East daily snapshots coexist and sorting never drops a mainl
     assert(#projection.rows == 7, "sorting must not remove rows")
     assert(projection.rows[1].continentKey == "east" and projection.rows[#projection.rows].continentKey == "west", "east-first order not applied")
 
-    -- Selecting the merge winner while still in all-rows mode must remain a pure
-    -- preference. Only the explicit duplicate mode switch may collapse rows.
+    -- 显示全部行时，选择合并优先项只能更新偏好；只有显式切换重复项模式才允许折叠行。
     Bonds.Commands:SetBondFilterOption("excludeSame", false)
     Bonds.Commands:SetDuplicatePriority("east")
     projection = BA:GetProjection()
@@ -682,7 +680,7 @@ Test("B14: West and East daily snapshots coexist and sorting never drops a mainl
     for _, row in ipairs(projection.rows) do if row.materialKey == "fabric" then fabric = row end end
     assert(fabric ~= nil and fabric.continentKey == "east", "east merge priority must retain the east duplicate")
 
-    -- Restore user-facing default for following tests/runs.
+    -- 恢复面向用户的默认值，避免影响后续测试。
     Bonds.Commands:SetBondFilterOption("excludeSame", false)
     Bonds.Commands:SetContinentOrder("west_first")
     local released, releaseErr = Bonds:ReleaseConsumer("test:bonds-multicontinent")
@@ -760,9 +758,9 @@ Test("B18: Auroria rows resolve real material ItemType, quest and shortage", fun
     _G.X2Bag = {
         Capacity = function() return 20 end,
         GetBagItemInfo = function(_, bagId, slot)
-            if bagId == 1 and slot == 1 then return { itemType = 35461, stackCount = 12 } end -- Prince purse
-            if bagId == 1 and slot == 2 then return { itemType = 42077, stackCount = 3 } end -- Queen crate
-            if bagId == 1 and slot == 3 then return { itemType = 43176, stackCount = 5 } end -- Ancestor purse
+            if bagId == 1 and slot == 1 then return { itemType = 35461, stackCount = 12 } end -- 王子钱袋。
+            if bagId == 1 and slot == 2 then return { itemType = 42077, stackCount = 3 } end -- 女王箱子。
+            if bagId == 1 and slot == 3 then return { itemType = 43176, stackCount = 5 } end -- 先祖钱袋。
             return nil
         end,
     }
@@ -780,7 +778,7 @@ Test("B18: Auroria rows resolve real material ItemType, quest and shortage", fun
     assert(byMaterial.prince_purse and byMaterial.prince_purse.questId == 10504 and byMaterial.prince_purse.requiredCount == 30, "Prince purse mapping mismatch")
     assert(byMaterial.queen_crate and byMaterial.queen_crate.questId == 10510 and byMaterial.queen_crate.requiredCount == 8, "Queen crate mapping mismatch")
     assert(byMaterial.ancestor_purse and byMaterial.ancestor_purse.questId == 10512 and byMaterial.ancestor_purse.requiredCount == 20, "Ancestor purse mapping mismatch")
-    -- InventorySnapshot may be unavailable/partial in a stripped test host; whenever ready, counts must use the real Auroria identities.
+    -- 精简宿主中的 InventorySnapshot 可能不可用或不完整；只要已就绪，数量必须按真实原大陆物品身份计算。
     if byMaterial.prince_purse.haveCount ~= nil then
         assert(byMaterial.prince_purse.haveCount == 12 and byMaterial.prince_purse.shortage == 18, "Prince purse inventory/shortage mismatch")
         assert(byMaterial.queen_crate.haveCount == 3 and byMaterial.queen_crate.shortage == 5, "Queen crate inventory/shortage mismatch")
@@ -843,7 +841,7 @@ Test("B21: RU Ancestor coinpurse wording resolves the ambiguous 20 requirement",
     SetMockUnit({ GetCurrentZoneGroup = function(_) return 777 end })
     SetMockResident({ GetResidentBoardContent = function(_, index)
         if index == 7 then return { faction = "Auroria", contents = { "Доставьте 20 котомок эфенского странника председателю совета общины." } } end
-        -- Public ArcheRage board-family behavior requires board 5 or 6 evidence to classify Auroria.
+        -- ArcheRage 公告板族的公开行为要求提供第 5 或第 6 块公告板证据，才能判断为原大陆。
         if index == 6 then return { faction = "Auroria", contents = { "Расшитые жемчугом кошельки 25" } } end
         return { faction = "Auroria", contents = {} }
     end })

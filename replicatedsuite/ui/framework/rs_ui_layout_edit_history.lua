@@ -1,23 +1,13 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Layout Edit History Model v1
+-- Replicated Suite · 布局编辑撤销历史
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared reversible-command authority for Layout Editor commits.
---
--- Contract:
---   * only successful editor COMMITs are recorded; preview / drag pulses are
---     never history entries;
---   * every command is stable-key based and before/after key sets must match;
---   * history is bounded (default 64, hard cap 256) and drops the oldest entry;
---   * Undo/Redo moves the cursor only after the external apply transaction
---     succeeds; rejected/failed apply performs a best-effort rollback and leaves
---     history state unchanged;
---   * the model owns no Feature Store and no Native UI. Caller supplies apply /
---     rollback callbacks at the projection/persistence boundary;
---   * optional state snapshots exist for non-Rect editor state such as
---     Anchor/Pivot. They are bounded deep copies, never live table references.
---
--- Performance:
---   no Tick / polling. O(selected) work happens only on Record/Undo/Redo.
+-- 布局编辑提交的共享可撤销命令权威层。
+-- 仅记录成功 COMMIT，预览/拖动不入历史；命令基于稳定 key，前后 key 集必须一致；默认 64、硬上限 256，丢最旧项。
+-- Undo/Redo 外部 apply 成功才移游标，拒绝/失败尽力回滚且历史不变。模型不持 Feature Store/Native，调用方提供 apply/rollback；
+-- Anchor/Pivot 等可选非 Rect 状态为有界深拷贝，不能引用实时表。
+-- 无 Tick/轮询，仅 Record/Undo/Redo 执行 O(selected) 工作。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

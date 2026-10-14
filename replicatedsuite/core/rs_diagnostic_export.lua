@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- 中文维护（2026-10-02）：完整报告文件出口。RU 没有已验证的任意文件写入接口；
+-- Replicated Suite · 诊断导出编码
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- （2026-10-02）完整报告文件出口。RU 没有已验证的任意文件写入接口；
 -- Diagnostics 冻结正文 -> Persistence 固定专用 key -> Native SaveData/LoadData
 -- 完整回读 -> 本地只读提取工具生成 txt。业务 Store/Fence/配置均不参与此出口。
 -- 仅明确点击才分块写快照，无 Tick、自动上传、报告历史堆积或业务启停副作用。
@@ -13,7 +17,7 @@ local PROTOCOL = 'RS-DIAGNOSTIC-FILE-2'
 S.DiagnosticExport = { version = 2, key = KEY, maxBytes = MAX_BYTES }
 local E = S.DiagnosticExport
 
--- 中文维护：报告身份/长度/校验全部使用字符串，避开 RU 数值精度与假值省略；
+-- 报告身份/长度/校验全部使用字符串，避开 RU 数值精度与假值省略；
 -- 正文按二进制字节 HEX 编码，换行、引号、中文和 Native 转义均不改变原文。
 local function Hex(text)
     return (text:gsub('.', function(c) return string.format('%02X', string.byte(c)) end))
@@ -37,7 +41,7 @@ local function Build(text, meta)
     return out, nil, pages
 end
 
--- 中文维护：Persistence 是 Native 持久化唯一入口。此 key 是用户显式导出的传输快照，
+-- Persistence 是 Native 持久化唯一入口。此 key 是用户显式导出的传输快照，
 -- 不注册业务 Store、不 Apply/default/migrate、不绕过任何已有业务 Store 的 write fence。
 -- SaveData 返回成功仍须逐字段逐块完整回读；失败状态只属于本次导出，不能污染业务健康度。
 function P:SaveDiagnosticExport(text, meta)
@@ -55,7 +59,7 @@ function P:SaveDiagnosticExport(text, meta)
         end
         return true
     end
-    -- 中文维护（实机取证）：旧单 key 正文被截在 16383 字节。每页最多 4 KiB 原文，
+    -- 旧单 key 正文被截在 16383 字节。每页最多 4 KiB 原文，
     -- HEX 与全部元数据小于 9 KiB；固定最多 256 个 key 复用，无 Native 深层大表。
     -- 每页逐字段回读通过后，最后才提交总清单。本地端还须验证页号、各页及全文校验，
     -- 因此半途失败或两次导出交错不会被当成完整文件，也不从旧清单拼出新旧混合报告。
@@ -68,7 +72,7 @@ function P:SaveDiagnosticExport(text, meta)
     return true, { id = payload.report_id, bytes = #text, checksum = payload.checksum }
 end
 
--- 中文维护：展示端提交 immutable 原文，而非 Native 编辑框可能被截断的当前页；
+-- 展示端提交 immutable 原文，而非 Native 编辑框可能被截断的当前页；
 -- 成功回执只承诺 Native 快照回读成功，txt 尚须本地提取工具读取磁盘后验证生成。
 function D:ExportReport(text, meta)
     local ok, result = P:SaveDiagnosticExport(text, meta)

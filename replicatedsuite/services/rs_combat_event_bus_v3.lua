@@ -1,25 +1,14 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Event Bus / Combat Facts Foundation
+-- Replicated Suite · 战斗事件总线
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- One Native combat-event Authority for independent consumers such as
--- DeathReview, DPS, Healer combat reactions and Boss mechanics.
---
--- Transport contract:
---   * private hidden widget COMBAT_MSG: reliable SELF-endpoint safety slice.
---   * global UI/UIParent COMBAT_MSG: enabled only when any consumer asks for
---     scope="all"; live RU evidence says team-only rows may exist only here.
---   * global route filters SELF rows, so private/global slices stay disjoint.
---   * UI + UIParent duplicates are paired/deduped only across different hosts;
---     repeated identical rows from the same host are never suppressed.
---
--- Fact contract:
---   * native payload normalization only (kind/category/amount/raw fields).
---   * no faction, PVP/PVE, friendly/opponent, ranking or healer conclusions.
---   * raw unit id binds source/target only through UnitIdentityV3 verified name.
---
--- No Tick / OnUpdate. Native handlers exist only while consumers are leased,
--- except on client builds that lack explicit release APIs; those fall back to
--- hidden parked compatibility mode with generation/runtime guards.
+-- 战斗事件总线为 DeathReview/DPS/Healer/Boss 等提供唯一原生战斗事件权威。私有隐藏 Widget 的 COMBAT_MSG 提供
+-- 可靠 SELF 端点；只有消费者请求 scope="all" 才启用 UI/UIParent 全局路由，RU 实机团队行可能仅在该处。全局路
+-- 由过滤 SELF，保持切片互斥；仅跨不同宿主配对去重，同宿主相同重复行不抑制。只归一化
+-- kind/category/amount/raw 原生事实，不推导阵营、PVP/PVE、友敌、排名或治疗结论；原始单位 ID 仅通过
+-- UnitIdentityV3 已验证名称绑定 source/target。没有 Tick/OnUpdate；租约存在才持有原生处理器，缺显式释放 API
+-- 的版本采用隐藏停放兼容模式，配代际/运行 guard。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -56,7 +45,7 @@ local C = {
     privateRows = 0,
     globalRows = 0,
     globalSelfFiltered = 0,
-    globalNoIdentitySuppressed = 0, -- historical counter name; now counts cold-path journaled rows
+    globalNoIdentitySuppressed = 0, -- 保留历史计数名，现在统计冷路径 journal 行。
     globalCrossHostDuplicates = 0,
     globalCrossHostEvicted = 0,
     factMutationErrors = 0,
@@ -99,9 +88,7 @@ local function Emit(level, code, message, context)
     end
 end
 
--- Combat rows can arrive at hundreds per second. Never let a misbehaving
--- consumer turn the hot path into hundreds of log writes per second; counters
--- stay exact while the log row is rate limited.
+-- 战斗行每秒可数百次，异常消费者不能把热路径变为每秒数百条日志；计数精确保留，日志行限频。
 local function EmitRateLimited(level, code, message, context)
     local diag = S.DiagnosticsManager
     if type(diag) == "table" and type(diag.RateLimited) == "function" then
@@ -122,7 +109,7 @@ local function DiagnosticScalar(value)
     while finish>0 and (value:byte(finish+1) or 0)>=128 and (value:byte(finish+1) or 0)<192 do finish=finish-1 end
     return value:sub(1,finish).."<clipped>"
 end
--- 中文维护（2026-10-08）：原生死亡/归属入口先留证据，再交消费者过滤。仅低频通知分配标量行，
+-- （2026-10-08）原生死亡/归属入口先留证据，再交消费者过滤。仅低频通知分配标量行，
 -- 64槽环形覆盖是 O(1)，不持有原生 payload；跨停用保留本代现场，普通伤害不能写入此环。
 local noticeEvidence={rows={},next=1,count=0,evicted=0}
 local function RecordNoticeEvidence(fact,reason)
@@ -135,7 +122,7 @@ local function RecordNoticeEvidence(fact,reason)
     if noticeEvidence.count<64 then noticeEvidence.count=noticeEvidence.count+1 else noticeEvidence.evicted=noticeEvidence.evicted+1 end
 end
 local function CopyNoticeEvidence()
-    -- 中文维护：只在导出时按先后复制，不暴露现场表、不消费通知，不触发 Native 或结算。
+    -- 只在导出时按先后复制，不暴露现场表、不消费通知，不触发 Native 或结算。
     local rows={};local first=noticeEvidence.count==64 and noticeEvidence.next or 1
     for offset=0,noticeEvidence.count-1 do
         local copy={};for key,value in pairs(noticeEvidence.rows[(first+offset-1)%64+1]) do copy[key]=value end
@@ -143,7 +130,7 @@ local function CopyNoticeEvidence()
     end
     return rows
 end
--- 中文维护（2026-10-06）：未知 Native 类型可能藏着漏记的死亡 ABI，不能只导出 unknownKinds。
+-- （2026-10-06）未知 Native 类型可能藏着漏记的死亡 ABI，不能只导出 unknownKinds。
 -- 每种类型仅首次保留一份标量样本（最多32种），后续只加计数；已识别伤害无额外快照。
 function C:_RecordUnrecognizedFact(fact)
     local key=tostring(DiagnosticScalar(fact.rawEventType) or "")
@@ -167,8 +154,7 @@ function C:DescribeEventType(eventType)
     if cached ~= nil then return cached end
     local upper = string.upper(Trim(raw))
     local row = { kind = "other", category = "other", environmental = false, auraType = nil }
-    -- Aura facts are intentionally conservative: only explicit apply/remove
-    -- event types are normalized. Unknown BUFF/DEBUFF-like strings stay other.
+    -- Aura 事实仅归一化显式 apply/remove 事件；未知类似 BUFF/DEBUFF 的字符串仍为 other。
     if string.find(upper, "DEBUFF_APPLIED", 1, true) ~= nil or string.find(upper, "DEBUFF_ADDED", 1, true) ~= nil then
         row.kind, row.category, row.auraType = "aura_apply", "aura", "debuff"
     elseif string.find(upper, "BUFF_APPLIED", 1, true) ~= nil or string.find(upper, "BUFF_ADDED", 1, true) ~= nil then
@@ -238,11 +224,8 @@ function C:_ReleasePrivateHost()
                 else errors[#errors + 1] = "UnregisterEvent(" .. tostring(eventName) .. ")=" .. tostring(ok and result or "error") end
             end
         else
-            -- Case B: this RU build simply does not expose the release API.
-            -- That is a capability gap, NOT a failed business transaction.
-            -- Keep the lease-local host parked and hidden; callbacks stay inert
-            -- through the runtime/generation guard. Feature shutdown must not
-            -- report failure here, and the user's action must not be blocked.
+            -- 客户端缺释放 API 属于能力缺口，不是业务事务失败；租约宿主保持隐藏停放，回调由
+            -- runtime/generation guard 惰性隔离。Feature 关闭不能因此报失败或阻断用户动作。
             remaining[eventName] = true
             retainedEvents = true
         end
@@ -261,9 +244,8 @@ function C:_ReleasePrivateHost()
         end
     end
     if type(host.Show) == "function" then pcall(function() host:Show(false) end) end
-    -- RU exposes no project-verified DestroyWidget. Keep the generation-local
-    -- native host hidden and reuse it on the next 0->1 Demand transition;
-    -- recreating the same physical id inside one generation would be rejected.
+    -- RU 没有项目已验证的 DestroyWidget；代际内宿主保持隐藏，下次 Demand 0->1 时复用，同代际重复创建相同物
+    -- 理 ID 会被拒绝。
     self.privateParked = retainedEvents or retainedHandler
     if retainedEvents == true or retainedHandler == true then
         self.releaseApiMissing = self.releaseApiMissing + 1
@@ -359,9 +341,7 @@ function C:_ReleaseGlobalBridge()
                 released = ok == true and result ~= false
                 if released ~= true then releaseErr = ok and "ReleaseEventHandler returned false" or tostring(result) end
             else
-                -- Case B: the build registers a global COMBAT_MSG bridge but
-                -- exposes no way to release it. Park the inert handler instead
-                -- of failing the caller's feature toggle.
+                -- 客户端可注册全局 COMBAT_MSG 却不能释放时，停放惰性处理器，不使功能开关失败。
                 retained = true
             end
         elseif host ~= nil and handler ~= nil then
@@ -478,13 +458,9 @@ function C:_Stop()
     return true
 end
 
--- Force the bus inert without pretending the native release succeeded.
---
--- Demand may fall back to ForceQuiesce when a normal Clear fails (for example
--- because a release API exists but returned false). In that path the consumer
--- projection is dropped regardless, so callbacks MUST stop doing business work
--- even though the native host could not be detached. `running`/`globalActive`
--- are the lease-independent guards the native closures check first.
+-- 强制使总线惰性但不假称原生释放成功。正常 Clear 失败（如释放 API 存在但返回 false）时 Demand 可走
+-- ForceQuiesce，消费者投影仍被丢弃，因此业务回调必须停止，即使宿主未解绑。原生闭包先检查独立于租约的
+-- running/globalActive 保护条件。
 function C:_MarkInert()
     self.forcedInert = self.forcedInert + 1
     self.running = false
@@ -496,8 +472,7 @@ function C:_MarkInert()
     return true
 end
 
--- Generation guard helper used by both transports. A stale generation means a
--- previous addon load still owns the native handler; it must never dispatch.
+-- 两种传输共用代际 guard；旧代际表明原生处理器仍归上次插件加载，绝不派发。
 function C:_IsCurrentGeneration(generation)
     return tonumber(S.Generation) == tonumber(generation)
 end
@@ -507,13 +482,8 @@ local function TransportIsPrivate(transport)
     return transport == "private" or transport:sub(1, 8) == "private:" or transport == "death_notice"
 end
 
--- Scope is part of the subscribe contract, not only a transport hint:
---   * scope=self  -> private slice only (reliable SELF endpoint facts)
---   * scope=all   -> private + global slices
--- Without this filter a low-cost self-scope consumer would pay for every
--- all-scope row as soon as any DPS-like consumer enables the global bridge.
--- Exposed as a method so the acceptance harness can assert it without
--- registering a native host.
+-- scope 是订阅契约：self 仅私有可靠 SELF 事实，all 为私有加全局切片。过滤确保任一 DPS 类消费者启用全局桥后
+-- ，低成本 self 消费者不会承担全部 all 行。暴露方法供验收框架无原生宿主断言。
 function C:AcceptsTransport(options, transport)
     if type(options) ~= "table" then return true end
     if options.scope == "all" then return true end
@@ -647,10 +617,8 @@ function C:_IsCrossHostDuplicate(hostLabel, signature, now)
         self.pairDedup[signature] = entry
     end
 
-    -- Pair one logical row with exactly one occurrence from another host. The
-    -- old single-slot map lost multiplicity: UI,UI,UIParent,UIParent could leak
-    -- the fourth row as a duplicate. Per-host FIFO tokens preserve same-host
-    -- repeated hits while still deduping each mirrored host occurrence 1:1.
+    -- 每个逻辑行与另一个宿主的一次出现精确配对；单槽 map 会丢重复次数，让 UI,UI,UIParent,UIParent 的第四行
+    -- 泄漏为重复。各宿主 FIFO token 保留同宿主重复命中，跨宿主镜像仍按 1:1 去重。
     for otherHost, queue in pairs(entry.hosts) do
         if otherHost ~= hostLabel then
             local token = PopMatchingToken(self, queue, now)
@@ -816,9 +784,8 @@ function C:_NormalizeCombatFact(transport, unitId, eventType, sourceName, target
             fact.boundRole = binding.role
             fact.boundConfidence = binding.confidence
             if binding.role == "source" then fact.sourceId = binding.id else fact.targetId = binding.id end
-            -- UnitIdentity owns explicit kind reads and caches them by stable ID.
-            -- The CombatFact carries that verified fact forward so every consumer
-            -- does not repeat GetUnitInfoById or invent its own PLAYER/NPC logic.
+            -- UnitIdentity 拥有显式 kind 读取并按稳定 ID 缓存；CombatFact 携带已验证事实，避免各消费者重复
+            -- GetUnitInfoById 或私建 PLAYER/NPC 逻辑。
             if type(Identity.GetById) == "function" then
                 local info = Identity:GetById(binding.id, { includeKind = true })
                 if type(info) == "table" and info.kindReliable == true then
@@ -869,9 +836,8 @@ function C:_DispatchFact(fact)
             if AcceptsTransport(row.options, fact.transport) ~= true then
                 self.scopeFiltered = self.scopeFiltered + 1
             else
-            -- CombatFact is borrowed + immutable. Capture primary semantic fields
-            -- so a buggy consumer cannot contaminate later consumers without
-            -- paying for a DeepCopy on every all-scope combat row.
+            -- CombatFact 是借用且不可变；捕获主要语义字段，防止异常消费者污染后续消费者，也避免每条
+            -- all-scope 行 DeepCopy。
             local schemaVersion, sequence, receivedAt = fact.schemaVersion, fact.sequence, fact.receivedAt
             local transport, kind, category, amount = fact.transport, fact.kind, fact.category, fact.amount
             local sourceName, targetName, sourceId, targetId = fact.sourceName, fact.targetName, fact.sourceId, fact.targetId
@@ -919,10 +885,8 @@ function C:_DispatchFact(fact)
 end
 
 function C:_OnCombatRaw(transport, unitId, eventType, sourceName, targetName, abilityId, abilityName, damageType, effectType, isActive, more, more2, more3, more4, more5, receivedAt)
-    -- Lease-independent gate. The native closures already check running before
-    -- calling in, but this second fence makes the contract hold for every
-    -- internal path too (journal replay, forced quiesce, parked hosts). A
-    -- consumer whose lease was dropped must never receive combat work.
+    -- 独立于租约的门禁：原生闭包先查 running，此处第二道隔离覆盖 journal 回放、强制静止和停放宿主等内部路径
+    -- ；已释放租约的消费者绝不收到战斗工作。
     if self.running ~= true then return 0 end
     local fact = self:_NormalizeCombatFact(transport, unitId, eventType, sourceName, targetName, abilityId, abilityName, damageType, effectType, isActive, more, more2, more3, more4, more5, receivedAt)
     return self:_DispatchFact(fact)
@@ -944,7 +908,7 @@ function C:_OnDeathNotice(info1, info2, info3, info4, info5)
         rawNotice4 = info4,
         rawNotice5 = info5,
     }
-    RecordNoticeEvidence(fact,"normalized") -- 中文维护：即使无自身伤害账本，也要证明原生姓名死亡通知曾到达。
+    RecordNoticeEvidence(fact,"normalized") -- 即使无自身伤害账本，也要证明原生姓名死亡通知曾到达。
     return self:_DispatchFact(fact)
 end
 
@@ -963,7 +927,7 @@ function C:_OnKillNotice(eventName, payload)
     end
     if type(killer)~="string" or type(victim)~="string" or #killer>512 or #victim>512
         or Trim(killer)=="" or Trim(victim)=="" or Trim(killer)==Trim(victim) then
-        -- 中文维护：非法字段仅留类型/截断标量，不放宽击杀 ABI；未形成 CombatFact 的行没有 sequence。
+        -- 非法字段仅留类型/截断标量，不放宽击杀 ABI；未形成 CombatFact 的行没有 sequence。
         RecordNoticeEvidence({receivedAt=NowMs(),kind="kill_notice",rawEventType=eventName,sourceName=killer,targetName=victim,
             rawNotice2=streak,rawNotice3=mode},"invalid_payload")
         self.killNoticeRejected=self.killNoticeRejected+1;return 0
@@ -973,7 +937,7 @@ function C:_OnKillNotice(eventName, payload)
         kind="kill_notice",category="death",rawEventType=eventName,sourceName=Trim(killer),targetName=Trim(victim),
         -- 这些是原生 BattleField 玩家击杀通知；常规 COMBAT_MSG 的类型仍由单位事实确认。
         sourceKind="PLAYER",targetKind="PLAYER",rawNotice2=DiagnosticScalar(streak),rawNotice3=DiagnosticScalar(mode)}
-    RecordNoticeEvidence(fact,"normalized") -- 中文维护：sequence 连接入口、Analytics 过滤与最终计数，不能借日志补算。
+    RecordNoticeEvidence(fact,"normalized") -- sequence 连接入口、Analytics 过滤与最终计数，不能借日志补算。
     return self:_DispatchFact(fact)
 end
 
@@ -986,7 +950,7 @@ function C:GetDiagnosticDetail()
         rows[#rows+1]=copy
     end
     local events={};for key,value in pairs(self.optionalKillEvents) do events[key]=value end
-    -- 中文维护：received/rejected 仍只统计原生归属；events 同时含姓名死亡通知，显式给出覆盖淘汰数。
+    -- received/rejected 仍只统计原生归属；events 同时含姓名死亡通知，显式给出覆盖淘汰数。
     return {health=self:GetHealth(),killNotifications={registrations=events,running=self.running,received=self.killNoticeRows,rejected=self.killNoticeRejected,
         events=CopyNoticeEvidence(),evicted=noticeEvidence.evicted,limit=64},unknownEvents=rows,unknownTypeDropped=self.unknownTypeDropped,unknownTypeLimit=32,
         coverage="未知类型仅保留本次加载每种类型的首次标量样本；不改变类型解释或击杀归属。"}
@@ -1019,9 +983,7 @@ if S.Demand ~= nil and type(S.Demand.Create) == "function" then
         owner = C,
         normalize = NormalizeDemandOptions,
         reconcile = function(lease, before, after, context) return C:_ReconcileDemand(lease, before, after, context) end,
-        -- Best-effort native detach. Whatever the outcome, the bus becomes
-        -- inert so no business callback survives a forced quiesce, and the
-        -- real release error is still reported (never silently swallowed).
+        -- 尽力原生解绑，无论结果总线都变惰性，强制静止后无业务回调存活；真实释放错误仍报告，不能静默吞掉。
         quiesce = function()
             local released, releaseErr = C:_Stop()
             C:_MarkInert()

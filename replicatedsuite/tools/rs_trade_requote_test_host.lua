@@ -1,6 +1,11 @@
--- 2026-09-30 trade-requote-2: test-only Native, clock, persistence boundaries.
--- Real Api/NativeImports/AuctionSurface/Query/Queue/MaterialPrice services are loaded below.
--- The helper shares the prior reviewed cold-import boundary model; no production test hook.
+------------------------------------------------------------------------
+-- Replicated Suite · 交易重新询价测试宿主
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 测试宿主仅替代原生接口、时钟和持久化边界，下方加载真实 Api、NativeImports、AuctionSurface、Query、Queue 和 MaterialPrice。
+-- 复用已审查的未预导入边界模型，不向生产代码加入测试钩子。
+------------------------------------------------------------------------
 unpack = unpack or table.unpack
 local function Eq(a,b,message) assert(a==b,(message or "value")..": expected="..tostring(b)..", actual="..tostring(a)) end
 local function Copy(v)
@@ -98,9 +103,9 @@ local function Boot(existingS)
             return 200, 150, 800, 600, h.visible
         end,
     }
-    -- Load services with no business namespaces present; import only Trade's actual registry dependencies later.
+    -- 加载服务时不预置业务命名空间，稍后只导入 Trade 注册元数据实际声明的依赖。
     for _,name in ipairs({"X2Auction","X2Craft","X2Store","X2Ability","X2Equipment"}) do _G[name]=nil end
-    if true then _G.X2Auction={} end -- placeholder/reload host, replaced by ImportAPI
+    if true then _G.X2Auction={} end -- 重载占位宿主，随后由 ImportAPI 替换。
     h.imports={}
     dofile("native/rs_native_contract.lua")
     function ADDON:ImportAPI(id)
@@ -114,7 +119,7 @@ local function Boot(existingS)
     dofile("native/rs_native_imports.lua")
     assert(S.BootError==nil,S.BootError)
     dofile("features/rs_feature_registry.lua")
-    -- toc.g order: Query and Queue load BEFORE Surface. Guard lookups must be runtime-local, not captured nil.
+    -- toc.g 中 Query 和 Queue 先于 Surface 加载；保护条件必须在运行时读取对象，不能捕获加载期的 nil。
     dofile('core/rs_diagnostic_detail.lua')
     dofile("services/rs_auction_query_v3.lua")
     dofile("services/rs_price_quote_queue_v3.lua")

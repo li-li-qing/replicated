@@ -1,7 +1,11 @@
--- Replicated Suite Gear regression: a loadout where only costume and title differ
--- must reach both actions. This reproduces the .18.253 selector regression where
--- false made already-correct gear look mismatched, then costume verification never
--- succeeded and title (which intentionally runs after gear) was never reached.
+------------------------------------------------------------------------
+-- Replicated Suite · 装备时装与称号应用测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- Gear 回归：仅时装和称号不同的方案也必须执行两项切换。
+-- 错误的 false 选择器会让已正确装备被误判为不一致，导致时装验证一直失败，后置的称号动作无法触达。
+------------------------------------------------------------------------
 local servicePath = (arg and arg[1]) or 'services/rs_gear_service_v3.lua'
 
 ReplicatedSuite = {
@@ -38,8 +42,7 @@ function S.Scheduler:RemoveTask() self.fn = nil end
 local equipped, bag = {}, {}
 X2Equipment = {}
 function X2Equipment:GetEquippedItemTooltipInfo(slot, targetEquippedItem)
-    -- Historical Gear path: true is the selector that returns the player's gear
-    -- in this observed client family; false reproduces the regression.
+    -- 当前已观测客户端族中，Gear 自身装备路径使用 true 才返回玩家装备；false 用于复现错误选择器。
     if targetEquippedItem ~= true then return nil end
     return equipped[tonumber(slot)]
 end

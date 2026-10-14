@@ -1,13 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - life_bonds Feature Authority
+-- Replicated Suite · 债券与居民委托板功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 2 Step 3（2026-09-28，§24.1 固定顺序第三步）：从 features/life/rs_life_m16_bundle.lua
--- 机械搬迁。只改变源码边界，不改业务行为：Feature ID、Store ID/Schema（v3.life.bonds）、
--- UpdateTopic、Demand owner、Commands、Projection shape、ApiDependencies 全部逐字一致。
---
--- §24.3 红线：Bonds 的 X2Quest ownership 保持 .328 修复（ApiDependencies 由
--- features/rs_feature_registry.lua 声明，本文件不重复声明、不扩大权限）。
--- 共享装配 helper 来自 features/life/shared/rs_life_slice_factory.lua（toc.g 已保证先加载）。
+-- 独立源码单元保留Feature ID、v3.life.bonds Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection与ApiDependencies契约。
+-- X2Quest所有权由features/rs_feature_registry.lua声明，本文件禁止重复声明或扩大权限；共享装配来自features/life/shared/rs_life_slice_factory.lua，由toc.g保证先加载。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -23,9 +20,7 @@ local Number, Text = LF.Number, LF.Text
 local InstallLifeWidgetContract, PublishFeatureUpdate = LF.InstallLifeWidgetContract, LF.PublishFeatureUpdate
 local RegisterStore, LoadStore, PersistLifeMutation = LF.RegisterStore, LF.LoadStore, LF.PersistLifeMutation
 
-------------------------------------------------------------------------
--- Bonds / Resident board
-------------------------------------------------------------------------
+-- 债券与居民委托板。
 local Bonds = { Id = "life_bonds", storeId = "v3.life.bonds", enabled = false, storeLoaded = false,
     progressConsumerToken = "feature:life_bonds:quest_progress", progressConsumerHeld = false, progressSubscribed = false,
     locationSubscribed = false }
@@ -37,8 +32,8 @@ Bonds.RegionContinentPatch = "bonds-region-continent-1"
 S.Features.Bonds = Bonds
 Bonds.UpdateTopic = "v3.life.bonds.updated"
 Bonds.State = { sortMode = "continent", continentOrder = "west_first", showCompleted = true, q20 = true, q60 = true, q100 = true, auroria = true, excludeSame = false, priority = "west", completionDateKey = nil, completedMainlandKeys = {}, dailyDateKey = nil, dailySnapshots = {}, widgetVisible = false, widgetWindow = nil }
--- 中文维护注释（2026-09-15，西/东大陆同日快照与排序语义）：
--- 问题原因：旧页面把“按大陆排序”“优先西/东”和“去重”挤在同一排，priority 还会隐式开启去重，
+--
+-- 旧页面把“按大陆排序”“优先西/东”和“去重”挤在同一排，priority 还会隐式开启去重，
 -- 用户切换排序时会看到另一大陆行被隐藏，从而误以为 Authority 只能读取一个大陆。Authority 实际已经
 -- 按 server day 保存 west/east/auroria 三份快照，因此本次不新增第二数据源，只把“大陆展示顺序”提升为
 -- 独立持久化偏好 continentOrder，并明确 duplicate priority 只有在合并模式开启时才参与。
@@ -46,7 +41,7 @@ Bonds.State = { sortMode = "continent", continentOrder = "west_first", showCompl
 -- Presentation 只能调用 Commands，禁止直接读取 State。兼容边界：新增字段缺失时默认 west_first，旧 Store
 -- schema/fingerprint 仍由 NormalizeBondState 兼容；不增加轮询，不跨大陆伪造远程读取。
 -- 风险：未来若增加第四大陆/新阵营，必须同时扩展排序 rank、dailySnapshotStatus 和 UI 标签，不能复用 priority。
--- 中文维护注释（2026-09-24，债券 18.302 契约）：v3 表示多大陆缓存已具备 Native 板族识别、
+-- v3 表示多大陆缓存已具备 Native 板族识别、
 -- 空快照拒绝、区域重探测以及按 board index 的同日增量合并；ResidentBoardFamily/AuroriaMaterial/DropdownPresentation 分开打契约，
 -- 让 Foundation/Acceptance 能在用户只覆盖部分文件时 fail-fast，而不是运行到一半才出现“原大陆没数据/按钮旧版”。
 Bonds.MultiContinentSnapshotContractVersion = 3
@@ -56,7 +51,7 @@ Bonds.DropdownPresentationContractVersion = 2
 InstallLifeWidgetContract(Bonds, { defaultWidth = 500, defaultHeight = 330, minWidth = 280, minHeight = 150, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
 Bonds.Authority = { version = 3, revision = 0, rows = {}, status = "idle", error = nil, boardScope = "unknown", faction = nil }
 local BA = Bonds.Authority
--- 中文维护注释（2026-09-24，债券 ItemType 反向索引）：大陆 4 种 + 原大陆 6 种材料在脚本加载时
+-- 大陆 4 种 + 原大陆 6 种材料在脚本加载时
 -- 建一次只读反向表。InventorySnapshotV3 刷新会遍历背包物品，如果每个 item 再 pairs 扫 10 个常量键，
 -- 会把一个 O(n) 背包聚合放大成 O(n*10)。反向索引保持同一 GameIds Authority，只消除热路径重复匹配。
 local BOND_MATERIAL_KEY_BY_ITEM_TYPE = {}
@@ -87,7 +82,7 @@ local function BondTextContainsAny(text, patterns)
     return false
 end
 local function ResolveAuroriaBondToken(boardIndex, text, quantity)
-    -- 中文维护注释（2026-09-24，原大陆任务解析 / 18.302 复核）：公开 ArcheRage residentboard
+    -- 公开 ArcheRage residentboard
     -- 插件确认板位 5/6/7 分别代表 Prince/Queen/Ancestor。板位只决定家族，文本优先判断钱袋/箱子；
     -- 若本地化关键词缺失，不能只拿“文本第一个数字”推断，因为区域名/阶段文本可能在需求量之前出现其它数字。
     -- 这里扫描整行所有数字，并且只有所有命中证据唯一指向 purse 或 crate 时才降级推断；30/25/20 等
@@ -147,7 +142,7 @@ local function ReadBondResources()
     for key in pairs(S.Constants and S.Constants.BondMaterialItemTypes or {}) do totals[key] = 0 end
     for key in pairs(S.Constants and S.Constants.AuroriaBondMaterialItemTypes or {}) do totals[key] = 0 end
     local status = "unknown"
-    -- 中文维护注释：优先复用 InventorySnapshotV3 统一背包只读快照（含 bagId 1/0 自动试探与数量提取），
+    -- 优先复用 InventorySnapshotV3 统一背包只读快照（含 bagId 1/0 自动试探与数量提取），
     -- 避免各生活模块对物理背包槽位产生第二 Authority 或猜测不同 bagId。
     local snapshotService = S.Services and S.Services.InventorySnapshotV3
     if type(snapshotService) == "table" and type(snapshotService.BuildSnapshot) == "function" then
@@ -171,7 +166,7 @@ local function ReadBondResources()
     if capacityOk ~= true or not capacity or capacity < 0 then return totals, status end
     local maxSlot = math.min(240, math.floor(capacity))
     local readCount, failed = 0, false
-    -- 中文维护注释：物理槽位降级读取依循 GearV3 规范：bagId=1 优先，无有效物品时降级 bagId=0。
+    -- 物理槽位降级读取依循 GearV3 规范：bagId=1 优先，无有效物品时降级 bagId=0。
     local bagIds = { 1, 0 }
     for _, bagId in ipairs(bagIds) do
         local currentReadCount, currentObservedItems = 0, 0
@@ -185,7 +180,7 @@ local function ReadBondResources()
             else
                 currentReadCount = currentReadCount + 1
                 if type(item) == "table" then
-                    -- 中文维护注释（bond-bag-fallback-1）：API 调用成功只证明槽位可读，nil/空表不能证明
+                    -- API 调用成功只证明槽位可读，nil/空表不能证明
                     -- bagId=1 是当前物理背包。只有看到至少一个真实物品后才锁定该 bagId；否则继续试 bagId=0。
                     -- 这样不会把“100 个空槽位成功返回 nil”误判为有效背包而把真实材料统计成 0。
                     if next(item) ~= nil then currentObservedItems = currentObservedItems + 1 end
@@ -220,7 +215,7 @@ local BOND_BOARD_NAMES = {
     [1] = "布料", [2] = "皮革", [3] = "木材", [4] = "铁锭",
     [5] = "王子的物品", [6] = "女王的物品", [7] = "祖先的物品",
 }
--- 维护（2026-09-30，跨大陆读取）：Native 行表和持久化序列不是同一个边界。
+-- Native 行表和持久化序列不是同一个边界。
 -- Native 允许稀疏/十进制字符串索引；旧 ipairs 会截断后半段，且 tonumber(key) 后再
 -- source[number] 取不到原 string key。现在保留实际键值，按数值顺序读取，元数据不当行。
 -- 单板最多检查 192 项；别名碰撞/过大输入整体拒绝，不按 pairs 的不确定顺序选赢家。
@@ -310,9 +305,7 @@ local function BoundedBondSnapshotText(value)
     local text = Text(value, "")
     if #text <= BOND_SNAPSHOT_MAX_TEXT then return text end
     local cut = BOND_SNAPSHOT_MAX_TEXT
-    -- Persist only a valid UTF-8 prefix. Russian/Chinese board text is
-    -- multi-byte; raw string.sub at the byte budget can split a codepoint and
-    -- corrupt the restored daily snapshot.
+    -- 仅持久化有效 UTF-8 前缀；中俄文是多字节，禁止在字节预算边界直接 string.sub 切断码点，损坏恢复的日常快照。
     while cut > 0 do
         local byte = string.byte(text, cut)
         if byte ~= nil and byte >= 0x80 and byte < 0xC0 then cut = cut - 1 else break end
@@ -337,12 +330,12 @@ local function BondBoardLineCount(boards, index)
 end
 
 local function DetectResidentBoardFamily(boards)
-    -- 中文维护注释（2026-09-24，ResidentBoard 家族识别）：Strawberry-devs 的公开 ArcheRage
+    -- Strawberry-devs 的公开 ArcheRage
     -- residentboard 插件使用“3/4 板同时非空 => 主大陆；5/6 任一非空 => 原大陆”的真实客户端行为。
     -- 旧 Bonds 反过来先相信静态 zoneGroup 表，导致未收录的原大陆区域在已经缓存西/东后完全不再调用
     -- GetResidentBoardContent，甚至可能把 5/6 的原大陆内容误作为西/东的一张空快照保存。这里把 Native
     -- ResidentBoard 内容提升为“当前板族”的 Authority，zoneGroup 只负责主大陆西/东分边，不再决定原大陆。
-    -- 维护（2026-09-30）：3/4 同时非空是充分条件而非必要条件。局部加载的 1/2
+    -- 3/4 同时非空是充分条件而非必要条件。局部加载的 1/2
     -- 以及原大陆单独第 7 板也携带真实内容；主大陆仍必须另有明确的西/东归属证据。
     local mainlandReady, auroriaReady = false, false
     for index = 1, 4 do mainlandReady = mainlandReady or BondBoardLineCount(boards, index) > 0 end
@@ -354,7 +347,7 @@ local function DetectResidentBoardFamily(boards)
 end
 
 local function BondFactionContinentHint(boards, includeEmpty)
-    -- 维护（2026-09-30）：优先检查有内容的主大陆板。跨区时 zone 可能已更新，而内容
+    -- 优先检查有内容的主大陆板。跨区时 zone 可能已更新，而内容
     -- 仍是上一大陆；冲突不得把旧板标成新大陆。空板 faction 仅保留旧版未知区域
     -- 的 locator 兜底，不得覆盖已知所在地或内容板的明确证据。
     local hint, faction = nil, ""
@@ -414,7 +407,7 @@ local function BondSnapshotLineCount(snapshot)
     return count
 end
 
--- 维护（2026-09-30，保存/重登表示差异）：仅 boards / lines 是已声明序列。
+-- 仅 boards / lines 是已声明序列。
 -- 遇到字符串数字索引，复用 Core 的完整 1..N 重建；缺口、碰撞、非规范数字键不补齐。
 -- 普通数字数组的 canonical 形状完全不改；原 envelope/stamped hash 必须继续通过。
 -- 该候选归一不绕过读回校验，不迁移 Schema，不扩大 Core 对其他 Store 的容错。
@@ -451,7 +444,7 @@ local function NormalizeBondSnapshot(value, continentKey)
             count = count + 1
         end
     end
-    -- 中文维护注释（2026-09-24，空快照污染修复）：旧 Normalize 只要存在 1..7 的 board 外壳就
+    -- 旧 Normalize 只要存在 1..7 的 board 外壳就
     -- 接受快照，即使所有 lines 都为空。若一次 ResidentBoard 临时读空却被错误大陆提示命中，Store 会把
     -- “空西大陆/空东大陆”保存整天，后续 Refresh 因 snapshot 已存在不再读取，表现就是“偶尔整天没数据”。
     -- 现在至少要求 1 条真实居民板文本；旧存档中的空壳会在 Normalize 时自然丢弃，无需清配置或迁移 schema。
@@ -479,7 +472,7 @@ local function CaptureBondSnapshot(continentKey, boards)
     return NormalizeBondSnapshot(snapshot, continentKey)
 end
 
--- 维护（2026-10-07）：同日已完整读取的大陆直接复用本地；缺板仍允许有限补读。
+-- 同日已完整读取的大陆直接复用本地；缺板仍允许有限补读。
 -- 只检查现有快照结构，不增加存档字段，保持 schema=1 的历史 canonical/指纹。
 local function BondSnapshotComplete(snapshot, continentKey)
     if type(snapshot) ~= "table" then return false end
@@ -493,7 +486,7 @@ local function BondSnapshotComplete(snapshot, continentKey)
 end
 
 
--- 中文维护注释（2026-09-24，18.302 每板增量合并）：dailySnapshots 的 Authority 粒度是“服务器日 + 大陆”，
+-- dailySnapshots 的 Authority 粒度是“服务器日 + 大陆”，
 -- 但一次 Native ResidentBoard 读取只代表玩家当前可见板内容。18.301 把整个 auroria 当成单个原子快照，
 -- 导致已经缓存 Prince 后进入 Queen/Ancestor 区域时，zone-boundary 探测虽然成功却因 previous 已存在而拒绝
 -- 新内容；手动刷新又只按总行数比较，可能同样丢失另一组合法板数据。这里改为按 board index 合并，并对
@@ -574,7 +567,7 @@ local function NormalizeBondState(value)
         local snap = NormalizeBondSnapshot(type(value.dailySnapshots) == "table" and value.dailySnapshots[continentKey] or nil, continentKey)
         if snap ~= nil then snapshots[continentKey] = snap end
     end
-    -- 中文维护注释（2026-09-24，排序兼容）：18.303 新增 material 排序，但不新增 Store 字段，避免
+    -- 18.303 新增 material 排序，但不新增 Store 字段，避免
     -- schema=1 的历史 envelope 再次发生 canonical 漂移。已有 continent/quantity 值保持原样；只有用户
     -- 新选择“按材料”后才会持久化 material。旧版本回退时 material 会安全归一为 continent，不破坏快照。
     local sortMode = value.sortMode == "quantity" and "quantity" or (value.sortMode == "material" and "material" or "continent")
@@ -586,15 +579,11 @@ local function NormalizeBondState(value)
         completionDateKey = dateKey, completedMainlandKeys = completed,
         dailyDateKey = dailyDateKey, dailySnapshots = snapshots,
         widgetVisible = value.widgetVisible == true,
-        -- widgetWindow is the only passthrough field left in this Domain and it
-        -- was the top fingerprint-drift candidate (arbitrary keys survive the
-        -- Copy; RU serialization then reorders/drops them). Routing it through
-        -- the shared FloatingSurface normalizer gives it a fixed shape like
-        -- every other field, which both stabilizes the canonical fingerprint
-        -- and repairs legacy windows saved with missing keys.
+        -- widgetWindow 是 Domain 唯一透传字段；任意 key 经 Copy 保留却被 RU 序列化重排/删除，会造成指纹漂移。
+        -- 必须经过共享 FloatingSurface normalizer 固定形态，稳定 canonical 指纹，并补齐旧窗口缺失键。
         widgetWindow = NormalizeBondWidgetWindow(value.widgetWindow) }
 end
--- 中文维护注释（2026-09-15，债券 historical canonical 修复）：上一版在 schema=1 的
+-- 上一版在 schema=1 的
 -- NormalizeBondState 中新增 continentOrder，导致已经合法盖章的旧存档（字段尚不存在）在下一次
 -- Fresh Reload 被当前 canonical 自动补成 west_first，从而出现 fingerprint_mismatch。这里由 Bonds Store
 -- 自己声明唯一可证明的历史形状：CURRENT canonical 去掉新增字段。候选没有信任权，仍必须重新计算并
@@ -622,7 +611,7 @@ end
 
 local function BondCompletionKey(materialKey, quantity, continentKey)
     if materialKey == nil or tonumber(quantity) == nil then return nil end
-    -- 中文维护注释（2026-09-24，原大陆完成锁存）：QuestProgress 在任务交付后可能从 activeIndex 中移除，
+    -- QuestProgress 在任务交付后可能从 activeIndex 中移除，
     -- 如果只依赖当前 questStatus，原大陆已完成行会从“已完成”退回“待确认”。沿用现有每日完成 Store，
     -- 但给原大陆 key 加 auroria 前缀，避免和主大陆 material:quantity 的跨大陆共享语义碰撞；不改 schema。
     local suffix = tostring(materialKey) .. ":" .. tostring(math.floor(tonumber(quantity)))
@@ -652,9 +641,7 @@ function BA:Refresh(reason)
     local completionDirty, snapshotDirty = false, false
     local serverDateKey = S.Utils and type(S.Utils.ServerDateKey) == "function" and tostring(S.Utils.ServerDateKey()) or "unknown"
 
-    -- Daily resident-board contents are stable for the server day. Keep the
-    -- restored cache during the cold unknown-date window; only a proven date
-    -- rollover is allowed to invalidate snapshots/completion latches.
+    -- 日常居民板内容在同一服务器日稳定；冷启动日期未知时保留恢复缓存，只允许已证明跨日后作废快照/完成锁存。
     local dateReady = string.match(serverDateKey, "^%d%d%d%d%-%d%d%-%d%d$") ~= nil
     self.serverDateKey = dateReady and serverDateKey or "unknown"
     local latestStoredDate = state.dailyDateKey
@@ -666,7 +653,7 @@ function BA:Refresh(reason)
         dateReady, self.dateValidation = false, "server_date_rollback"
     end
     self.snapshotDateVerified = dateReady
-    -- 维护（2026-09-30）：日期未知时只展示已恢复的快照，不把新板混入昨日快照，
+    -- 日期未知时只展示已恢复的快照，不把新板混入昨日快照，
     -- 也不保存无日期快照再于下一次日期就绪时清掉。有限恢复探测等待可信服务器日期。
     if dateReady then
         if state.completionDateKey ~= serverDateKey then
@@ -686,7 +673,7 @@ function BA:Refresh(reason)
     Bonds.State.dailySnapshots = Copy(state.dailySnapshots)
     BA.duplicatePriorityUnresolved = nil
 
-    -- 中文维护注释（2026-09-24，筛选/排序不重复扫包）：Dropdown 只改变 Presentation 过滤与排序，
+    -- Dropdown 只改变 Presentation 过滤与排序，
     -- 不改变背包事实。旧实现每次 SetDisplayOrder/SetFilterMask/SetDuplicateMode 都会重新 BuildSnapshot("bag")，
     -- 大背包下属于不必要的 O(slots) 读取。Authority 现在只在 presentation 重建时复用最近一次 detached 资源
     -- 汇总；Demand 首开、手动刷新、QuestProgress/其他业务刷新仍重新读取背包，因此交任务/消耗材料后的数量不会
@@ -708,7 +695,7 @@ function BA:Refresh(reason)
 
     local lastReadable, lastContentCount = 0, 0
     local forceRead = reason == "page_manual" or reason == "widget_manual" or reason == "overview_manual" or reason == "manual"
-    -- 维护（2026-10-07）：重载/重新上线先核对服务器日期；已完整缓存的当前大陆不再探测。
+    -- 重载/重新上线先核对服务器日期；已完整缓存的当前大陆不再探测。
     -- 未收录地图的区域边界仍可识别新板族；原大陆缺少 5/6/7 时继续增量补读。
     local boundaryProbe = reason == "zone_changed" or reason == "entered_world" or reason == "location_retry" or reason == "left_loading"
     local projectionOnly = reason == "presentation" or reason == "quest_progress"
@@ -812,7 +799,7 @@ function BA:Refresh(reason)
 
     local progress = S.Services and S.Services.QuestProgressV3
     local activeIndex = progress and (progress.activeIndex or (type(progress.BuildActiveIndex) == "function" and select(1, progress:BuildActiveIndex()))) or nil
-    -- 中文维护注释（2026-10-04）：snapshot.continentKey 仅记录采集来源。原生板和旧存档可能
+    -- snapshot.continentKey 仅记录采集来源。原生板和旧存档可能
     -- 在东大陆采集时包含西大陆任务，行标签、排序与可选合并必须按任务地区投影。修正不搬动
     -- dailySnapshots、不改变 schema/完整性指纹，也不清缓存；无法唯一识别地区时保留来源并留证据。
     local regionalRows = {}
@@ -827,7 +814,7 @@ function BA:Refresh(reason)
                     textValue = Text(textValue, "")
                     local materialKey = BOND_TEXT_MATERIAL[index]
                     local quantity = Number(string.match(textValue, "(%d+)"))
-                    -- 中文维护注释（2026-09-24，原大陆行身份闭环）：板 5/6/7 不再使用一个虚拟
+                    -- 板 5/6/7 不再使用一个虚拟
                     -- auroria_token。ResidentBoard 文本 + 板位先解析成 prince/queen/ancestor purse/crate，
                     -- 再与共享 ItemType/QuestId 映射汇合。这样原大陆也能显示真实“持有/缺口/完成状态”；
                     -- 文本不足以区分钱袋与箱子时保持 unknown，绝不为了显示数量而猜错材料/任务。
@@ -875,7 +862,7 @@ function BA:Refresh(reason)
                             requiredCount = requiredCount, haveCount = haveCount,
                             shortage = requiredCount and haveCount and math.max(0, requiredCount - haveCount) or nil,
                             resourceStatus = rowStatus,
-                            -- 中文维护注释：resourceStatus 保留机器态供诊断/兼容，玩家表格使用本地化文本，
+                            -- resourceStatus 保留机器态供诊断/兼容，玩家表格使用本地化文本，
                             -- 避免直接暴露 ready/partial/unknown 造成语义不清；这里仍由同一 Authority 生成。
                             resourceStatusText = rowStatus == "ready" and "可读取" or (rowStatus == "partial" and "部分" or "未知"),
                             resourceText = haveCount and tostring(haveCount) or "?",
@@ -913,10 +900,7 @@ function BA:Refresh(reason)
         AppendSnapshot(continentKey, state.dailySnapshots[continentKey])
     end
 
-    -- Mainland daily identity is material + quantity. A Leather:20 completion
-    -- is global across west/east, while Leather:20/60/100 remain three distinct
-    -- tasks. De-duplication therefore uses that exact key and may also collapse
-    -- accidental duplicates within one continent.
+    -- 大陆日常身份为材料+数量：Leather:20 完成状态跨东西大陆共用，而20/60/100是三个任务；按精确 key 去重，也可合并同大陆意外重复。
     if state.excludeSame then
         local groups = {}
         for _, row in ipairs(rows) do
@@ -946,7 +930,7 @@ function BA:Refresh(reason)
         end
     end
 
-    -- 中文维护注释（2026-09-24，债券三维排序）：18.302 的“按数量 · 西→东/东→西”只改变
+    -- 18.302 的“按数量 · 西→东/东→西”只改变
     -- 数量主键、却仍用大陆方向作为第二语义，用户无法表达“数量少→多/多→少”，也没有按材料聚合，
     -- 因而实际体验会像“少了排序”。18.303 不增加新的 Store 字段：继续复用 sortMode + continentOrder
     -- 这两个稳定字段，其中 continent 模式解释 order 为大陆方向；quantity/material 模式解释同一二值为
@@ -1013,7 +997,7 @@ function BA:Refresh(reason)
     self.revision = self.revision + 1
     local persisted, persistError = true, nil
     if completionDirty or snapshotDirty then
-        -- 维护（2026-10-07）：每日事实不能只排队延迟保存。先保留 Core 的有界失败重试，
+        -- 每日事实不能只排队延迟保存。先保留 Core 的有界失败重试，
         -- 再立即落盘并校验回读；返回成功前已验证日期、三个大陆快照和完成态的一致存档。
         persisted, persistError = P:MarkDirty(Bonds.storeId, 5000, "bond_daily_snapshot_or_completion")
         if persisted == true then
@@ -1034,7 +1018,7 @@ end
 
 function BA:GetProjection()
     local snapshots = type(Bonds.State.dailySnapshots) == "table" and Bonds.State.dailySnapshots or {}
-    -- 中文维护注释（2026-09-15，Projection 覆盖状态）：Presentation 需要告诉玩家“今天西/东大陆
+    -- Presentation 需要告诉玩家“今天西/东大陆
     -- 哪些已读取”，但禁止直接读 State/Store。因此 Authority 只投影三个布尔值和当前大陆标签，不暴露
     -- snapshot 原文/嵌套表，也不复制第二份业务数据。该 detached 状态不会触发任何 Native 读取。
     local coverage = { west = snapshots.west ~= nil, east = snapshots.east ~= nil, auroria = snapshots.auroria ~= nil }
@@ -1055,18 +1039,16 @@ function BA:GetProjection()
         selectedKey = Bonds.selectedKey,
     }
 end
--- The daily snapshot domain nests 5 tables deep with up to 21 boards of CJK
--- text; the generic helper budget (depth 6 / 320 nodes) sat at the boundary
--- and silently starved the integrity upgrade's decode validation.
+-- 日常快照嵌套5层、最多21块中文板文本；通用 depth6/320节点预算处于边界，会让 integrity 升级 decode 验证资源不足，必须按真实负载预算。
 RegisterStore(Bonds.storeId, "v3.life.bonds", function() return NormalizeBondState(nil) end,
     function() return Copy(Bonds.State) end,
     function(value) Bonds.State = NormalizeBondState(value) end,
     NormalizeBondState,
     { maxDepth = 8, maxNodes = 960, maxStringBytes = 24576, maxEntriesPerTable = 192 },
-    RebuildBondCanonicalForIntegrity) -- 中文维护注释：仅 Bonds 注册 pre-continentOrder exact historical bridge；Core 规则不放宽。
+    RebuildBondCanonicalForIntegrity) -- 仅 Bonds 注册 pre-continentOrder exact historical bridge；Core 规则不放宽。
 Bonds.ApiDependencies = {
     "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Unit:GetCurrentZoneGroup",
-    -- 中文维护注释（2026-09-28，native-dependency-ownership-2）：Bonds AcquireConsumer 会启动共享 QuestProgressV3，
+    -- Bonds AcquireConsumer 会启动共享 QuestProgressV3，
     -- 其基础 Refresh 必须读取活动任务索引与完成/可交付状态。FeatureRuntime 以实现层 ApiDependencies 优先，
     -- 因此这里必须由 Bonds 自己声明 X2Quest，禁止借用 Activities/Tasks 偶然已经导入的 namespace。
     "X2Quest:GetActiveQuestListCount", "X2Quest:GetActiveQuestType",
@@ -1077,7 +1059,7 @@ function Bonds:SubscribeProgress()
     if self.progressSubscribed == true then return true end
     if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "quest progress internal event unavailable" end
     local subscribed = S.Events:SubscribeInternal("v3.quest_progress.updated", self, function()
-        -- 中文维护注释（bond-quest-reactive-1）：居民板 Store/材料快照仍由 Bonds Authority 持有；这里只在已有
+        -- 居民板 Store/材料快照仍由 Bonds Authority 持有；这里只在已有
         -- Bonds Consumer 时重算 questStatus，不新增 ResidentBoard 轮询。QuestProgress 的事件由 Native Quest 事件
         -- 合并后发布，因此交任务/变为可交付可以在事件后立即刷新主页面与悬浮窗。
         if Bonds.enabled == true and Bonds.consumerCount > 0 then BA:Refresh("quest_progress") end
@@ -1094,7 +1076,7 @@ function Bonds:UnsubscribeProgress()
 end
 function Bonds:ScheduleLocationRefresh(reason, continuing)
     if self.enabled ~= true or (tonumber(self.consumerCount) or 0) <= 0 then return true end
-    -- 维护（2026-09-30）：只在需求首开/显式刷新/地图生命周期边界启动有限恢复序列。
+    -- 只在需求首开/显式刷新/地图生命周期边界启动有限恢复序列。
     -- 一次 750ms 探测可能早于慢客户端加载；最多再做 1500/3000ms 两次，不创建永久轮询。
     -- 新地图事件使旧 epoch 失效；退出需求或热重载后，迟到回调无权读取或保存新场景。
     if continuing ~= true then
@@ -1134,10 +1116,7 @@ function Bonds:SubscribeLocationEvents()
     local worldOk = S.Events:SubscribeOptional("ENTERED_WORLD", self, function()
         return Bonds:ScheduleLocationRefresh("entered_world")
     end)
-    -- Optional Native events are an enhancement, not a hard startup dependency. Manual refresh and Demand probe
-    -- remain valid fallback paths if an older RU client cannot register one of them. Track whether any listener landed
-    -- so release can deterministically clean the owner without introducing a second event Authority.
-    -- 已有客户端加载结束事件；仍为 optional，旧客户端不支持时手动刷新和有限恢复可用。
+    -- 可选Native事件仅增强能力，不能作为启动硬依赖；旧RU无法注册时仍可手动刷新和Demand探测。记录是否成功注册任一监听，让释放确定性清理owner，不建第二事件权威；客户端加载完成事件同样可选。
     local loadingOk = S.Events:SubscribeOptional("LEFT_LOADING", self, function()
         return Bonds:ScheduleLocationRefresh("left_loading")
     end)
@@ -1158,7 +1137,7 @@ function Bonds:StartServerDateCheck()
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return true end
     self.serverDateEpoch = (tonumber(self.serverDateEpoch) or 0) + 1
     local generation, epoch = S.Generation, self.serverDateEpoch
-    -- 维护（2026-10-07）：打开债券时每分钟只核对服务器日期，同日不扫居民板或写盘。
+    -- 打开债券时每分钟只核对服务器日期，同日不扫居民板或写盘。
     -- 确认换日才重建每日事实；无 Consumer 时释放任务，旧代回调不能采集新会话。
     local added = S.Scheduler:AddTask(BONDS_SERVER_DATE_TASK, 60000, function()
         if ReplicatedSuite ~= S or S.Generation ~= generation or Bonds.serverDateEpoch ~= epoch or Bonds.enabled ~= true
@@ -1227,9 +1206,7 @@ function Bonds:Refresh(reason)
     end
     return result
 end
--- Presentation must consume a detached Feature read model rather than reaching
--- through to Bonds.Authority. Keep this facade explicit so the public Feature
--- contract stays symmetric with Trade/Treasure/Fishing.
+-- Presentation 必须消费独立 Feature 读模型，禁止直达 Bonds.Authority；显式 facade 保持与 Trade/Treasure/Fishing 公共契约一致。
 function Bonds:GetProjection() return BA:GetProjection() end
 function Bonds:GetRow(key)
     key = tostring(key or "")
@@ -1248,11 +1225,10 @@ function Bonds:GetSelectedRow()
     return self:GetRow(self.selectedKey)
 end
 
--- §Bonds diagnostics (dayKey / per-continent load state / snapshot volume /
--- board read counter) for the acceptance snapshot. Reads only live state.
+-- Bonds 验收诊断：dayKey、各大陆加载状态、快照体积与委托板读取次数；仅读取实时状态。
 function Bonds:DescribeDailyCache()
     local snapshots = type(self.State.dailySnapshots) == "table" and self.State.dailySnapshots or {}
-    -- 维护（2026-09-30）：区分“未采集 / 已缓存但被合并筛选隐藏 / 等待落盘 / 写入失败”。
+    -- 区分“未采集 / 已缓存但被合并筛选隐藏 / 等待落盘 / 写入失败”。
     -- 只读已加载 State、Projection 和 Core 元数据；不 Load/Save/探测，也不解除任何 fence。
     local coverage = {}
     for _, key in ipairs({ "west", "east", "auroria" }) do
@@ -1287,7 +1263,7 @@ function Bonds:DescribeDailyCache()
         completedCount = (function() local n = 0 for _ in pairs(type(self.State.completedMainlandKeys) == "table" and self.State.completedMainlandKeys or {}) do n = n + 1 end return n end)(),
         boardReads = tonumber(self.boardReads) or 0,
         resourceReads = tonumber(BA.resourceReads) or 0,
-        -- 中文维护注释（2026-09-24，诊断证据）：只暴露上一次 bounded 1..7 探测摘要，不复制
+        -- 只暴露上一次 bounded 1..7 探测摘要，不复制
         -- ResidentBoard 原始文本，既能判断“没读/读空/板族未识别/保留旧缓存”，又控制诊断体积。
         lastBoardProbe = Copy(BA.lastBoardProbe),
     }
@@ -1307,7 +1283,7 @@ end
 function Bonds:GetContinentOrder() return NormalizeBondState(Bonds.State).continentOrder end
 function Bonds:SetContinentOrder(order)
     if order ~= "west_first" and order ~= "east_first" then return false, "大陆排序方向无效" end
-    -- 中文维护注释：大陆顺序是纯 Presentation 偏好，但由 Bonds Store 持久化并由 Authority 排序，
+    -- 大陆顺序是纯 Presentation 偏好，但由 Bonds Store 持久化并由 Authority 排序，
     -- 这样主页面/悬浮窗共享同一顺序。该命令不读 ResidentBoard、不修改 dailySnapshots，也不触发去重。
     local persisted, persistErr = PersistLifeMutation(self, "bonds_continent_order", function(state) state.continentOrder = order; return true end)
     if persisted ~= true then return false, persistErr end
@@ -1324,14 +1300,14 @@ function Bonds:SetBondFilterOption(key, enabled)
 end
 function Bonds:SetDuplicatePriority(priority)
     if priority ~= "west" and priority ~= "east" then return false, "重复材料优先大陆无效" end
-    -- 中文维护注释（2026-09-15，合并优先级无副作用）：旧实现会在选择“优先西/东”时顺手把
+    -- 旧实现会在选择“优先西/东”时顺手把
     -- excludeSame=true，导致用户只是想改顺序/偏好却突然少一整个大陆的重复行。priority 现在只保存
     -- “合并模式下保留哪一侧”，是否合并只能由 SetBondFilterOption(excludeSame) 显式决定。
     local persisted, persistErr = PersistLifeMutation(self, "bonds_priority", function(state) state.priority = priority; return true end)
     if persisted ~= true then return false, persistErr end
     return self:Refresh("presentation")
 end
--- 中文维护注释（2026-09-24，债券下拉框原子命令）：主页面与悬浮窗都改为 3 个 Dropdown。
+-- 主页面与悬浮窗都改为 3 个 Dropdown。
 -- Presentation 不能连续模拟点击多个旧按钮来表达一个选项，否则会产生多次 Store 写入/Projection 发布，
 -- 还可能在 Dropdown popup 未关闭时重入刷新。这里提供组合命令，一次 PersistLifeMutation 原子提交。
 -- 旧 SetSortMode/SetContinentOrder/SetBondFilterOption/SetDuplicatePriority 继续保留，保证升级/扩展兼容。

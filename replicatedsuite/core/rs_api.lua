@@ -1,8 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Official API boundary
--- Optional game APIs use the central Capability Registry at feature boundaries.
--- Call/Action remain the low-level protected invocation primitives for hot paths
--- that already passed a capability gate.
+-- Replicated Suite · 官方 API 调用边界
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 官方 API 边界。可选游戏 API 在功能边界通过中央 Capability Registry 放行；Call/Action 是已通过门禁热路径的
+-- 底层受保护调用原语。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
@@ -39,8 +41,7 @@ function A:ConsumeCapabilityCooldown(name)
         local elapsed = math.max(0, now - last)
         if elapsed < cooldown then return false, "capability cooldown active: " .. tostring(math.ceil(cooldown - elapsed)) .. "ms remaining" end
     end
-    -- Consume before the native invocation. A thrown/false native call must not
-    -- be spam-retried faster than the official RU contract permits.
+    -- 原生调用前先消费额度；原生调用抛错或返回 false 也不能以超过 RU 官方契约的频率反复重试。
     self.capabilityLastAttemptAt[key] = now
     return true
 end
@@ -83,10 +84,8 @@ function A:ActionCapability(name, object, methodName, ...)
     return self:Action(object, methodName, ...)
 end
 
--- Global-function capabilities (for example ConvertWorldToScreen) do not use
--- Lua method-call semantics and therefore must not pass _G as an implicit first
--- argument. Keep this as a separate primitive so ordinary X2*/UI object calls
--- retain the proven colon-style contract.
+-- 全局函数能力（例如 ConvertWorldToScreen）不采用 Lua 方法语义，不能隐式把 _G 作为首参。独立调用原语确保普
+-- 通 X2*/UI 对象继续遵循已验证的冒号调用契约。
 function A:CallGlobalCapability(name, ...)
     local allowed, reason = self:IsCapabilityAllowed(name)
     if allowed ~= true then return false, nil, "capability blocked: " .. tostring(reason or name) end
@@ -96,7 +95,7 @@ function A:CallGlobalCapability(name, ...)
     if type(fn) ~= "function" then return false, nil, "global capability unavailable: " .. tostring(name) end
     local paced, paceErr = self:ConsumeCapabilityCooldown(name)
     if paced ~= true then return false, nil, paceErr end
-    -- 中文维护（performance-hotpath-1）：Lua5.1 pcall 原样接收变参（含中间/尾部nil），
+    -- Lua5.1 pcall 原样接收变参（含中间/尾部nil），
     -- 不为每次只读调用分配参数表和闭包；权限、冷却及四个数据返回位保持原契约。
     local ok, a, b, c, d = pcall(fn, ...)
     if not ok then return false, nil, tostring(a) end
@@ -106,7 +105,7 @@ end
 function A:Call(object, methodName, ...)
     if object==nil then return false,nil,"object unavailable" end
     local method=object[methodName]; if type(method)~="function" then return false,nil,methodName.." unavailable" end
-    -- 中文维护：method仍显式传self；protected call和错误返回不变，避免每帧制造临时垃圾。
+    -- method仍显式传self；protected call和错误返回不变，避免每帧制造临时垃圾。
     local ok,a,b,c,d=pcall(method,object,...)
     if not ok then return false,nil,tostring(a) end
     return true,a,nil,b,c,d
@@ -132,15 +131,12 @@ local function UiNumber(host,name)
     if v==nil or v~=v or v<=0 or v==math.huge then return nil end return v
 end
 function A:GetUiMetrics()
-    -- UIParent:GetExtent() is the reliable logical-coordinate Authority used
-    -- by the user's existing Replicated Gear on RU ArcheRage.  GetScreenWidth
-    -- may already be scaled on some client/UI-size combinations; dividing it
-    -- blindly caused 1024x768 floating widgets to be clamped against the wrong
-    -- space and appear off-screen.
+    -- UIParent:GetExtent() 是 RU ArcheRage 现有 Replicated Gear 使用的可靠逻辑坐标权威。部分客户端和 UI 大
+    -- 小组合中 GetScreenWidth 已经缩放，不能盲目再除缩放，否则 1024x768 浮窗会按错误空间夹紧并落到屏幕外。
     local scale=UiNumber(UIParent,"GetUIScale") or UiNumber(UI,"GetUIScale") or 1
     if scale<=0 then scale=1 end
 
-    -- 维护（viewport-recovery-1）：Api 是 UIParent 逻辑单位唯一入口；异常 extent/scale
+    -- Api 是 UIParent 逻辑单位唯一入口；异常 extent/scale
     -- 不能进入 Layout 的比较/夹紧，否则 NaN 比较全部失效。返回来源仅供运行时诊断，
     -- 不写 Store，不把 screen 当成必然的物理单位，更不能对已知 logical 再除 uiScale。
     local logicalW,logicalH=nil,nil
@@ -166,11 +162,8 @@ function A:GetUiMetrics()
     return screenW,screenH,scale,logicalW,logicalH,{ source=source, ready=source=="uiparent" }
 end
 
--- Pointer coordinates are requested only by event-driven UI interactions such
--- as Tooltip OnEnter. ArcheRage RU officially enabled X2Input:GetMousePos on
--- 2026-08-26. The client may report either logical UI coordinates or physical
--- screen pixels depending on UI scale, so normalize conservatively here and
--- keep that ambiguity out of presentation code.
+-- 鼠标坐标只在 Tooltip OnEnter 等事件驱动交互中读取。ArcheRage RU 于 2026-08-26 官方开放
+-- X2Input:GetMousePos；返回值可能随 UI 缩放使用逻辑坐标或物理像素，须在此保守归一化，让表现层免于处理歧义。
 function A:GetMouseLogicalPosition()
     if X2Input == nil then return nil, nil, "X2Input unavailable" end
     local ok, first, err, second = self:CallCapability("X2Input:GetMousePos", X2Input, "GetMousePos")
@@ -191,8 +184,7 @@ function A:GetMouseLogicalPosition()
     logicalW, logicalH = tonumber(logicalW) or 1024, tonumber(logicalH) or 768
     screenW, screenH = tonumber(screenW) or logicalW * scale, tonumber(screenH) or logicalH * scale
 
-    -- Prefer already-logical values. Only divide by scale when the values exceed
-    -- the logical viewport while still fitting the physical screen bounds.
+    -- 优先保留已是逻辑单位的值；只有值超出逻辑视口但仍位于物理屏幕内时才除以缩放。
     if scale > 0 and scale ~= 1 and (x > logicalW + 2 or y > logicalH + 2)
         and x <= screenW + 2 and y <= screenH + 2 then
         x, y = x / scale, y / scale
@@ -207,7 +199,7 @@ function A:Validate()
     return S.NativeCapabilities:Validate()
 end
 
--- 维护（viewport-recovery-1）：原生通知归 Api，不替换 UIParent/其它插件的 Handler。
+-- 原生通知归 Api，不替换 UIParent/其它插件的 Handler。
 -- OnScale 在原生 UI 历史脚本中存在，但 RU 权限/触发仍须实测；安装失败由 Layout
 -- 诊断明确暴露，并保留已知 UI_RELOADED/进入世界事件和 create/show/reset 新鲜采样。
 -- 本宿主不持有窗口配置，不增加 OnUpdate；Stop 先废弃 epoch，迟到通知不能重新布局。
@@ -231,7 +223,7 @@ function A:StartUiMetricsNotifications(callback)
         end)
     end)
     self.metricsListening = ok and result ~= false
-    -- 维护：Lua 的 true and nil or error 会恒选 error；成功必须显式返回 nil。
+    -- Lua 的 true and nil or error 会恒选 error；成功必须显式返回 nil。
     if self.metricsListening then return true,nil end
     return false,"native_on_scale_unavailable"
 end

@@ -1,9 +1,15 @@
--- 中文维护：模拟真实 SaveData 传输边界，报告导出必须验证完整回读，且不得写业务 Store。
+------------------------------------------------------------------------
+-- Replicated Suite · 诊断导出测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 模拟真实 SaveData 传输边界，报告导出必须验证完整回读，且不得写业务 Store。
+------------------------------------------------------------------------
 local disk, writes, maxPhysicalBytes = {}, 0, 0
 ReplicatedSuite = { Persistence = {}, DiagnosticsManager = {}, Generation = 3, ReportCopyTransport = nil }
 local S = ReplicatedSuite
 S.Api = {
-    -- 中文维护：实机 UDF 正文截在 16383 字节；模拟序列化与截断，禁止原样表回传掩盖故障。
+    -- 实机 UDF 正文截在 16383 字节；模拟序列化与截断，禁止原样表回传掩盖故障。
     SaveData = function(_, key, value)
         writes = writes + 1
         local rows = {'isTable true\r\n'}
@@ -30,7 +36,7 @@ assert(S.DiagnosticsManager:ExportReport(text, { id = 'test.3' }))
 assert(writes == math.ceil(#text / 4096) + 1, 'pages must be verified before one manifest commit')
 assert(maxPhysicalBytes < 9000, 'a Native record exceeded the conservative physical budget')
 assert(S.DiagnosticExport.last.bytes == #text)
--- 中文维护：使用同一真实 Lua 生成的 Native 页面让 Python 端交叉验证完整中文正文。
+-- 使用同一真实 Lua 生成的 Native 页面让 Python 端交叉验证完整中文正文。
 if arg and arg[1] then
     local f = assert(io.open(arg[1], 'wb'))
     for key, raw in pairs(disk) do f:write(key, '\n', tostring(#raw), '\n', raw) end

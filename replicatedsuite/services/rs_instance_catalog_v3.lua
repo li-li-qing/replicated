@@ -1,19 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Instance Catalog Service
+-- Replicated Suite · 副本目录与次数
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Sole read-only Authority for X2BattleField instance entrance data.
---
--- Namespace contract:
---   * runtimeInstanceType = X2BattleField entry.type (session observation).
---   * databaseZoneId      = static ArcheRage map database Zone ID.
--- These identities are never promoted/interchanged automatically.
---
--- Performance:
---   * No Tick / OnUpdate.
---   * Full kind/list discovery on first consumer, explicit refresh, empty
---     catalog recovery, or at most once per 5 minutes while observed.
---   * Detail counters refresh every 30s while a consumer exists and react to
---     visit-count/reset events through a 200ms debounce.
+-- 副本目录是 X2BattleField 入口数据唯一只读权威。runtimeInstanceType 为会话 entry.type，databaseZoneId 为静
+-- 态地图 Zone ID，不能自动提升或互换。无 Tick/OnUpdate；首消费者、显式刷新、空目录恢复时发现完整 kind/list
+-- ，持续观察时最多每五分钟一次。消费者存在时详情计数每 30s 刷新，并对 visit-count/reset 事件以 200ms
+-- debounce 响应。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -300,8 +293,7 @@ function C:RefreshDetails(reason)
             self.staleDetailMisses[row.instanceType] = misses
             if misses >= 3 then
                 row.detailAvailable = false
-                -- Force the next safety refresh back through kind/list discovery;
-                -- a stale runtime type may have disappeared after server reset.
+                -- 强制下次安全刷新重新发现 kind/list，服务器重置后旧 runtime type 可能已消失。
                 self.lastDiscoveryAtMs = -300000
             end
         end

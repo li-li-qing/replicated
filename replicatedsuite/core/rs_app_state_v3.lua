@@ -1,9 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Application State
+-- Replicated Suite · 应用状态
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Small application-owned state only. Feature/business state must live in the
--- Feature that owns it and persist through its own V3 Store. This file replaces
--- the legacy monolithic Suite State as an active Foundation dependency.
+-- 应用状态只保存应用自身的小量状态；功能和业务状态归拥有它的 Feature，并通过自身 V3 Store 持久化。本文件作
+-- 为 Foundation 依赖，不承担旧单体 Suite State 的领域职责。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -110,9 +111,7 @@ function A:Set(key, value, persist)
         return true
     end
     if persist == false then return ApplyMutation() end
-    -- A startup fallback is a session-only safety state. Keep settings usable
-    -- for the current session without attempting a write against the fenced or
-    -- not-yet-loaded physical Store.
+    -- 启动兜底仅为会话安全状态；当前会话可继续操作设置，但不能向已隔离或尚未加载的物理 Store 写入。
     if self.sessionFallback == true then return ApplyMutation() end
     if type(P.MutateStore) ~= "function" then return false, "persistence transaction unavailable" end
     local ok, err = P:MutateStore(STORE_ID, ApplyMutation, { delayMs = 500, reason = "app_setting:" .. key })

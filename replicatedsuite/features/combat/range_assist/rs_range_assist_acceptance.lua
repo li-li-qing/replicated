@@ -1,15 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - combat_range_assist Visual Guide Contract Acceptance
+-- Replicated Suite · 范围辅助契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 3 Batch H（2026-09-29，core-feature-decoupling-1）：本文件承载范围辅助与视觉引导配合的
--- 五个契约版本。它们原先由 core/rs_foundation_gate.lua 的 v3_combat_life_usability_contract 里的
--- visual_guides 判定点名检查；搬到这里之后 Core 不再认识具体业务 Feature。失败同样是 blocker
--- （sequence case 失败 → sequence_harness 检查）。
---
--- 判定与旧版**逐条等价**（注释里不要写出带点号的“表名+字段”形式：rs_architecture_audit 是行级正则
--- 且不跳过注释，说明文字会被重新计成 CORE_FEATURE 债务）。
--- 兼容边界不变：Foundation 的自检原先就只校验投影/米数契约，**不读 target** ——
--- 真实 UnitDistance 样本仍只由 RangeAssist 的 Demand 在运行期按需采集。
+-- 验证visual_guides涉及的五项契约版本，保留原有逐项下限。失败为blocker，由sequence_harness报告。
+-- 仅校验投影/米数契约，不读target；真实UnitDistance样本仅由RangeAssist的Demand按需采集。
+-- 架构审计不跳过注释，说明禁止添加业务表加字段的点号引用。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -19,7 +15,7 @@ local F = S.Features and S.Features.combat_range_assist or nil
 
 local function Fail(message) return false, tostring(message or "range_assist_acceptance_failed") end
 
--- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_combat_range_assist_visual_guide_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.VisualGuideContractVersion) or 0) < 9 then return Fail("visual_guide_contract_version") end

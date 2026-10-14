@@ -1,11 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - combat_team_tools Feature Authority
+-- Replicated Suite · 团队职责工具功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 1 Batch D（2026-09-28）：从 features/rs_business_bridge.lua 机械搬迁。
--- 只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、UpdateTopic、Demand owner、
--- Commands、Projection shape、ApiDependencies、Scheduler task name、roster token、
--- Enable/Disable 包装语义与 AutoRoleContractVersion 全部与被搬迁前逐字一致。
---
+-- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
 -- Authority 边界：成员/职责事实来自 TeamRosterV3 与 X2Team 只读接口；本文件拥有“本 Feature 的
 -- 角色写入与自动职责观察”，但不复制团队快照，也不为其它 Feature 保留团队缓存。
 ------------------------------------------------------------------------
@@ -17,9 +15,9 @@ local Action, Call, Copy, Number, Text, NewFeature = FSF.Action, FSF.Call, FSF.C
 local Trim = FSF.Trim
 local PersistStateMutation = FSF.PersistStateMutation
 local Demand = S.Demand
-local function TeamApi() return rawget(_G, "X2Team") end -- 中文维护：接口在 Feature 初始化时按需导入，调用时取当前代，避免复用重载前的 Native 对象；能力门仍由 FSF 管理。
+local function TeamApi() return rawget(_G, "X2Team") end -- 接口在 Feature 初始化时按需导入，调用时取当前代，避免复用重载前的 Native 对象；能力门仍由 FSF 管理。
 
--- 中文维护注释（2026-09-28，Phase 1 Batch D 补漏）：成员序号校验是本 Feature 专属的输入契约
+-- 成员序号校验是本 Feature 专属的输入契约
 -- （1..maximum 的正整数），从 bridge 原样搬入；bridge 已删除副本，避免第二份 Authority。
 local function TeamCommandInteger(value, label, maximum)
     local number = Number(value)
@@ -32,7 +30,7 @@ end
 local TEAM_ROLE_MAX_TEAMS, TEAM_ROLE_MAX_MEMBERS = 2, 50
 local TEAM_ROLE_MAX_ROWS = TEAM_ROLE_MAX_TEAMS * TEAM_ROLE_MAX_MEMBERS
 local TEAM_ROLE_ROSTER_TOKEN = "combat_team_tools:roster"
--- 中文维护注释（2026-09-16，Lua5.1 主 chunk local 预算）：自动职责 roster token 使用稳定字面量
+-- 自动职责 roster token 使用稳定字面量
 -- "combat_team_tools:auto_role_roster"，不再新增顶层 local。该文件已接近 Lua 5.1 每函数 200 local 上限；
 -- 资源身份仍由 Demand token 保证唯一，避免为了可读性增加顶层 local 导致整个 business bridge 无法加载。
 
@@ -272,7 +270,7 @@ local function NormalizeTeamRole(value)
 end
 
 local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:GetRole", "X2Team:SetRole", "X2Unit:GetTargetAbilityTemplates", "X2Unit:UnitName" },
-    -- 中文维护注释（2026-09-10，自动职责默认开启）：autoRoleEnabled 早已属于 default，因此 NewFeature 的持久化白名单事实上会保存它；这里把它同时写入 explicit persistentKeys，目的是把“新安装默认 true、旧用户显式 false 必须保留”变成可读且可测试的 Store 契约。Authority 仍是 TeamTools.State，UI 只通过 SetAutoRoleEnabled -> PersistStateMutation 修改；不会在 Reload/Enable 时强制把旧 false 改 true，也不会增加新的轮询任务。
+    -- autoRoleEnabled 早已属于 default，因此 NewFeature 的持久化白名单事实上会保存它；这里把它同时写入 explicit persistentKeys，目的是把“新安装默认 true、旧用户显式 false 必须保留”变成可读且可测试的 Store 契约。Authority 仍是 TeamTools.State，UI 只通过 SetAutoRoleEnabled -> PersistStateMutation 修改；不会在 Reload/Enable 时强制把旧 false 改 true，也不会增加新的轮询任务。
     state = { role = nil, autoRoleEnabled = true }, default = { role = nil, autoRoleEnabled = true }, persistentKeys = { "role", "autoRoleEnabled" },
     reconcileDemand = AcquireTeamRoleRoster,
     onDisable = ReleaseTeamRoleRoster,
@@ -288,7 +286,7 @@ local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:
             local enabled = value == true
             local ok, err = PersistStateMutation(feature, "team_auto_role", function(state) state.autoRoleEnabled = enabled; return true end)
             if ok ~= true then return false, err end
-            -- 中文维护注释（2026-09-16，自动职责生命周期）：旧实现只改 Store，false 时不释放观察，且若 Feature 启动时 Store=false，
+            -- 旧实现只改 Store，false 时不释放观察，且若 Feature 启动时 Store=false，
             -- 后续切回 true 只 Schedule 一次 Apply，并不会重新订阅 ABILITY/roster 事件。Authority 仍是 TeamTools.State，Command 负责把用户意图同步到运行时资源。
             -- 数据流：SetAutoRoleEnabled -> Start/StopAutoRoleObservation -> 独立 TeamRoster lease + 独立 Event owner；Presentation 不直接订阅 Native。
             -- 兼容边界：先提交用户配置，再调整本会话资源；若运行时资源建立失败，保留用户 true 意图并返回错误，下一次 Enable/重载仍会重试，不静默改回 false。
@@ -308,8 +306,8 @@ local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:
             local value = NormalizeTeamRole(role)
             if value == nil then return false, "职责必须来自当前客户端 TMROLE_* 枚举" end
             local ok, err = Action("X2Team:SetRole", TeamApi(), "SetRole", value)
-            feature.ManualRoleEvidence={at=S.NowMs and S.NowMs(),requested=value,accepted=ok==true,error=ok~=true and err or nil} -- 中文维护：Native 接受不冒充同步成功；只记录本玩家显式动作，不写其它成员。
-            if ok==true then feature:ScheduleRoleVerification(value,feature.ManualRoleEvidence,false) end -- 中文维护：写后只读一次同步结果，不能把 Action 返回 true 当作职责已生效。
+            feature.ManualRoleEvidence={at=S.NowMs and S.NowMs(),requested=value,accepted=ok==true,error=ok~=true and err or nil} -- Native 接受不冒充同步成功；只记录本玩家显式动作，不写其它成员。
+            if ok==true then feature:ScheduleRoleVerification(value,feature.ManualRoleEvidence,false) end -- 写后只读一次同步结果，不能把 Action 返回 true 当作职责已生效。
             return ok, err
         end,
         MoveMember = function(_, from, to)
@@ -327,19 +325,19 @@ local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:
 TeamTools.TeamRoleRosterHeld = false
 TeamTools.TeamRoleRosterSubscribed = false
 TeamTools.TeamRoleContractVersion = 2
-TeamTools.AutoRoleCatalogContractVersion = 2 -- 中文维护注释（2026-09-16）：v2 增加 8+9+14=治疗 与 6+8+9=远程的双规则验收；目录仍是精确 class-key Authority。
-TeamTools.AutoRoleDefaultOnContractVersion = 1 -- 中文维护注释：发布门禁钉死“空 Store 默认开 + 旧显式关可持久化”的产品语义；它不代表功能无条件常驻，Feature Disabled 时观察任务仍全部释放。
-TeamTools.AutoRoleRosterLeaseContractVersion = 1 -- 中文维护注释（2026-09-16）：自动职责开启时必须独立持有 TeamRosterV3，不能借页面/Healer 的 Consumer“碰巧运行”。
+TeamTools.AutoRoleCatalogContractVersion = 2 -- v2 增加 8+9+14=治疗 与 6+8+9=远程的双规则验收；目录仍是精确 class-key Authority。
+TeamTools.AutoRoleDefaultOnContractVersion = 1 -- 发布门禁钉死“空 Store 默认开 + 旧显式关可持久化”的产品语义；它不代表功能无条件常驻，Feature Disabled 时观察任务仍全部释放。
+TeamTools.AutoRoleRosterLeaseContractVersion = 1 -- 自动职责开启时必须独立持有 TeamRosterV3，不能借页面/Healer 的 Consumer“碰巧运行”。
 TeamTools.AutoRoleRosterHeld = false
 TeamTools.AutoRoleSubscribed = false
-TeamTools.AutoRoleEventOwner = { Id = "combat_team_tools:auto_role_observer" } -- 中文维护注释：事件 owner 与 Feature 本体分离；StopAutoRoleObservation 只回收自己的 Native/Internal 订阅，不能误删职责页面的 v3.team_roster.updated 订阅。
+TeamTools.AutoRoleEventOwner = { Id = "combat_team_tools:auto_role_observer" } -- 事件 owner 与 Feature 本体分离；StopAutoRoleObservation 只回收自己的 Native/Internal 订阅，不能误删职责页面的 v3.team_roster.updated 订阅。
 
 local TEAM_AUTO_ROLE_TASK="v3_team_auto_role_apply"
 local function TeamAutoRoleCatalog() return S.Data and S.Data.TeamAutoRoleCatalog or nil end
 local function ResolveAutoRole(feature)
     local ok,templates,err=Call("X2Unit:GetTargetAbilityTemplates",rawget(_G,"X2Unit"),"GetTargetAbilityTemplates","player")
     feature.AutoRoleEvidence = feature.AutoRoleEvidence or {}
-    feature.AutoRoleEvidence.templates=Copy(templates) -- 中文维护：冻结实际三天赋返回；仅现有自动职责观察读 Native，导出不再读取或写入。
+    feature.AutoRoleEvidence.templates=Copy(templates) -- 冻结实际三天赋返回；仅现有自动职责观察读 Native，导出不再读取或写入。
     feature.AutoRoleEvidence.abilityReadOk=ok==true
     feature.AutoRoleEvidence.abilityError=err
     if ok~=true or type(templates)~="table" then return nil,nil,nil,"职业树不可读："..tostring(err or "unknown") end
@@ -348,7 +346,7 @@ local function ResolveAutoRole(feature)
     table.sort(indices)
     local key=string.format("name_%d_%d_%d",indices[1],indices[2],indices[3])
     local catalog=TeamAutoRoleCatalog(); local row=type(catalog)=="table" and type(catalog.byClassKey)=="table" and catalog.byClassKey[key] or nil
-    if type(row)~="table" then return nil,key,nil,"职业组合尚未登记；保留当前职责" end -- 中文维护：目录没有记录只代表未知，绝不能据此 SetRole(NONE) 清掉用户现有职责。
+    if type(row)~="table" then return nil,key,nil,"职业组合尚未登记；保留当前职责" end -- 目录没有记录只代表未知，绝不能据此 SetRole(NONE) 清掉用户现有职责。
     local globalByRole={tank="TMROLE_TANKER",healer="TMROLE_HEALER",dealer="TMROLE_DEALER",ranged="TMROLE_RANGED_DEALER",none="TMROLE_NONE"}
     local role=NormalizeTeamRole(rawget(_G,globalByRole[row.role] or "TMROLE_NONE"))
     return role,key,({tank="坦克",healer="治疗",dealer="输出",ranged="远程输出",none="未标记"})[row.role] or "未标记",nil
@@ -361,9 +359,9 @@ local function FindPlayerRoleSlot()
     local snap=roster:GetSnapshot()
     for _,member in ipairs(type(snap)=="table" and type(snap.members)=="table" and snap.members or {}) do
         local memberName=string.lower(tostring(member.name or ""))
-        if member.unitToken=="player" or memberName==wanted then -- 中文维护：共享名单的 player token 已证明本地身份；显示名可能带 @World，不能让显示文本差异阻断已确认槽位。
+        if member.unitToken=="player" or memberName==wanted then -- 共享名单的 player token 已证明本地身份；显示名可能带 @World，不能让显示文本差异阻断已确认槽位。
             local teamIndex,memberIndex=tonumber(member.teamIndex),tonumber(member.memberIndex)
-            -- 中文维护注释（2026-09-16，入团竞态）：TeamRosterV3 总会先以 player/0/0 种下本地身份，0/0 只证明“玩家存在”，
+            -- TeamRosterV3 总会先以 player/0/0 种下本地身份，0/0 只证明“玩家存在”，
             -- 不能证明 native team slot 已稳定。旧代码把 0/0 当有效槽位，可能在 TEAM_MEMBERS_CHANGED 过早到达时调用 GetRole(0,0)/SetRole，
             -- RU 侧拒绝后又没有后续边沿，于是表现为“有时进团不改职责”。这里只接受 >0 的真实团队槽位；晚到槽位由 TeamRoster 的有界 settle refresh 补齐。
             -- 数据流仍只消费 TeamRosterV3 公共 Snapshot，不读取其私有 map；大小写归一化只用于当前玩家同名匹配，不建立第二份缓存。
@@ -374,10 +372,10 @@ local function FindPlayerRoleSlot()
     return nil,nil,"当前玩家尚未进入团队名单"
 end
 local function PublishRoleStatus(feature)
-    if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish(feature.UpdateTopic,feature.Authority.revision,"auto_role_status") end -- 中文维护：事件任务完成后让页面立即显示最新匹配状态；展示层不轮询 Native。
+    if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish(feature.UpdateTopic,feature.Authority.revision,"auto_role_status") end -- 事件任务完成后让页面立即显示最新匹配状态；展示层不轮询 Native。
 end
 function TeamTools:ScheduleRoleVerification(desired,evidence,automatic)
-    -- 中文维护：600ms 后仅确认本玩家真实槽位的职责；不循环重写、不触及其他成员。新请求替换旧确认，禁用 Feature 清理任务。
+    -- 600ms 后仅确认本玩家真实槽位的职责；不循环重写、不触及其他成员。新请求替换旧确认，禁用 Feature 清理任务。
     local scheduler=S.Scheduler
     if not scheduler or type(scheduler.AddOneShot)~="function" then evidence.verificationError="scheduler_unavailable"; return false end
     local ok=scheduler:AddOneShot("v3_team_role_verify",600,function()
@@ -411,16 +409,16 @@ local function ApplyAutoRole(feature,reason)
     local ok,current,currentErr=Call("X2Team:GetRole",TeamApi(),"GetRole",teamIndex,memberIndex)
     self.AutoRoleEvidence.currentRole,self.AutoRoleEvidence.currentReadOk,self.AutoRoleEvidence.currentError=current,ok==true,currentErr
     self.AutoRoleEvidence.desiredRole=desired
-    if ok==true and tonumber(current)==tonumber(desired) then self.AutoRoleEvidence.confirmed=true; self.AutoRoleStatus="已匹配："..tostring(label); return true end -- 中文维护：已匹配来自真实槽位只读证据，无需再写或排队确认。
+    if ok==true and tonumber(current)==tonumber(desired) then self.AutoRoleEvidence.confirmed=true; self.AutoRoleStatus="已匹配："..tostring(label); return true end -- 已匹配来自真实槽位只读证据，无需再写或排队确认。
     local wrote,writeErr=Action("X2Team:SetRole",TeamApi(),"SetRole",desired)
-    self.AutoRoleEvidence.writeAccepted,self.AutoRoleEvidence.writeError=wrote==true,wrote~=true and writeErr or nil -- 中文维护：Action 成功的第二返回值是 Native 结果，不能当作错误记录。
+    self.AutoRoleEvidence.writeAccepted,self.AutoRoleEvidence.writeError=wrote==true,wrote~=true and writeErr or nil -- Action 成功的第二返回值是 Native 结果，不能当作错误记录。
     if wrote~=true then self.AutoRoleStatus="设置失败："..tostring(writeErr or currentErr or "unknown"); return false,writeErr end
     self.AutoRoleStatus="已请求："..tostring(label).."（等待团队同步）"
     self:ScheduleRoleVerification(desired,self.AutoRoleEvidence,true)
     return true
 end
 function TeamTools:ApplyAutoRole(reason)
-    self.AutoRoleEvidence={at=S.NowMs and S.NowMs(),reason=reason} -- 中文维护：单次决策快照，不能把上次成功字段混入本次未执行的写入。
+    self.AutoRoleEvidence={at=S.NowMs and S.NowMs(),reason=reason} -- 单次决策快照，不能把上次成功字段混入本次未执行的写入。
     local ok,err=ApplyAutoRole(self,reason)
     self.AutoRoleEvidence.status=self.AutoRoleStatus
     self.AutoRoleEvidence.classKey=self.AutoRoleClassKey
@@ -461,7 +459,7 @@ function TeamTools:StartAutoRoleObservation()
     local rosterOk, rosterErr = self:AcquireAutoRoleRoster()
     if rosterOk ~= true then return false, rosterErr end
     local owner = self.AutoRoleEventOwner
-    -- 中文维护注释（2026-09-16，独立观察所有权）：自动职责不能借 combat_team_tools 页面 Demand 持有 TeamRoster，也不能用 Feature 本体
+    -- 自动职责不能借 combat_team_tools 页面 Demand 持有 TeamRoster，也不能用 Feature 本体
     -- 作为 Event owner 后再 UnsubscribeOwner(self)，否则关闭自动职责会顺带删除页面只读职责订阅。这里把 Native ability 事件和内部 roster 事件都绑定到专属 owner。
     -- 生命周期：Feature Enabled + autoRoleEnabled=true 才持有；关闭设置/Feature Disable 时 RemoveTask + Unsubscribe + ReleaseConsumer 全部释放。无 Tick、无常驻扫描。
     S.Events:BindOwner(owner,self.Id)
@@ -505,16 +503,16 @@ function TeamTools:Enable(reason)
     return true
 end
 function TeamTools:Disable(reason)
-    if S.Scheduler then S.Scheduler:RemoveTask("v3_team_role_verify") end -- 中文维护：写后确认只属于本次模块生命周期，关闭后不得继续查询 Native。
+    if S.Scheduler then S.Scheduler:RemoveTask("v3_team_role_verify") end -- 写后确认只属于本次模块生命周期，关闭后不得继续查询 Native。
     local stopOk, stopErr = self:StopAutoRoleObservation()
     local baseOk, baseErr = TeamToolsBaseDisable(self,reason)
     if baseOk ~= true then return false, baseErr end
     if stopOk ~= true then return false, stopErr end
     return true
 end
-TeamTools.AutoRoleContractVersion=3 -- 中文维护注释（2026-09-16）：v3 固化独立 TeamRoster lease、独立 Event owner、关→开重建观察与真实>0团队槽位门；仍为事件驱动，不增加周期轮询。
+TeamTools.AutoRoleContractVersion=3 -- v3 固化独立 TeamRoster lease、独立 Event owner、关→开重建观察与真实>0团队槽位门；仍为事件驱动，不增加周期轮询。
 
--- 中文维护：详细报告只导出现有 Authority/名单/观察租约/决策结果，绝不因诊断执行 SetRole 或额外查询成员。
+-- 详细报告只导出现有 Authority/名单/观察租约/决策结果，绝不因诊断执行 SetRole 或额外查询成员。
 function TeamTools:DescribeDiagnosticDetail()
     local roster,scheduler=TeamRosterV3(),S.Scheduler
     return Copy({projection=self:GetProjection(),settings=self.State,autoRole=self.AutoRoleEvidence or {available=false,reason="not_applied"},
@@ -527,11 +525,11 @@ end
 function TeamTools:RegisterDiagnosticProviders()
     local hub=S.ModuleDiagnosticsHub
     if type(hub)~="table" then return false end
-    hub:RegisterStoreOwner(self.Id,self.storeId) -- 中文维护：物理业务 Store ID 与注册 Authority 名不同，必须显式归属才能导出写保护和加载证据。
+    hub:RegisterStoreOwner(self.Id,self.storeId) -- 物理业务 Store ID 与注册 Authority 名不同，必须显式归属才能导出写保护和加载证据。
     return hub:RegisterProvider(self.Id,"team_role_evidence",function()return TeamTools:DescribeDiagnosticDetail()end,30,{detailOnly=true})
 end
 function TeamTools:GetHealth()
     return {autoRoleEnabled=self.State.autoRoleEnabled~=false,status=self.AutoRoleStatus,classKey=self.AutoRoleClassKey,
-        autoRoleRosterHeld=self.AutoRoleRosterHeld,autoRoleSubscribed=self.AutoRoleSubscribed,teamRoleScan=Copy(self.TeamRoleScan)} -- 中文维护：模块摘要显示职业匹配/槽位状态，不再仅提示“未采样”。
+        autoRoleRosterHeld=self.AutoRoleRosterHeld,autoRoleSubscribed=self.AutoRoleSubscribed,teamRoleScan=Copy(self.TeamRoleScan)} -- 模块摘要显示职业匹配/槽位状态，不再仅提示“未采样”。
 end
 TeamTools:RegisterDiagnosticProviders()

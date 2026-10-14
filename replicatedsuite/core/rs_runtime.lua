@@ -1,10 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Runtime
+-- Replicated Suite · 运行生命周期
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- The active runtime is intentionally small. It owns Foundation lifecycle only:
--- V3 AppState/Persistence, layout, one scheduler, one event bus, FeatureRuntime
--- and the V3 Presentation Host. Legacy services/modules/HUD managers are not
--- loaded, started, refreshed or reconciled here.
+-- 活动运行体保持精简，只拥有 Foundation 生命周期：V3 AppState/Persistence、layout、单一 Scheduler、单一事件
+-- 总线、FeatureRuntime 和 V3 Presentation Host。不加载、启动、刷新或协调旧 services/modules/HUD manager。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -48,24 +48,19 @@ local function RecordStartupDegradation(stage, detail)
 end
 
 function R:Stop()
-    -- Idempotent quiescence fence for hot reload and normal teardown.
+    -- 热重载与正常销毁共用幂等静止隔离。
     S.Ready = false
     self.started = false
     if type(S.UI) == "table" and type(S.UI.QuiesceKeyboardInput) == "function" then
         pcall(function() S.UI:QuiesceKeyboardInput("runtime_stop", false) end)
     end
-    -- Teardown/hot-reload must never arm an EditBox keyboard owner. The R
-    -- launcher remains the bootstrap recovery path; only an actual startup
-    -- failure explicitly reveals the command input further below.
+    -- 销毁或热重载不能激活 EditBox 键盘所有者。R 启动器仍是引导恢复路径；只有下方实际启动失败才显式显示命令输入。
     if type(S.SetRecoveryCommandBarVisible) == "function" then
         pcall(function() S.SetRecoveryCommandBarVisible(false) end)
     end
 
-    -- Durability barrier MUST precede Feature teardown. Feature Disable/Stop is
-    -- allowed to release caches and reset transient Domain state; flushing only
-    -- after that lifecycle step could serialize teardown/default state and
-    -- overwrite the user's last good configuration. Never perform a second
-    -- persistence flush after DisableAll for the same reason.
+    -- 耐久屏障必须先于 Feature 销毁。Disable/Stop 可释放缓存、重置瞬态 Domain；之后 Flush 可能把销毁或默认
+    -- 状态序列化并覆盖用户最后健康配置。因此 DisableAll 后也不能再做第二次持久化 Flush。
     local persistenceOk, persistenceErr = true, nil
     if S.Persistence ~= nil and type(S.Persistence.Flush) == "function" then
         local callOk, flushed, failures = pcall(function() return S.Persistence:Flush() end)
@@ -116,9 +111,8 @@ function R:InstallSchedulerTasks()
     local scheduler = S.Scheduler
     if scheduler == nil or type(scheduler.AddTask) ~= "function" then return false, "scheduler unavailable" end
 
-    -- Foundation task installation is transactional. A future scheduler contract
-    -- change must never leave Runtime reporting a successful start with only part
-    -- of Persistence/Layout/Observation periodic work actually installed.
+    -- Foundation 任务安装采用事务；未来 Scheduler 契约变化不能使 Runtime 报启动成功而实际只安装了部分
+    -- Persistence/Layout/Observation 周期任务。
     local installed = {}
     local function Add(name, intervalMs, callback, runImmediately, owner, priority)
         local ok = scheduler:AddTask(name, intervalMs, callback, runImmediately, owner, priority)
@@ -127,10 +121,9 @@ function R:InstallSchedulerTasks()
         return false
     end
 
-    -- One shared scheduler is the only periodic Foundation driver. Features add
-    -- bounded lanes to this scheduler instead of creating their own OnUpdate.
-    -- 维护（viewport-recovery-1）：移除永久 metrics 轮询。Layout 在事件总线/调度器
-    -- 启动后安装自有事件宿主 + 单次稳定采样；Persistence/Observation 周期不受影响。
+    -- 共享 Scheduler 是 Foundation 唯一周期驱动；Feature 添加有界通道，不自建 OnUpdate。Layout 在事件总线和
+    -- Scheduler 启动后安装自有事件宿主与单次稳定采样，没有永久 metrics 轮询；Persistence/Observation 周期不
+    -- 受影响。
 
     if Add("v3_persistence", math.max(200, tonumber(S.Constants.Refresh.storageMs) or 200), function()
         if S.Persistence ~= nil and type(S.Persistence.Tick) == "function" then S.Persistence:Tick() end
@@ -274,8 +267,7 @@ function R:Describe()
 end
 
 function R:RefreshAll(_, flushNow)
-    -- Compatibility name for bootstrap/developer refresh actions. V3 refresh is
-    -- Feature-owned; no legacy Service list is scanned here.
+    -- 保留引导或开发刷新动作的兼容名称；V3 刷新归 Feature，不扫描旧 Service 清单。
     if S.FeatureRuntime ~= nil and type(S.FeatureRuntime.RefreshEnabled) == "function" then
         S.FeatureRuntime:RefreshEnabled("manual_refresh")
     end
@@ -379,11 +371,8 @@ function R:Start()
         EnterStage("feature_defaults")
         if S.FeatureRuntime ~= nil and type(S.FeatureRuntime.EnableDefaults) == "function" then
             local featureOk, featureErr = S.FeatureRuntime:EnableDefaults("runtime_start")
-            -- Feature modules are optional consumers of the Foundation. One
-            -- broken preference/API/store must never make the application shell
-            -- disappear. The failed Feature remains faulted/disabled and is
-            -- surfaced in Diagnostics; Core continues to Ready so the user can
-            -- inspect or disable it from the main menu.
+            -- Feature 是 Foundation 可选消费者；单个偏好/API/Store 故障不能使应用外壳消失。失败 Feature 保
+            -- 持 faulted/disabled 并在 Diagnostics 展示，Core 继续 Ready，让用户能从主菜单检查或禁用。
             if featureOk ~= true then RecordStartupDegradation("feature_defaults", featureErr or "default feature enable failed") end
         end
 
@@ -403,17 +392,15 @@ function R:Start()
         S.Ready = false
         S.BootError = "runtime/" .. tostring(S.BootStage or "unknown") .. ": " .. tostring(failure)
         S.SafeChat("初始化失败 [" .. tostring(S.BootStage or "unknown") .. "]：" .. tostring(failure))
-        -- Startup rollback follows the same durability ordering as normal Stop:
-        -- persist any already-loaded/migrated dirty Stores before Feature
-        -- cleanup is allowed to release Domain state. Failure here is recorded
-        -- by Persistence; teardown must still continue to leave native state safe.
+        -- 启动回滚遵循正常 Stop 的耐久顺序：允许 Feature 清理释放 Domain 前，先保存已加载或迁移的 dirty
+        -- Store。失败由 Persistence 记录，但销毁仍须继续，以确保原生状态安全。
         if S.Persistence ~= nil and type(S.Persistence.Flush) == "function" then
             pcall(function() S.Persistence:Flush() end)
         end
         if S.FeatureRuntime ~= nil then pcall(function() S.FeatureRuntime:DisableAll("startup_failure") end) end
         if S.RefreshCoordinator ~= nil and type(S.RefreshCoordinator.ClearAll) == "function" then pcall(function() S.RefreshCoordinator:ClearAll() end) end
         if S.Demand ~= nil and type(S.Demand.ClearAll) == "function" then pcall(function() S.Demand:ClearAll("startup_failure") end) end
-        -- 维护：失败回滚也释放通知 owner/单次任务，旧代不能复活窗口。
+        -- 失败回滚也释放通知 owner/单次任务，旧代不能复活窗口。
         if S.Layout and type(S.Layout.StopMetricsEvents) == "function" then pcall(function() S.Layout:StopMetricsEvents() end) end
         if S.Events ~= nil then pcall(function() S.Events:Stop() end) end
         if S.Scheduler ~= nil then pcall(function() S.Scheduler:Stop() end) end
@@ -429,14 +416,12 @@ function R:Start()
     S.Ready = true
     S.BootStage = "ready"
     S.BootError = nil
-    -- Normal UI is healthy: hide the emergency editbox so it never competes
-    -- with chat/input focus during ordinary gameplay. The R launcher remains.
+    -- 正常 UI 健康时隐藏应急 editbox，避免争抢聊天或输入焦点；R 启动器仍保留。
     if type(S.SetRecoveryCommandBarVisible) == "function" then
         pcall(function() S.SetRecoveryCommandBarVisible(false) end)
     end
-    -- Host construction may have created visible native EditBoxes underneath a
-    -- logically hidden shell. Clear only a focus proven to belong to Suite
-    -- before handing normal gameplay input back to the client.
+    -- 宿主构造可能在逻辑隐藏外壳下创建可见原生 EditBox；只清除已证明属于 Suite 的焦点，再把正常游戏输入交还
+    -- 客户端。
     if type(S.UI) == "table" and type(S.UI.QuiesceKeyboardInput) == "function" then
         pcall(function() S.UI:QuiesceKeyboardInput("runtime_ready", false) end)
     end

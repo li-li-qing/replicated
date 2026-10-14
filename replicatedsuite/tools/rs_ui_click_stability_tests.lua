@@ -1,5 +1,11 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 界面点击稳定性测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 真实 RSUI 容器、虚拟数据视图和 Native OnClick；Native 隐藏取消按下采用显式故障模型。
 -- 开发期门禁，不进入 toc.g，不代表 RU 客户端实测。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

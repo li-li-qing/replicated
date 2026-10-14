@@ -1,14 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Adaptive / Viewport Panels v1
+-- Replicated Suite · 自适应组合布局
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- UMG-inspired composite layout primitives built above rs_ui_panels.lua.
--- They are layout/event driven only. No panel here owns a Tick callback.
---
--- Important RU limitation:
---   ScrollBox uses safe item-snapped viewport visibility instead of assuming
---   an undocumented generic native clipping rectangle. This guarantees that
---   children outside the viewport are hidden rather than painting across
---   neighboring UI. Native EnableScroll is used only for wheel event support.
+-- 基于 rs_ui_panels.lua 的 UMG 风格组合布局，仅布局/事件驱动，各面板不持有 Tick 回调。
+-- RU 限制：ScrollBox 使用安全条目吸附视口显隐，不假设未文档化通用裁切矩形；视口外子节点必须隐藏以免绘到邻近 UI。Native EnableScroll 仅用于滚轮事件支持。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -56,7 +52,7 @@ local function RecordOverflow(panel, amount)
 end
 
 ------------------------------------------------------------------------
--- UniformGrid
+-- UniformGrid 均匀网格。
 ------------------------------------------------------------------------
 RSUI:RegisterType("UniformGrid", function(spec)
     local c, err = Host("UniformGrid", spec)
@@ -106,9 +102,7 @@ RSUI:RegisterType("UniformGrid", function(spec)
         local measureCellWidth = innerAvailable and math.max(1, (innerAvailable - self.columnGap * math.max(0, columns - 1)) / columns) or nil
         local maxW, maxH = self.minCellWidth, self.minCellHeight
         for _, entry in ipairs(entries) do
-            -- Measure children against the width they will actually receive in
-            -- the grid, not the whole grid width. Wrapped text otherwise reports
-            -- a one-line desired height and later paints outside a compressed card.
+            -- 按子节点实际分得的网格宽度测量，不能使用整个网格宽度；否则换行文字误报单行高度，并在压缩卡片外绘制。
             local ow, oh = OuterSize(entry, measureCellWidth, availableH)
             maxW, maxH = math.max(maxW, ow), math.max(maxH, oh)
         end
@@ -165,7 +159,7 @@ RSUI:RegisterType("UniformGrid", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- WrapBox
+-- WrapBox 自动换行布局。
 ------------------------------------------------------------------------
 RSUI:RegisterType("WrapBox", function(spec)
     local c, err = Host("WrapBox", spec)
@@ -261,7 +255,7 @@ RSUI:RegisterType("WrapBox", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- WidgetSwitcher
+-- WidgetSwitcher 页面切换容器。
 ------------------------------------------------------------------------
 RSUI.WidgetSwitcherContractVersion = 2
 RSUI:RegisterType("WidgetSwitcher", function(spec)
@@ -290,10 +284,7 @@ RSUI:RegisterType("WidgetSwitcher", function(spec)
     function c:SetActiveWidget(widgetOrId)
         for index, entry in ipairs(self.slots) do
             if entry.child == widgetOrId or tostring(entry.child.id or "") == tostring(widgetOrId or "") then
-                -- SetActiveIndex returns false for a no-op because callers may use
-                -- it as a change detector. SetActiveWidget, however, is also the
-                -- navigation acceptance API: an already-active target is valid and
-                -- must not be reported as a rejected page.
+                -- SetActiveIndex 无变化返回 false 供变化检测；SetActiveWidget 同时是导航接受 API，已活跃目标有效，不能报告页面拒绝。
                 if index == self.activeIndex then return true, false end
                 local changed = self:SetActiveIndex(index)
                 return changed ~= false, changed == true
@@ -355,12 +346,9 @@ RSUI:RegisterType("WidgetSwitcher", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- ResponsiveInspector
+-- ResponsiveInspector 响应式检查面板。
 --
--- Stable-host responsive composition. Content and inspector are created once
--- under the SAME native RSUI host; width changes only alter geometry/viewport
--- visibility. This deliberately avoids runtime reparenting, which is not a
--- validated RU native capability and would split logical/native ownership.
+-- 稳定宿主响应式组合：内容与检查面板仅创建一次且共享原生 RSUI 宿主，宽度变化仅改几何/视口显隐；不运行时换父，RU 未验证该能力且会割裂逻辑/原生所有权。
 ------------------------------------------------------------------------
 RSUI.ResponsiveInspectorContractVersion = 1
 RSUI:RegisterType("ResponsiveInspector", function(spec)
@@ -516,7 +504,7 @@ RSUI:RegisterType("ResponsiveInspector", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- ScaleBox
+-- ScaleBox 缩放布局。
 ------------------------------------------------------------------------
 RSUI:RegisterType("ScaleBox", function(spec)
     local c, err = Host("ScaleBox", spec)
@@ -571,8 +559,7 @@ RSUI:RegisterType("ScaleBox", function(spec)
         local sx, sy = iw / dw, ih / dh
         local scale
         if self.stretch == "fill" then
-            -- Native SetScale is uniform; "fill" therefore chooses the larger
-            -- ratio and may crop. Use ScaleToFit when clipping is undesirable.
+            -- Native SetScale 等比缩放，因此 fill 选较大比例而可能裁切；需避免裁切时用 ScaleToFit。
             scale = math.max(sx, sy)
         elseif self.stretch == "scaletofitx" or self.stretch == "fitx" then scale = sx
         elseif self.stretch == "scaletofity" or self.stretch == "fity" then scale = sy
@@ -589,8 +576,7 @@ RSUI:RegisterType("ScaleBox", function(spec)
         local hasNativeScale = self.content.root ~= nil and type(self.content.root.SetScale) == "function"
         if hasNativeScale and type(UI.SetScale) == "function" then UI:SetScale(self.content.root, scale, self.content.owner) end
         if not hasNativeScale then
-            -- Safe fallback on widget classes without native SetScale: keep the
-            -- child within the available rectangle instead of allowing overlap.
+            -- 控件缺少 Native SetScale 时安全回退，让子节点留在可用矩形内，避免重叠。
             Arrange(self.content, p.left, p.top, iw, ih)
             scale, effectiveW, effectiveH = 1, iw, ih
         end
@@ -603,11 +589,9 @@ RSUI:RegisterType("ScaleBox", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- SplitView (master/detail, event-driven divider)
+-- SplitView 主从分栏与事件驱动分隔条。
 ------------------------------------------------------------------------
--- Pure policy used by both runtime layout and sequence tests. The helper has
--- no Native side effects, so tiny-window behavior remains deterministic and
--- independently testable. Explicit max values are respected; none are invented.
+-- 运行布局和序列测试共享纯策略，无 Native 副作用，小窗口行为确定且可独立验证；仅遵循显式 max，不补造上限。
 RSUI.SplitViewPolicy = RSUI.SplitViewPolicy or { version = 1 }
 function RSUI.SplitViewPolicy:Resolve(primaryAvail, dividerSize, minPrimary, minSecondary, requested, maxPrimary, maxSecondary)
     primaryAvail = math.max(0, tonumber(primaryAvail) or 0)
@@ -636,8 +620,7 @@ RSUI:RegisterType("SplitView", function(spec)
     if c.mode ~= "fixed" then c.mode = "ratio" end
     c.ratio = Clamp(N(spec.ratio or spec.splitRatio, 0.35), 0, 1)
     c.primarySize = tonumber(spec.primarySize or spec.fixedSize)
-    -- No framework-imposed pane minimum. Features that require semantic room
-    -- must opt in explicitly; otherwise users may collapse either side fully.
+    -- 框架不强加面板最小值；需要语义空间的 Feature 显式声明，否则用户可完全折叠任一侧。
     c.minPrimary = math.max(0, N(spec.minPrimary, 0))
     c.minSecondary = math.max(0, N(spec.minSecondary, 0))
     c.maxPrimary = tonumber(spec.maxPrimary)
@@ -834,10 +817,7 @@ RSUI:RegisterType("SplitView", function(spec)
             if S.Scheduler~=nil and type(S.Scheduler.AddInteractiveTask)=="function" then
                 scheduled = S.Scheduler:AddInteractiveTask(c.dragTaskName,16,function() if c.dragging then SyncDrag(false) end return true end,true,c,"P0",1) == true
             end
-            -- Dedicated divider input surfaces can safely own a gesture-only
-            -- OnUpdate fallback. It is released on drag stop and never becomes
-            -- a permanent Tick path. This keeps live feedback working even if
-            -- the scheduler is unavailable during early/reload UI construction.
+            -- 专用分隔条仅在手势期间持有 OnUpdate 兜底，拖动停止即释放；启动/重载时 Scheduler 不可用也保持实时反馈，不形成永久 Tick。
             if scheduled ~= true then
                 c.dragUpdateFallback = UI:SafeHandler(dividerDrag,"OnUpdate",function() if c.dragging then SyncDrag(false) end return true end,"rsui:"..c.id..":split_drag_update") == true
             end
@@ -877,7 +857,7 @@ function RSUI:SplitView(spec)
 end
 
 ------------------------------------------------------------------------
--- ScrollBox (safe item-snapped viewport)
+-- ScrollBox 安全条目吸附视口。
 ------------------------------------------------------------------------
 RSUI:RegisterType("ScrollBox", function(spec)
     local c, err = Host("ScrollBox", spec)
@@ -903,18 +883,13 @@ RSUI:RegisterType("ScrollBox", function(spec)
             local scrollOk, scrollErr = UI:TryInteractionCall(root, "EnableScroll", true)
             if scrollOk ~= true then return self:FailClosedInteraction("scrollbox_enable_scroll_failed:" .. tostring(scrollErr or "unknown")) end
         end
-        -- The viewport itself must be a real hit target. Descendant widgets keep
-        -- their own native hit-test policy; changing it here could steal clicks
-        -- from buttons/inputs nested inside the scroll tree.
+        -- 视口必须是真实命中目标；子控件保留自身命中策略，不能在此改变而抢走嵌套按钮/输入点击。
         if root == self.root then
             if type(UI.EnsurePickable) ~= "function" then return self:FailClosedInteraction("scrollbox_pickable_contract_unavailable") end
             local pickOk, _, pickErr = UI:EnsurePickable(root, true, self.owner)
             if pickOk ~= true then return self:FailClosedInteraction("scrollbox_root_pickable_failed:" .. tostring(pickErr or "unknown")) end
         end
-        -- Child buttons/text/cards frequently own the native mouse hit in
-        -- ArcheRage RU. Bind the wheel to every descendant and forward it to
-        -- the nearest ScrollBox so scrolling is independent of the exact pixel
-        -- under the cursor. No polling or focus state is required.
+        -- RU 子按钮/文本/卡片常持有鼠标命中；为各后代绑定滚轮并转发最近 ScrollBox，使滚动不依赖光标像素，不需轮询或焦点状态。
         local upKey = "rsui:" .. self.id .. ":wheel_up_desc"
         local downKey = "rsui:" .. self.id .. ":wheel_down_desc"
         local upOk = self:On(root, "OnWheelUp", function() return self:ScrollBy(-self.scrollStep) end, upKey)
@@ -930,8 +905,7 @@ RSUI:RegisterType("ScrollBox", function(spec)
 
     function c:OnDescendantAdded(component)
         if component == self then return true end
-        -- Nested ScrollBoxes own their subtree; do not install the outer wheel
-        -- forwarder on the nested viewport itself.
+        -- 嵌套 ScrollBox 持有自身子树；外层滚轮转发器不能安装到嵌套视口。
         if type(component) == "table" and tostring(component.kind or "") == "ScrollBox" then return true end
         self:BindWheelTarget(component)
         return true
@@ -1083,7 +1057,7 @@ RSUI:RegisterType("ScrollBox", function(spec)
                 break
             end
         end
-        -- 中文维护（2026-10-10）：先计算最终可见区，再一次提交显隐。旧版每次排版先全隐藏再显示，
+        -- 约束（2026-10-10）：先计算最终可见区，再一次提交显隐。旧版每次排版先全隐藏再显示，
         -- 战斗刷新会隐藏正在按下的按钮祖先，导致 Native 取消点击；留在视口的控件必须持续可见。
         for index, entry in ipairs(entries) do
             SetViewport(entry.child, index >= self.visibleStart and index <= self.visibleEnd)
@@ -1112,7 +1086,6 @@ RSUI:RegisterType("ScrollBox", function(spec)
         return baseRelease(self)
     end
 
-    -- Root wheel binding is installed through BindWheelTarget above so the
-    -- exact same path is used for the viewport and all descendants.
+    -- 根滚轮同样经上方 BindWheelTarget 安装，与视口/后代共用路径。
     return c
 end)

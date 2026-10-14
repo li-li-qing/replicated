@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Release gate: compile every shipped Lua file with a real Lua 5.1 compiler."""
+# ---------------------------------------------------------------------
+# Replicated Suite · Lua5.1编译门禁
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+"""发行语法门禁：使用真实 Lua 5.1 编译器检查全部随包发布的 Lua 文件。"""
 from pathlib import Path
 import shutil, subprocess, sys
 ROOT=Path(__file__).resolve().parents[1]

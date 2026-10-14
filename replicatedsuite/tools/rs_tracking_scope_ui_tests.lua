@@ -1,4 +1,10 @@
--- Scoped tracking interaction regression: real BuffDisplay model + synthetic presentation controls.
+------------------------------------------------------------------------
+-- Replicated Suite · 追踪范围界面测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 按范围追踪的交互回归，使用真实 BuffDisplay 模型及构造的表现控件。
+------------------------------------------------------------------------
 local pass,fail=0,0
 local function Test(name,fn)local ok,err=pcall(fn);if ok then pass=pass+1;print('PASS scope-ui '..name)else fail=fail+1;print('FAIL scope-ui '..name..': '..tostring(err))end end
 local Boot=dofile('tools/rs_pvp_hud_test_host.lua')

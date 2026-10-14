@@ -1,6 +1,12 @@
--- 中文维护：真实 Business Page + RSUI 输入/调度链，Feature/Native 数据为替身。
+------------------------------------------------------------------------
+-- Replicated Suite · 视觉设置输入测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 真实 Business Page + RSUI 输入/调度链，Feature/Native 数据为替身。
 -- 回归 2026-09-14：UnitLines/RangeAssist 高频 visual_tick 不能在用户持有 NumericInput draft 时
 -- 触发整页 Refresh；整页更新会改写 Table/Status/Enabled 等 Native 状态，RU 会丢失 EditBox 焦点或把 draft 恢复为 Authority。
+------------------------------------------------------------------------
 local Base = dofile('tools/rs_gear_page_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)
@@ -13,7 +19,7 @@ local function Boot(id, reused, strict)
     local h=reused or Base({width=980,height=760})
     if not reused then assert(h.page:OnDeactivated()) end
     local S=h.S
-    if not reused then -- 中文维护：连续开页回归保留同一 Generation/RSUI 消耗 ID 表，不重建宿主掩盖碰撞。
+    if not reused then -- 连续开页回归保留同一 Generation/RSUI 消耗 ID 表，不重建宿主掩盖碰撞。
     -- 维护（2026-09-30，range-continuity-1）：Gear 的旧测试宿主只有 RegisterFactory，
     -- Business Page 已采用真实 PageHost Consumer 生命周期桥；补齐生产加载顺序，
     -- 不用返回 true 的空桩掩盖订阅/租约行为，也不改生产输入逻辑来迁就过期测试宿主。
@@ -27,9 +33,7 @@ local function Boot(id, reused, strict)
             return n
         end
     end
-    -- Production load order persists adaptive slider endpoints before Forms.
-    -- Keep the harness on the same Authority path so dynamic-range tests prove
-    -- both immediate expansion and the presentation metadata write.
+    -- 生产加载顺序在 Forms 之前保存自适应滑条端点；测试沿相同数据归属路径验证即时范围扩展及表现元数据写入。
     dofile('ui/framework/rs_ui_numeric_range_store.lua')
     dofile('ui/framework/rs_ui_forms.lua')
     if type(S.RSUI.StatusChip) ~= 'function' then
@@ -95,7 +99,7 @@ local function Boot(id, reused, strict)
     S.Features[id]=F
     S.FeatureRegistry={Get=function(_,wanted)return {id=wanted,name=wanted,description='test'} end,
         GetByRoute=function(_,route)return {id=route=='combat.team_tools' and 'combat_team_tools' or 'combat_sac_highlight',name=route} end,
-        IsAccessible=function(_,wanted)return wanted=='combat_team_tools' or wanted=='combat_sac_highlight'end} -- 中文维护：真实 PageHost 会先校验开放；宿主仅允许本套件的两个已配置页面。
+        IsAccessible=function(_,wanted)return wanted=='combat_team_tools' or wanted=='combat_sac_highlight'end} -- 真实 PageHost 会先校验开放；宿主仅允许本套件的两个已配置页面。
     S.FeatureRuntime={IsEnabled=function(_,wanted)return S.Features[wanted] and S.Features[wanted].enabled==true end,
         SetPreferredEnabled=function(_,wanted,v)S.Features[wanted].enabled=v;return true end}
     if not reused then dofile('presentation/v3/pages/rs_v3_business_pages.lua') end
@@ -105,7 +109,7 @@ local function Boot(id, reused, strict)
     if strict then
         local host=S.UIV3.PageHost
         if not reused then assert(host:Attach(ext)) end
-        root,err=host:CreatePage(route) -- 中文维护：执行生产严格构建/失败隔离路径，而非单独调用页面工厂。
+        root,err=host:CreatePage(route) -- 执行生产严格构建/失败隔离路径，而非单独调用页面工厂。
     else root,err=S.UIV3.PageHost.factories[route](ext,route) end
     assert(root,err)
     h.page=root;h.widgets={}

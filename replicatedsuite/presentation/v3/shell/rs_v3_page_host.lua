@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Page Host
+-- Replicated Suite · 页面生命周期宿主
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Pages register factories against semantic routes. PageHost lazy-creates and
--- retains pages, while every page-to-page transition returns through Router.
+-- 页面工厂按语义路由注册；PageHost 延迟创建并保留页面，所有页面间转换经 Router 返回。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -24,7 +25,7 @@ S.UIV3.PageHost = {
     pageOrder = {},
     activeRoute = nil,
     context = nil,
-    -- 中文维护注释（2026-09-18，module-diagnostics-header-1）：buildContext 只在页面工厂
+    -- 约束（2026-09-18，module-diagnostics-header-1）：buildContext 只在页面工厂
     -- 同步构建期间存在，用来把 FeatureRegistry 的 moduleId 传给 DesignSystem。它不是运行时
     -- Feature Authority，也不得跨帧缓存；页面构建成功/失败都必须恢复 previousContext，避免
     -- 后一个页面错误继承前一个模块的诊断入口。
@@ -89,9 +90,9 @@ function H:GetBuildContext()
 end
 
 ------------------------------------------------------------------------
--- Active-page Feature Consumer lifecycle bridge
+-- 活跃页面 Feature Consumer 的生命周期桥。
 --
--- 中文维护注释（2026-09-25，page-feature-consumer-lifecycle-1）：
+-- 约束（2026-09-25，page-feature-consumer-lifecycle-1）：
 -- FeatureRuntime 是 Enabled/Disabled 唯一 Authority。Feature:Disable() 会先清空其 Demand，随后才发布
 -- `v3.feature.lifecycle=disabled`。过去很多已打开页面只记一份 `consumerHeld=true`，却不监听这个
 -- 生命周期事实；功能方案关闭模块后，真实 Demand 已归零而页面旗标仍为 true，再次启用时页面不会
@@ -204,7 +205,7 @@ end
 function H:CreatePage(route)
     route = tostring(route or "")
     if self.switcher == nil then return nil, "page host not attached" end
-    -- 中文维护：直接 PageHost 调用也检查开放，不能只依赖 Shell/Router。先于缓存页和 Native build，
+    -- 直接 PageHost 调用也检查开放，不能只依赖 Shell/Router。先于缓存页和 Native build，
     -- 拒绝不进入 quarantine，也不调用页面 Initialize/AcquireConsumer。
     local accessMeta = S.FeatureRegistry and S.FeatureRegistry:GetByRoute(route)
     local accessRoute = S.UIV3.Router and S.UIV3.Router.routes and S.UIV3.Router.routes[route]
@@ -229,7 +230,7 @@ function H:CreatePage(route)
 
     local controlBar
     local ok, page, detail = RSUI:WithBuildScope("page:" .. route, function()
-        -- 中文维护注释（2026-09-18）：PageHeader 的诊断按钮必须自动知道当前 Feature，
+        -- 约束（2026-09-18）：PageHeader 的诊断按钮必须自动知道当前 Feature，
         -- 但不能要求每个业务页面手工传 moduleId。这里以页面工厂同步调用栈作为唯一边界；
         -- xpcall 确保 factory 抛错时 buildContext 也一定恢复。禁止把 buildContext 留到页面
         -- 激活/Refresh 阶段，否则异步 UI 会串模块并把错误报告归错 Owner。
@@ -327,10 +328,7 @@ function H:Navigate(route, context)
         return true
     end
 
-    -- Route preparation runs before the current page releases its consumers. A
-    -- malformed target therefore cannot tear down the page the user is already
-    -- using. OnRoute must remain presentation-only and must not acquire runtime
-    -- resources; OnActivated is the lifecycle boundary.
+    -- 当前页面释放 Consumer 前先准备目标路由，畸形目标不能拆掉正在使用的页面；OnRoute 仅负责表现，不获取运行资源，OnActivated 才是生命周期边界。
     if type(page.OnRoute) == "function" then
         local ok, routeResult, routeErr = xpcall(function() return page:OnRoute(nextContext) end, S.SafeTraceback)
         if not ok then
@@ -343,19 +341,12 @@ function H:Navigate(route, context)
         end
     end
 
-    -- Dropdown popups are physically parented to UIParent so they can escape a
-    -- page ScrollBox/card clipping boundary. They are transient presentation,
-    -- therefore every successful route transition closes them before the old
-    -- page is hidden. This is event-driven and owns no Tick/scan task.
+    -- 下拉弹层物理父节点为 UIParent，以越过页面 ScrollBox/卡片裁切；成功路由转换须在隐藏旧页面前关闭这些临时表现窗口，事件驱动且没有 Tick/扫描任务。
     if RSUI.DropdownService ~= nil and type(RSUI.DropdownService.CloseAll) == "function" then
         RSUI.DropdownService:CloseAll()
     end
 
-    -- Re-selecting the route already on screen is an idempotent navigation. The
-    -- old path asked WidgetSwitcher to "change" to the same page; its no-change
-    -- return was then misclassified as a hard navigation rejection. Keep OnRoute
-    -- above so refreshed route context is accepted, but do not tear down/reacquire
-    -- feature consumers or emit activation/deactivation churn.
+    -- 重选当前路由应幂等；WidgetSwitcher 切到同页的无变更返回不能当成导航拒绝。保留上方 OnRoute 接受新上下文，不拆除/重新获取 Consumer，也不产生激活/停用抖动。
     if previousPage == page and previousRoute == route then
         self.activeRoute = route
         self.context = nextContext
@@ -397,10 +388,7 @@ function H:Navigate(route, context)
         if not activated then
             local activationErr = ok and (activateDetail or "page activation returned false") or activateResult
             ReportPageFault("V3_PAGE_ACTIVATE_FAILED", "V3 页面激活失败", route, "activate", activationErr)
-            -- Best-effort rollback. The failed target first releases anything it
-            -- may have acquired, then the previous route regains presentation and
-            -- consumer ownership. A navigation failure must never leave Feature
-            -- lanes running behind a blank page.
+            -- 尽力回滚：失败目标先释放已获取资源，再由前一条路由恢复表现与 Consumer 所有权；导航失败不能让 Feature 通道在空白页面后继续运行。
             if type(page.OnDeactivated) == "function" then pcall(function() page:OnDeactivated(previousRoute) end) end
             local restored, restoreErr = RestorePreviousPage()
             if restored ~= true then

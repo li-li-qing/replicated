@@ -1,16 +1,17 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 11 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Auction Favorites & Query Test Suite (B9)
+-- Replicated Suite · 拍卖收藏测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Tests AuctionFavorites Feature, AuctionQueryV3 service, AuctionSurfaceV3,
--- bounded favorites mutations, 9-parameter search, itemGrade extraction,
--- paging logic, explicit PriceQuoteQueueV3 quotes, sidecar lifecycle,
--- and FoundationGate / Acceptance contract clauses.
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
+-- 覆盖 AuctionFavorites、AuctionQueryV3 和 AuctionSurfaceV3，
+-- 包括有界收藏修改、九参数搜索、itemGrade 提取，
+-- 分页、显式 PriceQuoteQueueV3 询价和伴随浮窗生命周期，
+-- 并核对 FoundationGate 和验收契约条款。
 ------------------------------------------------------------------------
-
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -80,9 +81,9 @@ S.UI.CreateWindowShell = function(self, spec)
     return shell
 end
 
--- Layout context mock
+-- 布局上下文测试替身。
 S.Constants={SafeArea=12,MinAddonScale=.5,MaxAddonScale=2,Breakpoint={COMPACT=1150,STANDARD=1700,WIDE=2300,NARROW_ONE_COLUMN=760}}
-dofile('core/rs_layout.lua') -- Real placement metadata writer; legacy viewport/geometry leaves below remain fixed.
+dofile('core/rs_layout.lua') -- 使用真实位置元数据写入逻辑；下方旧视口和几何测试值保持固定。
 S.Layout = S.Layout or {}
 S.Layout.GetContext = function()
     return { logicalWidth = 1920, logicalHeight = 1080, usableWidth = 1920, usableHeight = 1080, addonScale = 1, uiScale = 1, safeLeft = 0, safeTop = 0, safeRight = 0, safeBottom = 0 }
@@ -99,7 +100,7 @@ S.Layout.ResolvePlacement = function(self, state, w, h, dx, dy, options)
     return x, y, w, h, { x = x, y = y, width = w, height = h, screenW = 1920, screenH = 1080 }
 end
 
--- Native UI mock
+-- 原生 UI 测试替身。
 local mockAuctionContent = {
     IsVisible = function() return true end,
     GetParent = function() return nil end,
@@ -117,7 +118,7 @@ end
 _G.UIC_AUCTION = 9999
 _G.UIC_BAG = 9998
 
--- Mock X2Auction
+-- X2Auction 测试替身。
 local mockAuction
 mockAuction = {
     searchCalls = {},
@@ -145,7 +146,7 @@ mockAuction = {
 }
 _G.X2Auction = mockAuction
 
--- Allow API capabilities
+-- 开放测试需要的 API 能力。
 S.Api.allowedCapabilities = S.Api.allowedCapabilities or {}
 S.Api.allowedCapabilities["X2Auction:SearchAuctionArticle"] = true
 S.Api.allowedCapabilities["X2Auction:GetSearchedItemCount"] = true
@@ -159,7 +160,7 @@ _G.ReplicatedSuite = S
 S.Features = S.Features or {}
 S.Services = S.Services or {}
 
--- Load foundation and data modules in correct dependency order
+-- 按实际依赖顺序加载基础层和数据模块。
 dofile("data/rs_data_registry.lua")
 dofile("data/ids/rs_item_ids.lua")
 dofile("data/ids/rs_quest_ids.lua")
@@ -170,7 +171,7 @@ dofile("features/rs_feature_registry.lua")
 dofile("features/rs_feature_runtime.lua")
 dofile("core/rs_module_diagnostics.lua")
 
--- Services
+-- 加载共享服务。
 dofile("services/rs_price_quote_queue_v3.lua")
 dofile("services/rs_auction_query_v3.lua")
 dofile("services/rs_auction_surface_v3.lua")
@@ -194,7 +195,7 @@ S.Services.DailyAuctionMaterialsV3 = {
     MoveMaterial = function(self, questId, recipe, key, direction) self.moved = { questId=questId, recipe=recipe, key=key, direction=direction }; return true end,
 }
 
--- Business bridge (defines tools_auction and tools_market_analysis)
+-- 业务桥接定义 tools_auction 和 tools_market_analysis。
 -- 中文维护注释（2026-09-28，Phase 1 Batch A）：bridge 现在依赖 toc.g 中先加载的通用装配骨架，
 -- 离线宿主必须复现同一加载顺序，否则 FeatureRuntime/Store 注册路径与真实运行时不一致。
 dofile("features/shared/rs_feature_slice_factory.lua")
@@ -206,7 +207,7 @@ dofile("features/tools/auction/rs_auction_feature.lua")
 -- 中文维护注释（2026-09-28，Phase 1 Batch A/D）：tools_market_analysis 与 tools_auction 已从 bridge 拆出，
 -- 本套件同时覆盖两者，因此必须按 toc.g 顺序把它们也加载进来。
 
--- UI Framework and WidgetHost for Sidecar
+-- 伴随浮窗使用 UI 框架及 WidgetHost。
 S.RSUI = S.RSUI or {}
 local function ParseSpec(a, b)
     if type(b) == "table" then return b end
@@ -293,7 +294,7 @@ S.UIV3.WidgetHost = {
     end,
 }
 
--- Load sidecar widget
+-- 加载拍卖伴随浮窗。
 dofile("presentation/v3/widgets/rs_v3_auction_sidecar.lua")
 
 local Feature = S.Features.tools_auction
@@ -301,9 +302,7 @@ local Query = S.Services.AuctionQueryV3
 local Surface = S.Services.AuctionSurfaceV3
 local QuoteQueue = S.Services.PriceQuoteQueueV3
 
-------------------------------------------------------------------------
--- Test 1: Feature Registry Metadata & Contracts
-------------------------------------------------------------------------
+-- 测试 1：功能注册元数据与契约。
 Test("T1: Feature registry metadata & contracts", function()
     local reg = S.FeatureRegistry:Get("tools_auction")
     assert(reg ~= nil, "tools_auction must be in FeatureRegistry")
@@ -321,7 +320,7 @@ Test("T1: Feature registry metadata & contracts", function()
     assert(reg.description == "拍卖关键词收藏、当前挂单查询与拍卖助手管理；打开拍卖行后可使用收藏、今日任务和临时清单工作区。", "auction registry description must be player-facing and explain the Sidecar workspace")
     assert(reg.apiPolicy == "explicit_server_query_plus_readonly_native_surface_observation", "apiPolicy mismatch")
 
-    -- Check required API dependencies
+    -- 核对必需的 API 依赖声明。
     local deps = reg.apiDependencies
     assert(#deps >= 6, "Must declare at least 6 API dependencies")
     local hasSearch, hasLowest, hasPosVis = false, false, false
@@ -334,7 +333,7 @@ Test("T1: Feature registry metadata & contracts", function()
     assert(hasLowest, "X2Auction:GetLowestPrice dependency missing")
     assert(hasPosVis, "ADDON:GetContentMainScriptPosVis dependency missing")
 
-    -- Check Feature implementation
+    -- 核对功能实现是否注册。
     assert(Feature ~= nil, "tools_auction Feature missing from S.Features")
     assert(Feature.AuctionQueryContractVersion >= 1, "AuctionQueryContractVersion >= 1 missing")
     assert(type(Feature.Commands) == "table", "Feature.Commands table missing")
@@ -348,35 +347,33 @@ Test("T1: Feature registry metadata & contracts", function()
     assert(type(Feature.IsSidecarEnabled) == "function", "Feature.IsSidecarEnabled missing")
 end)
 
-------------------------------------------------------------------------
--- Test 2: Favorite Keywords: Add, Deduplication, Bounds & Remove
-------------------------------------------------------------------------
+-- 测试 2：收藏关键词的添加、去重、数量边界与删除。
 Test("T2: Favorite keywords: Add, deduplication, bounds & Remove", function()
     Feature:Enable()
     assert(Feature:AcquireConsumer("test_t2"), "AcquireConsumer failed")
 
-    -- Clean slate
+    -- 清空测试状态，避免前一用例影响收藏断言。
     Feature.State.favorites = {}
 
-    -- 1. Add valid favorite
+    -- 1. 添加有效收藏。
     local ok, err = Feature.Commands:AddFavorite("铁锭")
     assert(ok == true, "AddFavorite failed: " .. tostring(err))
     assert(#Feature.State.favorites == 1, "Favorites count should be 1")
     assert(Feature.State.favorites[1] == "铁锭", "First favorite mismatch")
 
-    -- 2. Deduplication check: re-adding "铁锭" must fail
+    -- 2. 验证去重：重复添加铁锭收藏必须失败。
     local dupOk, dupErr = Feature.Commands:AddFavorite("铁锭")
     assert(dupOk == false, "Re-adding duplicate favorite should fail")
     assert(tostring(dupErr):find("已存在") ~= nil, "Error message must mention already exists")
     assert(#Feature.State.favorites == 1, "Favorites count should still be 1")
 
-    -- 3. Validation: empty or whitespace
+    -- 3. 拒绝空字符串和纯空白关键词。
     local emptyOk, emptyErr = Feature.Commands:AddFavorite("   ")
     assert(emptyOk == false, "Empty keyword must be rejected")
     local controlOk, _ = Feature.Commands:AddFavorite("test\nitem")
     assert(controlOk == false, "Control characters must be rejected")
 
-    -- 4. Upper bound: AUCTION_FAVORITE_MAX = 20
+    -- 4. 验证 AUCTION_FAVORITE_MAX=20 的数量上限。
     for i = 2, 20 do
         local addOk = Feature.Commands:AddFavorite("材料_" .. tostring(i))
         assert(addOk == true, "Adding favorite " .. tostring(i) .. " should succeed")
@@ -386,7 +383,7 @@ Test("T2: Favorite keywords: Add, deduplication, bounds & Remove", function()
     assert(overOk == false, "21st favorite must be rejected due to max limit")
     assert(tostring(overErr):find("上限") ~= nil, "Error should mention upper bound")
 
-    -- 5. RemoveFavorite
+    -- 5. 验证 RemoveFavorite 删除收藏。
     local remInvalidOk = Feature.Commands:RemoveFavorite(999)
     assert(remInvalidOk == false, "Out of bounds index must be rejected")
     local remOk, remErr = Feature.Commands:RemoveFavorite(1) -- Remove "铁锭"
@@ -394,19 +391,17 @@ Test("T2: Favorite keywords: Add, deduplication, bounds & Remove", function()
     assert(#Feature.State.favorites == 19, "Favorites count should now be 19")
     assert(Feature.State.favorites[1] == "材料_2", "New first favorite should be 材料_2")
 
-    -- 6. Check projection
+    -- 6. 核对收藏投影。
     local proj = Feature:GetProjection()
     assert(proj.favoriteCount == 19, "proj.favoriteCount mismatch")
     assert(proj.favoriteMax == 20, "proj.favoriteMax mismatch")
 
-    -- Cleanup
+    -- 清理本用例的数据和订阅。
     Feature.State.favorites = { "原木", "粗糙的石头" }
     Feature:ReleaseConsumer("test_t2")
 end)
 
-------------------------------------------------------------------------
--- Test 2B: Favorite stable-key CRUD preserves legacy string-array schema
-------------------------------------------------------------------------
+-- 测试 2B：按稳定键增删改查收藏，保持旧字符串数组存档结构。
 Test("T2B: Favorite rename, move, remove-by-keyword & clear", function()
     Feature.State.favorites = { "木材", "铁锭", "蜂蜜" }
 
@@ -435,15 +430,13 @@ Test("T2B: Favorite rename, move, remove-by-keyword & clear", function()
     Feature.State.favorites = { "原木", "粗糙的石头" }
 end)
 
-------------------------------------------------------------------------
--- Test 2C: AuctionSearchBridgeV3 native sync success/fallback is non-blocking
-------------------------------------------------------------------------
+-- 测试 2C：AuctionSearchBridgeV3 原生同步成功或降级时均不阻塞搜索。
 Test("T2C: Search bridge verified native sync and fallback", function()
     assert(auctionSearchBridgeLoaded == true, "AuctionSearchBridgeV3 failed to load: " .. tostring(auctionSearchBridgeLoadErr))
     local Bridge = S.Services.AuctionSearchBridgeV3
     assert(type(Bridge) == "table" and type(Bridge.Search) == "function", "AuctionSearchBridgeV3 contract missing")
 
-    -- Verified EditBox candidate: path/name carries search semantics, type is EditBox, and readback must match.
+    -- 已验证的 EditBox 候选必须同时满足：路径或名称具有搜索语义、类型为 EditBox，且写入后回读一致。
     local nativeText = ""
     mockAuctionContent.keywordSearchBox = {
         GetObjectType = function() return "EditBox" end,
@@ -461,10 +454,10 @@ Test("T2C: Search bridge verified native sync and fallback", function()
     assert(verified.nativeSync == "success", "verified native sync must report success")
     assert(tostring(verified.candidatePath or ""):find("keywordSearchBox", 1, true) ~= nil, "candidate path must be diagnosable")
 
-    -- Finish request before second query.
+    -- 第二次查询前先结束当前请求，避免单请求约束干扰用例。
     mockAuction.searchedItems = {}; Query:_OnSearched()
 
-    -- No verified candidate: server query must still run and bridge reports fallback.
+    -- 找不到已验证候选时仍须发起服务器查询，桥接层报告降级。
     mockAuctionContent.keywordSearchBox = nil
     Bridge:ResetNativeCandidate("test_fallback")
     Query:_CleanupNativeEdge(); Query.pending = nil; mockAuction.searchCalls = {}
@@ -477,9 +470,7 @@ Test("T2C: Search bridge verified native sync and fallback", function()
     mockAuction.searchedItems = {}; Query:_OnSearched()
 end)
 
-------------------------------------------------------------------------
--- Test 2D: hostile/opaque userdata in Native auction content must fail closed
-------------------------------------------------------------------------
+-- 测试 2D：原生拍卖内容中的不可访问或不透明 userdata 必须安全拒绝。
 Test("T2D: Search bridge hostile userdata probe cannot break authoritative query", function()
     local Bridge = S.Services.AuctionSearchBridgeV3
     mockAuctionContent.keywordSearchBox = nil
@@ -501,22 +492,20 @@ Test("T2D: Search bridge hostile userdata probe cannot break authoritative query
     mockAuction.searchedItems = {}; Query:_OnSearched()
 end)
 
-------------------------------------------------------------------------
--- Test 3: AuctionQueryV3: 9-Parameter Call, SingleFlight & Timeout Guard
-------------------------------------------------------------------------
+-- 测试 3：AuctionQueryV3 的九参数契约、单请求约束和超时保护。
 Test("T3: AuctionQueryV3: 9-parameter call, SingleFlight & timeout guard", function()
-    -- Reset query state
+    -- 重置查询状态，隔离后续请求断言。
     Query:_CleanupNativeEdge()
     Query.pending = nil
     mockAuction.searchCalls = {}
 
-    -- 1. Input validation
+    -- 1. 核对输入校验。
     local badReqOk = Query:Search("", "keyword")
     assert(badReqOk == false, "Empty requester must be rejected")
     local badKeyOk = Query:Search("test", "")
     assert(badKeyOk == false, "Empty keyword must be rejected")
 
-    -- 2. Successful search dispatch with 9-parameter contract
+    -- 2. 按九参数契约成功派发搜索。
     local ok, status = Query:Search("tools_auction", "原木", { exactMatch = true, resultLimit = 15 })
     assert(ok == true, "Query:Search failed: " .. tostring(status))
     assert(status == "waiting", "Status must be waiting")
@@ -530,15 +519,15 @@ Test("T3: AuctionQueryV3: 9-parameter call, SingleFlight & timeout guard", funct
     assert(call.keyword == "原木", "keyword mismatch")
     assert(call.minPrice == "0" and call.maxPrice == "0", "prices must be '0', '0'")
 
-    -- 3. SingleFlight rejection while waiting
+    -- 3. 等待回包期间拒绝并发查询。
     local dupOk, dupErr = Query:Search("tools_auction", "铁锭")
     assert(dupOk == false, "Concurrent search while pending must be rejected")
     assert(tostring(dupErr):find("等待") ~= nil, "Rejection error must mention pending search")
 
-    -- 4. Timeout guard
+    -- 4. 验证超时保护。
     assert(Query.pending ~= nil, "Must have pending request")
     assert(S.Scheduler.tasks[Query.timeoutTask] ~= nil, "Timeout task must be scheduled")
-    -- Simulate timeout execution
+    -- 手动推进超时回调，验证等待状态能够释放。
     local timeoutTask = S.Scheduler.tasks[Query.timeoutTask]
     timeoutTask.callback()
     assert(Query.pending == nil, "Pending must be cleared after timeout")
@@ -547,26 +536,24 @@ Test("T3: AuctionQueryV3: 9-parameter call, SingleFlight & timeout guard", funct
     assert(tostring(snap.error):find("超时") ~= nil, "Snapshot error must mention timeout")
 end)
 
-------------------------------------------------------------------------
--- Test 4: Native AUCTION_ITEM_SEARCHED Completion Edge & Normalization
-------------------------------------------------------------------------
+-- 测试 4：原生 AUCTION_ITEM_SEARCHED 完成事件与结果归一化。
 Test("T4: Native AUCTION_ITEM_SEARCHED completion edge & normalization", function()
     Query:_CleanupNativeEdge()
     Query.pending = nil
     mockAuction.searchCalls = {}
 
-    -- Case A: Empty results (0 items)
+    -- 情形 A：搜索结果为空。
     mockAuction.searchedItems = {}
     local okA = Query:Search("tools_auction", "稀有不存在物品")
     assert(okA == true)
-    -- Fire native completion edge
+    -- 触发原生查询完成事件。
     Query:_OnSearched()
     local snapA = Query:GetSnapshot("tools_auction")
     assert(snapA.status == "empty", "0 items should result in status = empty")
     assert(snapA.count == 0, "count should be 0")
     assert(#snapA.rows == 0, "rows should be empty")
 
-    -- Case B: Multiple results with diverse fields including itemGrade
+    -- 情形 B：多条结果包含不同字段，覆盖 itemGrade。
     mockAuction.searchedItems = {
         {
             itemType = 18888,
@@ -598,7 +585,7 @@ Test("T4: Native AUCTION_ITEM_SEARCHED completion edge & normalization", functio
     assert(snapB.count == 2, "Count should be 2")
     assert(#snapB.rows == 2, "Rows count should be 2")
 
-    -- Row 1 check
+    -- 核对第 1 条结果。
     local r1 = snapB.rows[1]
     assert(r1.itemType == 18888, "r1 itemType mismatch")
     assert(r1.itemGrade == 3, "r1 itemGrade must be extracted as 3")
@@ -610,7 +597,7 @@ Test("T4: Native AUCTION_ITEM_SEARCHED completion edge & normalization", functio
     assert(r1.text:find("数量 100") ~= nil, "r1 text must contain quantity")
     assert(r1.text:find("一口价 50000") ~= nil, "r1 text must contain buyout price")
 
-    -- Row 2 check (nested itemInfo extraction)
+    -- 核对第 2 条结果，覆盖嵌套 itemInfo 的提取。
     local r2 = snapB.rows[2]
     assert(r2.itemType == 18889, "r2 nested itemType mismatch")
     assert(r2.itemGrade == 1, "r2 nested itemGrade must be extracted as 1")
@@ -620,11 +607,9 @@ Test("T4: Native AUCTION_ITEM_SEARCHED completion edge & normalization", functio
     assert(r2.seller == "MinerTwo", "r2 nested seller mismatch")
 end)
 
-------------------------------------------------------------------------
--- Test 5: Feature Demand Lifecycle & Dual Favorite/Result Rows Projection
-------------------------------------------------------------------------
+-- 测试 5：功能需求生命周期及收藏、搜索结果两类行的投影。
 Test("T5: Feature demand lifecycle & dual favorite/result rows projection", function()
-    -- Ensure clean demand state before T5
+    -- 第 5 组测试前清空需求状态，避免前序消费者影响断言。
     S.Events:Publish("v3.auction_surface.updated", { status = "ready", visible = false })
     for token in pairs(Feature.Demand and Feature.Demand.consumers or {}) do
         Feature:ReleaseConsumer(token)
@@ -632,32 +617,32 @@ Test("T5: Feature demand lifecycle & dual favorite/result rows projection", func
     Feature:Enable()
     assert(Feature.enabled == true, "Feature must be enabled")
 
-    -- Initial state before acquiring consumer
+    -- 核对消费者获取需求之前的初始状态。
     assert(Feature.AuctionQuerySubscribed ~= true, "Must not subscribe before consumer acquired")
 
-    -- Acquire consumer: activates Demand and subscribes to events
+    -- 获取消费者需求后，应激活 Demand 并订阅事件。
     assert(Feature:AcquireConsumer("test_t5"), "AcquireConsumer failed")
     assert(Feature.consumerCount == 1, "consumerCount should be 1")
     assert(Feature.AuctionQuerySubscribed == true, "Must subscribe to v3.auction_query.updated")
     assert(Feature.PriceQuoteSubscribed == true, "Must subscribe to v3.price_quote.completed")
 
-    -- Set up favorites and execute search
+    -- 配置收藏并执行搜索。
     Feature.State.favorites = { "原木", "铁矿石" }
     local okSearch = Feature.Commands:Search("原木")
     assert(okSearch == true, "Feature.Commands:Search failed")
     assert(Feature.State.searchStatus == "waiting", "searchStatus should be waiting")
 
-    -- Complete search
+    -- 触发搜索完成回包。
     Query:_OnSearched()
     Feature.Authority:Refresh("auction_query_updated")
 
-    -- Verify projection contains both favorites and search results
+    -- 验证投影同时包含收藏和搜索结果。
     local proj = Feature:GetProjection()
     assert(proj.favoriteCount == 2, "favoriteCount should be 2")
     assert(proj.searchStatus == "ready", "searchStatus should be ready")
     assert(proj.resultCount == 2, "resultCount should be 2")
 
-    -- Read rows from authority/projection
+    -- 从数据层及投影读取行，核对数据归属。
     local rows = proj.rows
     assert(#rows == 4, "Total rows must be 4 (2 favorites + 2 results)")
     assert(rows[1].kind == "favorite" and rows[1].name == "原木", "Row 1 must be favorite")
@@ -665,18 +650,16 @@ Test("T5: Feature demand lifecycle & dual favorite/result rows projection", func
     assert(rows[3].kind == "result" and rows[3].itemType == 18888, "Row 3 must be search result")
     assert(rows[4].kind == "result" and rows[4].itemType == 18889, "Row 4 must be search result")
 
-    -- Release consumer: tears down subscriptions
+    -- 释放消费者需求后必须清除订阅。
     Feature:ReleaseConsumer("test_t5")
     assert(Feature.consumerCount == 0, "consumerCount should be 0")
     assert(Feature.AuctionQuerySubscribed == false, "Must unsubscribe from v3.auction_query.updated")
     assert(Feature.PriceQuoteSubscribed == false, "Must unsubscribe from v3.price_quote.completed")
 end)
 
-------------------------------------------------------------------------
--- Test 6: Bounded Paging Calculation
-------------------------------------------------------------------------
+-- 测试 6：有界分页计算。
 Test("T6: Bounded paging calculation (25 items, 10 per page)", function()
-    -- Mock 25 items in rows
+    -- 构造 25 条结果，用于覆盖完整页和末尾不足一页的情况。
     local dummyRows = {}
     for i = 1, 25 do
         dummyRows[#dummyRows + 1] = { key = "item:" .. i, index = i, name = "Item_" .. i }
@@ -695,7 +678,7 @@ Test("T6: Bounded paging calculation (25 items, 10 per page)", function()
         return clampedPage, pagesCount, pageRows, clampedPage > 1, clampedPage < pagesCount
     end
 
-    -- Page 1
+    -- 核对第 1 页。
     local p1, totalPages, r1, canPrev1, canNext1 = ComputePage(1)
     assert(p1 == 1 and totalPages == 3, "Page 1 count mismatch")
     assert(#r1 == 10, "Page 1 should have 10 rows")
@@ -703,46 +686,44 @@ Test("T6: Bounded paging calculation (25 items, 10 per page)", function()
     assert(canPrev1 == false, "Page 1 cannot prev")
     assert(canNext1 == true, "Page 1 can next")
 
-    -- Page 2
+    -- 核对第 2 页。
     local p2, _, r2, canPrev2, canNext2 = ComputePage(2)
     assert(p2 == 2, "Page 2 mismatch")
     assert(#r2 == 10, "Page 2 should have 10 rows")
     assert(r2[1].index == 11 and r2[10].index == 20, "Page 2 bounds mismatch")
     assert(canPrev2 == true and canNext2 == true, "Page 2 prev/next mismatch")
 
-    -- Page 3 (Partial page: 5 rows)
+    -- 核对第 3 页，仅剩 5 条结果。
     local p3, _, r3, canPrev3, canNext3 = ComputePage(3)
     assert(p3 == 3, "Page 3 mismatch")
     assert(#r3 == 5, "Page 3 should have 5 rows")
     assert(r3[1].index == 21 and r3[5].index == 25, "Page 3 bounds mismatch")
     assert(canPrev3 == true and canNext3 == false, "Page 3 cannot next")
 
-    -- Out of bounds clamping: requesting page 99 clamps to page 3
+    -- 请求第 99 页时应限制到实际最后一页，即第 3 页。
     local p99, _, r99 = ComputePage(99)
     assert(p99 == 3, "Page 99 must clamp to max page 3")
     assert(#r99 == 5, "Clamped page rows mismatch")
 end)
 
-------------------------------------------------------------------------
--- Test 7: Explicit Lowest-Price Quote via PriceQuoteQueueV3
-------------------------------------------------------------------------
+-- 测试 7：通过 PriceQuoteQueueV3 显式查询最低价。
 Test("T7: Explicit lowest-price quote via PriceQuoteQueueV3", function()
     Feature:Enable()
     Feature:AcquireConsumer("test_t7")
 
-    -- Verify Quote command delegates to PriceQuoteQueueV3
+    -- 验证 Quote 命令委托现有 PriceQuoteQueueV3 队列。
     assert(type(Feature.Commands.Quote) == "function", "Commands.Quote missing")
 
     local ok, status = Feature.Commands:Quote(18888, 3)
     assert(ok == true, "Commands:Quote failed: " .. tostring(status))
 
-    -- Check PriceQuoteQueueV3 snapshot for tools_auction
+    -- 核对 tools_auction 对应的询价队列快照。
     local quoteSnap = QuoteQueue:GetSnapshot("tools_auction")
     assert(quoteSnap ~= nil, "Quote snapshot missing")
     assert(quoteSnap.itemType == 18888, "itemType mismatch in queue")
     assert((quoteSnap.itemGrade or quoteSnap.grade) == 3, "grade mismatch in queue")
 
-    -- Advance scheduler / process queue item
+    -- 推进共享调度器，处理当前队列项。
     local taskKey = QuoteQueue.taskId or QuoteQueue.taskName
     assert(S.Scheduler.tasks[taskKey] ~= nil, "Quote task must be scheduled")
     local quoteTask = S.Scheduler.tasks[taskKey]
@@ -753,19 +734,19 @@ Test("T7: Explicit lowest-price quote via PriceQuoteQueueV3", function()
     assert(QuoteQueue:GetSnapshot("tools_auction").status ~= "ready", "Visible native auction cannot admit a quote")
     local oldPosVis = _G.ADDON.GetContentMainScriptPosVis
     _G.ADDON.GetContentMainScriptPosVis = function() return nil, nil, nil, nil, false end
-    -- Resume edge -> dequeue -> AskMarketPrice -> GetLowestPrice; retain the actual price/projection checks below.
+    -- 恢复事件推进出队，再调用 AskMarketPrice 和 GetLowestPrice；后续继续核对实际价格及投影。
     for _ = 1, 6 do
         h.ms = h.ms + QuoteQueue.intervalMs
         quoteTask.callback()
     end
     _G.ADDON.GetContentMainScriptPosVis = oldPosVis
 
-    -- Completed quote should have recorded the mock lowest price (125000 = 12g 50s)
+    -- 完成询价后应记录替身最低价：125000，即 12 金 50 银。
     local compSnap = QuoteQueue:GetSnapshot("tools_auction")
     assert(compSnap.status == "ready", "Quote status should be ready after processing")
     assert(compSnap.price == 125000, "Lowest price should be 125000, got: " .. tostring(compSnap.price))
 
-    -- Projection should reflect the quote result
+    -- 投影必须包含本次询价结果。
     local proj = Feature:GetProjection()
     assert(proj.quoteStatus == "ready", "Projection quoteStatus mismatch")
     assert(proj.quotePrice == 125000, "Projection quotePrice mismatch")
@@ -773,20 +754,18 @@ Test("T7: Explicit lowest-price quote via PriceQuoteQueueV3", function()
     Feature:ReleaseConsumer("test_t7")
 end)
 
-------------------------------------------------------------------------
--- Test 8: AuctionSurfaceV3: 5-Value & 4-Value Native Geometry & Cleanup
-------------------------------------------------------------------------
+-- 测试 8：AuctionSurfaceV3 的五返回值、四返回值原生几何与停用清理。
 Test("T8: AuctionSurfaceV3: 5-value & 4-value native geometry & cleanup", function()
     Surface:Stop("test_init")
     assert(Surface.started == false, "Must be stopped initially")
 
-    -- 1. Start observer
+    -- 1. 启动观察服务。
     local okStart, errStart = Surface:Start()
     assert(okStart == true, "Surface:Start failed: " .. tostring(errStart))
     assert(Surface.started == true, "started must be true")
     assert(S.Scheduler.tasks[Surface.taskId] ~= nil, "Observer task must be registered in Scheduler")
 
-    -- 2. 5-value native return: (x, y, width, height, visible)
+    -- 2. 五返回值契约为 (x, y, width, height, visible)。
     _G.ADDON.GetContentMainScriptPosVis = function(self, id)
         return 300, 200, 750, 550, true
     end
@@ -798,10 +777,9 @@ Test("T8: AuctionSurfaceV3: 5-value & 4-value native geometry & cleanup", functi
     assert(snap5.width == 750 and snap5.height == 550, "snap5 size mismatch")
     assert(snap5.source == "main-script", "snap5 source should be main-script")
 
-    -- 3. RU 4-value compatibility: (x, y, width, height, nil)
-    -- Omit the 5th boolean, relying on plausible geometry and content visibility
+    -- 3. 覆盖 RU 四返回值兼容契约 (x, y, width, height, nil)；第五个布尔值缺失时结合有效几何和内容可见性判断。
     _G.ADDON.GetContentMainScriptPosVis = function(self, id)
-        return 320, 210, 750, 550 -- 5th return value is nil
+        return 320, 210, 750, 550 -- 第五个返回值为 nil。
     end
     Surface:Refresh("test_4val", true)
     local snap4 = Surface:GetSnapshot()
@@ -809,7 +787,7 @@ Test("T8: AuctionSurfaceV3: 5-value & 4-value native geometry & cleanup", functi
     assert(snap4.visible == true, "snap4 visible must resolve to true from content/geometry")
     assert(snap4.x == 320 and snap4.y == 210, "snap4 position mismatch")
 
-    -- 4. Closed state: content hidden
+    -- 4. 内容隐藏时应判断为关闭状态。
     mockAuctionContent.IsVisible = function() return false end
     _G.ADDON.GetContentMainScriptPosVis = function(self, id)
         return 0, 0, 0, 0, false
@@ -818,21 +796,19 @@ Test("T8: AuctionSurfaceV3: 5-value & 4-value native geometry & cleanup", functi
     local snapClosed = Surface:GetSnapshot()
     assert(snapClosed.visible == false, "snapClosed must be invisible")
 
-    -- Restore mock
+    -- 恢复原生接口测试替身。
     mockAuctionContent.IsVisible = function() return true end
     _G.ADDON.GetContentMainScriptPosVis = function(self, id)
         return 200, 150, 820, 600, true
     end
 
-    -- 5. Stop cleanup
+    -- 5. 停用观察服务并清理资源。
     Surface:Stop("test_teardown")
     assert(Surface.started == false, "started must be false after Stop")
     assert(S.Scheduler.tasks[Surface.taskId] == nil, "Scheduler task must be removed after Stop")
 end)
 
-------------------------------------------------------------------------
--- Test 9: AuctionSidecar Widget: Native Window Tracking & Anchoring
-------------------------------------------------------------------------
+-- 测试 9：拍卖伴随浮窗的原生窗口跟随与锚定。
 Test("T9: AuctionSidecar widget: independent placement & native visibility lifecycle", function()
     local sidecarSpec = S.UIV3.WidgetHost:GetSpec("tools.auction_sidecar")
     assert(sidecarSpec ~= nil, "tools.auction_sidecar widget spec must be registered")
@@ -841,7 +817,7 @@ Test("T9: AuctionSidecar widget: independent placement & native visibility lifec
     local SidecarController = S.UIV3.AuctionSidecar
     assert(SidecarController ~= nil, "AuctionSidecar controller missing")
 
-    -- 1. Native window opens -> Sidecar becomes visible
+    -- 1. 原生拍卖窗口打开后，伴随浮窗显示。
     local previousInstance=S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar")
     local previousX,previousY=previousInstance and previousInstance.shell.x,previousInstance and previousInstance.shell.y
     local openSnapshot = { status = "ready", visible = true, x = 400, y = 200, width = 800, height = 600, revision = 10 }
@@ -854,8 +830,7 @@ Test("T9: AuctionSidecar widget: independent placement & native visibility lifec
     assert(instance ~= nil, "Sidecar instance must exist")
     assert(instance.acquired == true, "Sidecar must have acquired Consumer")
 
-    -- 2. Anchoring check: sidecar should be placed adjacent to the auction window
-    -- Window is 300px wide, auctionX is 400 -> x = 400 - 300 - 8 = 92
+    -- 2. 伴随浮窗放在拍卖窗口相邻位置：宽度 300px，auctionX=400，因此 x=400-300-8=92。
     if previousInstance then
         assert(instance.shell.x==previousX and instance.shell.y==previousY,"native update cannot move independent sidecar")
     else
@@ -863,7 +838,7 @@ Test("T9: AuctionSidecar widget: independent placement & native visibility lifec
     end
     assert(instance.surface.spec.movable==true and instance.state.userMoved==false,"unmodified default must allow dragging")
 
-    -- 3. Native window closes -> Sidecar hides
+    -- 3. 原生拍卖窗口关闭后，伴随浮窗隐藏。
     local closeSnapshot = { status = "ready", visible = false, x = 0, y = 0, width = 0, height = 0, revision = 11 }
     S.Events:Publish("v3.auction_surface.updated", closeSnapshot)
 
@@ -871,29 +846,27 @@ Test("T9: AuctionSidecar widget: independent placement & native visibility lifec
     assert(SidecarController.nativeVisible == false, "nativeVisible must be false")
     assert(instance.acquired == false, "Consumer must be released when hidden")
 
-    -- 4. User manual close (dismissal)
+    -- 4. 覆盖用户手动关闭浮窗。
     S.Events:Publish("v3.auction_surface.updated", openSnapshot)
     assert(S.UIV3.WidgetHost:IsVisible("tools.auction_sidecar") == true)
     instance.surface.spec.onClosed(instance.surface, "user_click_close")
     assert(SidecarController.dismissed == true, "dismissed flag must be set on manual close")
 
-    -- Subsequent surface updates while still open must not resurrect dismissed sidecar
+    -- 原生窗口仍打开时，后续状态刷新不能重新打开用户已关闭的伴随浮窗。
     S.Events:Publish("v3.auction_surface.updated", openSnapshot)
     assert(S.UIV3.WidgetHost:IsVisible("tools.auction_sidecar") == false, "Dismissed sidecar must not re-open while native window remains open")
 
-    -- Native closes and reopens -> dismissed flag is cleared and sidecar resurrects
+    -- 原生窗口关闭后重新打开时清除 dismissed 状态，允许再次显示伴随浮窗。
     S.Events:Publish("v3.auction_surface.updated", closeSnapshot)
     assert(SidecarController.dismissed == false, "dismissed flag must reset when native closes")
     S.Events:Publish("v3.auction_surface.updated", openSnapshot)
     assert(S.UIV3.WidgetHost:IsVisible("tools.auction_sidecar") == true, "Sidecar re-opens on fresh native auction open")
 
-    -- Final cleanup
+    -- 清理最后一组消费者和窗口状态。
     S.Events:Publish("v3.auction_surface.updated", closeSnapshot)
 end)
 
-------------------------------------------------------------------------
--- Test 9A: Main page may explicitly restore a manually dismissed Sidecar
-------------------------------------------------------------------------
+-- 测试 9A：主页面可以显式恢复用户手动关闭的伴随浮窗。
 Test("T9A: AuctionSidecar explicit restore contract", function()
     local controller = S.UIV3.AuctionSidecar
     assert(type(controller.GetControlState) == "function", "AuctionSidecar must expose read-only control state for the main page")
@@ -924,16 +897,13 @@ Test("T9A: AuctionSidecar explicit restore contract", function()
     assert(tostring(blockedErr):find("拍卖行", 1, true) ~= nil, "closed-native error must explain that auction house needs to be opened")
 end)
 
-------------------------------------------------------------------------
--- Test 9A1: Persistent Sidecar enable/disable preference owns observer lifecycle
-------------------------------------------------------------------------
+-- 测试 9A1：持久化的伴随浮窗开关管理观察服务生命周期。
 Test("T9A1: AuctionSidecar persistent enable/disable preference", function()
     local controller = S.UIV3.AuctionSidecar
     local store = S.Persistence:GetStore(Feature.storeId)
     assert(type(store) == "table" and type(store.apply) == "function" and type(store.get) == "function", "auction store contract unavailable")
 
-    -- Compatibility: pre-toggle payloads have no sidecarEnabled field and must
-    -- keep the historical behavior (automatic Sidecar enabled).
+    -- 旧存档没有 sidecarEnabled 字段时保持原有行为，即默认允许自动显示伴随浮窗。
     store.apply({ keyword = "", favorites = {}, exactMatch = false, resultLimit = 20 })
     assert(Feature:IsSidecarEnabled() == true, "legacy auction payload must default Sidecar to enabled")
 
@@ -952,15 +922,13 @@ Test("T9A1: AuctionSidecar persistent enable/disable preference", function()
     local blocked, blockedErr = controller:RequestShow("test_disabled_preference")
     assert(blocked == false and tostring(blockedErr):find("开启", 1, true) ~= nil, "manual show must be blocked while Sidecar preference is off")
 
-    -- Lifecycle/reload equivalent: a persisted false preference must prevent
-    -- Feature enable from restarting the 250ms native AuctionSurface watcher.
+    -- 持久化的 false 偏好必须阻止功能启用或重载后重新启动每 250ms 执行的原生 AuctionSurface 观察任务。
     assert(Feature:Disable("t9a1_pref_off") == true, "feature disable with Sidecar off failed")
     assert(Feature:Enable("t9a1_pref_off_reload") == true, "feature enable with Sidecar off failed")
     assert(Surface.started == false, "persisted Sidecar-off preference must survive Feature enable without restarting observer")
     assert(S.UIV3.WidgetHost:IsVisible("tools.auction_sidecar") == false, "Feature enable must not resurrect Sidecar while preference is off")
 
-    -- Re-enable while the native auction mock is already open. Starting the
-    -- observer must refresh the real native surface and auto-show immediately.
+    -- 原生拍卖窗口已打开时重新启用观察服务，应立即读取真实窗口状态并自动显示浮窗。
     local onOk, onErr = Feature.Commands:SetSidecarEnabled(true)
     assert(onOk == true, "re-enabling Sidecar failed: " .. tostring(onErr))
     assert(Feature:IsSidecarEnabled() == true, "Sidecar preference must become true")
@@ -971,9 +939,7 @@ Test("T9A1: AuctionSidecar persistent enable/disable preference", function()
     Surface:Stop("t9a1_cleanup")
 end)
 
-------------------------------------------------------------------------
--- Test 9A2: Auction main page contains the Sidecar explanation and entry controls
-------------------------------------------------------------------------
+-- 测试 9A2：拍卖主页提供伴随浮窗说明和入口控件。
 Test("T9A2: Auction main page Sidecar entry layout contract", function()
     local pageFile = assert(io.open("presentation/v3/pages/rs_v3_business_pages.lua", "rb"))
     local pageText = pageFile:read("*a"); pageFile:close()
@@ -995,9 +961,7 @@ Test("T9A2: Auction main page Sidecar entry layout contract", function()
         "auction page must listen to Sidecar control-state changes while active")
 end)
 
-------------------------------------------------------------------------
--- Test 9B: Auction sidecar three-tab workspace and explicit row actions
-------------------------------------------------------------------------
+-- 测试 9B：伴随浮窗的三个工作区页签及显式行操作。
 Test("T9B: AuctionSidecar favorites/daily/temp workspace", function()
     local openSnapshot = { status = "ready", visible = true, x = 400, y = 200, width = 800, height = 600, revision = 20 }
     S.Events:Publish("v3.auction_surface.updated", openSnapshot)
@@ -1007,7 +971,7 @@ Test("T9B: AuctionSidecar favorites/daily/temp workspace", function()
     assert(type(instance.SetTab) == "function" and instance.activeTab == "favorites", "default tab must be favorites")
     assert(instance.editButton and instance.upButton and instance.downButton and instance.clearButton, "CRUD/move controls missing")
 
-    -- Favorite single-row activation is a real explicit search, not background polling.
+    -- 激活单条收藏会显式发起真实搜索，不能转换为后台轮询。
     Feature.State.favorites = { "木材", "铁锭" }; Feature:Refresh("sidecar_t9b")
     instance:SetTab("favorites"); instance:Refresh()
     Query:_CleanupNativeEdge(); Query.pending = nil; mockAuction.searchCalls = {}
@@ -1016,7 +980,7 @@ Test("T9B: AuctionSidecar favorites/daily/temp workspace", function()
     assert(activated == true and #mockAuction.searchCalls == 1 and mockAuction.searchCalls[1].keyword == "木材", "favorite click must explicitly search selected keyword")
     mockAuction.searchedItems = {}; Query:_OnSearched()
 
-    -- Daily tab acquires only while active; material click searches, candidate click selects.
+    -- 每日页签仅在激活期间获取需求；点击材料发起搜索，点击候选仅选择该项。
     assert(instance:SetTab("daily") == true and instance.activeTab == "daily", "daily tab switch failed")
     assert(dailySidecarConsumers == 1, "daily tab must acquire one demand consumer")
     instance:Refresh()
@@ -1030,7 +994,7 @@ Test("T9B: AuctionSidecar favorites/daily/temp workspace", function()
     assert(instance.table.spec.onItemActivated(recipeRow, 1, recipeRow.key, instance.table, "row_click") == true, "daily recipe activation must select candidate")
     assert(S.Services.DailyAuctionMaterialsV3.selectedRecipe == recipeRow.recipe, "daily recipe selection not routed to service")
 
-    -- Temporary tab releases daily demand, supports manual add and session-only data.
+    -- 临时页签释放每日任务需求，支持手动添加，数据仅在当前会话保留。
     assert(instance:SetTab("temp") == true and dailySidecarConsumers == 0, "leaving daily tab must release quest demand")
     instance.input:SetValue("蜂蜜")
     instance.qtyInput:SetValue("3")
@@ -1046,10 +1010,7 @@ Test("T9B: AuctionSidecar favorites/daily/temp workspace", function()
     assert(dailySidecarConsumers == 0, "sidecar hide must not leak daily consumer")
 end)
 
-------------------------------------------------------------------------
--- Regression: FloatingSurface reserves <surface-id>_status for footer chrome.
--- A child content Text must never reuse that logical id in the same build Generation.
-------------------------------------------------------------------------
+-- 回归约束：FloatingSurface 保留 <surface-id>_status 作为底部状态栏标识，同一构建 Generation 内的内容 Text 不能复用该逻辑 ID。
 Test("T9C: AuctionSidecar content status id does not collide with FloatingSurface footer", function()
     local sidecarFile = assert(io.open("presentation/v3/widgets/rs_v3_auction_sidecar.lua", "rb"))
     local sidecarText = sidecarFile:read("*a"); sidecarFile:close()
@@ -1059,12 +1020,8 @@ Test("T9C: AuctionSidecar content status id does not collide with FloatingSurfac
         "sidecar must use a dedicated content/action status logical id")
 end)
 
-------------------------------------------------------------------------
--- Regression: switching Daily <-> Temp changes searchRow layout participation.
--- The FloatingSurface must run a fresh shell layout after that visibility change
--- or the resurrected search row keeps its old bounds while the action row stays
--- in the Daily-tab position, causing both rows to overlap.
-------------------------------------------------------------------------
+-- 每日与临时页签切换会改变 searchRow 是否参与布局。
+-- 可见性变化后必须重新布局 FloatingSurface 外壳，否则搜索行复用旧边界，而操作行仍处于每日页签的位置，导致两行重叠。
 Test("T9D: AuctionSidecar tab visibility change reapplies floating layout", function()
     local openSnapshot = { status = "ready", visible = true, x = 400, y = 200, width = 800, height = 600, revision = 30 }
     S.Events:Publish("v3.auction_surface.updated", openSnapshot)
@@ -1087,10 +1044,7 @@ Test("T9D: AuctionSidecar tab visibility change reapplies floating layout", func
     instance.surface.ApplyLayout = originalApply
 end)
 
-------------------------------------------------------------------------
--- Regression: Temp tab quantity input must explain its meaning, and this compact
--- Sidecar should request a slightly shorter native caret than the shared default.
-------------------------------------------------------------------------
+-- 临时页签的数量输入必须说明含义；紧凑伴随浮窗需要比共享默认值略短的原生输入光标。
 Test("T9E: AuctionSidecar temp quantity affordance and compact caret", function()
     local sidecarFile = assert(io.open("presentation/v3/widgets/rs_v3_auction_sidecar.lua", "rb"))
     local sidecarText = sidecarFile:read("*a"); sidecarFile:close()
@@ -1103,11 +1057,9 @@ Test("T9E: AuctionSidecar temp quantity affordance and compact caret", function(
         "sidecar edit boxes need an explicit compact creation height so native caret is not oversized")
 end)
 
-------------------------------------------------------------------------
--- Test 10: FoundationGate & Acceptance Contract Verification
-------------------------------------------------------------------------
+-- 测试 10：基础门禁与验收契约。
 Test("T10: FoundationGate & Acceptance contract verification", function()
-    -- 1. v3_auction_query_contract verification
+    -- 1. 核对 v3_auction_query_contract。
     assert(type(Query) == "table", "Query must be table")
     assert((tonumber(Query.version) or 0) >= 2, "AuctionQueryV3 version >= 2")
     assert((tonumber(Query.EventAuthorityContractVersion) or 0) >= 1, "EventAuthorityContractVersion >= 1")
@@ -1122,7 +1074,7 @@ Test("T10: FoundationGate & Acceptance contract verification", function()
     assert((tonumber(MarketFeature.AuctionQueryContractVersion) or 0) >= 1, "MarketFeature AuctionQueryContractVersion >= 1")
     assert(type(MarketFeature.Commands.Search) == "function", "MarketFeature Commands.Search must be function")
 
-    -- 2. v3_auction_sidecar_contract verification
+    -- 2. 核对 v3_auction_sidecar_contract。
     assert(type(Surface) == "table", "Surface must be table")
     assert((tonumber(Surface.version) or 0) >= 2, "AuctionSurfaceV3 version >= 2")
     assert((tonumber(Surface.VisibilityContractVersion) or 0) >= 2, "VisibilityContractVersion >= 2")
@@ -1131,7 +1083,7 @@ Test("T10: FoundationGate & Acceptance contract verification", function()
     assert(type(Surface.Stop) == "function", "Surface.Stop must be function")
     assert(type(S.UIV3.AuctionSidecar) == "table", "AuctionSidecar controller must be table")
 
-    -- 3. Acceptance contract clauses
+    -- 3. 核对验收契约条款。
     assert(Feature.Commands.AddFavorite ~= nil, "AddFavorite command must exist")
     assert(Feature.Commands.RemoveFavorite ~= nil, "RemoveFavorite command must exist")
     assert(Feature.Commands.Quote ~= nil, "Quote command must exist")
@@ -1141,7 +1093,7 @@ Test("T10: FoundationGate & Acceptance contract verification", function()
     local sidecarSpec = S.UIV3.WidgetHost:GetSpec("tools.auction_sidecar")
     assert(sidecarSpec ~= nil and sidecarSpec.featureId == "tools_auction", "Sidecar spec must exist with featureId tools_auction")
 
-    -- 4. Auction Workspace contracts: CRUD + daily/session authorities + optional native-sync bridge.
+    -- 4. 核对拍卖工作区的增删改查、每日任务与会话数据归属，以及可选原生搜索同步桥接。
     local Bridge = S.Services.AuctionSearchBridgeV3
     local Session = S.Services.AuctionSessionListV3
     local Daily = S.Services.DailyAuctionMaterialsV3
@@ -1159,10 +1111,7 @@ Test("T10: FoundationGate & Acceptance contract verification", function()
     assert(reportText:find("DAILY_AUCTION_MATERIALS", 1, true) ~= nil, "Self-check report must expose daily trade task discovery evidence")
 end)
 
-------------------------------------------------------------------------
--- 2026-09-30: real Sidecar projection/render contract for partial daily tasks.
--- Native UI primitives remain test doubles; no automatic auction search allowed.
-------------------------------------------------------------------------
+-- 使用真实伴随浮窗投影和渲染契约覆盖部分每日任务；原生 UI 基础控件为测试替身，禁止自动发起拍卖搜索。
 Test("Daily UI keeps real missing task materials without internal match reasons", function()
     local daily = S.Services.DailyAuctionMaterialsV3
     local old = daily.snapshot

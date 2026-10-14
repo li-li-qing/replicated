@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- 中文维护（2026-10-09）：正背面 Presenter 只渲染 Feature 当前帧，不拥有 Native 观测或第二套 Tick。
+-- Replicated Suite · 朝向提示组件
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 约束（2026-10-09）：正背面 Presenter 只渲染 Feature 当前帧，不拥有 Native 观测或第二套 Tick。
 -- 两个 17 点弧和两个文字的池固定有界；透明窗口/点/文字均不抢输入，统一沿用 game overlay 层。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
@@ -11,7 +15,7 @@ local U=S.UI
 local P={owner="v3:facing_indicator",token="presentation:facing_indicator",pools={},labels={},held=false,visiblePoints=0}
 S.UIV3.FacingIndicatorV3=P
 
--- 中文维护：Ensure 返回 accepted/changed，拒绝写入时缓存不得前进；旧控件失效后保持下一帧可重试。
+-- Ensure 返回 accepted/changed，拒绝写入时缓存不得前进；旧控件失效后保持下一帧可重试。
 local function Visible(item,value)
     if not item or not item.root then return false,false end
     if item.visible==value then return value,true end
@@ -21,7 +25,7 @@ local function Visible(item,value)
 end
 function P:Hide()
     self.visiblePoints=0
-    -- 中文维护：Show=false 也可能拒写。停止世界采样不依赖 Native UI 接受，但必须保留待隐藏
+    -- Show=false 也可能拒写。停止世界采样不依赖 Native UI 接受，但必须保留待隐藏
     -- 事实供原1秒 watchdog 重试，否则两侧关闭/租约撤销后没有 visual_tick，旧弧会永久留屏。
     local hidden=true
     for _,pool in pairs(self.pools) do for _,dot in ipairs(pool) do
@@ -42,7 +46,7 @@ function P:EnsureItem(side,index,text)
     label.rsManualTypography,label.rsManualTextColor=true,true
     U:SetPickable(label,false,self.owner)
     item={root=label}
-    -- 中文维护：CreateLabel 原生初始状态可能已显示，首次隐藏也可能被拒绝；只有接受才缓存 false。
+    -- CreateLabel 原生初始状态可能已显示，首次隐藏也可能被拒绝；只有接受才缓存 false。
     -- 否则后续锚点/字号失败的 Hide 会误判“已经隐藏”，把无位置的点永久留在屏幕原点。
     if U:EnsureVisible(label,false,self.owner)==true then item.visible=false end
     if text then self.labels[side]=item else pool[index]=item end
@@ -55,7 +59,7 @@ function P:Place(item,point,size,opacity,color,ox,oy,isText,viewportW,viewportH)
         or (viewportW and viewportH and (x<0 or y<0 or x>viewportW or y>viewportH)) then
         self.clippedPoints=(self.clippedPoints or 0)+1;Visible(item,false);return false
     end
-    -- 中文维护：世界投影是 raw UIParent 点，只减宿主原点；文本按自身尺寸居中，不乘 Addon Scale。
+    -- 世界投影是 raw UIParent 点，只减宿主原点；文本按自身尺寸居中，不乘 Addon Scale。
     x,y=math.floor(x-ox-(isText and 27 or 0)+0.5),math.floor(y-oy-(isText and 11 or 0)+0.5)
     if item.x~=x or item.y~=y then
         local accepted,_,anchorErr=U:EnsureAnchor(item.root,self.host,x,y,self.owner)
@@ -65,7 +69,7 @@ function P:Place(item,point,size,opacity,color,ox,oy,isText,viewportW,viewportH)
     local fontAccepted,_,fontErr=U:EnsureFontSize(item.root,size,self.owner)
     if fontAccepted~=true then self.lastPlacementError=fontErr or "font_rejected";self.placementFailures=self.placementFailures+1;Visible(item,false);return false end
     if item.r~=color[1] or item.g~=color[2] or item.b~=color[3] or item.opacity~=opacity then
-        -- 中文维护：SetColor 的 false 既可能是无变化也可能是拒绝；这里持续交给 UI cache 收敛，
+        -- SetColor 的 false 既可能是无变化也可能是拒绝；这里持续交给 UI cache 收敛，
         -- 只有 true 才记 Presenter cache，避免一次拒写后相同颜色永不恢复。
         if U:SetColor(item.root,color[1],color[2],color[3],opacity,self.owner)==true then
             item.r,item.g,item.b,item.opacity=color[1],color[2],color[3],opacity
@@ -74,7 +78,7 @@ function P:Place(item,point,size,opacity,color,ox,oy,isText,viewportW,viewportH)
     return Visible(item,true)
 end
 function P:Render()
-    -- 中文维护（facing-render-evidence-1）：仅记录本次既有渲染的阶段与拒写，不为诊断额外调用 Native。
+    -- 约束（facing-render-evidence-1）：仅记录本次既有渲染的阶段与拒写，不为诊断额外调用 Native。
     -- 实机报告出现 ready/36 个投影点却零显示，旧报告缺少创建/回调失败原因，不能据此改投影倍数。
     self.renderCalls=(self.renderCalls or 0)+1
     self.renderStage="projection"
@@ -90,10 +94,10 @@ function P:Render()
         self.host=host
     end
     self.renderStage="environment"
-    -- 中文维护：分辨率/画质改变时失效两层位置/样式缓存，保持字体和弧点尺寸；复用原池不造新任务。
+    -- 分辨率/画质改变时失效两层位置/样式缓存，保持字体和弧点尺寸；复用原池不造新任务。
     local revision=S.Layout and tonumber(S.Layout.metricsRevision) or 0
     if S.Layout and type(S.Layout.GetUiEnvironmentRevision)=="function" then
-        -- 中文维护（facing-revision-return-1）：Layout 返回 revision,reason 两个值，Lua 的末位函数
+        -- 约束（facing-revision-return-1）：Layout 返回 revision,reason 两个值，Lua 的末位函数
         -- 实参会展开全部返回；直接 tonumber(Get...) 会把 reason 当进制而报错，整帧在创建弧点前中断。
         -- 先以单变量接收首值，保留 Layout 的双返回契约，不改变环境失效/字体恢复/采样频率。
         local environmentRevision=S.Layout:GetUiEnvironmentRevision()
@@ -140,7 +144,7 @@ function P:Render()
     self.renderStage="host_show"
     if U:EnsureVisible(self.host,visible>0,self.owner)~=true then self:Hide();return false,"正背面宿主显示失败" end
     self.renderStage=visible>0 and "visible" or "no_visible_points"
-    self.hidePending=false -- 中文维护：恢复显示的成功帧取消上一关闭边沿的待隐藏请求，不能误隐藏新帧。
+    self.hidePending=false -- 恢复显示的成功帧取消上一关闭边沿的待隐藏请求，不能误隐藏新帧。
     return true
 end
 local function WantsVisuals()
@@ -149,7 +153,7 @@ local function WantsVisuals()
     return front or back
 end
 function P:Reconcile()
-    -- 中文维护（facing-independent-sides-1）：总开关不被两侧偏好改写；两侧隐藏时只撤销本 Presenter
+    -- 约束（facing-independent-sides-1）：总开关不被两侧偏好改写；两侧隐藏时只撤销本 Presenter
     -- 租约，由现有 Demand 清任务/事件。任一侧重新显示则恢复同一租约，不建立第二个刷新器。
     if not WantsVisuals() then
         local hidden,hideErr=self:Hide()
@@ -158,9 +162,9 @@ function P:Reconcile()
             if ok~=true then return false,err end
         end
         self.held=false
-        return hidden,hideErr -- 中文维护：Native 拒写只记录显示待重试，租约和采样仍已释放。
+        return hidden,hideErr -- Native 拒写只记录显示待重试，租约和采样仍已释放。
     end
-    -- 中文维护：Demand 才是租约 Authority；不能因 Feature.Disable 已清空而重复 Release，也不能
+    -- Demand 才是租约 Authority；不能因 Feature.Disable 已清空而重复 Release，也不能
     -- 在静默 ForceQuiesce 后永远相信 Presenter 的 held。共享视觉 watchdog 会低频重试握手。
     if not F:HasConsumer(self.token) then
         self.held=false
@@ -174,10 +178,10 @@ function P:ConvergeTick()
     local wanted=WantsVisuals()
     if wanted and (not self.held or not F:HasConsumer(self.token)) then return self:Invoke("Reconcile") end
     if not wanted and (self.held or F:HasConsumer(self.token)) then return self:Invoke("Reconcile") end
-    if not wanted and self.hidePending then return self:Invoke("Hide") end -- 中文维护：仅重试UI隐藏，不领取租约/采样目标。
+    if not wanted and self.hidePending then return self:Invoke("Hide") end -- 仅重试UI隐藏，不领取租约/采样目标。
     return true
 end
--- 中文维护：原来的 Report(P:Render()) 会先求值 Render；异常越过 Report 后仅留在总线的
+-- 原来的 Report(P:Render()) 会先求值 Render；异常越过 Report 后仅留在总线的
 -- LastInternalEventError，模块报告因而显示零错误。这里包住实际调用，保留阶段/堆栈并限速归属本模块。
 -- 出错先隐藏旧帧，保留 Consumer 和原任务供下帧恢复，不新增定时器、不取消保护边界。
 function P:Invoke(method)
@@ -198,7 +202,7 @@ function P:Invoke(method)
 end
 if S.Events and type(S.Events.SubscribeInternal)=="function" then
     S.Events:SubscribeInternal(F.UpdateTopic,P,function(_,_,reason)
-        -- 中文维护：仅设置边沿重新核对显示需求；16ms visual_tick 仍只渲染，不反复复制设置/握手。
+        -- 仅设置边沿重新核对显示需求；16ms visual_tick 仍只渲染，不反复复制设置/握手。
         P:Invoke(reason=="settings_changed" and "Reconcile" or "Render")
     end)
     S.Events:SubscribeInternal(S.FeatureRuntime.LifecycleTopic or "v3.feature.lifecycle",P,function(_,id)

@@ -1,10 +1,16 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 7 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · 焦点报告测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 维护：RS-FOCUS-1 兼容格式回归；真实Diagnostics/Core/Page，仅Native和外部诊断Getter模拟。
 -- 页面默认必须使用完整的 paged fault report；Focused 仅保留旧工具兼容，不能再次成为用户默认输出。
 -- 测试不进TOC，不清除业务Fence，不可将合成Native容量/档案当作RU实机验证。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=pcall(fn)
@@ -294,8 +300,7 @@ Test('large numeric fact rows omit atomically with coverage count',function()
     assert(type(m.numericEvidenceOmitted)=='number' and m.numericEvidenceOmitted>0 and #text<=3500 and text:find('numericOmit=',1,true))
 end)
 
--- Maintenance: full raw evidence was omitted by the UI budget; the user must receive an
--- explicit file route, not be asked to repeat the same short report. No additional native reads.
+-- 完整原始证据超过界面预算时，必须向用户提供明确的文件导出路径，不能要求重复生成相同短报告，也不能增加原生读取。
 Test('oversized evidence advertises the offline udf route without hiding omission',function()
     local S,D,c=Boot();S.Persistence.BuildFailedStoreEvidenceText=function(_,id)
         c.reads[#c.reads+1]=id;return ('x'):rep(50000)

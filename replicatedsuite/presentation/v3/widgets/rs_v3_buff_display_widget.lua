@@ -1,9 +1,10 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 2 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Floating Widget
+-- Replicated Suite · 状态追踪悬浮组件
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并约束：先检查冲突标记、toc.g 加载清单完整性与 Lua 语法，再做运行时验收。
+-- 权威归属、调用链和存档协议由实现负责，不能通过清配置、跳过加载或恢复 Legacy 绕过错误。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -62,7 +63,7 @@ local function CreateWidget()
         return ok,err
     end
     instance.listFreezeButton.onClick=function()
-        -- 中文维护：页面与悬浮窗共用 Feature 会话快照；冻结名单后仍能设置四个追踪通道，HUD 继续实时更新。
+        -- 页面与悬浮窗共用 Feature 会话快照；冻结名单后仍能设置四个追踪通道，HUD 继续实时更新。
         local ok,err=Feature.Commands:SetManagementListFrozen(not Feature:GetManagementListFreezeState().active)
         if ok then instance:Refresh()else instance.surface:SetStatus(tostring(err),"warn")end
         return ok,err
@@ -87,10 +88,10 @@ local function CreateWidget()
             {id="time",title="剩余",field="timeText",size="fixed",width=50,minWidth=42},
             {id="tracked",title="追踪位置",field="trackedText",size="fixed",width=112,minWidth=90}},
         slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
-    -- 中文维护（tracking-scope-v1）：小窗复用同一四通道命令，不创建第二套追踪状态。
+    -- 约束（tracking-scope-v1）：小窗复用同一四通道命令，不创建第二套追踪状态。
     -- 行激活仅选择；通道按钮才跨 Persistence boundary。关闭小窗不会影响正式 HUD Consumer。
     local scopeActions=RSUI:HorizontalBox({id="v3_buff_widget_scope_actions",parent=content,gap=4,slot={size="fixed",height=27,hAlign="fill"}})
-    -- 中文维护（tracking-toggle-label-v1）：悬浮窗与主页面必须读取同一个追踪 Authority，
+    -- 约束（tracking-toggle-label-v1）：悬浮窗与主页面必须读取同一个追踪 Authority，
     -- 不能各自缓存“是否已追踪”。这里仅把下一次点击的动作显式显示为“设为/取消”，
     -- Commands:SetTrackedChannel 仍是唯一写边界；关闭窗口、刷新投影或旧存档恢复都不会改变语义。
     local defs={
@@ -150,9 +151,7 @@ local function CreateWidget()
         if self.subscribed == true then return true end
         if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
             S.Events:SubscribeInternal("v3.buff_display.updated", self, function() if instance.visible then instance:Refresh() end end)
-            -- Tracked-id mutations (row click, quick import) also publish the
-            -- settings topic; refresh on it too so the tracking manager always
-            -- mirrors the authoritative list.
+            -- 追踪 id 修改（行点击、快速导入）也发布设置主题；须响应刷新，使追踪管理器始终与权威名单一致。
             S.Events:SubscribeInternal("v3.buff_display.settings", self, function() if instance.visible then instance:Refresh() end end)
         end
         self.subscribed = true
@@ -173,9 +172,8 @@ local function CreateWidget()
             if acquireOk ~= true then error(acquireErr or "状态显示悬浮窗订阅失败") end
             acquired = true
             Feature:SetManagementPageActive(true,"widget")
-            -- Fill the projection synchronously (the aura lane only runs on the
-            -- next Scheduler frame) so live rows carry their name/icon and the
-            -- tracking list is not all-"已消失" placeholders on first open.
+            -- Aura 通道在下个 Scheduler 帧才执行；此处同步填充投影，让首次打开的实时行已有名称/图标，
+            -- 避免追踪列表全部显示“已消失”占位。
             if type(Feature.Commands) == "table" and type(Feature.Commands.Refresh) == "function" then
                 Feature.Commands:Refresh("widget_show")
             end

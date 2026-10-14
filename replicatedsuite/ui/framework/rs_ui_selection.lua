@@ -1,14 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Selection Model + Visual Authority v2
+-- Replicated Suite · 稳定身份选择与高亮
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared selection authority for ListView / TileView / TableView and future
--- data-driven widgets.  Selection is intentionally key-based so a sort or
--- data reorder does not silently move selection to a different item.
---
--- IMPORTANT:
---   * No Tick work and no data-set scans.
---   * Multi-selection stores only selected keys (O(selected), not O(data)).
---   * Views remain responsible for mapping index -> stable item key.
+-- ListView/TileView/TableView 共用 key 选择权威，排序/重排不能把选择静默迁到其它条目。
+-- 无 Tick 或数据集扫描；多选仅存已选 key，O(selected) 而非 O(data)，View 负责下标映射稳定 key。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -31,15 +27,11 @@ end
 
 
 ------------------------------------------------------------------------
--- Shared selection presentation
+-- 共享选择表现。
 ------------------------------------------------------------------------
--- SelectionModel owns *which* keys are selected.  SelectionVisual owns how a
--- selected item is presented across every DataView family.  Keeping this here
--- prevents business pages from inventing per-feature markers/colors and also
--- covers custom ListView/TileView rows that do not implement SetSelected().
+-- SelectionModel 决定哪些 key 选中，SelectionVisual 统一各 DataView 的呈现；业务页不能自建标记/颜色，未实现 SetSelected() 的自定义列表/图块也受覆盖。
 --
--- The visual is allocated once per pooled row/tile and only toggled when the
--- selection state changes.  No Tick, polling or data-set scan is introduced.
+-- 每池行/图块一次分配，仅选择变化切换；无 Tick、轮询或数据扫描。
 local SelectionVisual = { version = 1 }
 
 local function SelectionColor()
@@ -100,10 +92,7 @@ function SelectionVisual:Apply(component, selected)
     selected = selected == true
     component.state = component.state or {}
 
-    -- Preserve component-specific selected behavior (native active button skin,
-    -- TableSkin, etc.) while the shared overlay remains the final visual
-    -- guarantee.  Do not pre-write state.selected: some component SetSelected()
-    -- implementations use that field as their own diff guard.
+    -- 保留组件自身 Native 活跃皮肤/TableSkin，共享覆盖层作最终保证；不能预写 state.selected，部分 SetSelected() 用它作 Diff 守卫。
     local specialized = false
     if type(component.SetSelected) == "function" and component.rsSelectionVisualApplying ~= true then
         component.rsSelectionVisualApplying = true
@@ -113,9 +102,7 @@ function SelectionVisual:Apply(component, selected)
     end
     component.state.selected = selected
 
-    -- Stay allocation-free for rows/tiles that have never been selected.  A
-    -- pooled item gets its two shared highlight drawables only on first select,
-    -- then they are reused for every later bind/selection change.
+    -- 从未选中过的行/图块不分配高亮；首次选择才创建两个共享 drawable，后续绑定/选择均复用。
     local visual = component.rsSelectionVisual
     if selected == true and type(visual) ~= "table" then visual = self:_Ensure(component) end
     if type(visual) == "table" then

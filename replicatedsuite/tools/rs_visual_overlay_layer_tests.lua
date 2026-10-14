@@ -1,9 +1,13 @@
--- Replicated Suite visual overlay native-layer regression.
+------------------------------------------------------------------------
+-- Replicated Suite · 视觉覆盖层测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 维护（2026-09-17）：范围辅助 / 单位连线属于世界 HUD 引导，不是插件窗口。
 -- 它们必须位于 game 层，避免遮挡背包、拍卖、地图等 normal/dialog/system 原生窗口；
 -- 同时保持 non-pickable，不能截获鼠标。测试只验证 Foundation Native policy，
 -- 不冒充 ArcheRage RU 客户端最终渲染顺序的实机验收。
-
+------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -48,7 +52,7 @@ local function LoadHost(options)
         NativeObjectFactory = {
             CreateWindow = function(_, id, parent, template)
                 local widget = NewNative(id, options)
-                -- Match NativeObjectFactory:CreateWindow: all new windows start hidden.
+                -- 与 NativeObjectFactory:CreateWindow 一致，新窗口初始必须隐藏。
                 widget:Show(false)
                 ReplicatedSuite.lastCreatedWindow = widget
                 return widget

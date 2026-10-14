@@ -1,6 +1,10 @@
--- Every page implementation must expose the shared module diagnostics affordance.
--- Standard pages get it from D:PageHeader; custom header pages must place the
--- shared D:ModuleDiagnosticsButton helper. No page may reimplement the click logic.
+------------------------------------------------------------------------
+-- Replicated Suite · 模块诊断页面覆盖测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 每个页面必须提供共享模块诊断入口：标准页由 D:PageHeader 注入，自定义页头放置 D:ModuleDiagnosticsButton，不能自行实现点击逻辑。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS module-diag-coverage '..name)else failed=failed+1;print('FAIL module-diag-coverage '..name..': '..tostring(err))end end
 local function Read(path)local f=assert(io.open(path,'rb'));local s=f:read('*a');f:close();return s end
@@ -9,8 +13,7 @@ Test('all V3 page files use shared diagnostic placement',function()
   local missing={}
   for path in p:lines() do
     local s=Read(path)
-    -- registration-only files still contain PageHeader through their factories; custom
-    -- headers must opt into the one shared helper, never duplicate Window:Open logic.
+    -- 仅注册的页面文件仍由工厂提供 PageHeader；自定义页头必须使用共享辅助函数，不能重复 Window:Open 逻辑。
     if not s:find('D:PageHeader(',1,true) and not s:find('D:ModuleDiagnosticsButton(',1,true) then
       missing[#missing+1]=path
     end

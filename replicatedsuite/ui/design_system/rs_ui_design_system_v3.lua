@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Design System Helpers
+-- Replicated Suite · 共享界面设计组合
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Composition helpers only. They create RSUI components and never own domain
--- state. Visual consistency lives here; page information architecture does not.
+-- 仅提供组合辅助函数，创建 RSUI 组件而不持有领域状态；视觉一致性归此处，页面信息架构仍归页面。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -41,12 +42,8 @@ function D:PageRoot(parent, idOrSpec)
     return RSUI:VerticalBox(spec)
 end
 
--- Long settings/forms must remain operable at the minimum window size and at
--- enlarged font/UI scales. Use this root only for sequential content; pages
--- whose primary body is a ListView/TableView keep their own virtual scrolling.
--- `idOrSpec` is intentionally backward-compatible: simple pages may pass an id
--- string, while richer pages may override gap/padding without bypassing the
--- shared Design helper.
+-- 长设置/表单在最小窗口和放大字体/UI 下仍应可操作；此根仅用于顺序内容，ListView/TableView 页面保留自身虚拟滚动。
+-- idOrSpec 兼容 id 字符串，也允许覆写 gap/padding 而不绕过共享 Design。
 function D:ScrollablePageRoot(parent, idOrSpec)
     local spec = RootSpec(parent, idOrSpec, {
         orientation = "vertical", gap = 12, padding = 2, scrollStep = 2,
@@ -65,7 +62,7 @@ function D:ModuleToggleButton(spec)
     local context = host and type(host.GetBuildContext) == "function" and host:GetBuildContext() or nil
     local bar = context and context.controlBar
     if bar and bar.toggle then
-        -- 中文维护注释（2026-09-20，module-toggle-native-trampoline-1）：模块控制条按钮属于
+        -- 约束（2026-09-20，module-toggle-native-trampoline-1）：模块控制条按钮属于
         -- PageHost，Native OnClick 在按钮创建时就由控制条安装稳定 trampoline。页面只能把业务动作
         -- 暂存到 bar.pageAction，禁止再直接替换 toolbar Button 的逻辑回调；部分 RU 客户端在
         -- 可见按钮创建后再换回调时会出现“诊断按钮能点、启动按钮无响应”的死按钮表现。
@@ -78,7 +75,7 @@ function D:ModuleToggleButton(spec)
 end
 
 function D:ModuleDiagnosticsButton(parent, id, width)
-    -- 中文维护注释（2026-09-18，module-diagnostics-header-2）：所有业务页的诊断入口都必须
+    -- 约束（2026-09-18，module-diagnostics-header-2）：所有业务页的诊断入口都必须
     -- 经过这个共享 helper。标准 PageHeader 自动调用；少数拥有自定义抬头（首页/战斗分析）的页面
     -- 只负责放置按钮，不得复制 Window:Open、Feature 归属或错误处理逻辑。这样未来诊断入口协议
     -- 变化只改 DesignSystem，不会在几十个页面里产生分叉。
@@ -159,9 +156,7 @@ function D:StatusRow(parent, id, label, value, tone)
     return row
 end
 
--- Static "not migrated yet" placeholder only. Stateful empty/loading/error/
--- blocked notices belong to RSUI StateNotice (composite foundation), which owns
--- the shared status semantics; do not grow this placeholder into a second one.
+-- 仅作为“尚未迁移”静态占位；有状态空/加载/错误/阻塞提示归共享 RSUI StateNotice，不能把此占位扩成第二套状态语义。
 function D:EmptyState(parent, id, title, detail)
     local card = RSUI:Border({ id = id, parent = parent, variant = "soft", padding = 14, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     local stack = RSUI:VerticalBox({ id = id .. "_stack", parent = card, gap = 6, slot = { hAlign = "fill", vAlign = "fill" } })
@@ -172,9 +167,7 @@ function D:EmptyState(parent, id, title, detail)
     return card
 end
 
--- Standard settings-page composition. These are thin Design-System entrypoints
--- over RSUI.SettingsFoundation; geometry remains owned by the existing RSUI
--- panels/templates and business state remains in Feature bindings.
+-- 标准设置页组合是 RSUI.SettingsFoundation 上的薄入口；几何归现有 RSUI 面板/模板，业务状态归 Feature 绑定。
 function D:FeatureSettingsHeader(parent, spec)
     spec = RootSpec(parent, spec, {})
     return RSUI:CreateFeatureSettingsHeader(spec)
@@ -220,9 +213,7 @@ function D:SettingsNumericSlider(parent, spec)
     return RSUI:CreateSettingsNumericSlider(spec)
 end
 
--- Exact numeric-setting contract. V3 numeric preferences always expose a real
--- NumericInput; sliders are optional accelerators and +/- step buttons are
--- disabled by default. Pages must not encode numeric choices as cycling buttons.
+-- 精确数值契约：V3 数值偏好始终提供真实 NumericInput，滑块仅为可选加速入口，默认禁用 +/- 步进按钮；页面不能使用循环按钮表达数值选择。
 function D:NumericSetting(parent, spec)
     spec = type(spec) == "table" and spec or {}
     local nextSpec = {}
@@ -231,10 +222,7 @@ function D:NumericSetting(parent, spec)
     nextSpec.stepButtons = spec.stepButtons == true
     if spec.slider == nil then nextSpec.slider = true end
 
-    -- NumericField owns its typography-aware desired height. Historical V3 pages
-    -- used fixed 62px slots, which clipped the hint line as soon as UI/font scale
-    -- increased. Preserve an explicit legacy height only as a minimum; Auto sizing
-    -- lets Measure -> Arrange allocate the real label/control/hint requirement.
+    -- NumericField 自行提供匹配字体的期望高度；固定 62px 槽会在放大 UI/字体时裁切提示。显式旧高度只作最小值，Auto 让 Measure -> Arrange 分配真实标签/控件/提示高度。
     local slot = {}
     for key, value in pairs(type(spec.slot) == "table" and spec.slot or {}) do slot[key] = value end
     if next(slot) == nil then slot = { size = "auto", hAlign = "fill" } end
@@ -249,9 +237,7 @@ function D:NumericSetting(parent, spec)
     return RSUI:NumericField(nextSpec)
 end
 
--- Dense V3 settings row: label + slider + exact edit box on one line.  The
--- NumericField/Binding implementation is reused unchanged, so preview/commit,
--- validation and persistence retain the same single Authority.
+-- 紧凑设置行把标签、滑块与精确编辑框放在一行，复用原 NumericField/Binding，预览、提交、校验、持久化均保持统一权威层。
 function D:CompactNumericSetting(parent, spec)
     spec = type(spec) == "table" and spec or {}
     local nextSpec = {}
@@ -260,9 +246,7 @@ function D:CompactNumericSetting(parent, spec)
     nextSpec.inline = true
     nextSpec.slider = spec.slider ~= false
     nextSpec.stepButtons = spec.stepButtons == true
-    -- RU EditBox Enter delivery is not a verified capability.  Compact numeric
-    -- settings therefore expose a visible Apply action by default; Enter/blur
-    -- remain compatibility conveniences, not the only commit path.
+    -- RU EditBox 的 Enter 派发未获验证；紧凑设置默认提供可见应用按钮，Enter/失焦仅兼容便利入口，不能成为唯一提交路径。
     nextSpec.applyButton = spec.applyButton ~= false
     nextSpec.applyText = tostring(spec.applyText or "应用")
     nextSpec.applyButtonWidth = tonumber(spec.applyButtonWidth) or 40

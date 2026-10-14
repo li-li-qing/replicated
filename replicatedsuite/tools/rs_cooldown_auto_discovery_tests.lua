@@ -1,5 +1,11 @@
--- Real Demand, Scheduler, CombatEventBus, Cooldown service and BuffDisplay projections.
--- Native transport/cooldown values use a controlled model; not RU live evidence. Never in TOC.
+------------------------------------------------------------------------
+-- Replicated Suite · 冷却自动发现测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用真实 Demand、Scheduler、CombatEventBus、冷却服务和 BuffDisplay 投影。
+-- 原生传输及冷却值来自受控模型，不是 RU 实机证据，且不进入 TOC。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

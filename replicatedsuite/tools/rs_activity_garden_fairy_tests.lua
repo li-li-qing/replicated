@@ -1,9 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Garden Fairy Request Activity Tests
+-- Replicated Suite · 活动花园仙女测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Covers the 2026-09-22 mapping of Garden of the Gods dynamic activity to
--- Fairy Request / 精灵的委托 (Quest 10056). The quest is score-based internally,
--- while the Activity completion contract is binary: unfinished 0/1, ready/completed 1/1.
+-- 覆盖 2026-09-22 核对的神之庭院动态活动映射，对应下方任务定义；
+-- 精灵的委托对应任务 10056，任务内部按分数计算进度，
+-- 活动完成契约仍为二值：未完成 0/1，已就绪或已完成 1/1。
 ------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)

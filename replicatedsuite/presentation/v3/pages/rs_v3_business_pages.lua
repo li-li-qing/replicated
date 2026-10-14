@@ -1,8 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - business Feature pages
-------------------------------------------------------------------------
--- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- Replicated Suite · 业务功能页面
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
 -- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D, Host = S.RSUI, S.UIV3Design, S.UIV3 and S.UIV3.PageHost or nil
@@ -20,18 +23,18 @@ local RANGE_RADIUS_HARD_MAX = tonumber(VISUAL_LIMITS.rangeRadiusHardMax) or 1000
 local REFRESH_HARD_MIN = tonumber(VISUAL_LIMITS.refreshMsHardMin) or 1
 local REFRESH_HARD_MAX = tonumber(VISUAL_LIMITS.refreshMsHardMax) or 60000
 S.UIV3.BusinessPagesContract = { version = 11, componentIdContractVersion = 1, bagProductUxContractVersion = 3, auctionCurrentListingUxContractVersion = 1, auctionSidecarEntryContractVersion = 2, craftSidecarUxContractVersion = 1, unitLineSettingsFoundationConsumerContractVersion = 3,
-    teamCenterLayoutContractVersion = 1, teamFeatureSplitContractVersion = 1, -- 中文维护注释：.18.197 团队中心把职责/团队辅助分组，并移除主视图中永远不可执行的成员移动表单；只改变 Presentation 层级与列定义，不改变 v3.team_tools / v3.team_visuals Authority、命令安全门或 Store。
-    rangeAssistEditorLayoutContractVersion = 1, -- 中文维护注释：.18.210 只整理范围辅助选中圆编辑器的布局层次，避免标题/动作/控件在窄屏下互相挤压；业务数据、Store schema 与命令路由不变。
-    visualSettingsInputFenceContractVersion = 1, -- 中文维护注释：.18.218 UnitLines/RangeAssist 的 visual_tick 继续按原频率绘制，但用户持有输入草稿时禁止整页 Presentation Refresh；结束编辑后由下一次 visual_tick 自动追平。
+    teamCenterLayoutContractVersion = 1, teamFeatureSplitContractVersion = 1, -- 团队中心分组展示职责与团队辅助，不显示不可执行的成员移动表单；层级与列定义不能改变 v3.team_tools/v3.team_visuals 权威、命令安全门或 Store。
+    rangeAssistEditorLayoutContractVersion = 1, -- 范围辅助选中圆编辑器需保持清晰布局层次，避免窄屏标题/操作/控件挤压；不能改变业务数据、Store schema 或命令路由。
+    visualSettingsInputFenceContractVersion = 1, -- UnitLines/RangeAssist 的 visual_tick 按原频率绘制；持有输入草稿时禁止整页表现刷新，编辑结束由下一 visual_tick 追平。
 }
 
 local ROUTES = {
     { route = "combat.boss_alerts", id = "combat_boss_alerts" }, { route = "combat.target_monitor", id = "combat_target_monitor" },
     { route = "combat.unit_lines", id = "combat_unit_lines" }, { route = "combat.range_assist", id = "combat_range_assist" },
     { route = "combat.buff_cap", id = "combat_buff_cap" }, { route = "combat.team_tools", id = "combat_team_tools" },
-    { route = "combat.sac_highlight", id = "combat_sac_highlight" }, -- 中文维护：独立牺牲之舞页与独立 Feature 总开关。
+    { route = "combat.sac_highlight", id = "combat_sac_highlight" }, -- 独立牺牲之舞页与独立 Feature 总开关。
     { route = "combat.raid_recruitment", id = "combat_raid_recruitment" }, { route = "combat.siege_readiness", id = "combat_siege_readiness" },
-    -- 中文维护注释（2026-09-15）：制作规划已删除；Business Page 不再注册其 Route，避免旧页面工厂继续持有无用 Feature/Store。
+    -- 约束（2026-09-15）：制作规划已删除；Business Page 不再注册其 Route，避免旧页面工厂继续持有无用 Feature/Store。
     { route = "tools.bag_organizer", id = "tools_bag" },
     { route = "tools.auction_favorites", id = "tools_auction" }, { route = "tools.market_analysis", id = "tools_market_analysis" },
     { route = "tools.craft_assist", id = "tools_craft" }, { route = "tools.social", id = "tools_social" },
@@ -48,12 +51,12 @@ local function BusinessStatusText(value)
     return BUSINESS_STATUS_ZH[key] or key
 end
 local function AuctionRowKey(row,index)
-    -- 中文维护：收藏下标会随删除/移动变化；管理选择属于关键词，分页表不能复用上一页的行号作身份。
+    -- 收藏下标会随删除/移动变化；管理选择属于关键词，分页表不能复用上一页的行号作身份。
     if type(row)=="table" and row.kind=="favorite" then return "favorite:"..tostring(row.name or "") end
     return type(row)=="table" and (row.key or row.id) or tostring(index)
 end
 local function SelectedAuctionRow(view)
-    -- 中文维护：GetSelectedIndex 在 key 消失/不在池中时会回退旧索引，不能作为删除/询价身份。
+    -- GetSelectedIndex 在 key 消失/不在池中时会回退旧索引，不能作为删除/询价身份。
     local key=view:GetSelectedKey()
     if key==nil then return nil end
     for index=1,view:GetItemCount() do
@@ -79,28 +82,21 @@ local function Build(parent, route, id)
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get(id)
     local contractOk, contractErr = ValidateBusinessFeature(feature, id)
     if contractOk ~= true then return nil, contractErr end
-    -- 中文维护：增益计数页也使用连续滚动，窄屏表单不用逐项跳页；不改变其它页面的滚动语义。
+    -- 增益计数页也使用连续滚动，窄屏表单不用逐项跳页；不改变其它页面的滚动语义。
     local rootSpec = id == "tools_bag" and { id="v3_page_business_tools_bag",gap=4,padding=2 } or (id == "combat_unit_lines" or id == "combat_boss_alerts" or id == "combat_buff_cap") and {
         id = "v3_page_business_" .. tostring(id), gap = 7, padding = 2, scrollStep = 1,
     } or ("v3_page_business_" .. tostring(id))
     local root, err
     if id == "tools_bag" or id == "combat_range_assist" then
-        -- 中文维护注释（2026-09-14，range-assist-non-snapping-root）：范围辅助是“固定设置区 + 自带滚动的
+        -- 约束（2026-09-14，range-assist-non-snapping-root）：范围辅助是“固定设置区 + 自带滚动的
         -- TableView”工作台，不是纯顺序长表单。继续放进 item-snapped ScrollBox 时，SettingsSection 的嵌套
         -- auto Measure 会在不同窗口高度下被 viewport 约束，随后下一顶层条目提前排入，造成列表标题/颜色行/
         -- 状态文本互相挤压或裁切。这里和 tools_bag 一样改用普通 PageRoot，让 TableView 独占剩余高度；
         -- Circle Authority、自适应高频刚性投影、Store 与选择数据流完全不变，1024x768 下 TableView 自己负责行滚动。
-        -- MAINTENANCE (2026-09-10, bag viewport fill): tools_bag is a data-view page whose
-        -- primary body is the virtualized TableView below.  The generic business ScrollBox
-        -- measures that table from desiredRows and treats it as an auto-sized snapped item;
-        -- on tall windows this left a large unused strip below the bag rows even though the
-        -- page still owned free viewport height.  InventorySnapshotV3 / feature projection
-        -- remains the data Authority and all quick-move / blacklist commands keep their
-        -- existing data flow; this is Presentation geometry only.  Give this one page a
-        -- normal VerticalBox root so its fixed editor controls consume natural height and
-        -- the TableView's existing fill slot receives the entire remainder.  The TableView
-        -- continues to own row scrolling/selection, while all other sequential business
-        -- pages retain ScrollablePageRoot for small-resolution/UI-scale compatibility.
+        -- tools_bag 的主体是虚拟化 TableView，应使用普通 VerticalBox 根节点：固定编辑控件占自然高度，表格的 fill slot 获取全部剩余高度。
+        -- 通用业务 ScrollBox 按 desiredRows 将表格测量为自动高度的吸附条目，会让高窗口留下未使用空间。
+        -- InventorySnapshotV3/Feature 投影仍负责数据，快捷移动与黑名单命令保持原数据流；
+        -- TableView 负责行滚动与选择，其它顺序业务页面继续使用 ScrollablePageRoot 适配小分辨率和 UI 缩放。
         root, err = D:PageRoot(parent, rootSpec)
     else
         root, err = D:ScrollablePageRoot(parent, rootSpec)
@@ -112,7 +108,7 @@ local function Build(parent, route, id)
         refresh = function(page) return page:Refresh() end,
     }
     if id == "combat_buff_cap" then
-        -- 中文维护：新增持久设置在构造 Binding 前读取原 Store；失败保持只读保护页，
+        -- 新增持久设置在构造 Binding 前读取原 Store；失败保持只读保护页，
         -- 不显示可写默认值、不重置存档、不启用观察。普通控件构建错误仍交给 PageHost。
         local called, loaded, loadErr = pcall(feature.Initialize, feature)
         if called ~= true or loaded ~= true then
@@ -164,7 +160,7 @@ local function Build(parent, route, id)
             end)
     end
 
-    -- 中文维护：删除团队中心局部导航；职责与牺牲之舞由左侧独立入口切换。
+    -- 删除团队中心局部导航；职责与牺牲之舞由左侧独立入口切换。
     if unitLineSettingsPage ~= true then
         local actionRow = RSUI:HorizontalBox({ id = "v3_business_" .. id .. "_actions", parent = root, gap = 6, slot = { size = "fixed", height = 31, hAlign = "fill" } })
         toggle = D:ModuleToggleButton({ id = "v3_business_" .. id .. "_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
@@ -181,7 +177,7 @@ local function Build(parent, route, id)
             return false, enableErr
         end
         -- page-feature-consumer-lifecycle-1：FeatureRuntime 改状态后由生命周期桥恢复可见页 lease；
-        -- 本次幂等 Sync 只负责把获取失败反馈给点击事务并回滚，不再维护脱离 Demand 的布尔副本。
+        -- 幂等 Sync 只负责把获取失败反馈给点击事务并回滚，不再维护脱离 Demand 的布尔副本。
         local synced, syncErr = Host:SyncFeatureConsumer(root, consumerBinding, "business_page_toggle")
         if synced ~= true and target == true then
             local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled(id, false, "business_page_acquire_rollback")
@@ -195,11 +191,11 @@ local function Build(parent, route, id)
     local craftRecipeDropdown, craftActionStatus, craftQuoteButton
     local specialFields = {}
     local function TrackField(field) if field ~= nil then specialFields[#specialFields + 1] = field end return field end
-    -- 中文维护注释（range-selected-editor-1）：范围圆是可增删的持久业务实体，不能在 Page Build 时按
+    -- 约束（range-selected-editor-1）：范围圆是可增删的持久业务实体，不能在 Page Build 时按
     -- `#circles` 静态生成一套控件。旧实现首次打开为空列表时只构建“空状态”，之后 AddCircle 仅调用
     -- root:Refresh；Refresh 只刷新现有组件和 TableView，不会新增 Card，结果就是用户能看到新圆投影行，
     -- 却永远没有对应的编辑/删除控件。Presentation 改为“稳定列表 + 单一选中圆编辑器”：feature 私有 State 的 circles
-    -- 仍是唯一 Authority，Table 只保存本页 selected circle id，不复制业务配置；增删不需要重建 Page/Generation。
+    -- 仍是唯一 Authority，Table 只保存本页 选中圆 id，不复制业务配置；增删不需要重建 Page/Generation。
     -- 兼容边界：既有 circles/name/id/数值存档格式完全不改；页面关闭后选择状态不持久化。风险：选择必须按
     -- 稳定 circleId 而不是行 index 绑定，所以刷新/删除后都重新按 id 对齐，禁止以后改回按构建时 index 捕获。
     local rangeSelectedCircleId, rangeSummaryText, rangeEditorTitle, rangeEditorStatus, rangeDeleteButton
@@ -233,7 +229,7 @@ local function Build(parent, route, id)
         end
         return rows
     end
-    -- 中文维护（2026-09-12）：选择只是本页视图状态，规则开关仍由 Feature/Store 持有。
+    -- 约束（2026-09-12）：选择只是本页视图状态，规则开关仍由 Feature/Store 持有。
     -- 操作前按稳定 key 重新读取 Projection，避免行排序/刷新后用旧 index 改错规则。
     -- 动作回执独立于 Refresh 摘要，保存拒绝不能被紧随其后的事件刷新覆盖成成功。
     local bossTestStatus, bossRuleSummary, bossRuleToggle, bossRuleTest
@@ -251,7 +247,7 @@ local function Build(parent, route, id)
         end
         return ok, actionErr
     end
-    -- 中文维护：计数设置的操作回执与实时读数分开；后续观察刷新不能吞掉保存失败。
+    -- 计数设置的操作回执与实时读数分开；后续观察刷新不能吞掉保存失败。
     -- 开关/阈值只经 Feature Commands，输入草稿/焦点/应用按钮继续由 RSUI NumericField 持有。
     local capActionStatus, capLiveStatus, capTestButton, SyncBuffCapControls
     if id == "combat_buff_cap" then
@@ -286,7 +282,7 @@ local function Build(parent, route, id)
             minCellWidth = 250, minCellHeight = 30, maxColumns = 2, gap = 6,
             slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
         local function AddThreshold(key, label)
-            -- 中文维护：只提供精确整数输入和显式应用，不创建第二套滑块范围存档。
+            -- 只提供精确整数输入和显式应用，不创建第二套滑块范围存档。
             -- 0-1000 是个人配置预算，不代表 Buff 槽位上限；未实测的容量预警继续不开放。
             TrackField(D:CompactNumericSetting(fields, { id = "v3_business_combat_buff_cap_" .. key .. "_threshold",
                 label = label, min = 0, max = 1000, step = 1, integer = true, slider = false,
@@ -316,7 +312,7 @@ local function Build(parent, route, id)
     end
 
     if id == "combat_boss_alerts" then
-        -- 中文维护：旧单行六按钮+回执超过窄页宽度。用共享 UniformGrid 自动换行；
+        -- 旧单行六按钮+回执超过窄页宽度。用共享 UniformGrid 自动换行；
         -- 不做 Native 绝对坐标/二次缩放，原设置 Commands、输入/焦点所有权与 HUD Presenter 保持不变。
         local hudRow = RSUI:UniformGrid({ id = "v3_business_combat_boss_alerts_hud_row", parent = root,
             minCellWidth = 145, minCellHeight = 30, maxColumns = 3, gap = 6,
@@ -345,7 +341,7 @@ local function Build(parent, route, id)
         TestButton("test_countdown", "测试倒计时", "TestCountdown", "倒计时 HUD 已触发（手动测试）")
         TestButton("sim_cast", "仿真读条", "SimulateCast", "仿真读条已触发；不是实时命中证明")
         TestButton("sim_debuff", "仿真 Debuff", "SimulateDebuff", "仿真 Debuff 已触发；不是实时命中证明")
-        -- 中文维护（boss-hud-clock-1）：校准通过命令/服务/Windowing，不让页面直接操纵 HUD Native。
+        -- 约束（boss-hud-clock-1）：校准通过命令/服务/Windowing，不让页面直接操纵 HUD Native。
         TrackField(RSUI:Toggle({id="v3_business_combat_boss_alerts_hud_edit", parent=hudRow,
             onText="完成 HUD 调整", offText="调整 HUD（可拖动）",
             get=function()return (feature:GetProjection() or {}).hudEditing == true end,
@@ -362,7 +358,7 @@ local function Build(parent, route, id)
             get = function() return (feature:GetProjection() or {}).hudFontSize or 34 end, set = function(v) return feature.Commands:SetHudFontSize(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
         TrackField(D:CompactNumericSetting(hudGrid, { id = "v3_business_combat_boss_alerts_duration", label = "大字时长", min = 1000, max = 10000, step = 250, integer = true, unit = "ms", slider = true,
             get = function() return (feature:GetProjection() or {}).hudDurationMs or 3000 end, set = function(v) return feature.Commands:SetHudDurationMs(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        -- 中文维护：数值与拖拽共用同一耐久设置；零/负偏移有效，修改后立即布局但不重启倒计时。
+        -- 数值与拖拽共用同一耐久设置；零/负偏移有效，修改后立即布局但不重启倒计时。
         for _, setting in ipairs({
             {suffix="offset_x",label="水平偏移",key="hudOffsetX",command="SetHudOffsetX",min=-8192,max=8192,default=0},
             {suffix="offset_y",label="垂直偏移",key="hudOffsetY",command="SetHudOffsetY",min=-8192,max=8192,default=0},
@@ -433,9 +429,7 @@ local function Build(parent, route, id)
             { key="focus", label="焦点目标", field="showFocusTarget" },
             { key="focustarget", label="焦点的目标", field="showFocusTargetTarget" },
         }
-        -- Keep visible text inside the RU font's known-safe glyph set.  Earlier
-        -- arrow/check glyphs were silently missing on some client fonts and left
-        -- awkward gaps in card titles/toggle labels.
+        -- 可见文字必须使用 RU 字体已确认支持的字形；部分客户端缺少箭头/勾选字形，会在卡片标题和开关标签中留下空隙。
         local pairNames = {
             target = "自己 与 当前目标", targettarget = "当前目标 与 目标的目标",
             focus = "自己 与 焦点目标", focustarget = "焦点目标 与 焦点的目标",
@@ -445,10 +439,7 @@ local function Build(parent, route, id)
             focus = { 0.35, 0.82, 1.00 }, focustarget = { 0.67, 0.52, 1.00 },
         }
 
-        -- .18.161: use the COMPLETE shared numeric contract everywhere.  The
-        -- .18.160 card compaction incorrectly disabled sliders in per-pair rows;
-        -- cards now keep one full Slider + exact NumericInput + Apply row per
-        -- value. NumericField remains the sole Binding/adaptive-range authority.
+        -- 所有位置均使用完整共享数值契约：每个数值保留 Slider、精确 NumericInput 与应用按钮；NumericField 是 Binding 和自适应范围的唯一权威层，不能因压缩卡片而停用成对行的滑块。
         local visibilitySection, visibilityErr = D:SettingsSection(root, {
             id = "v3_business_combat_unit_lines_visibility", title = "显示哪些连线",
             headerHeight = 20, gap = 3, itemGap = 3,
@@ -515,7 +506,7 @@ local function Build(parent, route, id)
             slot = { size = "fill", fill = 1, hAlign = "fill" },
         }))
         TrackField(D:SettingsNumericSlider(globalGrid, {
-            -- 中文维护：视觉常用范围1～100ms，步长1；精确输入仍允许原技术上限，不破坏已有慢速配置。
+            -- 视觉常用范围1～100ms，步长1；精确输入仍允许原技术上限，不破坏已有慢速配置。
             id = "v3_business_combat_unit_lines_refresh", label = "绘制间隔", min = 1, max = 100, fixedSliderRange = true, hardMin = REFRESH_HARD_MIN, hardMax = REFRESH_HARD_MAX, step = 1, integer = true, unit = "ms", labelWidth = 68, inputWidth = 58, applyButtonWidth = 38,
             controlHeight = 22, minHeight = 30, stackBelow = 274, sliderMinWidth = 74, sliderPreferredShare = 0.44,
             get = function() return (feature:GetProjection() or {}).refreshMs or 100 end,
@@ -574,7 +565,7 @@ local function Build(parent, route, id)
             local defaultColor = UNIT_LINE_PALETTE[pairKey] or { 1, 1, 1 }
             TrackField(RSUI:ColorField({ id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_color",
                 parent = card.content, label = "颜色",
-                defaultColor = { defaultColor[1], defaultColor[2], defaultColor[3] }, -- 中文维护注释：ColorField V2 的“恢复默认”必须由业务声明自己的权威默认色，禁止共享控件猜颜色。
+                defaultColor = { defaultColor[1], defaultColor[2], defaultColor[3] }, -- ColorField V2 的“恢复默认”必须由业务声明自己的权威默认色，禁止共享控件猜颜色。
                 get = function()
                     local colors = (feature:GetProjection() or {}).colors
                     local c = type(colors) == "table" and colors[pairKey] or nil
@@ -611,7 +602,7 @@ local function Build(parent, route, id)
         local circles = type(rangeProjection.circles) == "table" and rangeProjection.circles or {}
         if circles[1] ~= nil then rangeSelectedCircleId = tonumber(circles[1].id) end
 
-        -- 中文维护：范围绘制间隔独立于点数；保持几何预算，缺偏好仍用原自动节奏。
+        -- 范围绘制间隔独立于点数；保持几何预算，缺偏好仍用原自动节奏。
         TrackField(D:SettingsNumericSlider(root, {
             id="v3_business_range_refresh",label="绘制间隔",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="ms",
             get=function()return (feature:GetProjection() or {}).refreshMs or 16 end,
@@ -620,7 +611,7 @@ local function Build(parent, route, id)
         }))
         local listSection, listErr = D:SettingsSection(root, {
             id = "v3_business_combat_range_assist_list", title = "范围圆列表",
-            -- 中文维护注释（range-layout-budget-1）：保留完整 title/divider/intro/action 的最小纵向预算。
+            -- 约束（range-layout-budget-1）：保留完整 title/divider/intro/action 的最小纵向预算。
             -- 使用 auto+minHeight 而不是 fixed，字体/UI Scale 增大时仍可自然增长；默认尺寸下则禁止被父布局压扁。
             headerHeight = 20, gap = 4, itemGap = 4, slot = { size = "auto", minHeight = 92, hAlign = "fill" },
         })
@@ -629,7 +620,7 @@ local function Build(parent, route, id)
             text = "新增后直接在下方列表点击任意范围圆，再在编辑区修改或删除；每个圆独立保存参数。",
             fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2,
             slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
-        -- 中文维护注释（range-selected-editor-2）：新增动作只改变 Domain circles；本页随后从 detached
+        -- 约束（range-selected-editor-2）：新增动作只改变 Domain circles；本页随后从 detached
         -- Projection 读取最后一个稳定 id 并选中，不尝试重建 RSUI 子树。这样连续新增 1..N 个圆时控件身份
         -- 和 Native handler 都保持稳定，也不会触发 logical_id_already_consumed。
         local listActions = RSUI:HorizontalBox({ id = "v3_business_combat_range_assist_circle_list_actions", parent = listSection.content,
@@ -655,12 +646,12 @@ local function Build(parent, route, id)
 
         local editorSection, editorErr = D:SettingsSection(root, {
             id = "v3_business_combat_range_assist_editor", title = "选中范围圆编辑",
-            -- 中文维护注释（range-layout-budget-2）：标题、动作、两行滑块、颜色行与状态文本的完整自然高度约
+            -- 约束（range-layout-budget-2）：标题、动作、两行滑块、颜色行与状态文本的完整自然高度约
             -- 218px；显式保留 224px 下限，避免 ColorField/状态文本被 TableView 顶上来。仍允许更大字体自然增长。
             headerHeight = 20, gap = 5, itemGap = 5, slot = { size = "auto", minHeight = 224, hAlign = "fill" },
         })
         if editorSection == nil then return nil, editorErr end
-        -- 中文维护注释（range-selected-editor-layout-1）：上一版把“当前编辑标题 + 开关 + 删除”压在同一条
+        -- 约束（range-selected-editor-layout-1）：上一版把“当前编辑标题 + 开关 + 删除”压在同一条
         -- HorizontalBox 上，窄分辨率下很容易和下面的双列滑块视觉挤压。这里只调整 Presentation：标题独占一行，
         -- 动作按钮单独一行；范围圆的 Authority、命令与持久化 schema 全部不变。
         rangeEditorTitle = RSUI:Text({ id = "v3_business_combat_range_assist_editor_title", parent = editorSection.content,
@@ -697,7 +688,7 @@ local function Build(parent, route, id)
             return ok, removeErr
         end
 
-        -- 中文维护注释（range-selected-editor-layout-2）：编辑控件改成“两行双列 + 一行颜色”的稳定布局，
+        -- 约束（range-selected-editor-layout-2）：编辑控件改成“两行双列 + 一行颜色”的稳定布局，
         -- 避免通用 UniformGrid 在不同宽度下重算单元格高度时，把标题/动作/颜色行压在一起。这里只改 UI
         -- 组织形式，不改任何 Circle Command。
         local editorRows = RSUI:VerticalBox({ id = "v3_business_combat_range_assist_editor_rows", parent = editorSection.content,
@@ -794,10 +785,10 @@ local function Build(parent, route, id)
     local auctionSidecarStatus, auctionSidecarDetail, auctionSidecarShowButton, auctionSidecarEnabledToggle = nil, nil, nil, nil
     local SyncAuctionSidecarControls = nil
     if id == "tools_auction" then
-        -- 中文维护注释（2026-09-15，拍卖收藏主页面入口与说明）：
-        -- 问题原因：功能实际已有随原生拍卖行出现的 AuctionSidecar，但主页面只暴露收藏/查询表单，
-        -- 用户无法知道“收藏/今日任务/临时清单”工作区存在；手动关闭 Sidecar 后也没有重新显示入口。
-        -- Authority/数据流：这里是纯 Presentation。拍卖行可见性和 Sidecar 生命周期只读取
+        -- 约束（2026-09-15，拍卖收藏主页面入口与说明）：
+        -- 维护约束：主页面应提供 AuctionSidecar 的收藏/今日任务/临时清单入口，
+        -- 并允许手动关闭后受控恢复，不能让玩家无法发现该工作区。
+        -- 权威归属/数据流：这里是纯 Presentation。拍卖行可见性和 Sidecar 生命周期只读取
         -- S.UIV3.AuctionSidecar:GetControlState()；显示动作只调用 RequestShow。页面不直接访问 WidgetHost、
         -- AuctionSurfaceV3、Feature 的私有 State 或任何 Store 私有字段。收藏仍由 tools_auction，今日任务仍由
         -- DailyAuctionMaterialsV3，临时清单仍由 AuctionSessionListV3 持有。
@@ -948,8 +939,7 @@ local function Build(parent, route, id)
         next.onClick=function() auctionPage=auctionPage+1; root:Refresh(); return true end
         if remove~=nil then remove.onClick=function()
             if auctionSelectedKeyword==nil then auctionRemoveArm=nil; remove:SetText("删除收藏"); auctionStatus:SetText("请先选择一条收藏关键词"); return false end
-            -- Two-click confirm: favorites are not recoverable, and an accidental
-            -- click used to delete immediately with no undo.
+            -- 收藏删除不可恢复，必须点击两次确认，防止误触立即删除且无法撤销。
             if auctionRemoveArm~=auctionSelectedKeyword then
                 auctionRemoveArm=auctionSelectedKeyword
                 remove:SetText("确认删除?")
@@ -966,7 +956,7 @@ local function Build(parent, route, id)
             local pagesCount=math.max(1,math.ceil(total/auctionPageSize)); auctionPage=math.min(auctionPage,pagesCount)
             local first=(auctionPage-1)*auctionPageSize+1; local pageRows={}
             for i=first,math.min(first+auctionPageSize-1,total) do pageRows[#pageRows+1]=source[i] end
-            -- 中文维护：分页改变可见切片，不推进业务 revision；加入页码后才能让 Native 池重绑到当前行。
+            -- 分页改变可见切片，不推进业务 revision；加入页码后才能让 Native 池重绑到当前行。
             local pageChanged=self.auctionDisplayedPage~=auctionPage
             if pageChanged then tableView:ClearSelection() end
             tableView:SetItems(pageRows,"auction:"..tostring(projection.revision or 0)..":page:"..auctionPage)
@@ -979,7 +969,7 @@ local function Build(parent, route, id)
             prev:SetEnabled(auctionPage>1); next:SetEnabled(auctionPage<pagesCount)
         end
     end
-    -- 中文维护注释（2026-09-15）：共享制作页面 UI 现在只服务 tools_craft；
+    -- 约束（2026-09-15）：共享制作页面 UI 现在只服务 tools_craft；
     -- 已删除的 life_craft_planner 不再创建控件、Consumer 或报价动作，避免“删导航但后台仍注册”的假删除。
     if id == "tools_craft" then
         local craftRow = RSUI:HorizontalBox({ id = "v3_business_" .. id .. "_recipe_row", parent = root, gap = 6,
@@ -1016,7 +1006,7 @@ local function Build(parent, route, id)
             return ok, quoteMessage
         end
         if type(feature.Commands.SetAutoSidecar) == "function" then
-            -- 中文维护注释：tools_craft 继续拥有自己的制作台 Sidecar 开关；此块与已删除的多配方“制作规划”无关。
+            -- tools_craft 继续拥有自己的制作台 Sidecar 开关；此块与已删除的多配方“制作规划”无关。
             local sidecarRow = RSUI:HorizontalBox({ id = "v3_business_tools_craft_sidecar_row", parent = root, gap = 6,
                 slot = { size = "fixed", height = 31, hAlign = "fill" } })
             TrackField(RSUI:Toggle({ id = "v3_business_tools_craft_auto_sidecar", parent = sidecarRow,
@@ -1077,9 +1067,7 @@ local function Build(parent, route, id)
             return name
         end
         for index, action in ipairs(actions) do
-            -- Lua 5.1 generic-for control variables are shared by closures.
-            -- Capture stable locals so buttons cannot collapse onto the final
-            -- Unmute command after the loop exits.
+            -- Lua 5.1 的 generic-for 控制变量会被闭包共享；捕获稳定局部变量，避免循环结束后所有按钮都执行最后一个 Unmute 命令。
             local commandRef, textRef, actionSpec = action.command, action.text, action
             local button = RSUI:Button({ id = "v3_business_tools_social_action_" .. tostring(index), parent = socialRow, text = textRef, compact = true, slot = { size = "fixed", width = 74 } })
             button.onClick = function()
@@ -1091,8 +1079,8 @@ local function Build(parent, route, id)
                     socialStatus:SetText("失败：" .. tostring(result or "未执行"))
                     return false, result
                 end
-                -- Info commands (查好友) report a fact instead of a write
-                -- acknowledgement and do not dirty the authority.
+                -- 查询命令（查好友）报告事实，
+                -- 而非写入确认，也不会把权威状态标记为脏。
                 socialStatus:SetText(textRef .. "：" .. tostring(result or "已执行"))
                 if actionSpec.holdRefresh ~= true then feature.Commands:Refresh("social_" .. commandRef); root:Refresh() end
                 return true, nil
@@ -1173,14 +1161,14 @@ local function Build(parent, route, id)
     end
     local teamRoleInput, teamActionStatus, teamAutoRoleButton, teamExtra
     if id == "combat_team_tools" or id == "combat_sac_highlight" then
-        -- 中文维护（2026-10-02）：独立页面只创建所属功能的控件；共享动作状态仅属于当前页。
-        -- 中文维护（232017 TXT）：PageHost 保留同代两个页面，逻辑 ID 一旦消耗不能重用。
+        -- 约束（2026-10-02）：独立页面只创建所属功能的控件；共享动作状态仅属于当前页。
+        -- 约束（232017 TXT）：PageHost 保留同代两个页面，逻辑 ID 一旦消耗不能重用。
         -- 整组控件按当前 Feature 分配命名空间；不能沿用旧聚合页前缀，也不能放宽 RSUI
         -- 重复 ID/构建隔离保护。该 ID 只属于 Presentation，不改变职责/视觉存档身份。
         local teamComponentPrefix = "v3_business_" .. id .. "_"
         teamActionStatus = RSUI:Text({ id = teamComponentPrefix .. "action_status", parent = root,
             text = "全队职责只读；职责写入只作用于当前玩家。成员移动因缺少合法队长权限读取契约继续安全停用。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
-            slot = { size = "auto", minHeight = 24, hAlign = "fill" } }) -- 中文维护注释：用一条明确能力说明替代两组永久禁用输入框，减少视觉噪声；Domain 的 MoveMember/MoveMemberToParty 仍存在并拒绝执行，兼容未来功能恢复与旧调用方。
+            slot = { size = "auto", minHeight = 24, hAlign = "fill" } }) -- 用一条明确能力说明替代两组永久禁用输入框，减少视觉噪声；Domain 的 MoveMember/MoveMemberToParty 仍存在并拒绝执行，兼容未来功能恢复与旧调用方。
 
         local function SetTeamActionStatus(text, tone)
             teamActionStatus:SetText(tostring(text or ""))
@@ -1201,15 +1189,15 @@ local function Build(parent, route, id)
         end
         teamExtra = {}
         if id == "combat_team_tools" then
-        -- 中文维护注释（2026-09-10，团队中心布局）：旧版把“职责、两个已禁用的成员移动表单、牺牲之舞/头标”连续堆在同一层，既占据大量垂直空间，也让不可执行的 Native 写能力看起来像可配置功能。这里仅重组 Presentation：v3.team_tools 继续拥有职责/自动职责 Authority，v3.team_visuals 继续拥有牺牲之舞与头标 Store/Consumer；成员移动命令仍保留在 Domain 并 fail-closed，等未来获得合法队长权限 getter 后再单独恢复 UI。禁止以后为了“把按钮放回来”绕过 Domain 权限安全门。
+        -- 约束（2026-09-10，团队中心布局）：旧版把“职责、两个已禁用的成员移动表单、牺牲之舞/头标”连续堆在同一层，既占据大量垂直空间，也让不可执行的 Native 写能力看起来像可配置功能。这里仅重组 Presentation：v3.team_tools 继续拥有职责/自动职责 Authority，v3.team_visuals 继续拥有牺牲之舞与头标 Store/Consumer；成员移动命令仍保留在 Domain 并 fail-closed，等未来获得合法队长权限 getter 后再单独恢复 UI。禁止以后为了“把按钮放回来”绕过 Domain 权限安全门。
         local roleGroup = RSUI:GroupBox({ id = teamComponentPrefix .. "role_group", parent = root, title = "职责设置", variant = "soft", gap = 5, padding = 8,
-            slot = { size = "auto", hAlign = "fill" } }) -- 中文维护注释：GroupBox 使用 RSUI 布局而非手算像素，窗口缩放/不同分辨率由 Measure/Arrange 统一处理，避免 1280×768 下控件挤压。
-        local roleInner = RSUI:VerticalBox({ id = teamComponentPrefix .. "role_inner", parent = roleGroup, gap = 5 }) -- 中文维护注释：职责组内部只承载当前玩家可执行的设置；全队职责表仍是只读投影，不与写入控件共享 Authority。
+            slot = { size = "auto", hAlign = "fill" } }) -- GroupBox 使用 RSUI 布局而非手算像素，窗口缩放/不同分辨率由 Measure/Arrange 统一处理，避免 1280×768 下控件挤压。
+        local roleInner = RSUI:VerticalBox({ id = teamComponentPrefix .. "role_inner", parent = roleGroup, gap = 5 }) -- 职责组内部只承载当前玩家可执行的设置；全队职责表仍是只读投影，不与写入控件共享 Authority。
         local roleRow = RSUI:HorizontalBox({ id = teamComponentPrefix .. "role_row", parent = roleInner, gap = 6,
             slot = { size = "fixed", height = 31, hAlign = "fill" } })
         RSUI:Text({ id = teamComponentPrefix .. "role_label", parent = roleRow, text = "我的职责", fontSize = 9, tone = "strong",
             overflow = "ellipsis", slot = { size = "fixed", width = 58 } })
-        local roleProjection = feature:GetProjection() or {} -- 中文维护注释：下拉选项只读取 Feature detached projection，不直接调用 X2Team；Native 读写仍集中在 TeamTools Domain。
+        local roleProjection = feature:GetProjection() or {} -- 下拉选项只读取 Feature detached projection，不直接调用 X2Team；Native 读写仍集中在 TeamTools Domain。
         local roleItems = {}
         for _, item in ipairs(type(roleProjection.roleOptions) == "table" and roleProjection.roleOptions or {}) do
             roleItems[#roleItems + 1] = { value = item.value, text = tostring(item.text or item.key or item.value) }
@@ -1221,15 +1209,15 @@ local function Build(parent, route, id)
         local setRoleButton = RSUI:Button({ id = teamComponentPrefix .. "set_role", parent = roleRow, text = "设置我的职责", compact = true,
             slot = { size = "fixed", width = 96 } })
         teamAutoRoleButton = RSUI:Button({ id = teamComponentPrefix .. "auto_role", parent = roleRow, text = "自动职责：开", compact = true,
-            slot = { size = "fixed", width = 108 } }) -- 中文维护注释：初始文案与 Domain 新安装默认 true 对齐；Refresh 仍以 projection 为最终事实，旧用户保存 false 不会被 UI 初始文字反向写入。
+            slot = { size = "fixed", width = 108 } }) -- 初始文案与 Domain 新安装默认 true 对齐；Refresh 仍以 projection 为最终事实，旧用户保存 false 不会被 UI 初始文字反向写入。
         local roleStatus = RSUI:Text({ id = teamComponentPrefix .. "role_status", parent = roleInner,
             text = "自动职责默认开启；进入团队或职业组合变化后按已验证职业表匹配。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
-            slot = { size = "auto", minHeight = 20, hAlign = "fill" } }) -- 中文维护注释：这是只读说明/状态文本，不参与 Store，避免把运行时识别结果误写成永久配置。
+            slot = { size = "auto", minHeight = 20, hAlign = "fill" } }) -- 这是只读说明/状态文本，不参与 Store，避免把运行时识别结果误写成永久配置。
 
         teamAutoRoleButton.onClick = function()
-            local projection = feature:GetProjection() or {} -- 中文维护注释：按钮切换以前一份 Feature projection 为事实，不使用本地按钮文案推断状态，避免 UI 与 Store 脱节。
+            local projection = feature:GetProjection() or {} -- 按钮切换以前一份 Feature projection 为事实，不使用本地按钮文案推断状态，避免 UI 与 Store 脱节。
             local nextValue = projection.autoRoleEnabled == false
-            local ok, err = feature.Commands:SetAutoRoleEnabled(nextValue) -- 中文维护注释：写入必须经过 TeamTools PersistStateMutation；Presentation 不直接改 State/SaveData。
+            local ok, err = feature.Commands:SetAutoRoleEnabled(nextValue) -- 写入必须经过 TeamTools PersistStateMutation；Presentation 不直接改 State/SaveData。
             if ok ~= true then SetTeamActionStatus("自动职责设置失败：" .. tostring(err or "未执行"), "warn"); return false, err end
             root:Refresh()
             SetTeamActionStatus(nextValue and "自动职责已开启；进团或切换职业后会按职业组合自动匹配" or "自动职责已关闭", nextValue and "success" or "muted")
@@ -1238,23 +1226,23 @@ local function Build(parent, route, id)
         setRoleButton.onClick = function()
             local role = teamRoleInput and type(teamRoleInput.GetValue) == "function" and teamRoleInput:GetValue() or nil
             if role == nil then local valueErr = "请选择职责"; SetTeamActionStatus("失败：" .. valueErr, "warn"); return false, valueErr end
-            local ok, err = feature.Commands:SetRole(role) -- 中文维护注释：X2Team:SetRole 的 Native 写 Authority 仍在 Domain ActionCapability；页面只提交已验证 TMROLE 枚举。
+            local ok, err = feature.Commands:SetRole(role) -- X2Team:SetRole 的 Native 写 Authority 仍在 Domain ActionCapability；页面只提交已验证 TMROLE 枚举。
             if ok ~= true then SetTeamActionStatus("失败：" .. tostring(err or "职责设置未执行"), "warn"); return false, err end
             local refreshed, refreshErr = RefreshTeamAction("team_tools_set_role")
             if refreshed ~= true then SetTeamActionStatus(refreshErr, "warn"); return false, refreshErr end
-            SetTeamActionStatus("已提交当前玩家职责；等待团队同步确认", "success"); return true -- 中文维护：Action 接受与服务端同步是两个边界，后续只读确认和诊断归职责 Feature。
+            SetTeamActionStatus("已提交当前玩家职责；等待团队同步确认", "success"); return true -- Action 接受与服务端同步是两个边界，后续只读确认和诊断归职责 Feature。
         end
         if #roleItems <= 0 then teamRoleInput:SetEnabled(false); setRoleButton:SetEnabled(false) end
         teamExtra.roleStatus = roleStatus
-        end -- 中文维护：职责控件不进入牺牲之舞页。
+        end -- 职责控件不进入牺牲之舞页。
         if id == "combat_sac_highlight" then
         local assistGroup = RSUI:GroupBox({ id = teamComponentPrefix .. "assist_group", parent = root, title = "牺牲之舞 / 团队头标", variant = "soft", gap = 5, padding = 8,
-            slot = { size = "auto", hAlign = "fill" } }) -- 中文维护注释：团队视觉辅助与职责写入分组，明确它们由不同子 Authority 管理；分组本身不获取额外 Consumer。
+            slot = { size = "auto", hAlign = "fill" } }) -- 团队视觉辅助与职责写入分组，明确它们由不同子 Authority 管理；分组本身不获取额外 Consumer。
         local assistInner = RSUI:VerticalBox({ id = teamComponentPrefix .. "assist_inner", parent = assistGroup, gap = 5 })
         local visualRow = RSUI:HorizontalBox({ id = teamComponentPrefix .. "visual_row", parent = assistInner, gap = 6,
             slot = { size = "fixed", height = 31, hAlign = "fill" } })
         teamExtra.sacButton = RSUI:Button({ id = teamComponentPrefix .. "sac_toggle", parent = visualRow, text = "牺牲之舞：开", compact = true,
-            slot = { size = "fixed", width = 108 } }) -- 中文维护注释：仅默认显示“开”；真实状态由 TeamVisuals Store schema2 projection 刷新，旧 schema1 的关闭状态会立即显示回“关”。
+            slot = { size = "fixed", width = 108 } }) -- 仅默认显示“开”；真实状态由 TeamVisuals Store schema2 projection 刷新，旧 schema1 的关闭状态会立即显示回“关”。
         teamExtra.saveMarks = RSUI:Button({ id = teamComponentPrefix .. "mark_save", parent = visualRow, text = "保存头标", compact = true,
             slot = { size = "fixed", width = 78 } })
         teamExtra.restoreMarks = RSUI:Button({ id = teamComponentPrefix .. "mark_restore", parent = visualRow, text = "恢复头标", compact = true,
@@ -1263,7 +1251,7 @@ local function Build(parent, route, id)
             slot = { size = "fixed", width = 78 } })
         teamExtra.status = RSUI:Text({ id = teamComponentPrefix .. "visual_status", parent = assistInner,
             text = "牺牲之舞高亮默认开启 · 尚未保存团队头标", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
-            slot = { size = "auto", minHeight = 22, hAlign = "fill" } }) -- 中文维护注释：只展示 TeamVisuals detached projection，不进行 Aura/Marker Native 读取；高频事实仍由共享 Service + 按需 Consumer 提供。
+            slot = { size = "auto", minHeight = 22, hAlign = "fill" } }) -- 只展示 TeamVisuals detached projection，不进行 Aura/Marker Native 读取；高频事实仍由共享 Service + 按需 Consumer 提供。
         TrackField(D:SettingsNumericSlider(assistInner, {
             id=teamComponentPrefix.."sac_refresh",label="高亮绘制间隔",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="ms",
             get=function()return feature:GetProjection().sacRefreshMs or 50 end,
@@ -1271,33 +1259,33 @@ local function Build(parent, route, id)
             slot={size="fixed",height=42,hAlign="fill"},
         }))
 
-        end -- 中文维护：视觉与头标控件不进入职责页。
+        end -- 视觉与头标控件不进入职责页。
         if id == "combat_sac_highlight" then
         teamExtra.sacButton.onClick = function()
-            local projection = feature:GetProjection() or {} -- 中文维护注释：牺牲之舞开关只消费 TeamVisuals projection；候选扫描/Aura 事实不由页面直接读取。
+            local projection = feature:GetProjection() or {} -- 牺牲之舞开关只消费 TeamVisuals projection；候选扫描/Aura 事实不由页面直接读取。
             local nextValue = projection.sacEnabled ~= true
-            local ok, err = feature.Commands:SetSacHighlightEnabled(nextValue) -- 中文维护注释：生命周期由 TeamVisuals 在开关变更后获取/释放 Consumer；隐藏页面不等于关闭功能。
+            local ok, err = feature.Commands:SetSacHighlightEnabled(nextValue) -- 生命周期由 TeamVisuals 在开关变更后获取/释放 Consumer；隐藏页面不等于关闭功能。
             if ok ~= true then SetTeamActionStatus("牺牲之舞高亮设置失败：" .. tostring(err or "未执行"), "warn"); return false, err end
             root:Refresh()
             SetTeamActionStatus(nextValue and "牺牲之舞高亮已开启；仅扫描舞乐候选成员" or "牺牲之舞高亮已关闭并释放团队/Aura观察", nextValue and "success" or "muted")
             return true
         end
         teamExtra.saveMarks.onClick = function()
-            local ok, countOrErr = feature.Commands:SaveRaidMarkers() -- 中文维护注释：头标快照通过 Domain 读 Native 并 durable 保存；UI 不缓存 marker identity。
+            local ok, countOrErr = feature.Commands:SaveRaidMarkers() -- 头标快照通过 Domain 读 Native 并 durable 保存；UI 不缓存 marker identity。
             if ok ~= true then SetTeamActionStatus("保存头标失败：" .. tostring(countOrErr or "未执行"), "warn"); return false, countOrErr end
             root:Refresh(); SetTeamActionStatus("已保存当前团队头标：" .. tostring(countOrErr or 0) .. " 个", "success"); return true
         end
         teamExtra.restoreMarks.onClick = function()
-            local ok, countOrErr = feature.Commands:RestoreRaidMarkers() -- 中文维护注释：恢复仍由 1100ms 串行队列 + 读回验证治理，布局改动绝不能改成循环瞬发 Native 写入。
+            local ok, countOrErr = feature.Commands:RestoreRaidMarkers() -- 恢复仍由 1100ms 串行队列 + 读回验证治理，布局改动绝不能改成循环瞬发 Native 写入。
             if ok ~= true then SetTeamActionStatus("恢复头标失败：" .. tostring(countOrErr or "未执行"), "warn"); return false, countOrErr end
             root:Refresh(); SetTeamActionStatus("头标恢复队列已启动：" .. tostring(countOrErr or 0) .. " 个；按官方 1 秒冷却串行执行", "success"); return true
         end
         teamExtra.clearMarks.onClick = function()
-            local ok, err = feature.Commands:ClearSavedRaidMarkers() -- 中文维护注释：只清插件 Store 中的快照，不调用 Native 清除当前游戏头标，保持用户可逆性。
+            local ok, err = feature.Commands:ClearSavedRaidMarkers() -- 只清插件 Store 中的快照，不调用 Native 清除当前游戏头标，保持用户可逆性。
             if ok ~= true then SetTeamActionStatus("清空保存失败：" .. tostring(err or "未执行"), "warn"); return false, err end
             root:Refresh(); SetTeamActionStatus("已清空插件保存的头标方案；不会清除当前游戏头标", "muted"); return true
         end
-        end -- 中文维护：独立视觉命令绑定结束。
+        end -- 独立视觉命令绑定结束。
         SetTeamActionStatus(id == "combat_team_tools" and "仅设置当前玩家职责；全队名单只读" or "高亮与头标使用独立开关；恢复按冷却串行并读回核验", "muted")
     end
     local tableView
@@ -1306,13 +1294,13 @@ local function Build(parent, route, id)
     local tableSlot = unitLineSettingsPage
         and { size = "auto", minHeight = 150, hAlign = "fill" }
         or { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" }
-    -- 中文维护：机制只有五条静态规则；固定自然高度交给外层 ScrollBox 管理溢出，
+    -- 机制只有五条静态规则；固定自然高度交给外层 ScrollBox 管理溢出，
     -- 不用十四行空表挤走操作区。getKey/回调必须传入构造器，TableView 不转发事后赋值字段。
     if id == "combat_boss_alerts" then tableSlot = { size = "fixed", height = 180, hAlign = "fill" } end
-    -- 中文维护：计数只有两行，不让通用十四行成本表把设置挤出窄屏；滚动仍由外层负责。
+    -- 计数只有两行，不让通用十四行成本表把设置挤出窄屏；滚动仍由外层负责。
     if id == "combat_buff_cap" then tableSlot = { size = "fixed", height = 100, hAlign = "fill" }; tableDesiredRows = 2 end
     tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = tableParent, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = tableDesiredRows, scrollbar = true, selectable = id == "combat_boss_alerts" or id == "combat_range_assist" or id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social", selectionMode = "single", columnResize = true,
-        -- 中文维护注释（range-selected-editor-3）：范围圆列表的选择键必须是持久稳定 circleId。
+        -- 约束（range-selected-editor-3）：范围圆列表的选择键必须是持久稳定 circleId。
         -- Authority 刷新会改变可见点/status，删除也会改变行位置；若使用默认 index key，用户可能在刷新后编辑错圆。
         getKey = id == "combat_range_assist" and function(row) return row and row.circleId end
             or id == "combat_boss_alerts" and function(row) return row and row.key end
@@ -1323,7 +1311,7 @@ local function Build(parent, route, id)
             rangeSelectedCircleId = row ~= nil and tonumber(row.circleId) or nil
             if SyncRangeCircleEditor ~= nil then SyncRangeCircleEditor(feature:GetProjection() or {}, true) end
         end or id == "combat_boss_alerts" and function(_, _, view)
-            -- 中文维护：ClearSelection 的同步回调可能仍携带旧 index；当前 primary key 才是选择事实。
+            -- ClearSelection 的同步回调可能仍携带旧 index；当前 primary key 才是选择事实。
             -- 仅遍历五条 detached 目录行，不用内部 ListView 字段，也不读取 Native 或持久化。
             local selectedKey, projection = view:GetSelectedKey(), feature:GetProjection() or {}
             bossSelectedKey = nil
@@ -1332,9 +1320,9 @@ local function Build(parent, route, id)
             end
             if SyncBossControls ~= nil then SyncBossControls(projection) end
         end or nil,
-        -- 中文维护：只消费独立计数/峰值投影，不在单元格读API，不把未知显示成0或合计容量。
+        -- 只消费独立计数/峰值投影，不在单元格读API，不把未知显示成0或合计容量。
         columns = id == "combat_range_assist" and {
-            -- 中文维护注释：列表现在是“配置实体选择器”，展示所有 circles（包括已隐藏圆），
+            -- 列表现在是“配置实体选择器”，展示所有 circles（包括已隐藏圆），
             -- 不再拿仅含当前可绘制圆的 Authority.rows 当配置清单，因此关闭某个圆后仍能再次选中并启用。
             { id = "name", title = "范围圆", field = "name", size = "fixed", width = 170, minWidth = 120 },
             { id = "text", title = "参数", field = "text", size = "fill", minWidth = 260 },
@@ -1358,9 +1346,9 @@ local function Build(parent, route, id)
             {id="state",title="状态",field="stateText",size="fixed",width=66,minWidth=60},
             {id="action",title="操作",cellType="button",size="fixed",width=64,minWidth=64,absoluteMinWidth=64,sortable=false,resizable=false,
                 getText=function(row)return row and row.blocked==true and "移出" or "加入"end,onClick=function(row)return root:ToggleBlacklistItem(row)end},
-        } or id == "combat_team_tools" and { -- 中文维护注释：团队职责行没有 craft cost 语义；使用专用三列避免“成本/持有/缺口”空列长期浪费宽度。只改变 detached row 的 Presentation 映射，ReadTeamRoleRoster 数据结构/Authority 不变。
-            { id = "name", title = "团队成员", field = "name", size = "fixed", width = 180, minWidth = 120 }, -- 中文维护注释：成员名固定列保证 1280×768 仍有足够职责说明空间；不缓存 Unit 对象或身份指针。
-            { id = "text", title = "位置 / 职责", field = "text", size = "fill", minWidth = 260 }, -- 中文维护注释：复用 Domain 已生成的 team/member/role 文本，不在 Table 渲染循环重复调用 X2Team:GetRole。
+        } or id == "combat_team_tools" and { -- 团队职责行没有 craft cost 语义；使用专用三列避免“成本/持有/缺口”空列长期浪费宽度。只改变 detached row 的 Presentation 映射，ReadTeamRoleRoster 数据结构/Authority 不变。
+            { id = "name", title = "团队成员", field = "name", size = "fixed", width = 180, minWidth = 120 }, -- 成员名固定列保证 1280×768 仍有足够职责说明空间；不缓存 Unit 对象或身份指针。
+            { id = "text", title = "位置 / 职责", field = "text", size = "fill", minWidth = 260 }, -- 复用 Domain 已生成的 team/member/role 文本，不在 Table 渲染循环重复调用 X2Team:GetRole。
             { id = "status", title = "状态", field = "statusText", size = "fixed", width = 110, minWidth = 82, getTone = function(item) return item and item.tone or "muted" end },
         } or {
             { id = "name", title = "项目", field = "name", size = "fixed", width = 180, minWidth = 100 },
@@ -1374,7 +1362,7 @@ local function Build(parent, route, id)
         }, slot = tableSlot })
     if id == "tools_auction" then
         function root:SyncAuctionSelection(updateInput)
-            -- 中文维护：ClearSelection 的回调可能携带旧 index，只从当前 primary key 解析选择。
+            -- ClearSelection 的回调可能携带旧 index，只从当前 primary key 解析选择。
             local row=SelectedAuctionRow(tableView)
             auctionSelectedKeyword=row and row.kind=="favorite" and tostring(row.name or "") or nil
             if auctionRemoveArm~=auctionSelectedKeyword then auctionRemoveArm=nil end
@@ -1394,8 +1382,7 @@ local function Build(parent, route, id)
         tableView.onSelectionChanged=function() auctionRemoveArm=nil;return root:SyncAuctionSelection(true) end
     end
     if id == "tools_social" then
-        -- Clicking a list row loads that member name into the action input;
-        -- unrecognized-shape placeholder rows (memberName == nil) are inert.
+        -- 点击列表行会把成员名填入操作输入框；无法识别结构的占位行（memberName == nil）不响应操作。
         tableView.onSelectionChanged = function(index)
             local row = tableView:GetItem(index)
             if row == nil or row.memberName == nil then return end
@@ -1431,7 +1418,7 @@ local function Build(parent, route, id)
         local rows = id == "tools_bag" and BuildBagSettingsRows(projection)
             or id == "combat_range_assist" and BuildRangeCircleRows(projection)
             or (projection.rows or {})
-        -- 中文维护注释（range-selected-editor-4）：先按当前 detached circles 校验选择，再 Render Binding；
+        -- 约束（range-selected-editor-4）：先按当前 detached circles 校验选择，再 Render Binding；
         -- 删除最后一个圆时必须先把 selected id 置空，避免 NumericField 在同一次 Refresh 中读取已不存在实体。
         if id == "combat_range_assist" and SyncRangeCircleEditor ~= nil then SyncRangeCircleEditor(projection, false) end
         for _, field in ipairs(specialFields) do if type(field.Render) == "function" then field:Render() end end
@@ -1455,7 +1442,7 @@ local function Build(parent, route, id)
             end
         end
         if SyncBossControls ~= nil then SyncBossControls(projection) end
-        if SyncBuffCapControls ~= nil then SyncBuffCapControls(projection) end -- 中文维护：实时说明独立更新，保留用户动作回执。
+        if SyncBuffCapControls ~= nil then SyncBuffCapControls(projection) end -- 实时说明独立更新，保留用户动作回执。
         if (id == "tools_auction" or id == "tools_market_analysis") and auctionStatus ~= nil then
             local statusZh=({idle="等待查询",waiting="等待服务器",ready="查询完成",partial="部分结果",empty="没有结果",failed="查询失败",unavailable="不可用"})[tostring(projection.searchStatus or "idle")] or tostring(projection.searchStatus or "idle")
             local quotePart = ""
@@ -1506,9 +1493,9 @@ local function Build(parent, route, id)
         if id == "tools_bag" and type(self.RefreshBlacklistEditor) == "function" then self:RefreshBlacklistEditor(projection) end
         if id=="tools_bag" then self:RefreshBagQuickStatus(projection)end
         if id == "combat_team_tools" and teamAutoRoleButton ~= nil then
-            teamAutoRoleButton:SetText(projection.autoRoleEnabled == false and "自动职责：关" or "自动职责：开") -- 中文维护注释：投影是显示 Authority，旧用户显式 false 会覆盖初始“开”文案；这里不触发任何持久化写入。
+            teamAutoRoleButton:SetText(projection.autoRoleEnabled == false and "自动职责：关" or "自动职责：开") -- 投影是显示 Authority，旧用户显式 false 会覆盖初始“开”文案；这里不触发任何持久化写入。
             if type(teamExtra) == "table" and teamExtra.roleStatus ~= nil then
-                local roleRuntime = tostring(projection.autoRoleStatus or "等待团队/职业变化") -- 中文维护注释：运行状态来自 TeamTools Domain 的事件驱动结果，页面只做文本投影，不额外轮询职业或团队名单。
+                local roleRuntime = tostring(projection.autoRoleStatus or "等待团队/职业变化") -- 运行状态来自 TeamTools Domain 的事件驱动结果，页面只做文本投影，不额外轮询职业或团队名单。
                 local roleLabel = projection.autoRoleLabel and (" · 识别：" .. tostring(projection.autoRoleLabel)) or ""
                 teamExtra.roleStatus:SetText((projection.autoRoleEnabled == false and "自动职责已关闭" or "自动职责已开启") .. " · " .. roleRuntime .. roleLabel)
             end
@@ -1581,7 +1568,7 @@ local function Build(parent, route, id)
                 unitLineDiagnosticsText:SetText(table.concat(parts, " · "))
             end
         elseif id == "combat_buff_cap" then
-            -- 中文维护：不再沿用通用“部分可用”长文案遮住操作区；边界随页面一直可见。
+            -- 不再沿用通用“部分可用”长文案遮住操作区；边界随页面一直可见。
             hint:SetText("普通/隐藏分别计数，不推断共享容量或顶替规则。0关闭该类提醒；本次启用峰值仅覆盖实际采样。"
                 .. (enabled ~= true and " 功能已关闭，设置仍可保存。" or " 关闭页面后仅个人提醒继续观察；关闭功能全部停止。"))
         elseif id == "tools_bag" then
@@ -1615,12 +1602,9 @@ local function Build(parent, route, id)
         else
             hint:SetText(enabled and (BusinessStatusText(projection.status) .. " · " .. tostring(#rows) .. " 条数据") or "功能已关闭；启用后才读取对应 API。")
         end
-        -- Table view-state coverage: every sibling V3 table page drives the
-        -- table's empty/loading/unavailable overlay from the same enabled / #rows
-        -- signals used for the hint line above. The business table previously
-        -- never set a view state, so empty/unavailable states had no overlay.
+        -- 业务表与其它 V3 表格页面保持相同视图状态契约：以提示行使用的 enabled/#rows 信号驱动空、加载和不可用覆盖层，避免这些状态没有可见反馈。
         local tvState, tvOpts
-        -- 中文维护：机制目录不是实时采集结果，停用 Feature 后仍可配置下一次启动规则；
+        -- 机制目录不是实时采集结果，停用 Feature 后仍可配置下一次启动规则；
         -- 这里只保持静态表可选，测试按钮与观察任务仍服从 Feature/HUD 开关，不放宽其它页面。
         if enabled ~= true and id ~= "combat_boss_alerts" and id ~= "combat_range_assist" then
             tvState, tvOpts = "unavailable", { title = "功能已关闭", detail = id == "tools_bag" and "重新启用后会读取当前背包物品；已有黑名单不会丢失。" or ((meta and meta.name or id) .. " 启用后才会读取对应 API 并填充此表。") }
@@ -1629,7 +1613,7 @@ local function Build(parent, route, id)
             if circleCount <= 0 then
                 tvState, tvOpts = "empty", { title = "当前没有范围圆", detail = "点击上方“新增范围圆”；新圆会自动选中并可立即编辑。" }
             else
-                -- 中文维护注释：这是持久配置列表，不是 Native 实时结果。即使 Feature 关闭或所有圆隐藏，
+                -- 这是持久配置列表，不是 Native 实时结果。即使 Feature 关闭或所有圆隐藏，
                 -- 仍必须允许点击任意圆继续编辑/删除；是否绘制由上方状态行说明，不能用 unavailable/empty 覆盖交互。
                 tvState = "ready"
             end
@@ -1641,12 +1625,8 @@ local function Build(parent, route, id)
         tableView:SetViewState(tvState, tvOpts)
         return true
     end
-    -- World-visual authorities may publish at 20 Hz (RangeAssist) or even a
-    -- user-selected 1 ms UnitLines cadence.  The settings page is not part of
-    -- that render path: redrawing RSUI controls at the same cadence wastes UI
-    -- work and, on RU, can synthesize false button leave/enter transitions.
-    -- Coalesce visual-tick presentation updates while keeping direct commands
-    -- and non-visual authority updates immediate.
+    -- 世界视觉权威层可能以 20 Hz（RangeAssist）或用户选择的 1 ms（UnitLines）发布。设置页不属于该渲染路径；同频重绘 RSUI 会浪费工作，并在 RU 中产生虚假的按钮离开/进入事件。
+    -- 合并 visual-tick 表现更新，直接命令和非视觉权威更新仍立即处理。
     local visualSettingsPage = id == "combat_unit_lines" or id == "combat_range_assist"
     local visualPageRefreshTask = "v3_business_visual_page_refresh:" .. tostring(id)
     local visualPageRefreshMs = 160
@@ -1672,10 +1652,10 @@ local function Build(parent, route, id)
         if visualSettingsPage ~= true or (reason ~= "visual_tick" and reason ~= "visual_tick_error") then
             return self:Refresh()
         end
-        -- 中文维护注释（2026-09-14，visual-settings transaction fence）：UnitLines/RangeAssist 的
+        -- 约束（2026-09-14，visual-settings transaction fence）：UnitLines/RangeAssist 的
         -- visual_tick 属于绘制 Authority，不得在用户持有 EditBox draft 时驱动整页 Refresh。控件级 Render
         -- 抑制只能保护文本本身；TableView/状态/Enabled 的 Native 更新仍可能触发 RU LostFocus，造成“点一下
-        -- 过会不能输入”或“删一个字符又恢复”。因此输入事务期间直接吞掉 ambient visual refresh；视觉绘制
+        -- 过会不能输入”或“删一个字符又恢复”。因此输入事务期间直接吞掉 环境视觉刷新；视觉绘制
         -- Scheduler 完全不受影响，用户结束编辑后的下一次 visual_tick 会自动补一次页面刷新。
         if VisualSettingsInputDraftActive() then return DeferVisualPageRefreshForInput(reason) end
         root.visualPageRefreshDeferredForInput = false
@@ -1686,8 +1666,7 @@ local function Build(parent, route, id)
         local added = S.Scheduler:AddOneShot(visualPageRefreshTask, visualPageRefreshMs, function()
             self.visualPageRefreshPending = false
             if self.featureUpdatesBound ~= true then return true end
-            -- A refresh may have been queued immediately before the user clicked an input. Re-check at execution time;
-            -- otherwise that stale one-shot can still steal focus 160ms later even though later ticks were suppressed.
+            -- 刷新可能在用户点击输入框之前入队，执行时必须再次检查编辑状态；否则即使后续 Tick 被抑制，旧 one-shot 仍可能在 160ms 后抢走焦点。
             if VisualSettingsInputDraftActive() then return DeferVisualPageRefreshForInput("scheduled:" .. reason) end
             self.visualPageRefreshDeferredForInput = false
             self.visualPageRefreshDeferredReason = nil
@@ -1712,7 +1691,7 @@ local function Build(parent, route, id)
             local subscribed, subscribeErr = S.Events:SubscribeInternal(feature.UpdateTopic, self, function(_, _, reason) return root:RequestFeatureRefresh(reason) end)
             if subscribed ~= true then return false, subscribeErr end
         end
-        -- 中文维护注释（2026-09-15，Sidecar 状态轻量同步）：AuctionSurface 的几何变化不应驱动
+        -- 约束（2026-09-15，Sidecar 状态轻量同步）：AuctionSurface 的几何变化不应驱动
         -- 整个业务页重绘。Controller 只在“原生拍卖行开关 / Sidecar 显隐 / 用户恢复”发生变化时发布
         -- ControlTopic；本页只刷新卡片里的状态与按钮，不触发 AuctionQuery，不获取额外 Consumer。
         -- 该订阅归 root owner，OnDeactivated 仍由统一 UnsubscribeInternalOwner 释放，不产生隐藏页后台工作。
@@ -1755,7 +1734,7 @@ local function Build(parent, route, id)
         return Host:SyncFeatureConsumer(self, consumerBinding, "page_activated")
     end
     function root:OnDeactivated()
-        -- 中文维护：离开设置页只退出鼠标校准，保留已启用机制的后台观察，避免 HUD 截获战斗点击。
+        -- 离开设置页只退出鼠标校准，保留已启用机制的后台观察，避免 HUD 截获战斗点击。
         if id == "combat_boss_alerts" and type(feature.Commands.SetHudEditing) == "function" then feature.Commands:SetHudEditing(false) end
         self:UnbindFeatureUpdates()
         return Host:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")

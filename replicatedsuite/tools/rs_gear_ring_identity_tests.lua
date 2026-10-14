@@ -1,4 +1,10 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 戒指身份测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 中文维护（2026-10-09）：真实 Gear 捕获/候选/事务/Store/UI；Native 为可控替身，不代表 RU 大象戒指实机词条已验证。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

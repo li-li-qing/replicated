@@ -1,6 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Shared Alert HUD Presenter
--- 中文维护（2026-09-13，boss-hud-clock-1）：服务持有单调计时/截止点，
+-- Replicated Suite · 警报 HUD
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 约束（boss-hud-clock-1）：服务持有单调计时/截止点，
 -- 本文件只接收文本与几何；不自建 OnUpdate/读技能。Native 失败不能冒充文本已显示。
 -- 校准只在显式编辑期间取得鼠标，通过统一 Windowing 提交 Feature 的耐久事务；
 -- 正常战斗穿透，离页/停用释放。位置保存为逻辑偏移，分辨率变化不重写用户存档。
@@ -52,7 +55,7 @@ function P:EnsureCreated()
     if self.root ~= nil and self.label ~= nil then
         if type(S.UI.IsWidgetUsable) ~= "function" or
             (S.UI:IsWidgetUsable(self.root) == true and S.UI:IsWidgetUsable(self.label) == true) then return true end
-        -- 中文维护：已退役的原生对象不能因非 nil 被复用；只释放本 Presenter，不影响其他 UI。
+        -- 已退役的原生对象不能因非 nil 被复用；只释放本 Presenter，不影响其他 UI。
         if S.RSUI and S.RSUI.Windowing then S.RSUI.Windowing:Detach(self.owner) end
         self.root, self.label, self.background, self.controller = nil, nil, nil, nil
     end
@@ -75,7 +78,7 @@ function P:WriteText(text)
     if self.label == nil then return false, "alert_label_missing" end
     text = tostring(text or "")
     local accepted = S.UI:SetText(self.label, text, self.owner)
-    -- 中文维护：DiffRenderer false 既可能无变化也可能拒写，不能简单把 false 当错误。
+    -- DiffRenderer false 既可能无变化也可能拒写，不能简单把 false 当错误。
     -- 已核验 label:GetText 可回读时以 Native 为准；无读接口时只承认成功写入或本代已确认的同值。
     local read, value = false, nil
     if type(self.label.GetText) == "function" then read, value = pcall(self.label.GetText, self.label) end
@@ -92,12 +95,12 @@ end
 
 function P:ApplyLayout(cfg)
     if self.root == nil then return false, "alert_root_missing" end
-    -- 中文维护：新机制提示可以改文字，但 Native 鼠标正在移动时不能重新锚定旧位置。
+    -- 新机制提示可以改文字，但 Native 鼠标正在移动时不能重新锚定旧位置。
     -- Windowing 结束手势后提交几何，届时设置事务再应用布局，避免“边拖边跳回”。
     if self.controller and self.controller:IsInteracting() then return true end
     local nextConfig = CopyConfig(cfg)
     local x, y, width, height = Geometry(nextConfig)
-    -- 中文维护：使用 Ensure* 的 accepted 语义，避免 no-op 被当成失败；布局只在推送/设置变更执行。
+    -- 使用 Ensure* 的 accepted 语义，避免 no-op 被当成失败；布局只在推送/设置变更执行。
     for _, item in ipairs({ {self.root, UIParent, x, y, width, height},
         {self.background, self.root, 0, 0, width, height},
         {self.label, self.root, 8, 4, math.max(1, width - 16), math.max(1, height - 8)} }) do
@@ -146,13 +149,13 @@ function P:EditLayout(enabled, cfg, onCommit)
         local controller, attachErr = windowing:Attach({id=self.owner, owner=self.owner, window=self.root,
             dragHandle=self.root, locked=false, resizable=false, boundaryMode="strict",
             onGeometryChanged=function(_, x, y)
-                -- 中文维护：退出/重新进入编辑使旧 Native 排队回调失效，不能提交到新一轮配置。
+                -- 退出/重新进入编辑使旧 Native 排队回调失效，不能提交到新一轮配置。
                 if P.editing ~= true or P.editGeneration ~= generation or type(P.onCommit) ~= "function" then
                     return false, "retired_alert_layout_callback"
                 end
                 local current = CopyConfig(P.config)
                 local _, _, _, _, baseX, baseY = Geometry(current)
-                -- 中文维护：Native 拖拽 -> Windowing 逻辑坐标 -> Feature 偏移持久化。
+                -- Native 拖拽 -> Windowing 逻辑坐标 -> Feature 偏移持久化。
                 -- 保存失败回到上次确认的几何；不使临时拖动污染永久配置，不重新启动倒计时。
                 local saved, saveErr = P.onCommit(math.floor(x - baseX), math.floor(y - baseY), current.width)
                 if saved ~= true then

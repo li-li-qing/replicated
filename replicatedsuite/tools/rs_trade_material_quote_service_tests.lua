@@ -1,4 +1,10 @@
--- 2026-10-01: production services with Native/clock/persistence boundaries only.
+------------------------------------------------------------------------
+-- Replicated Suite · 交易材料报价服务测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用生产服务，仅原生接口、时钟和持久化边界由测试替身提供。
+------------------------------------------------------------------------
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')
 local function Eq(a,b,m) assert(a==b,(m or 'value')..': '..tostring(a)..' ~= '..tostring(b)) end
 local function Fixture()
@@ -102,7 +108,7 @@ Test('captured common and rare native grades keep separate verified price keys',
  h:advance(5000);Eq(r.known,2);Eq(h.materialPrices:GetTradePrice(773,0),3095);Eq(h.materialPrices:GetTradePrice(3680,3),1787)
  assert(h.materialPrices.entries['773:1']==nil and h.materialPrices.entries['3680:1']==nil)
 end)
--- 中文维护：215703 实机每次响应约 250~450ms，多货物共享一秒串行 lane；即时回包旧 fixture 隐藏了排队超时。
+-- 215703 实机每次响应约 250~450ms，多货物共享一秒串行 lane；即时回包旧 fixture 隐藏了排队超时。
 Test('eight rapid recipes finish queued materials with delayed native responses',function()
  local h=Fixture();h.syncComplete=false;local seq=0;local results={}
  h.onSearch=function(keyword)
@@ -137,7 +143,7 @@ Test('stage guard registration failure cannot send an unbounded query',function(
  assert(h.service:RequestRecipe('no_guard',{Material(101)},function(x)r=x end))
  assert(not r.active);Eq(r.unknown,1);Eq(h:count('SearchAuctionArticle'),0)
 end)
--- 中文维护：221122 实机由玩家开拍卖中断后三个材料。关闭后的显式重查应只补缺价，不能丢已确认价格。
+-- 221122 实机由玩家开拍卖中断后三个材料。关闭后的显式重查应只补缺价，不能丢已确认价格。
 Test('opening native auction stops remaining materials and close retry queries only missing identities',function()
  local h=Fixture();h.syncComplete=false;local seq=0;local first,second
  h.onSearch=function(keyword)

@@ -1,4 +1,10 @@
--- QuestProgressV3 detail-refresh contract regression. Development-only; not in toc.g.
+------------------------------------------------------------------------
+-- Replicated Suite · 任务进度详情刷新测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- QuestProgressV3 详情刷新契约回归，仅供开发期使用，不进入 toc.g。
+------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

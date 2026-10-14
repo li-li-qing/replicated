@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Window Chrome Preference Store v1
+-- Replicated Suite · 窗口层级偏好
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation-only preferences shared by top-level RSUI windows. Business
--- Feature stores continue to own geometry/appearance. Keeping native layer
--- preference here avoids changing dozens of frozen Feature canonical shapes.
+-- 顶层 RSUI 窗口共用仅表现偏好；业务 Store 仍持几何/外观，Native 层级偏好独立保存，避免改大量冻结 Feature 规范形状。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -47,7 +47,7 @@ local function NormalizeState(value)
     local out = {}
     for index = 1, math.min(#keys, MAX_WINDOWS) do out[keys[index]] = true end
     local normalized = { topmost = out }
-    -- 中文维护：会话设置窗只保存小锁，不提升几何为业务存档；空锁表省略，旧 schema1 canonical 完全不变。
+    -- 会话设置窗只保存小锁，不提升几何为业务存档；空锁表省略，旧 schema1 canonical 完全不变。
     local lockedKeys = {}
     for key, enabled in pairs(type(value.locked) == "table" and value.locked or {}) do
         key = tostring(key or "")
@@ -127,9 +127,7 @@ function Store:SetTopmost(windowId, value, persist)
     if nextValue then self.state.topmost[key] = true else self.state.topmost[key] = nil end
     if persist == false then return true, nextValue, true end
     if self.sessionFallback == true then
-        -- Do not overwrite a fenced/corrupt payload. Native layer may still be
-        -- changed for this session, but the caller can report that persistence
-        -- was unavailable instead of pretending it survived relog.
+        -- 隔离/损坏载荷不能覆盖；可仅会话改变 Native 层级，但应报告持久化不可用，不能宣称重登保留。
         return true, nextValue, true, "session_fallback_no_persist"
     end
 
@@ -163,7 +161,7 @@ function Store:GetLocked(windowId)
 end
 
 function Store:SetLocked(windowId, value, persist)
-    -- 中文维护：仅显式声明 persistSessionLock 的窗口使用此 Authority；Feature HUD 继续由自身 widgetWindow 保存锁。
+    -- 仅显式声明 persistSessionLock 的窗口使用此 Authority；Feature HUD 继续由自身 widgetWindow 保存锁。
     self:EnsureLoaded()
     local key, nextValue = tostring(windowId or ""), value == true
     if key == "" or #key > 180 then return false, "invalid_window_preference_key" end

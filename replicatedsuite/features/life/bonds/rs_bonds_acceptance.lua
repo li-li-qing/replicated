@@ -1,20 +1,22 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 4 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Bonds / Resident Board Acceptance / Sequence Contract
+-- Replicated Suite · 债券与居民委托板契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 中文维护注释：该门禁验证债券 / 居民板（life.bonds）在 V3 架构下的生命周期、
+-- 合并前必须清除冲突标记，核对源码与加载清单完整性。
+-- Authority、调用数据流与存档协议保持下方实现的原有责任，
+-- 禁止通过清配置、跳过加载或恢复Legacy绕过故障；源码与toc.g、UI实现必须成套，
+-- 合并后先检查Lua语法，再做运行时验收。
+-- 该门禁验证债券 / 居民板（life.bonds）在 V3 架构下的生命周期、
 -- Authority 契约、Store 注册、命令完整性、悬浮窗/页面规格以及空板/就绪/不可用状态。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 中文维护注释（Phase 3 Batch C，2026-09-29，core-feature-decoupling-1）：本文件是 life_bonds 的
+-- 本文件是 life_bonds 的
 -- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的
--- 硬编码断言兜底；Phase 3 正在删掉那处硬编码，所以这里必须**无条件注册** case，并在实现缺失时明确失败
+-- 硬编码独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败
 -- （注意：注释里不要写成带点号的“表名+字段”形式，rs_architecture_audit 是行级正则且不跳过注释）。
 local F = S.Features and S.Features.Bonds or nil
 
@@ -28,7 +30,7 @@ G:RegisterSequenceCase("v3_m1_bonds", function(runtimeOnly)
 
     local store = S.Persistence and S.Persistence:GetStore(F.storeId or "v3.life.bonds") or nil
     if store == nil or tostring(store.owner or "") ~= "v3.life.bonds" then return Fail("store_contract") end
-    -- 中文维护注释（2026-09-15，pre-continentOrder 兼容门禁）：债券曾在 schema=1 内新增 canonical 字段。
+    -- 债券曾在 schema=1 内新增 canonical 字段。
     -- Historical bridge 属于 Bonds Store 自己的兼容契约；若未来重构漏注册，旧合法存档会再次被 Core 正确地 fence。
     -- Acceptance 因此只检查 hook 存在，不在此绕过/模拟 Hash；exact old-stamp 认证仍完全由 Persistence Core 执行。
     if type(store.rebuildCanonicalForIntegrity) ~= "function" then return Fail("store_historical_canonical_contract") end
@@ -36,7 +38,7 @@ G:RegisterSequenceCase("v3_m1_bonds", function(runtimeOnly)
     if S.UIV3 == nil or S.UIV3.PageHost == nil or S.UIV3.PageHost.factories["life.bonds"] == nil then return Fail("page_contract") end
     if S.UIV3.WidgetHost == nil or S.UIV3.WidgetHost:GetSpec("life.bonds") == nil then return Fail("widget_contract") end
 
-    -- 中文维护注释（2026-09-24，18.303 债券门禁）：原大陆板族识别、六种材料身份与
+    -- 原大陆板族识别、六种材料身份与
     -- Dropdown 原子命令必须整套存在；否则部分覆盖文件会让 UI 看似可用却继续漏原大陆/写多次 Store。
     if (tonumber(F.MultiContinentSnapshotContractVersion) or 0) < 3
         or (tonumber(F.ResidentBoardFamilyContractVersion) or 0) < 1
@@ -62,7 +64,7 @@ G:RegisterSequenceCase("v3_m1_bonds", function(runtimeOnly)
         return Fail("presentation_command_contract")
     end
 
-    -- 维护（2026-09-30）：玩家诊断到此只读返回；下方租约/刷新/选择测试仅离线执行。
+    -- 玩家诊断到此只读返回；下方租约/刷新/选择测试仅离线执行。
     if runtimeOnly == true then return true end
     if S.FeatureRuntime:IsEnabled("life_bonds") ~= true then return true end
 
@@ -72,7 +74,7 @@ G:RegisterSequenceCase("v3_m1_bonds", function(runtimeOnly)
         local ok, err = F:AcquireConsumer(token)
         if ok ~= true then return Fail("consumer_acquire: " .. tostring(err)) end
         acquired = true
-        -- 中文维护注释（bond-progress-lifecycle-acceptance）：债券任务状态的 Authority 在 QuestProgressV3；
+        -- 债券任务状态的 Authority 在 QuestProgressV3；
         -- 第一个 Bonds Consumer 必须同步持有该服务并订阅内部更新，否则真实交任务后只能等偶发刷新。
         local progress = S.Services and S.Services.QuestProgressV3 or nil
         if type(progress) ~= "table" or F.progressConsumerHeld ~= true or F.progressSubscribed ~= true
@@ -104,7 +106,7 @@ G:RegisterSequenceCase("v3_m1_bonds", function(runtimeOnly)
         return Fail("cache_description_missing")
     end
 
-    -- Test row lookup & selection contract
+    -- 测试行查询与选择契约。
     if #projection.rows > 0 then
         local first = projection.rows[1]
         F.Commands:SelectRow(first.key)

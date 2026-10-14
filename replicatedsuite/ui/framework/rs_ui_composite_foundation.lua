@@ -1,15 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Reusable Composite Foundation v4
+-- Replicated Suite · 状态与选择组合基础
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Foundation-only reusable components shared by multiple feature families.
--- No business facts, no persistence authority and no permanent Tick work.
---
--- Foundation generations:
---   * v1: StatusChip + PickerModel + stable bounded TreeModel/TreeView;
---   * v2: Tree stable identity, transactional mutation and bounded expansion;
---   * v3: SearchablePicker presentation over PickerModel with explicit-submit
---         RU-safe input semantics (Enter/search button; no guessed live keys);
---   * v4: IconPicker presentation over PickerModel + virtual TileView + Image.
+-- 多个功能族共用的 Foundation 组件，不持有业务事实、持久化权限或永久 Tick。
+-- 组合能力：StatusChip、PickerModel、有界稳定 TreeModel/TreeView；树采用稳定身份、事务修改、有界展开；
+-- SearchablePicker 基于 PickerModel 明确提交，使用 RU 已验证输入而不猜测实时按键；IconPicker 组合 PickerModel、虚拟 TileView 与 Image。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -44,7 +40,7 @@ local function Clamp(value, lo, hi)
 end
 
 ------------------------------------------------------------------------
--- StatusChip
+-- StatusChip 状态标记。
 ------------------------------------------------------------------------
 local STATUS = {
     neutral = { tone = "muted", text = "状态" },
@@ -162,15 +158,10 @@ RSUI:RegisterType("StatusChip", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- Status semantics authority + combined-state / detail-header composites (v5)
---
--- Resolves the long-standing "StatusChip 语义统一" contract item: Pending /
--- Success / Warning / Blocked and the Empty/Loading/Error/Blocked combined
--- states have ONE semantic authority here. Pages and features resolve their
--- status through RSUI:ResolveStatusSemantic instead of hardcoding tones or
--- building one-off label stacks. StateNotice and DetailHeader are the two
--- standard visual composites named by the RSUI/roadmap contracts; both stay
--- free of business facts, persistence and Tick work.
+-- 状态语义及组合状态/详情表头。
+-- Pending/Success/Warning/Blocked 和 Empty/Loading/Error/Blocked 均在此统一定义。
+-- 页面/功能经 RSUI:ResolveStatusSemantic 解析，不硬编码色调或自建标签堆栈。
+-- StateNotice/DetailHeader 是标准组合，不持有业务事实、持久化或 Tick。
 ------------------------------------------------------------------------
 RSUI.StatusSemanticsContractVersion = 1
 
@@ -183,8 +174,7 @@ local STATE_SEMANTICS = {
     unavailable = { tone = "muted", text = "不可用" },
 }
 
--- Single authority for status -> {tone, default text}. Unknown statuses
--- resolve to nil so callers can fail visible instead of guessing a color.
+-- 状态到 {tone, 默认文字} 的唯一权威；未知状态返回 nil，让调用方明确显示失败而不猜颜色。
 function RSUI:ResolveStatusSemantic(status)
     status = tostring(status or ""):lower()
     local row = STATE_SEMANTICS[status] or STATUS[status]
@@ -194,8 +184,7 @@ end
 
 RSUI.StateNoticeContractVersion = 1
 
--- StateNotice states are a superset of StatusChip statuses; project the state
--- onto the closest chip-legal status while keeping the notice tone.
+-- StateNotice 状态是 StatusChip 超集；投影到最接近的合法 chip 状态，同时保留 notice 色调。
 local function ChipStatusForState(state)
     if state == "loading" or state == "pending" then return "pending" end
     if state == "error" or state == "blocked" then return "blocked" end
@@ -421,11 +410,9 @@ RSUI:RegisterType("DetailHeader", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- PickerModel: explicit-query, stable-key and bounded option projection.
+-- PickerModel：明确查询、稳定 key、有界选项投影。
 --
--- SearchablePicker / IconPicker / domain pickers may share this model without
--- inventing per-page filtering state. It is deliberately UI-agnostic and does
--- not assume OnTextChanged, generic keyboard navigation or Tick polling.
+-- SearchablePicker/IconPicker/领域选择器共用模型，不另建页面筛选状态；模型与 UI 无关，不假设 OnTextChanged、通用键盘导航或 Tick 轮询。
 ------------------------------------------------------------------------
 local PickerModel = { version = 1 }
 PickerModel.__index = PickerModel
@@ -634,12 +621,10 @@ end
 RSUI.PickerModel = PickerModel
 
 ------------------------------------------------------------------------
--- SearchablePicker v1
+-- SearchablePicker 搜索选择器。
 --
--- Explicit-submit Presentation above PickerModel. RU input evidence currently
--- validates Enter/EditEnter/LostFocus but not generic OnTextChanged/OnKeyDown,
--- therefore filtering happens ONLY on Submit() or the visible Search button.
--- The component is an embedded workbench surface, not an implicit popup.
+-- PickerModel 上的明确提交表现；
+-- RU 已验证 Enter/EditEnter/LostFocus，未验证通用 OnTextChanged/OnKeyDown，仅 Submit() 或可见搜索按钮执行筛选。组件是嵌入工作台，不隐式弹层。
 ------------------------------------------------------------------------
 RSUI.SearchablePickerContractVersion = 1
 RSUI:RegisterType("SearchablePicker", function(spec)
@@ -855,9 +840,7 @@ RSUI:RegisterType("SearchablePicker", function(spec)
         return height
     end
 
-    -- TextInput/Button closures read their component spec at event time, so the
-    -- composite can install callbacks after all required children have built
-    -- without binding duplicate Native handlers.
+    -- TextInput/Button 闭包在事件时读取组件 spec，全部必需子节点完成后可安装回调，不重复绑定 Native 处理器。
     input.spec.onSubmit = function(value) return c:SubmitQuery(value, "enter") end
     searchButton.spec.onClick = function() return c:SubmitQuery(c.input:GetDraftValue(), "button") end
     if clearButton ~= nil then
@@ -878,11 +861,9 @@ RSUI:RegisterType("SearchablePicker", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- IconPicker v1
+-- IconPicker 图标选择器。
 --
--- Generic icon-selection Presentation above PickerModel. Icon paths are caller
--- projection data; the component neither resolves Skill/Buff/Item metadata nor
--- owns a second query/selection model. TileView keeps native tile count bounded.
+-- PickerModel 上的通用图标表现；图标路径来自调用方投影，不解析 Skill/Buff/Item 元数据，也不持有第二套查询/选择模型，TileView 限制原生图块数量。
 ------------------------------------------------------------------------
 RSUI.IconPickerContractVersion = 1
 RSUI:RegisterType("IconPicker", function(spec)
@@ -1261,23 +1242,16 @@ RSUI:RegisterType("IconPicker", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- TreeModel: bounded, key-stable and UI-agnostic.
+-- TreeModel：有界、稳定 key、与 UI 无关。
 ------------------------------------------------------------------------
 local TreeModel = { version = 2 }
 TreeModel.__index = TreeModel
 
--- Tree mutations are staged and validated before commit.  Failed SetNodes /
--- expansion operations may update lastError for diagnostics, but must not
--- mutate rows/maps/expansion/revision or leave a half-applied projection.
+-- 树修改先暂存校验再提交；失败 SetNodes/展开可更新 lastError 供诊断，但不能改 rows/maps/expansion/revision 或留下半应用投影。
 RSUI.TreeMutationTransactionContractVersion = 2
--- Node identity is a semantic contract, not a visual-row convenience.  A tree
--- must provide node.key / node.id or getKey(); index-path fallback is forbidden
--- because insert/reorder operations would silently move expansion/selection to
--- a different entity.
+-- 节点身份属语义契约；必须提供 node.key/node.id/getKey()，禁止下标路径兜底，否则插入/重排会把展开/选择静默迁移到其它实体。
 RSUI.TreeStableIdentityContractVersion = 1
--- Expansion overrides are tri-state (true/false/nil) and hard-bounded so a
--- long-lived tree receiving changing datasets cannot accumulate stale keys
--- without limit.
+-- 展开覆盖为 true/false/nil 三态且硬限制数量，防止长寿命树随数据变化无限积累旧 key。
 RSUI.TreeExpansionStateBoundContractVersion = 1
 
 local function TreeNodeKey(model, node, path)
@@ -1326,9 +1300,7 @@ local function BuildTreeProjection(model, nodes, expanded)
     local roots = type(nodes) == "table" and nodes or {}
     local nextExpanded = Copy(expanded)
 
-    -- Frame-cursor DFS keeps temporary memory bounded by traversal depth rather
-    -- than by sibling count. Every frame stores only an array reference + next
-    -- index. Visible output remains hard-bounded by maxNodes.
+    -- 帧游标 DFS 临时内存按遍历深度限制，不随兄弟数扩张；每帧仅数组引用和下一下标，输出受 maxNodes 硬限制。
     local frames = {}
     if #roots > 0 then
         frames[1] = { nodes = roots, index = 1, depth = 0, parentKey = nil, pathPrefix = "" }
@@ -1411,9 +1383,7 @@ local function BoundTreeExpansionState(model, expanded, visibleKeys)
     if count <= model.maxExpansionState then return expanded, false, count end
 
     local out, kept = {}, 0
-    -- Preserve currently visible overrides first; they are the state the player
-    -- can actually observe. Hidden/stale keys are best-effort once the hard cap
-    -- is reached.
+    -- 优先保留用户实际可见的展开覆盖；达硬上限后隐藏/旧 key 仅尽力保留。
     for key in pairs(type(visibleKeys) == "table" and visibleKeys or {}) do
         local value = expanded[key]
         if value ~= nil and kept < model.maxExpansionState then

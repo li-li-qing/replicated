@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 个人战斗历史页面
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 本地永久战绩只读页；打开历史不领取 Combat Consumer。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end

@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Shared Module Diagnostics Floating Window
+-- Replicated Suite · 模块诊断窗口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 中文维护注释（2026-09-18，module-diagnostics-window-1）：
+-- 约束（module-diagnostics-window-1）：
 -- 原因：每个 Feature 自建诊断窗会复制 Floating/分页/输入生命周期，最终再次分叉；因此全 Suite
 -- 只保留一个共享窗口，moduleId 仅是当前展示上下文。Authority：报告由 ModuleDiagnosticsHub 生成，
 -- 窗口只持有一次 Capture 的 immutable snapshot/pageIndex；Feature 生命周期/Store 均不归这里。
@@ -38,7 +40,7 @@ S.UIV3.ModuleDiagnosticsWindowV3 = type(previousWindow) == "table"
     pageIndex = 0,
 }
 local W = S.UIV3.ModuleDiagnosticsWindowV3
--- 中文维护（2026-09-25，diagnostic-native-capacity-1）：RU 多行 EditBox 的 SetText/GetText
+-- 约束（2026-09-25，diagnostic-native-capacity-1）：RU 多行 EditBox 的 SetText/GetText
 -- 往返容量明显小于 maxLength，且不同构建/文本形态会变化。3500 字节在实机出现
 -- expected=3429 / actual=2256 的稳定截断。正常分页改为保守 2048，并在任何回读失败时
 -- 基于本次 Native 实测 actualBytes 自动无损重分页；报告 snapshot 不重新采集。
@@ -57,12 +59,12 @@ local function SetText(control, text)
 end
 
 function W:_UpdateNavigation()
-    -- 中文维护注释（2026-09-19，module-diagnostics-pagination-authority-1）：
+    -- 约束（2026-09-19，module-diagnostics-pagination-authority-1）：
     -- 原因：RU 实机出现“正文已经是 PAGE=1/2，但工具栏仍 0/0 且下一页禁用”。旧实现把
     -- 分页导航错误绑定到 DiagnosticCopyBox 的 Native 回读事务：Hub 已经生成 immutable
     -- snapshot，正文甚至已经写入编辑框，只要 CopyBox 最后一步回读/提交没有完成，snapshot
     -- 就不发布，用户因此失去其余页面。分页 Authority 本应是 Hub snapshot，不是 Native 编辑框。
-    -- Authority/数据流：Hub:GetPage 成功即证明 page index 属于冻结 snapshot；窗口立刻发布
+    -- 权威归属/数据流：Hub:GetPage 成功即证明 page index 属于冻结 snapshot；窗口立刻发布
     -- snapshot/pageIndex。CopyBox 只负责“当前页显示与完整性校验”，失败仅把页码标红并在状态栏
     -- 报错，不得锁死上一页/下一页。缩短分页仍只重切同一份 report，不重新采集业务/Store。
     -- 兼容边界：分页可继续浏览不代表失败页可作为完整证据；copyPageValid=false 时仍要求用户
@@ -113,7 +115,7 @@ end
 function W:EnsureCreated()
     if self.created == true and self.surface ~= nil then return true end
 
-    -- 中文维护注释（2026-09-18，module-diagnostics-aux-fail-open-1）：
+    -- 约束（2026-09-18，module-diagnostics-aux-fail-open-1）：
     -- 原因：模块诊断是故障观察面，不得依赖另一个持久化 Store 健康后才能打开；否则
     -- v3.presentation.aux_windows 恰好损坏时，用户会在最需要诊断的时刻失去诊断入口。
     -- Authority：AuxWindowStore 只拥有“窗口几何/透明度”等 Presentation 状态，绝不拥有
@@ -223,7 +225,7 @@ function W:EnsureCreated()
         slot = { size = "fixed", width = 76 } })
     self.moduleText = RSUI:Text({ id = self.id .. "_module", parent = actions, text = "", fontSize = 10, tone = "muted",
         overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-    -- 中文维护：单独一行保持窄窗口不溢出；文件按钮直接使用 Hub immutable 原文，复制框失败也可导出。
+    -- 单独一行保持窄窗口不溢出；文件按钮直接使用 Hub immutable 原文，复制框失败也可导出。
     local exportActions = RSUI:HorizontalBox({ id = self.id .. "_export_actions", parent = stack, gap = 6,
         slot = { size = "fixed", height = 28, hAlign = "fill" } })
     self.exportButton = RSUI:Button({ id = self.id .. "_export_file", parent = exportActions, text = "导出 .txt", compact = true,
@@ -261,7 +263,7 @@ function W:EnsureCreated()
     if copyBox == nil then return false, copyErr or "诊断专用复制框创建失败" end
     self.copyBox, self.copyHost = copyBox, copyHost
 
-    -- 中文维护注释：Raw Native DiagnosticCopyBox 不是 RSUI logical child；只有 copyHost 的
+    -- Raw Native DiagnosticCopyBox 不是 RSUI logical child；只有 copyHost 的
     -- Layout 可以提交几何。相同几何由 CopyBox 自己 diff，任何 Feature Refresh/Tick 都不会
     -- SetText/SetExtent，因此用户 Ctrl+A 后的选区不会被后台布局刷新破坏。
     if type(copyHost.Layout) == "function" then
@@ -338,7 +340,7 @@ local function PageForOffset(snapshot, offset)
     return math.max(1, math.min(#bounds, 1))
 end
 
--- 中文维护（2026-09-25，diagnostic-auto-repage-1）：Native 回读失败是 Presentation 容量
+-- 约束（2026-09-25，diagnostic-auto-repage-1）：Native 回读失败是 Presentation 容量
 -- 事实，不是诊断采集失败。只允许对同一 immutable report 调 Hub:Repage；不调用 Provider、
 -- Store、Feature 或 Native 业务 API。actualBytes 来自刚完成的 SetText/GetText，取 78% 作为
 -- 安全预算，并同时最多缩到上一预算的 70%，避免 UTF-8/头部形态差异再次触顶。成功后记住
@@ -414,7 +416,7 @@ function W:_PresentSnapshot(snapshot, index, autoDepth)
     return true
 end
 
--- 中文维护：只有用户点击才采集/保存。既有冻结报告优先复用；没有报告才显式 Capture，
+-- 只有用户点击才采集/保存。既有冻结报告优先复用；没有报告才显式 Capture，
 -- 不读当前编辑框，不重分段，不修改业务 Store，也不因复制失败丢弃完整正文。
 function W:ExportFile()
     local diagnostic = S.DiagnosticsManager
@@ -501,7 +503,7 @@ function W:RestoreNormalPages()
 end
 
 function W:Close()
-    -- 中文维护注释（2026-09-18）：CopyBox 的键盘 Authority 只允许在“窗口确实关闭”
+    -- 约束（2026-09-18）：CopyBox 的键盘 Authority 只允许在“窗口确实关闭”
     -- 的 onClosed 生命周期里释放。这里禁止提前 Deactivate；否则 FloatingSurface:Close()
     -- 随后再次触发 onClosed，会造成双重释放/焦点抖动，也会让未来 Close 被 veto 时出现
     -- “窗口仍可见但复制框已经失去 Authority”的半关闭状态。

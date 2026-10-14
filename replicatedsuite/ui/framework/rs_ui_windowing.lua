@@ -1,16 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Outer Window Foundation v16
+-- Replicated Suite · 顶层窗口移动与缩放
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Every V3 top-level/native window binds its movement and resizing here.
--- Presentation code supplies policy/persistence callbacks; this layer owns the
--- native drag transaction, eight-edge resize handles, unrestricted free-placement
--- safety and strict-authority cache reconciliation after native movement.
---
--- No permanent Tick/OnUpdate is created. Native StartMoving/StartSizing owns
--- the mouse gesture. During an active resize only, one bounded ~16ms interactive task on the
--- shared Scheduler reflows RSUI content to the live Native extent. If scheduling
--- is unavailable/rejected, the dedicated resize handle owns a gesture-only
--- OnUpdate fallback. Both paths are removed immediately at drag stop.
+-- 全部 V3 顶层 Native 窗口在此绑定移动/缩放；表现提供策略/持久回调，此层持有原生事务、八向把手、自由位置安全及移动后严格缓存协调。
+-- 无永久 Tick/OnUpdate，Native StartMoving/StartSizing 持鼠标；
+-- 仅活跃缩放时借共享约 16ms 有界交互任务重排实时 extent，失败由专用把手手势期 OnUpdate 兜底，两路径停止立即移除。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -32,7 +27,7 @@ RSUI.Windowing.ResizeHitSurfaceContractVersion = 2
 RSUI.Windowing.ResizeCaptureStabilityContractVersion = 2
 RSUI.Windowing.metrics = RSUI.Windowing.metrics or {}
 local W = RSUI.Windowing
-local NATIVE_RESIZE_LIMIT = 16384 -- technical guard only; not a user-facing window cap
+local NATIVE_RESIZE_LIMIT = 16384 -- 仅技术守卫，不是用户窗口上限。
 
 local function NativeOf(value)
     if type(value) == "table" and value.root ~= nil then return value.root end
@@ -76,7 +71,7 @@ function W:ApplyGeometry(window, owner, x, y, width, height, force)
     end
     if x == nil or y == nil or width == nil or height == nil or width <= 0 or height <= 0 then return false, "invalid_window_rect" end
     if type(UI.EnsureAnchor) ~= "function" or type(UI.EnsureExtent) ~= "function" then return false,"geometry_transaction_unavailable" end
-    -- 中文维护（2026-10-04）：Primitive 首次 Show 后 Native 可能调整出生锚点，
+    -- 约束（2026-10-04）：Primitive 首次 Show 后 Native 可能调整出生锚点，
     -- 随后首次进入 Windowing 才建立校准后的几何基线。这个初始化交接必须失效旧几何镜像，
     -- 否则被误报为 strict 外部写入（换装/功能方案启动各按钮一次）。后续非 force 校验仍严格
     -- 记录真实越权位移；不清历史违规、不改变 Gate。仅顶层窗口进入该车道，HUD 不加入。
@@ -353,10 +348,7 @@ local function ReconcileWindow(controller, window, owner, x, y, width, height)
         W.metrics.recoveryClamps = (tonumber(W.metrics.recoveryClamps) or 0) + 1
     end
 
-    -- Native movement/sizing intentionally changes geometry outside DiffRenderer
-    -- while the mouse is captured. Clear the cached native snapshot BEFORE the
-    -- strict owner writes the committed geometry back, so this valid transaction
-    -- never looks like an authority violation.
+    -- 鼠标捕获时 Native 移动/缩放有意绕 Diff 改几何；严格 owner 回写提交前先清缓存，使合法事务不被视为权威违规。
     return W:ApplyGeometry(window, owner, x, y, width, height, true)
 end
 
@@ -380,9 +372,7 @@ function W:Attach(spec)
     if id == "" or window == nil or dragHandle == nil or owner == "" then return nil, "windowing identity required" end
     if self.bindings[id] ~= nil then return self.bindings[id] end
 
-    -- A top-level window has no UX minimum in the foundation. Feature code may
-    -- opt into a semantic minimum explicitly; otherwise only the native 1px
-    -- technical floor remains. Layout compression/clipping owns tiny extents.
+    -- Foundation 不强加顶层 UX 最小值；Feature 显式选择语义下限，否则仅 Native 1px 技术下限，小尺寸由布局压缩/裁切处理。
     local minWidth = math.max(1, tonumber(spec.minWidth) or 1)
     local minHeight = math.max(1, tonumber(spec.minHeight) or 1)
     local maxWidth = tonumber(spec.maxWidth)
@@ -559,9 +549,7 @@ function W:Attach(spec)
         -- 原 min/preferred 不改，返回大屏时自动恢复；这里只更新本次 native bounds。
         minW = math.min(minW, context.usableWidth or minW)
         minH = math.min(minH, context.usableHeight or minH)
-        -- Native APIs require a finite maximum on some RU clients. When the
-        -- caller has no semantic max, use a very large technical guard instead
-        -- of silently capping to the current viewport.
+        -- 部分 RU Native 要求有限 max；无语义上限时用大技术守卫，不能静默限制为当前视口。
         local maxW = math.max(minW, (tonumber(self.maxWidth) or NATIVE_RESIZE_LIMIT) * scale)
         local maxH = math.max(minH, (tonumber(self.maxHeight) or NATIVE_RESIZE_LIMIT) * scale)
         local resizingOk, resizingErr = EnsureNativeResizing(self.window, self.resizeEnabled == true and self.locked ~= true)
@@ -626,7 +614,7 @@ function W:Attach(spec)
         -- 对 8 个手柄持续重锚，并且每帧重新调用 UseResizing/SetMinResizingExtent/SetMaxResizingExtent。
         -- RU 客户端对活动中的 sizing transaction 不保证这些配置调用幂等，实机表现就是“按住边缘有时
         -- 没反应 / 刚开始又失效”。Slider 与 Table separator 已经遵守“活动 drag surface 不重锚”规则，
-        -- Windowing 现在统一同一语义：手势期间只让内容跟随 live extent，手柄和 Native resize bounds
+        -- Windowing 现在统一同一语义：手势期间只让内容跟随 实时 extent，手柄和 原生缩放边界
         -- 冻结到 DragStart；DragStop/Commit 后一次性重排。无 Tick 新增，不改变 Store 或窗口尺寸 Authority。
         if self:IsResizing() == true then return true end
         local t = self.handleThickness
@@ -750,18 +738,14 @@ function W:Attach(spec)
         or type(UI.EnsureEnabled) ~= "function" or type(UI.EnsurePickable) ~= "function" then
         return AbortAttach("critical_interaction_contract_unavailable")
     end
-    -- Windowing is the Authority for its drag surface. Do not assume the caller
-    -- happened to create a pickable Border/EmptyWidget: establish hit-testing
-    -- before enabling native drag, otherwise OnDragStart can never be delivered.
+    -- Windowing 持有拖动面，不能假设调用方已建可拾取 Border/EmptyWidget；启原生拖动前确立命中，否则无 OnDragStart。
     local handleEnabled, _, handleEnableErr = UI:EnsureEnabled(dragHandle, true, owner)
     if handleEnabled ~= true then return AbortAttach("window_drag_handle_enable_failed:" .. tostring(handleEnableErr or "rejected")) end
     local handlePickable, _, handlePickErr = UI:EnsurePickable(dragHandle, true, owner)
     if handlePickable ~= true then return AbortAttach("window_drag_handle_pickable_failed:" .. tostring(handlePickErr or "rejected")) end
     local dragEnabled, dragErr = UI:TryInteractionCall(dragHandle, "EnableDrag", true)
     if dragEnabled ~= true then return AbortAttach("window_enable_drag_failed:" .. tostring(dragErr or "rejected")) end
-    -- ArcheRage RU does not consistently emit OnDragStart from WidgetBase
-    -- after EnableDrag(true) alone. Every window drag surface therefore uses
-    -- the same verified DC_ALWAYS contract as sliders/splitters/gear buttons.
+    -- RU 仅 EnableDrag(true) 未必派发 OnDragStart；所有窗口拖动面使用滑块/分隔条/装备按钮相同已验证 DC_ALWAYS。
     if type(dragHandle.SetDragCondition) == "function" and DC_ALWAYS ~= nil then
         local conditionOk, conditionErr = UI:TryInteractionCall(dragHandle, "SetDragCondition", DC_ALWAYS)
         if conditionOk ~= true then return AbortAttach("window_drag_condition_failed:" .. tostring(conditionErr or "rejected")) end
@@ -792,9 +776,7 @@ function W:Attach(spec)
 
     if controller.resizeEnabled then
         for _, definition in ipairs(HANDLE_SPECS) do
-            -- Deferred native drag callbacks must not capture the reused Lua 5.1
-            -- generic-for variable. A stable per-handle definition preserves the
-            -- correct resize direction for every edge/corner.
+            -- 延迟 Native 回调不能捕获复用 Lua 5.1 generic-for 变量；各把手稳定定义保证边/角方向。
             local handleDefinition = definition
             local handle = UI:CreateEmptyWidget(window, "v3_window_" .. id .. "_resize_" .. handleDefinition.key, 0, 0, 1, 1, true)
             if handle ~= nil then
@@ -805,12 +787,7 @@ function W:Attach(spec)
                     local conditionOk, conditionErr = UI:TryInteractionCall(handle, "SetDragCondition", DC_ALWAYS)
                     if conditionOk ~= true then return AbortAttach("window_resize_drag_condition_failed:" .. tostring(handleDefinition.key) .. ":" .. tostring(conditionErr or "rejected")) end
                 end
-                -- ArcheRage RU exposes X2Cursor:SetCursorImage, but the project
-                -- does not yet contain a verified resize-cursor texture path.
-                -- Until that native asset is verified, provide an immediate
-                -- framework-owned edge highlight on hover rather than guessing a
-                -- client resource name. The hit target and actual resize gesture
-                -- remain identical.
+                -- RU 提供 X2Cursor:SetCursorImage，但尚无已验证缩放光标纹理；验证前使用框架边缘悬浮高亮，不猜资源名，命中/缩放手势保持一致。
                 local hoverLine = nil
                 if type(handle.CreateColorDrawable) == "function" then
                     -- 维护（window-resize-hit-plane-1）：完全 alpha=0 的 EmptyWidget 在 RU 不同父层/后创建
@@ -904,10 +881,7 @@ function W:Detach(id)
     if controller == nil then return false end
     controller.enabled = false
     controller.locked = true
-    -- Detach can happen during page/shell teardown while native mouse capture is
-    -- still active. Release the RU StartMoving/StartSizing transaction before
-    -- dropping the geometry lease/handlers, otherwise a hidden stale window may
-    -- keep moving or sizing until the next mouse event.
+    -- 拆页/Shell 时可能仍捕获鼠标；丢几何租约/处理器前先释放 StartMoving/StartSizing，避免隐藏旧窗继续移动/缩放。
     if controller:IsInteracting() == true and controller.window ~= nil and type(controller.window.StopMovingOrSizing) == "function" then
         pcall(function() controller.window:StopMovingOrSizing() end)
     end

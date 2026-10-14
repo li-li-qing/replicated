@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Verified static Chinese localization authority
--- Runtime code never fetches the Wiki.  Additions must be reviewed against
--- the RU-CN Knowledge Database before being committed.
+-- Replicated Suite · 静态中文本地化
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 运行时禁止访问 Wiki；新增静态中文本地化条目必须在提交前与 RU-CN Knowledge Database 核对。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -21,9 +23,7 @@ S.Data.Localization = {
         [6872] = "高级印刷机",
         [10469] = "高级印刷机",
         [11780] = "多功能制作台",
-        -- Trade materials: reviewed static subset currently referenced by the
-        -- trade/craft assistant. IDs are server item identities, never recipe
-        -- resource ids or a machine translation cache.
+        -- 贸易材料是当前贸易/制作助手使用且已审查的静态子集；ID 为服务器物品身份，不能使用配方资源 ID 或机器翻译缓存。
         [30898] = "切碎的蔬菜", [30902] = "谷物细粉", [30905] = "干净的肉脯",
         [30900] = "晒干的花草", [30899] = "浓缩的果汁", [30901] = "捣碎的香料",
         [3603] = "鸡蛋", [8065] = "葡萄", [19947] = "鹅毛", [773] = "苹果",

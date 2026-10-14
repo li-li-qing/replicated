@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Gear Quick Button Snap Settings Modal
+-- Replicated Suite · 装备快捷按钮吸附设置弹窗
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation only. Exact numeric entry is intentional: the interaction
--- policy is persisted by Gear Feature authority, while this modal owns no
--- independent state and performs no polling / Tick work.
+-- 仅负责表现。精确数字输入是有意设计：交互策略由 Gear Feature 的权威层持久化；本弹窗不持有独立状态，也不执行轮询或 Tick。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

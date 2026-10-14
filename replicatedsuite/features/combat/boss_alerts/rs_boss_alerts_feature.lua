@@ -1,13 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - combat_boss_alerts Feature Authority
+-- Replicated Suite · 首领机制提示功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 1 Batch C（2026-09-28）：从 features/rs_business_bridge.lua 机械搬迁（整块 do..end 原样搬运）。
--- 只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、UpdateTopic、Demand owner、
--- Commands、Projection shape、ApiDependencies、Scheduler task name、Event 订阅全部与被搬迁前逐字一致。
---
+-- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
 -- Authority 边界：本文件不拥有 Combat 事实（事实归 CastingObservationV3 / AuraObservationV3 与
 -- AlertsService），只按固定目录/四个 scope 做有界观察，并把“没证据”如实标成未知。
---------------------------------------------------------------------------
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory
@@ -16,7 +15,7 @@ local Load, NewFeature = FSF.Load, FSF.NewFeature
 local P = S.Persistence
 
 do
-    -- 中文维护（2026-09-12）：首领规则是 Feature 的业务 Authority；Casting/Aura 仅供事实，
+    -- 首领规则是 Feature 的业务 Authority；Casting/Aura 仅供事实，
     -- Alerts 仅负责提示寿命。逐条开关用稳定 key 持久化，目录不被写入；默认缺省=启用，兼容旧 HUD-only 存档。
     local BOSS_OBSERVE_TASK = "v3_business_boss_alert_observe"
     local BOSS_AURA_INTERVAL_MS = 300
@@ -53,10 +52,10 @@ do
     local function BossHide(feature, key)
         local alerts = S.Services and S.Services.Alerts
         if alerts and type(alerts.HideOwner) == "function" then return alerts:HideOwner(feature.Id, key) end
-        return true -- 中文维护：旧服务无按 owner 隐藏时不退回全局 Hide，避免清除别的业务提示。
+        return true -- 旧服务无按 owner 隐藏时不退回全局 Hide，避免清除别的业务提示。
     end
     local function BossTestKey(key) return "__boss_test:" .. tostring(key) end
-    -- 中文维护（boss-hud-clock-1）：可选字段避免改动旧 HUD-only 存档的缺省形状；
+    -- 可选字段避免改动旧 HUD-only 存档的缺省形状；
     -- Feature 是设置 Authority，服务/Presenter 接收分离配置，不得反向写 State。
     local function BossHudConfig(feature)
         return {anchorMode=feature.State.hudAnchor, fontSize=feature.State.hudFontSize,
@@ -88,9 +87,9 @@ do
         local style = tostring(rule.style or "bigtext")
         local duration = math.max(1000, math.min(10000, math.floor(tonumber(feature.State.hudDurationMs) or 3000)))
         local remaining = math.max(0, math.floor(tonumber(remainingMs) or 0))
-        -- 中文维护：读条必须覆盖实际剩余时间；hudDurationMs 仅控制普通大字提示，不截断长读条。
+        -- 读条必须覆盖实际剩余时间；hudDurationMs 仅控制普通大字提示，不截断长读条。
         if style == "countdown" and remaining > 0 then duration = remaining end
-        -- 中文维护：不把显示时长当作读条剩余时间；来源/key 让停用只回收当前规则的提示。
+        -- 不把显示时长当作读条剩余时间；来源/key 让停用只回收当前规则的提示。
         return alerts:Push({ text = tostring(rule.alert or rule.key), style = style, durationMs = duration,
             remainingMs = style == "countdown" and remaining or 0, ownerKey = feature.Id, alertKey = alertKey or rule.key,
             presentationConfig = BossHudConfig(feature) })
@@ -100,7 +99,7 @@ do
         dia.lastFactSource, dia.matchedRule = source, tostring(rule.key)
         dia.lastMechanicAt = math.max(0, tonumber(S.NowMs and S.NowMs()) or 0)
         local ok, err = BossPush(feature, rule, remaining)
-        -- 中文维护：失败也消费本次观察边沿，防止 100ms 无限重试；保留可见失败证据，不虚报已显示。
+        -- 失败也消费本次观察边沿，防止 100ms 无限重试；保留可见失败证据，不虚报已显示。
         if ok == true then
             dia.delivered = (tonumber(dia.delivered) or 0) + 1
             dia.lastDeliveryError = nil
@@ -116,7 +115,7 @@ do
         local dia = feature._bossDiag
         dia.observeTicks = (tonumber(dia.observeTicks) or 0) + 1
         local alerts = S.Services and S.Services.Alerts
-        -- 中文维护：恢复被维护清理掉的计时任务，不重复 Push、不延后真实截止点。
+        -- 恢复被维护清理掉的计时任务，不重复 Push、不延后真实截止点。
         if alerts and type(alerts.Maintain) == "function" then alerts:Maintain(feature.Id) end
         local casting = S.Services and S.Services.CastingObservationV3
         if type(casting) == "table" and type(casting.Get) == "function" then
@@ -132,7 +131,7 @@ do
                 if available and type(cast) == "table" and cast.casting == true then
                     local rule = BossCastIndex[NormalizeCastKey(cast.spellName)]
                     local old = previous[scope]
-                    -- 中文维护：未收录读条只来自当前目标/关注目标的真实观测，不猜 Boss ID/未来 CD；
+                    -- 未收录读条只来自当前目标/关注目标的真实观测，不猜 Boss ID/未来 CD；
                     -- 不把自己的技能、目标的目标混作机制。固定两个候选，不全单位扫描。
                     if rule == nil and feature.State.showObservedCasts == true and observed == nil
                         and (scope == "target" or scope == "watchtarget") then
@@ -152,7 +151,7 @@ do
                 elseif available then previous[scope] = nil end
             end
             dia.castCoverageComplete = complete
-            -- 中文维护：同机制同时出现在多个 scope 时只合并“提示”，不宣称它们是同一实体。
+            -- 同机制同时出现在多个 scope 时只合并“提示”，不宣称它们是同一实体。
             -- 真实空观察可结束通知段；同 scope 读条进度回退可重开一段；未知读取不得伪造结束。
             -- 固定目录/四个 scope 有界遍历，精确索引匹配；不做全单位枚举、Tag 模糊匹配或热路径保存。
             for _, rule in ipairs(BossRules) do
@@ -164,7 +163,7 @@ do
                         end
                         feature._bossActiveCasts[rule.key] = match.source
                     else
-                        -- 中文维护（boss-hud-clock-1）：以前要求四个 scope 都可读才能结束段；
+                        -- 以前要求四个 scope 都可读才能结束段；
                         -- 无关注目标/无效第三方读条会让已结束规则永远处于 active，漏掉下次施法。
                         -- 只让本提示实际观测来源的“已可读且不再匹配”结束段；未知不伪造打断。
                         local source = feature._bossActiveCasts[rule.key]
@@ -176,7 +175,7 @@ do
                     end
                 end
             end
-            -- 中文维护：已知机制/手动测试/其他模块提示优先，泛化读条不得抢占它们。
+            -- 已知机制/手动测试/其他模块提示优先，泛化读条不得抢占它们。
             -- 只按 scope+serial 建立一次倒计时；后续采样不反复重置，断读仅按已有截止点失效。
             local activeKey = alerts and alerts.currentAlertKey or nil
             local isObserved = alerts and alerts.currentOwnerKey == feature.Id
@@ -220,7 +219,7 @@ do
     end
 
     local function BossStopObservation(feature)
-        -- 中文维护：先使回调代次失效，再释放租约；旧闭包不能在下次启用时复用新需求。
+        -- 先使回调代次失效，再释放租约；旧闭包不能在下次启用时复用新需求。
         feature._bossObservationGeneration = (tonumber(feature._bossObservationGeneration) or 0) + 1
         feature._bossObservationStarted = false
         if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BOSS_OBSERVE_TASK) end
@@ -284,7 +283,7 @@ do
             if (key == nil or rule.key == key) and BossRuleEnabled(feature, rule.key) ~= enabled then changed = true end
         end
         if not changed then return true end
-        -- 中文维护：用户显式开关必须经过现有耐久事务及回读；失败回滚 State，不更新投影/观察。
+        -- 用户显式开关必须经过现有耐久事务及回读；失败回滚 State，不更新投影/观察。
         -- 全部启停仅提交一次；nil key 仅是私有批量入口，不把用户输入作为任意存档字段名。
         local ok, err = P:MutateStore(feature.storeId, function()
             feature.State.items = type(feature.State.items) == "table" and feature.State.items or {}
@@ -298,10 +297,10 @@ do
         if ok ~= true then return false, err end
         if enabled ~= true then
             BossHide(feature, key)
-            -- 中文维护（2026-10-07）：逐条关闭同时取消对应测试；nil key 已按 owner 清除全部提示。
+            -- 逐条关闭同时取消对应测试；nil key 已按 owner 清除全部提示。
             if key ~= nil then BossHide(feature, BossTestKey(key)) end
         end
-        -- 中文维护：重新启用可提示仍在观察到的当前机制；这是设置操作边沿，不修改事实或伪造状态。
+        -- 重新启用可提示仍在观察到的当前机制；这是设置操作边沿，不修改事实或伪造状态。
         for _, rule in ipairs(BossRules) do
             if key == nil or rule.key == key then
                 if feature._bossActiveCasts then feature._bossActiveCasts[rule.key] = nil end
@@ -321,12 +320,12 @@ do
             end
         end
         if rule == nil or (kind ~= nil and rule.kind ~= kind) then return false, "未找到可测试的对应规则" end
-        -- 中文维护（2026-10-07）：仿真独立提示 key，让真实“未施法”观察不能在下个 tick 撤掉测试。
+        -- 仿真独立提示 key，让真实“未施法”观察不能在下个 tick 撤掉测试。
         -- 寿命仍归共享 Alerts 的原截止点；不写真实观察事实/诊断，不自建计时或证明 RU Boss 已触发。
         return BossPush(feature, rule, rule.kind == "cast" and 6000 or 0, BossTestKey(rule.key))
     end
 
-    -- 中文维护：静态规则配置不依赖启用/消费租约；首次打开已关闭功能也要能配置。
+    -- 静态规则配置不依赖启用/消费租约；首次打开已关闭功能也要能配置。
     -- 纯投影读 State，不触发 Native/Store/事件；运行期 read 与初始目录回退复用同一构建函数。
     local function BossRuleRows(feature)
         local rows = {}
@@ -341,18 +340,18 @@ do
                 tone = enabled and "success" or "muted", mechanicKey = rule.key, kind = rule.kind, style = rule.style, debuffId = tonumber(rule.debuffId)}
         end
         if #rows == 0 then return rows, "empty", "BossAlerts 静态目录为空" end
-        return rows, "ready" -- 中文维护：避免 `true and nil or error` 把成功投影也写成错误。
+        return rows, "ready" -- 避免 `true and nil or error` 把成功投影也写成错误。
     end
 
     local BossAlerts = NewFeature("combat_boss_alerts", {
         apiDependencies = { "X2Unit:UnitCastingInfo", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitDeBuffTooltip" },
         observationContractVersion = 3,
         onEnable = function(feature)
-            -- 中文维护：关闭设置页不等于关闭警报；运行期租约只随 Feature 停用/重载清除。
+            -- 关闭设置页不等于关闭警报；运行期租约只随 Feature 停用/重载清除。
             if feature.Demand:Has("boss_alerts:runtime") then return true end
             return feature.Demand:Acquire("boss_alerts:runtime", {}, "boss_alert_runtime")
         end,
-        -- 中文维护：新增可选字段只有显式调整时写入；不向旧完整性快照强加非 nil 默认字段。
+        -- 新增可选字段只有显式调整时写入；不向旧完整性快照强加非 nil 默认字段。
         persistentKeys = {"hudOffsetX", "hudOffsetY", "hudWidth", "showObservedCasts"},
         state = { hudEnabled = true, hudAnchor = "center", hudFontSize = 34, hudDurationMs = 3000, items = {} },
         default = { hudEnabled = true, hudAnchor = "center", hudFontSize = 34, hudDurationMs = 3000, items = {} },
@@ -384,7 +383,7 @@ do
             end,
             SetHudEnabled = function(feature, value)
                 if type(value) ~= "boolean" then return false, "HUD 开关必须为布尔值" end
-                -- 中文维护：低频显式开关先耐久保存，保存失败不改变观察/提示生命周期。
+                -- 低频显式开关先耐久保存，保存失败不改变观察/提示生命周期。
                 local ok, err = P:MutateStore(feature.storeId, function() feature.State.hudEnabled = value; return true end,
                     {durable = true, reason = "boss_hud_enabled"})
                 if ok ~= true then return false, err end
@@ -456,18 +455,18 @@ do
             end,
             TestCountdown = function(feature)
                 return BossPush(feature, {key = "__hud_test_countdown", alert = "机制倒计时", style = "countdown"},
-                    6000) -- 中文维护：固定六秒，6/5/4/3/2/1 后隐藏，便于验证实际调度而非静态标签。
+                    6000) -- 固定六秒，6/5/4/3/2/1 后隐藏，便于验证实际调度而非静态标签。
             end,
             SimulateCast = function(feature, key) return BossTestRule(feature, key, "cast") end,
             SimulateDebuff = function(feature, key) return BossTestRule(feature, key, "debuff") end,
         },
     })
-    BossAlerts.HudContractVersion = 4 -- 中文维护：可校准 HUD、调度健康证据、可选未收录读条；旧命令兼容。
+    BossAlerts.HudContractVersion = 4 -- 可校准 HUD、调度健康证据、可选未收录读条；旧命令兼容。
     BossAlerts.RealtimeFactBridgeContractVersion = 2
     BossAlerts.RuleManagementContractVersion = 1
 end
 
--- 中文维护注释（Phase 3 Batch G，2026-09-29，core-feature-decoupling-1）：把首领机制的诊断投影
+-- 把首领机制的诊断投影
 -- 注册到 Core 的取值表。原先 core/rs_diagnostics.lua 直接按 id 读取它（属 CORE_FEATURE 债务）；
 -- 现在 Core 只按“用途名”取值，业务 Feature id 只出现在本目录。provider 每次实时调用、不缓存。
 local providers = S.FeatureHealthProviders

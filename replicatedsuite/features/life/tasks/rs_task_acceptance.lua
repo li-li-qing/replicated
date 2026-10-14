@@ -1,13 +1,17 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Task Tracker Acceptance / Sequence Contract
+-- Replicated Suite · 任务追踪契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 任务追踪验收与序列契约。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 中文维护注释（Phase 3 Batch D，2026-09-29，core-feature-decoupling-1）：本文件是 life_tasks 的
+-- 本文件是 life_tasks 的
 -- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
--- 断言兜底；Phase 3 正在删掉那处硬编码，所以这里必须**无条件注册** case，并在实现缺失时明确失败。
+-- 独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败。
 local F = S.Features and S.Features.Tasks or nil
 
 local function Fail(message) return false, tostring(message or "task_acceptance_failed") end
@@ -28,7 +32,7 @@ G:RegisterSequenceCase("v3_m1_tasks", function(runtimeOnly)
     if type(F.Commands) ~= "table" or type(F.Commands.MarkStoreDirty) ~= "function"
         or type(F.Commands.SetWidgetWindowState) ~= "function" then return Fail("presentation_command_contract") end
 
-    -- 维护（2026-09-30）：玩家诊断到此只读返回；下方租约/刷新/选择测试仅离线执行。
+    -- 玩家诊断到此只读返回；下方租约/刷新/选择测试仅离线执行。
     if runtimeOnly == true then return true end
     if S.FeatureRuntime:IsEnabled("life_tasks") ~= true then return true end
 
@@ -69,7 +73,7 @@ G:RegisterSequenceCase("v3_m1_tasks", function(runtimeOnly)
     return true
 end, { runtime = true })
 
--- Phase 3 Batch L（2026-09-29，core-feature-decoupling-1）：任务侧的持久化契约。
+-- 任务侧的持久化契约。
 -- 原先由 core/rs_foundation_gate.lua 的 v3_feature_persistence_mutation_contract（活动/任务各一半）
 -- 与 v3_task_persistence_stable_codec_contract 直接点名实现表检查；搬到这里之后 Core 不再认识
 -- 具体业务 Feature。判定与旧版**逐条等价**：

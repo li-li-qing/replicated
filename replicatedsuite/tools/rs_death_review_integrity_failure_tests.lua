@@ -1,5 +1,11 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 死亡复盘完整性失败测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 维护（2026-09-30，death-index-proof-1）：真实 Store/Core + 内存 Native 边界。
 -- 所有输入均为合成故障注入，不冒充玩家 3205A259 原档；不写入运行时 TOC。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = pcall(fn)
@@ -163,7 +169,7 @@ Test('record schema2 retains prior index and write verification gates',function(
     assert(st.schemaVersion==2 and st.verifyAfterSave==false and st.allowIntegrityUpgrade==true)
     assert(P:GetStore(rid).schemaVersion==2 and P:GetStore(rid).verifyAfterSave==false)
 end)
--- 中文维护：复刻本次 Native 截断的 settings 丢失 + 第27行不完整 + 后3行消失。
+-- 复刻本次 Native 截断的 settings 丢失 + 第27行不完整 + 后3行消失。
 local function NativeCut(P,h,st)
     local raw=assert(P:DecodePhysicalEnvelope(h.disk[st.resolvedKey]))
     raw.__rsmeta.transportVersion=3

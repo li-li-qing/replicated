@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Task Tracker Feature
+-- Replicated Suite · 任务追踪功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Independent lifecycle. The feature never reads X2Quest itself; it acquires
--- QuestProgressService V3 only while the page or floating tracker is visible.
+-- 独立生命周期，不自行读取 X2Quest；仅页面或浮动追踪器可见时获取 QuestProgressService。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -103,8 +104,7 @@ function F:SetLastScope(scope)
     return true
 end
 
--- Narrow Presentation read model. Pages and Widgets must not reach into the
--- persisted State table directly.
+-- 窄 Presentation 读模型，页面与 Widget 禁止直接访问持久 State 表。
 function F:GetLastScope()
     return VALID_SCOPE[self.State and tostring(self.State.lastScope or "")] and tostring(self.State.lastScope) or "daily"
 end
@@ -143,8 +143,7 @@ function F:GetWidgetVisiblePreference()
     return self.State and self.State.widgetVisible == true or false
 end
 
--- Public Projection/Commands boundary for Active V3. Presentation does not
--- retain or call the Task Authority object directly.
+-- 公共 Projection/Commands 边界，Presentation 禁止持有或直接调用 Task Authority。
 function F:GetRows(scope)
     return self.Authority:GetRows(scope)
 end
@@ -161,7 +160,7 @@ function F:GetWidgetProjection()
     return self.Authority:GetWidgetRows()
 end
 
--- 维护（overview-workbench-2）：首页需要独立的周期/完成状态/追踪筛选，不能借用
+-- 首页需要独立的周期/完成状态/追踪筛选，不能借用
 -- 悬浮窗可见行或直接改 State。Authority 的缓存行是唯一事实来源；这里只建立有界
 -- 只读视图，一份 revision+筛选缓存，不在搜索/绘制中查询 Native，不把展开子任务计为新组。
 -- 写入仍经现有 Commands，旧追踪选择与存档 schema 不变；未知进度不能算成已完成。
@@ -312,8 +311,7 @@ end
 function F:Enable(reason)
     if self.enabled == true then return true end
     self.enabled = true
-    -- Floating widget restore is a Presentation reaction bound to
-    -- `v3.feature.lifecycle`; Domain only owns the persisted preference.
+    -- 浮窗恢复由 Presentation 响应 v3.feature.lifecycle，Domain 仅拥有持久偏好。
     return true
 end
 

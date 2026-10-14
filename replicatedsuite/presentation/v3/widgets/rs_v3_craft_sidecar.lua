@@ -1,10 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Craft Assistant Native Sidecar
+-- Replicated Suite · 制作窗口侧栏
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation-only companion to verified native craft windows. Recipe/material
--- state remains owned by tools_craft.  The sidecar never performs background
--- auction queries: market quotes are submitted only by the user's explicit
--- "材料询价" action through the Feature command / PriceQuoteQueueV3.
+-- 已验证原生制作窗口的表现侧栏，配方/材料归 tools_craft；不执行后台拍卖查询，市场报价仅由用户明确
+-- “材料询价”操作经 Feature 命令与 PriceQuoteQueueV3 提交。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -108,7 +108,7 @@ local function CreateSidecar()
     instance.refresh = RSUI:Button({ id = "v3_craft_sidecar_refresh", parent = recipeRow, text = "刷新", compact = true, slot = { size = "fixed", width = 52 } })
     instance.quote = RSUI:Button({ id = "v3_craft_sidecar_quote", parent = recipeRow, text = "材料询价", compact = true, enabled = false, slot = { size = "fixed", width = 76 } })
 
-    -- 中文维护注释（2026-09-14，Sidecar logical-id 保留边界）：FloatingSurface 的 id 是
+    -- 约束（2026-09-14，Sidecar logical-id 保留边界）：FloatingSurface 的 id 是
     -- `v3_craft_sidecar`，WindowShellV3 footer 会自动占用 `v3_craft_sidecar_status`。业务内容区反馈
     -- 必须使用独立 logical id；否则首次构建该 Sidecar 时会触发 Generation quarantine。这里只修
     -- Presentation 身份，不改变制作 Feature、材料 Projection、询价队列或任何持久化数据。
@@ -198,7 +198,7 @@ local function CreateSidecar()
     function instance:Hide()
         local hidden, hideErr = self.surface:Show(false)
         if hidden ~= true then return false, hideErr end
-        -- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：Feature Disable 会先 Clear Demand，
+        -- 约束（2026-09-25，feature-profile-lifecycle-1）：Feature Disable 会先 Clear Demand，
         -- WidgetHost 随后的 Hide 只能按真实 token 释放，不能相信 acquired 的旧值触发 strict Demand 二次 Release。
         if self.acquired == true and Feature:HasConsumer("widget:craft_sidecar") then Feature:ReleaseConsumer("widget:craft_sidecar") end
         self.acquired = false; self.visible = false; self:Unsubscribe(); return true
@@ -220,7 +220,7 @@ local registered, registerErr = Host:Register(WIDGET_ID, {
     opacityAdjustable = false, backgroundOpacityAdjustable = false, textOpacityAdjustable = false,
 })
 if registered ~= true then error(registerErr) end
--- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：制作台 Sidecar 与原生制作窗口可见性是两条
+-- 约束（2026-09-25，feature-profile-lifecycle-1）：制作台 Sidecar 与原生制作窗口可见性是两条
 -- 不同 Authority。Feature 生命周期只负责资源 gate；原生 Surface 仍决定是否应该显示。绑定后方案关闭会
 -- 立即 Hide 并清理 Consumer，方案再次启用且原生窗口仍在时才按已有 nativeVisible 恢复，不增加扫描。
 local lifecycleBound, lifecycleErr = Host:BindFeatureLifecycle(WIDGET_ID, {

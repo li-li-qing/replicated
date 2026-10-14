@@ -1,12 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Shared Zone IDs / Static Zone Metadata
+-- Replicated Suite · 地区身份注册
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Zone identity belongs to the shared GameDataRegistry. Stable trade-specific
--- metadata (for example the legacy pack quality family) is mirrored into
--- StaticDataV2 so Services never carry their own magic zone-id tables.
---
--- These IDs are migrated from the existing ArcheRage RU curated trade data.
--- They are not marked database_verified until separately re-verified.
+-- 地区身份归共享 GameDataRegistry。稳定贸易元数据（如历史货包品质家族）同步到 StaticDataV2，Service 不应维护私有地区魔数表。
+-- 这些 ID 来源于现有 RU 人工整理的贸易数据；独立复核前不得标记 database_verified。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -60,7 +58,7 @@ local DEFINITIONS = {
     { 103, "WHALESONG",     "Whalesong",     "Coastal" },
 }
 
--- 中文维护注释（2026-10-04）：大陆是地区的静态事实，不是采集居民板时的所在地。
+-- 大陆是地区的静态事实，不是采集居民板时的所在地。
 -- RU 官方数据库的 Nuia/Haranya/Auroria 地区目录逐项核对；Airain（10）与 Aubre（21）
 -- 都属于西大陆。债券与所在地判断共同消费本表，禁止在 Feature 再维护另一份地区分边。
 -- https://wiki.archerage.to/ru-en/db/achievements/655
@@ -74,7 +72,7 @@ local CONTINENT_BY_ZONE = {
     [54]="auroria", [56]="auroria", [57]="auroria", [102]="auroria", [103]="auroria",
 }
 
--- 中文维护注释（2026-10-02）：地区中文名参与任务→ZoneId→配方解析，不能只当显示文案。
+-- 地区中文名参与任务→ZoneId→配方解析，不能只当显示文案。
 -- 对照 RU 中英文 Commerce 数据库的相同 CraftId：6243=草原/Windscour，6244=哈里洛/Perinoor，
 -- 6245=棋盘/Rookborne，9332=青铜/Airain，9336=太初/Aubre，9340=西风/Ahnimar。
 -- https://wiki.archerage.to/ru-cn/db/crafts/commerce-vocation

@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Gear / Title Authority
+-- Replicated Suite · 装备与称号方案业务权威
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 装备与称号业务权威。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -88,9 +92,7 @@ function A:CreateSet(name)
     local ok, err = F:SaveIndexNow("gear_create")
     if ok ~= true then table.remove(F.State.sets); F.State.nextId = F.State.nextId - 1; F.State.nextStorageId = storageId; return nil, err end
 
-    -- Publish the new row before asking WidgetHost to show the screen button.
-    -- Otherwise the first Show()/Refresh() can observe the pre-create row cache
-    -- and create no button until a later unrelated Gear refresh happens.
+    -- 先发布新行再要求 WidgetHost 显示按钮，否则首次 Show()/Refresh() 会看到创建前行缓存，直到其他刷新才出现按钮。
     self:Refresh("create")
     local runtimeOk, runtimeErr = true, nil
     if type(F.EnsurePersistentQuickRuntime) == "function" then runtimeOk, runtimeErr = F:EnsurePersistentQuickRuntime("gear_quick_created") end
@@ -150,11 +152,7 @@ end
 function A:CaptureDraft(id)
     local previous, err = self:GetDraft(id)
     if previous == nil then
-        -- A historical single-key payload may already have been truncated while
-        -- its lightweight index/name survived. "获取当前" is an explicit user
-        -- recovery action, so allow that action to rebuild the payload instead
-        -- of trapping the named plan in an unrecoverable state. Ordinary Start/
-        -- Validate still fail-closed and never overwrite missing data.
+        -- 历史单key payload可截断而轻量索引/名称仍存在；获取当前是用户显式恢复动作，允许重建payload。普通Start/Validate仍安全拒绝，禁止覆盖缺失数据。
         local set = self:FindSet(id); if set == nil then return nil, err or "换装方案不存在" end
         previous = F.DeepCopy(set)
         previous.items, previous.title, previous.capturedAt = {}, {}, nil
@@ -177,13 +175,8 @@ function A:SaveDraft(draft)
     local titleManaged = type(draft.title) == "table" and draft.title.apply == true
     if draft.configured == true and managed <= 0 and not titleManaged then return false, "请至少选择一个装备或效果称号配置项" end
 
-    -- Reliability v3 Gear journal:
-    --   1) read the currently referenced/last-known-good payload;
-    --   2) write the opposite A/B bank;
-    --   3) Persistence immediately LoadData-readback verifies that bank;
-    --   4) only then commit the lightweight index pointer.
-    -- SaveData has no multi-key transaction, so this ordering is what guarantees
-    -- an index failure never destroys the previously referenced loadout.
+    -- Gear 双库 journal 顺序：读取当前引用/最后健康 payload，写另一 A/B 库，由 Persistence 立即 LoadData 读回核实，最后提交轻量索引指针。
+    -- SaveData 无多 key 事务，必须遵守此顺序，保证索引失败不破坏旧引用方案。
     local previousPayload, previousPayloadErr, previousInfo = F:LoadPayloadForSet(set)
     if previousPayload == nil then
         if draft.persistenceReinitialize ~= true then return false, previousPayloadErr end
@@ -230,9 +223,7 @@ function A:SaveDraft(draft)
 
     local indexOk, indexErr = F:SaveIndexNow("gear_save_payload_bank_commit")
     if indexOk ~= true then
-        -- Do NOT overwrite either payload bank here. The old index still points
-        -- at the old verified bank; the newly written inactive bank is merely an
-        -- orphan and is safe to overwrite on the next successful save.
+        -- 这里禁止覆盖任一 payload 库；旧索引仍指向核实旧库，新写 inactive 库仅为孤立数据，下次成功保存可安全覆盖。
         for key in pairs(set) do set[key] = nil end
         for key, value in pairs(previousMeta) do set[key] = value end
         return false, FriendlyPersistenceError(indexErr)
@@ -245,10 +236,7 @@ function A:SetQuick(id, visible)
     local set = self:FindSet(id); if set == nil then return false, "换装方案不存在" end
     local nextValue = visible == true
     if set.quick == nextValue then
-        -- A persisted row can already say "显示" while the Presentation widget
-        -- has not been recreated yet (reload, native event downgrade, previous
-        -- build failure). Treat an explicit "显示" request as a reconciliation
-        -- command instead of a no-op so Domain and screen state cannot drift.
+        -- 存档行可已标显示，而Presentation尚因重载/事件降级/构建失败未重建；显式显示请求须做协调，不能无操作，让Domain与屏幕状态一致。
         if nextValue then
             local warning = nil
             if type(F.EnsurePersistentQuickRuntime) == "function" then

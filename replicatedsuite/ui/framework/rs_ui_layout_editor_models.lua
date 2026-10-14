@@ -1,20 +1,13 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Layout Editor Models v1
+-- Replicated Suite · 布局编辑模型
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared, UI-agnostic state for the future HUD/Layout editor.
---
--- Coordinate contract (ArcheAge / CryEngine UI):
---   origin = top-left, +X = right, +Y = down.
---   move up therefore means negative Y.
---
--- This file deliberately does NOT create Native widgets and does NOT own Tick.
--- It provides two small reusable Authorities:
---   * AnchorPivotModel: point-anchor + pivot + rect/offset conversion.
---   * LayoutEditorSnapSettingsModel: bounded snap/guide settings projection.
---
--- Stretch anchors are intentionally out of v1 scope. The current Suite stores
--- top-left rect geometry; silently introducing min/max stretch anchors would
--- reinterpret existing placement data and create upgrade ambiguity.
+-- HUD/布局编辑器共享且与 UI 无关的状态。
+-- ArcheAge/CryEngine UI 坐标：左上原点，+X 向右、+Y 向下，上移为负 Y。
+-- 不创建 Native、不持 Tick；
+-- AnchorPivotModel 负责点锚/pivot/rect-offset 转换，LayoutEditorSnapSettingsModel 提供有界吸附/引导设置投影。
+-- 当前只支持点锚，不支持 stretch；Suite 保存左上 rect，静默引入 min/max stretch 会重新解释位置数据并造成升级歧义。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -171,9 +164,7 @@ function AnchorPivotModel:SetRect(rect, source)
     return self:_Commit(nextState, source or "rect")
 end
 
--- Full-state restore for editor transactions. This is intentionally stricter
--- than SetRect(): anchor/pivot changes are part of the same user edit and must
--- roll back together when an external persistence adapter rejects the commit.
+-- 编辑事务恢复完整状态，严格于 SetRect()；anchor/pivot 属同一次编辑，外部持久适配器拒绝提交时须一起回滚。
 function AnchorPivotModel:ApplySnapshot(snapshot, source)
     if type(snapshot) ~= "table" then self.lastError = "anchor_snapshot_required"; return false, self.lastError end
     local parentRect = CopyRect(snapshot.parentRect)
@@ -232,9 +223,7 @@ function AnchorPivotModel:SetPivot(pivotX, pivotY, preserveVisual, source)
     return self:_Commit(nextState, source)
 end
 
--- Parent resize/reflow must be explicit. `preserveVisual=true` keeps the exact
--- current screen rect and merely recomputes offsets. `false` keeps anchor/pivot
--- placement offsets so the widget follows its anchor when the parent changes.
+-- 父缩放/重排须明确：preserveVisual=true 保留精确屏幕 rect 仅重算 offsets；false 保留 anchor/pivot 偏移，让控件随父锚移动。
 function AnchorPivotModel:SetParentRect(parentRect, preserveVisual, source)
     parentRect = CopyRect(parentRect)
     if parentRect == nil then self.lastError = "anchor_parent_rect_invalid"; return false, self.lastError end
@@ -305,7 +294,7 @@ RSUI.AnchorPivotModel = AnchorPivotModel
 RSUI.AnchorPresets = { order = ANCHOR_PRESET_ORDER, values = ANCHOR_PRESETS }
 
 ------------------------------------------------------------------------
--- LayoutEditorSnapSettingsModel v1
+-- LayoutEditorSnapSettingsModel 吸附设置模型。
 ------------------------------------------------------------------------
 local HARD_MAX_CANDIDATES = 1024
 local SnapSettingsModel = {}

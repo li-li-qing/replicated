@@ -1,6 +1,12 @@
--- 中文维护：Resolution-independent top-level placement 离线回归。
+------------------------------------------------------------------------
+-- Replicated Suite · 窗口视口测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- Resolution-independent top-level placement 离线回归。
 -- 真实被测代码：Api/Layout/Windowing/WindowShell/FloatingSurface；只有 Native、RSUI 叶节点和磁盘是替身。
 -- 测试不进入 toc.g；矩阵使用公式而非生产分辨率魔法表。失败不能标记为 RU 实机通过。
+------------------------------------------------------------------------
 local Boot=dofile('tools/rs_window_viewport_test_host.lua')
 local pass,fail=0,0
 local function Test(name,fn)
@@ -185,7 +191,7 @@ Test('metrics events bounded, lifecycle storm restarts one settle chain, release
     assert(drains==8,'event storm did not collapse into one bounded settle chain: '..tostring(drains))
     L:StopMetricsEvents();local n2=h.samples;h:Fire('UI_RELOADED');h:Drain();assert(h.samples==n2,'released metric owner still samples')
 end)
--- 中文维护：第二轮调用链回归，不依赖缺失的旧 gear/UI test host；Main/Host 使用真实代码。
+-- 第二轮调用链回归，不依赖缺失的旧 gear/UI test host；Main/Host 使用真实代码。
 local function BootMain(h,state)
     local S=h.S
     S.UIV3={Router={},PageHost={},ModalHost={},ToastHost={},ShellState=state,ShellSizePolicy={defaultWidth=1040,defaultHeight=700,minWidth=1,minHeight=1}}
@@ -304,13 +310,13 @@ Test('whole matrix same viewport free windows stay fully contained without accum
     print('MATRIX same-viewport '..count..' contained positions')
 end)
 
--- 中文维护：R 入口和 Gear 是持久屏幕按钮，不套窗口外壳；仍必须消费同一 Layout/Windowing 算法。
+-- R 入口和 Gear 是持久屏幕按钮，不套窗口外壳；仍必须消费同一 Layout/Windowing 算法。
 local function BootLauncher(h,state)
     local S=h.S;S.UIV3={LauncherState=state};local stores={}
     S.Persistence={Scope={Account='account'},Lifetime={Permanent='permanent'},V3KeyPrefix='v3.',
         GetStore=function(_,id)return stores[id]end,RegisterV3Store=function(_,spec)stores[spec.id]=spec;return true end,
         MarkDirty=function()h.writes=h.writes+1;return not h.rejectPersist,'injected_persist_rejection'end}
-    S.Persistence.LoadStore=function(_,id)stores[id].apply(stores[id].get());return true end -- 中文维护：读取本宿主已种入的 Launcher 偏好，新增锁命令必须先安全读档。
+    S.Persistence.LoadStore=function(_,id)stores[id].apply(stores[id].get());return true end -- 读取本宿主已种入的 Launcher 偏好，新增锁命令必须先安全读档。
     S.RecoveryEntry=h.Native(UIParent,'launcher',300,100,30,30);S.RecoveryEntry.visible=true
     dofile('presentation/v3/rs_v3_launcher_store.lua');return S.UIV3
 end
@@ -548,7 +554,7 @@ Test('free FloatingSurface drag commit cannot persist an offscreen window',funct
     Full(h.S.Layout:GetContext(),n.x,n.y,n.w,n.h)
     Full(h.S.Layout:GetContext(),state.x,state.y,n.w,n.h)
 end)
--- 中文维护：与功能方案相同的空拖动必须保留 Gear 点击，不得为静止手势写位置。
+-- 与功能方案相同的空拖动必须保留 Gear 点击，不得为静止手势写位置。
 Test('Gear stationary native drag does not suppress click or persist placement',function()
     local h=Boot();local gear,row=BootGear(h);gear.visible=true
     local record=assert(gear:EnsureButton(row,1));gear.rows={row}
@@ -560,7 +566,7 @@ Test('title lock button changes state and blocks drag plus resize with persisten
     local button=assert(surface.shell.lockButton,'title bar lock entry missing')
     assert(button.spec.onClick());assert(surface:IsLocked() and state.locked==true)
     assert(button.text=='锁' and button.selected==true,'locked state is not visible')
-    assert(surface.shell.titleBar.root.handlers.OnDragStart()==false) -- 中文维护：实际 Native 入口先检查 IsDragAllowed，不能绕过入口调用内部事务。
+    assert(surface.shell.titleBar.root.handlers.OnDragStart()==false) -- 实际 Native 入口先检查 IsDragAllowed，不能绕过入口调用内部事务。
     assert(surface.windowController:IsResizeAllowed()==false)
     assert(button.spec.onClick());assert(not surface:IsLocked() and button.selected==false)
     local rejected=h:Surface({width=420,height=286,locked=false},{id='rejected_lock',persist=function()return false,'save rejected'end})

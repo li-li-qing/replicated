@@ -1,6 +1,11 @@
--- Phase 0 recovery: shared offline host for persistence/HUD numeric regression suites.
--- Test infrastructure only; never loaded by toc.g. It models Native storage boundaries while
--- running the real Persistence, BuffDisplay store/feature, and FloatingSurface normalizers.
+------------------------------------------------------------------------
+-- Replicated Suite · UDF数值测试宿主
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 持久化和 HUD 数值回归共用的离线宿主，不进入 toc.g。
+-- 仅模拟原生存储边界，运行真实 Persistence、BuffDisplay Store 和 Feature，以及 FloatingSurface 归一化器。
+------------------------------------------------------------------------
 local H = {}
 local function Copy(value, seen)
     if type(value) ~= 'table' then return value end
@@ -133,7 +138,7 @@ function H.Boot(initialDisk)
     end
     function S.Api:GetCharacterId() return 'phase0-test-character' end
     function S.Api:GetCharacterName() return 'Phase0' end
-    -- FloatingSurface only needs the RSUI table and pure normalizer for these suites.
+    -- 这些用例中的 FloatingSurface 仅需要 RSUI 表和纯归一化器。
     dofile('data/rs_data_registry.lua')
     dofile('data/rs_skill_effects.lua')
     dofile('data/rs_combat_ability_catalog.lua')

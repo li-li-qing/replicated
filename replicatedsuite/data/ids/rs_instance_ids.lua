@@ -1,14 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Shared Instance Identities
+-- Replicated Suite · 副本浏览身份注册
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- IMPORTANT ID NAMESPACE CONTRACT
---   databaseZoneId   = ArcheRage database Map Zone ID.
---   runtimeInstanceId = X2BattleField/runtime instance type ID.
---
--- These are NOT interchangeable. The current RU database zone IDs below are
--- verified, while runtime X2BattleField IDs remain intentionally nil until the
--- client API exposes/validates them. Runtime discovery continues to use the
--- localized matchNames aliases where the QuestService needs it.
+-- ID 命名空间必须分开：databaseZoneId 是 ArcheRage 数据库 Map Zone ID，runtimeInstanceId 是 X2BattleField 的运行时副本类型 ID。
+-- 二者不能互换。下列 RU 数据库地区 ID 已核实；runtimeInstanceId 在客户端 API 提供并验证前保持 nil。QuestService 运行时发现仍按需使用本地化 matchNames 别名。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -64,8 +60,7 @@ local function RegisterInstanceZone(key, databaseZoneId, nameEn, options)
     return row
 end
 
--- Runtime-discovered raids currently used by QuestService. Keep all legacy
--- aliases/max-entry policy intact while attaching the separate DB zone identity.
+-- QuestService 使用的运行时发现团本；关联独立数据库地区身份时，必须保留原有别名和最大进入次数规则。
 RegisterInstanceZone("redDragon", 121, "Red Dragon's Keep", {
     maxEntry = 1,
     matchNames = {
@@ -84,8 +79,7 @@ RegisterInstanceZone("kadum", 132, "Kadum", {
     },
 })
 
--- Additional verified database Map Zone identities. These are static identity
--- groundwork only; no runtime completion behavior is enabled by these rows.
+-- 额外核实的数据库 Map Zone 身份仅提供静态身份基础；这些记录不会开启运行时完成判定。
 RegisterInstanceZone("mistmerrow", 78, "Mistmerrow")
 RegisterInstanceZone("mistsong", 89, "Mistsong Summit")
 RegisterInstanceZone("ipnysh", 105, "Ipnysh Sanctuary")
@@ -94,9 +88,7 @@ RegisterInstanceZone("noryette", 125, "Noryette Challenge")
 RegisterInstanceZone("hereafter", 130, "Hereafter Rebellion")
 RegisterInstanceZone("gardenOfGods", 133, "Garden of the Gods")
 
--- Classic dungeon database Map Zone identities verified from current ArcheRage
--- map pages. These rows intentionally do NOT set runtimeInstanceId; the
--- X2BattleField entry.type namespace still requires live-client verification.
+-- 经典副本的数据库 Map Zone 身份已按当前 ArcheRage 地图页面核实。这里不设置 runtimeInstanceId；X2BattleField entry.type 命名空间仍需实机验证。
 RegisterInstanceZone("burntCastleArmory", 45, "Burnt Castle Armory")
 RegisterInstanceZone("greaterBurntCastleArmory", 84, "Greater Burnt Castle Armory")
 RegisterInstanceZone("hadirFarm", 46, "Hadir Farm")
@@ -108,9 +100,7 @@ RegisterInstanceZone("greaterKroloalCradle", 88, "Greater Kroloal Cradle")
 RegisterInstanceZone("greaterSharpwindMines", 87, "Greater Sharpwind Mines")
 RegisterInstanceZone("greaterHowlingAbyss", 58, "Greater Howling Abyss")
 
--- Session-only live observation. This records X2BattleField entry.type without
--- promoting it to a static verified ID. Persist/static promotion requires a
--- separate review because runtimeInstanceId is a different server namespace.
+-- 会话内记录实机观察的 X2BattleField entry.type，不将其提升为已验证静态 ID。runtimeInstanceId 属于独立服务器命名空间，持久化或纳入静态表必须另行审查。
 function I:ObserveRuntimeCandidate(key, runtimeInstanceId, runtimeName)
     local row = self.ByKey[tostring(key or "")]
     runtimeInstanceId = tonumber(runtimeInstanceId)
@@ -148,8 +138,7 @@ function I:ObserveRuntimeCandidate(key, runtimeInstanceId, runtimeName)
         observed.runtimeName = runtimeName
         observed.status = "observed_pending_static_verification"
     else
-        -- Ambiguous client observations must never expose one candidate as if it
-        -- were authoritative. Keep all evidence in-session for diagnostics.
+        -- 客户端观察存在歧义时，不能把某个候选当成权威结论；所有证据保留在本次会话供诊断使用。
         observed.runtimeInstanceId = nil
         observed.runtimeName = ""
         observed.status = "observed_conflict_pending_static_verification"
@@ -165,7 +154,7 @@ function I:GetByDatabaseZoneId(databaseZoneId)
     return self.ByDatabaseZoneId[tonumber(databaseZoneId)]
 end
 
--- Diagnostics-only snapshot; never used in per-frame instance polling.
+-- 仅供诊断的快照，禁止用于逐帧副当前询。
 function I:Describe()
     local databaseVerified, runtimeVerified, runtimePending, runtimeObserved, runtimeObservedConflicts = 0, 0, 0, 0, 0
     for _, row in pairs(self.ByDatabaseZoneId or {}) do

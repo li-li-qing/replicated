@@ -1,7 +1,13 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 传输协议4双副本丢失恢复测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 维护（2026-09-17，RU v4 双副本同段丢失回归）：
 -- schema7->8 会把旧全局追踪复制到 player/target；实机可能在两个 v4 vector 表中都丢失同一 pN，
 -- 此时“另一 scope 作为 twin”也不够。测试只允许从已声明导入的静态 Catalog 构造有限候选，
 -- 且生产 Load 后仍必须通过原 envelope + canonical fingerprint，禁止猜测用户 ID。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
  local ok,err=xpcall(fn,function(e)return tostring(e)..'\n'..debug.traceback()end)
@@ -133,8 +139,7 @@ end)
 Test('synthetic current catalog: imported watermarks union 392 but tracked vector 388 recovers exact all pack',function()
  local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- -- Reproduce the real persistence semantics instead of treating importedPacks as the current selection:
- -- the user once imported all + hidden (watermarks remain), then explicitly removed hidden ids.
+ -- 复现真实持久化语义，不能把 importedPacks 当作当前选择：用户曾导入全部和隐藏包，保留水印后又显式移除了隐藏 ID。
  assert(LegacyPackFixture(F,P,'all',false))
  assert(LegacyPackFixture(F,P,'hidden',false))
  local hidden=ReplicatedSuite.Data.StatusTrackingCatalogV3.Packs.hidden
@@ -182,7 +187,7 @@ Test('static all candidate cannot overwrite a user change hidden entirely inside
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
  assert(pa.count==388 and ta.count==388 and pa.p25 and ta.p25)
- -- All surviving p1..p24 still match the static all pack; only the lost p25 contained the user's change.
+ -- 保留下来的 p1..p24 都仍匹配静态全部包；仅丢失的 p25 包含用户改动。
  pa.p25=nil;ta.p25=nil
  local _,fresh,freshP,fio=Boot({disk=io.disk})
  local ok=LegacyLoad(freshP);assert(ok~=true)
@@ -200,9 +205,8 @@ Test('no-candidate failure records bounded vector and first chunk mismatch evide
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
  assert(pa.count==388 and ta.count==388 and pa.p25 and ta.p25)
- -- Simulate the real class of failure: both copies lose one chunk while at least one surviving
- -- chunk differs from the current static all pack. Recovery must stay fenced, but diagnostics
- -- must tell us the vector topology and the first concrete mismatch instead of only no_candidate.
+ -- 模拟两份副本同时丢失一个分块，且至少一个存活分块不同于当前静态全部包。
+ -- 恢复必须保持写保护，但诊断需报告向量结构和首个具体差异，不能只给 no_candidate。
  pa.p1=pa.p1:gsub('^%d+','99999');ta.p1=pa.p1
  pa.p25=nil;ta.p25=nil
  local _,fresh,freshP,fio=Boot({disk=io.disk})
@@ -255,7 +259,7 @@ Test('observed RU 233 loss topology on current catalog: intact target twin repai
  local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
  assert(LegacyPackFixture(F,P,'all',false))
- -- Historical/custom selection: keep 388 ids but make p5 differ from today's static all catalog.
+ -- 历史自定义选择保留 388 个 ID，但 p5 与当前静态全部目录不同。
  assert(LegacyMutate(P,function()
   local base={};for i,id in ipairs(F.State.settings.tracked.player.auto) do base[i]=id end
   assert(#base==388);base[65]=16000002
@@ -274,7 +278,7 @@ Test('observed RU 233 loss topology on current catalog: intact target twin repai
  end
  pa.p1=nil;pa.p2=nil;pa.p3=nil;pa.p4=nil;pa.p19=nil
  pa.p5=FirstTokens(pa.p5,10)
- -- Exact RU evidence shape: target is structurally complete; player has 5 missing chunks + truncated p5.
+ -- 精确复现 RU 证据形状：target 结构完整，player 丢失 5 个分块且 p5 被截断。
  local _,fresh,freshP,fio=Boot({disk=io.disk})
  local ok,why=LegacyLoad(freshP);assert(ok,why)
  assert(#fresh.State.settings.tracked.player.auto==388 and #fresh.State.settings.tracked.target.auto==388)
@@ -295,7 +299,7 @@ Test('intact twin candidate cannot overwrite legitimate scoped divergence hidden
   local base={};for i,id in ipairs(F.State.settings.tracked.player.auto) do base[i]=id end
   assert(#base==388)
   local p={};local t={};for i,id in ipairs(base) do p[i]=id;t[i]=id end
-  -- Schema8 allows scope divergence. Put the user's player-only edit inside p1, which will later vanish physically.
+  -- schema8 允许各范围选择不同；把玩家独有修改放在之后将物理丢失的 p1 内。
   p[1]=22
   F.State.settings.tracked.player.auto=p
   F.State.settings.tracked.target.auto=t

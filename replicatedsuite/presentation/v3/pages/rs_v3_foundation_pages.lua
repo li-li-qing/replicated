@@ -1,5 +1,7 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Pages
+-- Replicated Suite · 基础设置页面
+-- 作者：Replicated
+-- QQ群：1104129461
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -8,9 +10,7 @@ S.UIV3 = S.UIV3 or {}
 local PageHost = S.UIV3.PageHost
 if type(RSUI) ~= "table" or type(D) ~= "table" or type(PageHost) ~= "table" then return end
 
--- Persistent bindings use stable store contracts owned by the Domain. Keep the
--- identifiers local to Presentation instead of reading Feature implementation
--- fields such as StoreId/IndexStoreId.
+-- 持久化绑定使用 Domain 持有的稳定 Store 契约；标识符留在表现层本地，不读取 Feature 的 StoreId/IndexStoreId 等实现字段。
 local ACTIVITIES_STORE_ID = "v3.activities"
 local GEAR_INDEX_STORE_ID = "v3.gear.index"
 local PERSISTENCE_ACCEPTANCE_STORE_IDS = {
@@ -21,7 +21,7 @@ local PERSISTENCE_ACCEPTANCE_STORE_IDS = {
     "v3.tasks",
     "v3.dps",
     "v3.life.trade",
-    -- 中文维护注释（2026-09-23，trade-preferences-acceptance）：跑商历史 Store 不扩 schema；
+    -- 约束（2026-09-23，trade-preferences-acceptance）：跑商历史 Store 不扩 schema；
     -- 新的关注/自动刷新/随身扫描偏好独立持久化，因此也必须进入运行时存档验收，避免升级后静默丢配置。
     "v3.trade_preferences",
     "v3.death_review",
@@ -112,7 +112,7 @@ local function BuildFeatures(parent, route)
     local preferenceText = RSUI:Text({ id = "v3_features_preference", parent = actionRow, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
 
     local list = nil
-    -- 中文维护：隔离宿主的旧管理页也消费开放目录；不改变 Registry 的完整诊断/实现身份。
+    -- 隔离宿主的旧管理页也消费开放目录；不改变 Registry 的完整诊断/实现身份。
     local accessibleFeatures = S.FeatureRegistry:ListAccessible()
     local function ItemAt(index)
         local feature = accessibleFeatures[index]
@@ -467,7 +467,7 @@ local function BuildWidgets(parent, route)
     end
     function root:OnActivated() return self:Refresh() end
     root.numericFields = {
-        opacity = overallOpacityField, -- compatibility alias for existing diagnostics
+        opacity = overallOpacityField, -- 供现有诊断使用的兼容别名。
         overallOpacity = overallOpacityField, backgroundOpacity = backgroundOpacityField, textOpacity = textOpacityField,
         width = widthField, height = heightField,
         gearOverallOpacity = gearOverallOpacityField, gearBackgroundOpacity = gearBackgroundOpacityField, gearTextOpacity = gearTextOpacityField,
@@ -583,7 +583,7 @@ local function BuildSettings(parent, route)
         end)
     end })
     local shellLockHint = RSUI:Text({ id = "v3_settings_shell_lock_hint", parent = windowPolicy, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-    -- 中文维护：独立 R 悬浮按钮没有标题栏，小锁入口放在所属主菜单设置，并沿用 Launcher Store。
+    -- 独立 R 悬浮按钮没有标题栏，小锁入口放在所属主菜单设置，并沿用 Launcher Store。
     local launcherPolicy = RSUI:HorizontalBox({ id = "v3_settings_launcher_policy", parent = root, gap = 8, slot = { size = "fixed", height = 32, hAlign = "fill" } })
     local launcherLockButton = RSUI:Button({ id = "v3_settings_launcher_lock", parent = launcherPolicy, text = "锁定启动按钮", compact = true,
         slot = { size = "fixed", width = 154 }, onClick = function()
@@ -640,7 +640,7 @@ local function BuildSettings(parent, route)
         shellLockHint:SetText(shellState.locked == true and "已锁定：标题栏拖动和边缘缩放暂时关闭" or "未锁定：可以拖动标题栏并从八个方向调整大小")
         local launcherLocked = S.UIV3 and S.UIV3.LauncherState and S.UIV3.LauncherState.locked == true
         launcherLockButton:SetText(launcherLocked and "启动按钮：已锁定" or "启动按钮：可拖动")
-        launcherLockButton:SetSelected(launcherLocked == true) -- 中文维护：颜色与文字都显示已保存的锁偏好。
+        launcherLockButton:SetSelected(launcherLocked == true) -- 颜色与文字都显示已保存的锁偏好。
         return true
     end
     function root:OnActivated() return self:Refresh() end
@@ -721,7 +721,7 @@ local function BuildDiagnostics(parent, route)
     local root, rootErr = D:PageRoot(parent,{id="v3_page_system_diagnostics",gap=6})
     if root==nil then return nil,"页面根组件创建失败："..tostring(rootErr or "未知错误") end
     root.route=route
-    -- 中文维护注释（2026-09-18，module-diagnostics-system-scope-1）：全局诊断页不删除，
+    -- 约束（2026-09-18，module-diagnostics-system-scope-1）：全局诊断页不删除，
     -- 但职责固定为 Core/Foundation/完整维护取证；普通业务故障的默认入口已经迁到模块页左上角。
     -- 禁止为了“方便”把所有 Feature 的日常诊断再次塞回这里；只有维护者明确需要全局证据时才使用
     -- 下方完整报告。这个页面的旧复制框继续保持兼容，不允许为了修模块 DiagnosticCopyBox 去改普通输入生命周期。
@@ -731,13 +731,13 @@ local function BuildDiagnostics(parent, route)
     local runButton=RSUI:Button({id="v3_diag_full_check",parent=actions,text="运行自检",compact=true,slot={size="fixed",width=120}})
     local printButton=RSUI:Button({id="v3_diag_output",parent=actions,text="打印故障报告",compact=true,slot={size="fixed",width=144}})
     local fullReportButton=RSUI:Button({id="v3_diag_output_full",parent=actions,text="完整报告",compact=true,slot={size="fixed",width=112}})
-    -- 中文维护：导出完整冻结原文，不读取当前编辑页；独立快照 key 不更改业务配置。
+    -- 导出完整冻结原文，不读取当前编辑页；独立快照 key 不更改业务配置。
     local exportButton=RSUI:Button({id="v3_diag_export_file",parent=actions,text="导出文件",compact=true,slot={size="fixed",width=100}})
-    local perfEntry -- 中文维护：入口放在下方翻页行，避免500px窄视口顶部固定按钮挤出可点击范围。
-    -- 中文维护（continuous-performance-1）：持续诊断只经已有 Monitor 手动开始/停止，页面关闭不
+    local perfEntry -- 入口放在下方翻页行，避免500px窄视口顶部固定按钮挤出可点击范围。
+    -- 约束（continuous-performance-1）：持续诊断只经已有 Monitor 手动开始/停止，页面关闭不
     -- 停采集；没有 UI Tick、自动业务查询或自动写盘。刷新仅消费快照，不碰下方报告选区。
     local perfActions=RSUI:HorizontalBox({id="v3_diag_perf_actions",parent=root,gap=7,slot={size="fixed",height=30,hAlign="fill"}})
-    -- 中文维护：按钮按可用宽度分配 Fill，预留可读最小宽；固定548px会让500px窗口的导出按钮越界。
+    -- 按钮按可用宽度分配 Fill，预留可读最小宽；固定548px会让500px窗口的导出按钮越界。
     local perfStart=RSUI:Button({id="v3_diag_perf_start",parent=perfActions,text="开始持续诊断",compact=true,fontSize=10,slot={size="fill",fill=1.35,minWidth=90}})
     local perfStop=RSUI:Button({id="v3_diag_perf_stop",parent=perfActions,text="停止诊断",compact=true,fontSize=10,slot={size="fill",fill=1,minWidth=70}})
     local perfRefresh=RSUI:Button({id="v3_diag_perf_refresh",parent=perfActions,text="刷新分析",compact=true,fontSize=10,slot={size="fill",fill=1,minWidth=70}})
@@ -745,7 +745,7 @@ local function BuildDiagnostics(parent, route)
     local perfExport=RSUI:Button({id="v3_diag_perf_export",parent=perfActions,text="导出性能",compact=true,fontSize=10,slot={size="fill",fill=1,minWidth=70}})
     local perfText=RSUI:Text({id="v3_diag_perf_status",parent=root,fontSize=9,tone="muted",overflow="wrap",maxLines=16,
         text="持续诊断默认关闭；手动开始后记录到停止/重载，再次开始会建立新记录。",slot={size="fill",fill=1,hAlign="fill"}})
-    -- 中文维护：诊断/性能切换复用同页空间，默认折叠性能区。新控件不能把 340px 小视口报告框
+    -- 诊断/性能切换复用同页空间，默认折叠性能区。新控件不能把 340px 小视口报告框
     -- 挤成 1px；性能模式隐藏报告区，但保留冻结正文/页码，回到系统诊断仍可继续复制。
     perfActions:SetVisible(false);perfText:SetVisible(false)
     local card=D:InfoCard(root,{id="v3_diag_gate",title="自检结果",value="尚未运行",
@@ -855,7 +855,7 @@ local function BuildDiagnostics(parent, route)
             pcall(ui.DeactivateInputWidget,ui,editor,host.owner,"performance_view_opened")
         end
         self:RefreshPerformance()
-        return true -- 中文维护：视图切换已完成；监控缺失只显示不可用提示，不能阻断返回系统报告。
+        return true -- 视图切换已完成；监控缺失只显示不可用提示，不能阻断返回系统报告。
     end
     perfEntry.onClick=function()return root:ShowPerformance(not root.performanceView)end
     function root:RefreshPerformance()
@@ -898,7 +898,7 @@ local function BuildDiagnostics(parent, route)
             local diagnostic,err=Backend("ExportReport");if not diagnostic then status:SetText(err);return false,err end
             local monitor=S.PerformanceMonitor
             if not monitor or type(monitor.BuildReport)~="function" then status:SetText("性能报告不可用");return false end
-            -- 中文维护：每次导出构造新性能快照，不使用 selfCheckText/selfCheckMeta，也不依赖
+            -- 每次导出构造新性能快照，不使用 selfCheckText/selfCheckMeta，也不依赖
             -- 原生复制框是否可用。导出中的采集状态保持原样，记录可继续运行。
             local text,meta=monitor:BuildReport()
             if not text then status:SetText(tostring(meta));return false,meta end
@@ -914,7 +914,7 @@ local function BuildDiagnostics(parent, route)
         elseif check.status=="ERROR" then card:SetData({value="自检执行异常",detail="仍可打印其余证据；执行异常不等于检查通过。"})
         else card:SetData({value=(tonumber(check.blockers)or 0)>0 and "需要处理" or ((tonumber(check.warnings)or 0)>0 and "存在警告" or "检查通过"),
             detail="阻断 "..tostring(check.blockers or 0).." · 警告 "..tostring(check.warnings or 0).." · 检查项 "..tostring(#(check.checks or {}))}) end
-        self:RefreshPerformance() -- 中文维护：只有页面显式刷新更新性能显示，不创建常驻页面刷新任务。
+        self:RefreshPerformance() -- 只有页面显式刷新更新性能显示，不创建常驻页面刷新任务。
         return true
     end
     -- 维护：一个Native编辑框承载多份独立页文本。快照/边界在首次打印确定，上一页/下一页
@@ -989,7 +989,7 @@ local function BuildDiagnostics(parent, route)
         WriteReportText("","delivery_failed") -- 维护：失败交付显式清空，不能留着截断页冒充成功。
         return {state='failed',code='TEXT_READBACK',readback=trace,error=transport:FormatReadback(trace)}
     end
-    -- 中文维护：没有已生成报告时先只读生成完整自检；文件出口不依赖编辑框交付成功或分页容量。
+    -- 没有已生成报告时先只读生成完整自检；文件出口不依赖编辑框交付成功或分页容量。
     exportButton.onClick=function()
         return Execute('export_self_check',function()
             local diagnostic,err=Backend('ExportReport');if not diagnostic then status:SetText(err);return false,err end
@@ -1011,10 +1011,10 @@ local function BuildDiagnostics(parent, route)
             return true
         end)
     end
-    -- 中文维护注释（2026-09-18，.18.237 故障报告 Authority 回归修复）：
+    -- 约束（2026-09-18，.18.237 故障报告 Authority 回归修复）：
     -- 原因：诊断页“打印故障报告”曾误接历史兼容 PrintFocusedSelfCheckReport；Focused 会在 Presentation
     -- 分页之前先把证据压到 3500 bytes，导致真实 RU 报告出现 PAGE=1/1 但正文已有 <cut>/<text_omitted>，
-    -- 丢失恰好用于判断 Store 恢复候选的尾部证据。Authority/数据流：Diagnostics 的 BuildPaged 仍是
+    -- 丢失恰好用于判断 Store 恢复候选的尾部证据。权威归属/数据流：Diagnostics 的 BuildPaged 仍是
     -- 本次加载故障快照 Authority，Persistence/Store 只提供只读取证；Presentation 只持有固定 text/meta
     -- 并按 Native 编辑框回读容量分页，上一页/下一页不得重新 RunSelfCheck/LoadData。兼容边界：
     -- PrintFocusedSelfCheckReport API 保留给旧工具/专项测试，但不再作为用户默认按钮；不改变 Store schema、
@@ -1022,7 +1022,7 @@ local function BuildDiagnostics(parent, route)
     -- 页数增加不能通过重新引入预裁剪来“优化”。
     printButton.onClick=function()
         return Execute('print_self_check',function()
-            root:ShowPerformance(false) -- 中文维护：用户打印自检时回到报告视图，不停止持续采集。
+            root:ShowPerformance(false) -- 用户打印自检时回到报告视图，不停止持续采集。
             local diagnostic,err=Backend('PrintPagedSelfCheckReport');if not diagnostic then status:SetText(err);return false,err end
             ClearReport();Navigation()
             local ok,text,meta=diagnostic:PrintPagedSelfCheckReport(Present)
@@ -1033,7 +1033,7 @@ local function BuildDiagnostics(parent, route)
     end
     fullReportButton.onClick=function()
         return Execute('print_full_self_check',function()
-            root:ShowPerformance(false) -- 中文维护：性能视图与冻结报告共享空间，打印必须露出真实复制框。
+            root:ShowPerformance(false) -- 性能视图与冻结报告共享空间，打印必须露出真实复制框。
             local diagnostic,err=Backend('PrintPagedSelfCheckReport');if not diagnostic then status:SetText(err);return false,err end
             ClearReport();Navigation()
             local ok,text,meta=diagnostic:PrintPagedSelfCheckReport(Present)

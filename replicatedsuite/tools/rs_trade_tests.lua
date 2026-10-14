@@ -1,18 +1,19 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 3 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Trade / Specialty Route Test Suite
+-- Replicated Suite · 交易测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Tests Trade Feature, Authority, SingleFlight route request & timeout,
--- dropped/stale callback handling, ratio & 130% full ratio modes,
--- Commerce proficiency integration, TradePayoutV3 price calculations,
--- bounded material projection & identity resolution, multi-row quote jobs over a shared single Native queue,
--- route favorites (max 12), HUD widget & TradeDetailFloatingV3,
--- and FoundationGate / Acceptance contract verification.
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
+-- 覆盖 Trade Feature、业务数据层、单路线请求及超时，
+-- 无对应请求及过期回调处理、当前比例和 130% 满比例模式，
+-- 贸易熟练度集成、TradePayoutV3 价格计算，
+-- 有界材料投影及身份解析、共用单一原生队列的多行询价，
+-- 最多 12 条路线收藏、HUD 控件及 TradeDetailFloatingV3，
+-- 并核对 FoundationGate 和验收契约。
 ------------------------------------------------------------------------
-
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -98,7 +99,7 @@ dofile("services/rs_trade_payout_v3.lua")
 dofile("services/rs_trade_material_identity_v3.lua")
 dofile("services/rs_auction_session_list_v3.lua")
 
--- Mock RSUI controls
+-- 提供 RSUI 控件测试替身。
 S.RSUI = S.RSUI or {}
 S.RSUI.TableView = function(spec)
     local tv = { spec = spec, items = {}, viewState = "ready" }
@@ -137,7 +138,7 @@ S.RSUI.HorizontalBox = function(spec) return { spec = spec } end
 S.RSUI.Border = function() return {} end
 S.RSUI.WithBuildScope = function(_, fn) return fn() end
 
--- Mock UI Hosts
+-- 提供 UI 宿主测试替身。
 S.UIV3 = S.UIV3 or {}
 S.UIV3.WidgetHost = {
     specs = {},
@@ -156,7 +157,7 @@ S.UIV3.AuxWindowStoreV3 = {
     PersistWindow = function() return true end,
 }
 
--- Native APIs mock
+-- 提供原生 API 测试替身。
 local mockStore = {
     productionZones = {
         { zoneGroupId = 1, zoneGroupName = "索兹里德半岛", continentName = "西大陆" },
@@ -207,7 +208,7 @@ local cargoIdentityMode = "direct"
 _G.X2Equipment = {
     GetEquippedItemType = function(self, slot)
         assert(slot == 27, "cargo identity must read ES_BACKPACK slot 27")
-        if cargoIdentityMode == "direct" then return 31857 end -- Solzreed Luxury Specialty
+        if cargoIdentityMode == "direct" then return 31857 end -- 索兹里德奢侈特产。
         return nil
     end,
     GetEquippedItemTooltipInfo = function(self, slot, targetEquippedItem)
@@ -241,9 +242,7 @@ assert(Trade ~= nil, "Trade feature failed to load")
 Trade.enabled = true
 assert(Trade:Initialize(), "Trade Initialize failed")
 
-------------------------------------------------------------------------
--- Test 1: Registry Contract & Metadata
-------------------------------------------------------------------------
+-- 测试 1：注册契约与元数据。
 Test("T1: Feature registry metadata & contract", function()
     local reg = S.FeatureRegistry:Get("life_trade")
     assert(reg ~= nil, "life_trade must be registered")
@@ -268,9 +267,7 @@ Test("T1: Feature registry metadata & contract", function()
     end
 end)
 
-------------------------------------------------------------------------
--- Test 1B: Cargo equipment-slot Authority / tooltip fallback
-------------------------------------------------------------------------
+-- 测试 1B：货物装备槽事实归属及 tooltip 降级。
 Test("T1B: Cargo uses ES_BACKPACK slot and bounded identity fallback", function()
     local TA = Trade.Authority
     cargoIdentityMode = "direct"
@@ -288,9 +285,7 @@ Test("T1B: Cargo uses ES_BACKPACK slot and bounded identity fallback", function(
     assert(TA.cargo.tooltipName == "Solzreed Luxury Specialty", "tooltip name is retained only as diagnostics evidence")
 end)
 
-------------------------------------------------------------------------
--- Test 2: Zone Normalization & Candidate Fallback
-------------------------------------------------------------------------
+-- 测试 2：区域归一化与候选降级。
 Test("T2: Zone reading, continent classification & candidate fallback", function()
     assert(Trade:AcquireConsumer("test_t2"), "AcquireConsumer failed")
     local TA = Trade.Authority
@@ -298,7 +293,7 @@ Test("T2: Zone reading, continent classification & candidate fallback", function
     assert(#TA.zones == 4, "Must have 4 zones from mock")
     assert(TA.zoneFallback == false, "zoneFallback should be false when native returns data")
 
-    -- Check continent tagging
+    -- 核对大陆分类标记。
     local westCount, eastCount = 0, 0
     for _, z in ipairs(TA.zones) do
         if z.continentKey == "west" then westCount = westCount + 1 end
@@ -307,13 +302,13 @@ Test("T2: Zone reading, continent classification & candidate fallback", function
     assert(westCount == 3, "Should have 3 west zones")
     assert(eastCount == 1, "Should have 1 east zone")
 
-    -- Test sellable zones caching
+    -- 验证可出售区域缓存。
     Trade.State.fromZone = 1
     assert(TA:RefreshSellable(), "RefreshSellable failed")
     assert(#TA.sellableZones == 2, "Should have 2 sellable destinations for zone 1: got " .. tostring(#TA.sellableZones))
     assert(TA.sellableCache[1] ~= nil, "Zone 1 should be cached")
 
-    -- Test fallback when native returns empty
+    -- 原生接口返回空结果时验证降级路径。
     local oldProd = mockStore.productionZones
     mockStore.productionZones = {}
     assert(TA:RefreshZones(), "RefreshZones with empty native failed")
@@ -325,9 +320,7 @@ Test("T2: Zone reading, continent classification & candidate fallback", function
     Trade:ReleaseConsumer("test_t2")
 end)
 
-------------------------------------------------------------------------
--- Test 3: Route Selection, SingleFlight & Timeout Guard
-------------------------------------------------------------------------
+-- 测试 3：路线选择、单请求约束和超时保护。
 Test("T3: Route selection, SingleFlight lane & request timeout guard", function()
     assert(Trade:AcquireConsumer("test_t3"))
     local TA = Trade.Authority
@@ -339,12 +332,12 @@ Test("T3: Route selection, SingleFlight lane & request timeout guard", function(
     TA:RefreshZones()
     mockStore.ratioCalls = {}
 
-    -- Setting From
+    -- 设置出发地。
     assert(Trade:SetFrom(1), "SetFrom(1) failed")
     assert(Trade.State.fromZone == 1, "fromZone must be 1")
     assert(Trade.State.toZone == nil, "toZone must be reset to nil on origin change")
 
-    -- Setting To
+    -- 设置目的地。
     assert(Trade:SetTo(5), "SetTo(5) failed")
     assert(Trade.State.toZone == 5, "toZone must be 5")
     assert(#mockStore.ratioCalls == 1, "Should have called GetSpecialtyRatioBetween once")
@@ -352,17 +345,17 @@ Test("T3: Route selection, SingleFlight lane & request timeout guard", function(
     assert(TA.inFlight ~= nil, "inFlight record must be set")
     assert(TA.status == "loading", "Status must be loading")
 
-    -- SingleFlight: identical request while inFlight with force=false is rejected as in-flight
+    -- 当前请求进行中且 force=false 时，重复相同请求应返回 in-flight。
     local ok, msg = TA:Request(false)
     assert(ok == false and msg == "路线查询仍在进行", "Duplicate request should be rejected")
 
-    -- SingleFlight: different route queues latest pending route
+    -- 当前请求进行中时，另一条路线只保留为最新待处理路线。
     Trade.State.toZone = 8
     local queued = TA:Request(false)
     assert(queued == true, "Different route should queue latest route")
     assert(TA.pendingRoute ~= nil and TA.pendingRoute.to == 8, "pendingRoute must be set to 8")
 
-    -- Simulate timeout guard task execution
+    -- 模拟执行超时保护任务。
     local timeoutTask = S.Scheduler.tasks and S.Scheduler.tasks[TA.requestTimeoutTask]
     if type(timeoutTask) == "table" and type(timeoutTask.callback) == "function" then
         timeoutTask.callback()
@@ -376,9 +369,7 @@ Test("T3: Route selection, SingleFlight lane & request timeout guard", function(
     Trade:ReleaseConsumer("test_t3")
 end)
 
-------------------------------------------------------------------------
--- Test 4: Stale & Dropped Callback Safety
-------------------------------------------------------------------------
+-- 测试 4：过期回调及无对应请求回调的安全处理。
 Test("T4: Dropped and stale callback protection", function()
     assert(Trade:AcquireConsumer("test_t4"))
     local TA = Trade.Authority
@@ -389,18 +380,18 @@ Test("T4: Dropped and stale callback protection", function()
     TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:RefreshZones()
 
-    -- Simulate dropped callback when inFlight is nil
+    -- inFlight 为 nil 时模拟无对应请求的回调。
     local droppedOk = TA:OnRatio({ { name = "test", ratio = 100 } })
     assert(droppedOk == false, "Late callback with no inFlight must be dropped")
     assert(TA.diag and TA.diag.droppedCallbacks > 0, "droppedCallbacks counter must increment")
 
-    -- Simulate stale callback when user switched selection
+    -- 用户切换选择后模拟旧回调到达。
     Trade:SetFrom(1)
     Trade:SetTo(5)
     assert(TA.inFlight ~= nil)
-    -- User switches to 8
+    -- 用户切换到目的地 8。
     Trade.State.toZone = 8
-    -- Callback arrives for 5
+    -- 目的地 5 的旧回调随后到达。
     local staleResult = TA:OnRatio({ { name = "test", ratio = 100 } })
     assert(TA.inFlight == nil or TA.inFlight.to == 8, "Stale callback must trigger pending request for route to 8")
 
@@ -411,9 +402,7 @@ Test("T4: Dropped and stale callback protection", function()
     Trade:ReleaseConsumer("test_t4")
 end)
 
-------------------------------------------------------------------------
--- Test 5: Ratio Event Processing, Sorting & 130% Full Mode
-------------------------------------------------------------------------
+-- 测试 5：比例事件处理、排序及 130% 满比例模式。
 Test("T5: Ratio event processing, 130% full mode & sorting", function()
     assert(Trade:AcquireConsumer("test_t5"))
     local TA = Trade.Authority
@@ -427,7 +416,7 @@ Test("T5: Ratio event processing, 130% full mode & sorting", function()
     assert(Trade:SetFrom(1))
     assert(Trade:SetTo(5))
 
-    -- Dispatch ratio data matching the active inFlight route (1->5)
+    -- 派发与当前 inFlight 路线 1→5 匹配的比例数据。
     local mockRatioInfo = {
         {
             name = "[格威尔]标准特产",
@@ -449,24 +438,24 @@ Test("T5: Ratio event processing, 130% full mode & sorting", function()
     assert(#TA.rows == 3, "Must have 3 rows: got " .. tostring(#TA.rows))
     assert(TA.status == "ready", "Status must be ready")
 
-    -- Test sorting: ratio mode (default)
+    -- 验证默认的比例排序模式。
     assert(Trade:SetSortMode("ratio"))
     assert(TA.rows[1].ratio >= TA.rows[2].ratio, "Rows must be sorted descending by ratio")
 
-    -- Test sorting: name mode ([xx] prefix priority)
+    -- 验证名称排序，覆盖 [xx] 前缀优先级。
     assert(Trade:SetSortMode("name"))
     assert(string.sub(TA.rows[1].name, 1, 1) == "[", "First row must have bracket prefix")
     assert(string.sub(TA.rows[2].name, 1, 1) == "[", "Second row must have bracket prefix")
     assert(string.sub(TA.rows[3].name, 1, 1) ~= "[", "Third row has no bracket prefix")
 
-    -- Test full 130% ratio mode
+    -- 验证 130% 满比例模式。
     assert(Trade:SetRatioMode("full"))
     for _, row in ipairs(TA.rows) do
         assert(row.ratio == 130, "All rows must have 130% ratio in full mode")
         assert(row.rate == "130%", "rate display must be 130%")
     end
 
-    -- Switch back to current ratio
+    -- 切回当前比例模式。
     assert(Trade:SetRatioMode("current"))
     assert(TA.rows[1].currentRatio ~= nil, "currentRatio must be preserved")
 
@@ -477,9 +466,7 @@ Test("T5: Ratio event processing, 130% full mode & sorting", function()
     Trade:ReleaseConsumer("test_t5")
 end)
 
-------------------------------------------------------------------------
--- Test 6: Commerce Proficiency & Payout Calculation
-------------------------------------------------------------------------
+-- 测试 6：贸易熟练度和收入计算。
 Test("T6: Commerce skill reading & TradePayoutV3 calculation", function()
     assert(Trade:AcquireConsumer("test_t6"))
     local TA = Trade.Authority
@@ -501,7 +488,7 @@ Test("T6: Commerce skill reading & TradePayoutV3 calculation", function()
     }
     assert(TA:OnRatio(mockRatioInfo))
 
-    -- Check commerce skill resolution
+    -- 核对贸易技能解析。
     assert(TA.commerceSkill == 50000, "Commerce skill must be 50000")
     assert(TA.commerceStatus == "ready", "Commerce status must be ready")
 
@@ -512,9 +499,9 @@ Test("T6: Commerce skill reading & TradePayoutV3 calculation", function()
     assert(row.commerceMultiplier ~= nil and row.commerceMultiplier > 1.0, "Commerce multiplier must be > 1.0")
     assert(row.priceComplete == true, "Price estimation must be complete")
 
-    -- 18.312 RU live anchor: preserved specialty freshness must contribute +3%.
+    -- 18.312 RU 实测基准：保鲜特产必须提供 +3% 乘数。
     -- [黄金]保存特制特产 -> 双冠丘陵, 332000 Commerce, 113% ratio:
-    -- (291257/107) * 113 * 2.66 * 1.03 = 842733 copper = 84g27s33c.
+    -- 收入计算：(291257/107)×113×2.66×1.03=842733 铜，即 84 金 27 银 33 铜。
     local payout = S.Services and S.Services.TradePayoutV3 or nil
     assert(type(payout) == "table" and type(payout.Estimate) == "function", "TradePayoutV3 must exist")
     local preservedPrice, preservedMeta = payout:Estimate({
@@ -525,7 +512,7 @@ Test("T6: Commerce skill reading & TradePayoutV3 calculation", function()
     assert(type(preservedMeta) == "table" and preservedMeta.packMultiplier == 1.03, "Preserved multiplier must be 1.03")
     assert(preservedMeta.packToken == "保存", "Preserved multiplier token must be 保存")
 
-    -- 18.326 full freshness matrix: verify every naming family used by TradePrices.
+    -- 完整鲜度矩阵必须覆盖 TradePrices 使用的全部命名族。
     local freshnessCases = {
         { "[格威尔]标准特产", 1.05, "标准" },
         { "[玛瑞诺普]新鲜特产", 1.15, "新鲜" },
@@ -551,12 +538,12 @@ Test("T6: Commerce skill reading & TradePayoutV3 calculation", function()
     local coverage = payout:AuditFreshnessCoverage()
     assert(type(coverage) == "table" and tonumber(coverage.unclassified or 0) == 0, "All current static trade price keys must be classified or explicitly neutral")
 
-    -- Test turning commerce mode off
+    -- 验证关闭贸易熟练度模式。
     assert(Trade:SetCommerceMode("off"))
     assert(Trade.State.commerceMode == "off")
     assert(TA.commerceStatus == "off")
 
-    -- Restore commerce mode
+    -- 恢复贸易熟练度模式。
     assert(Trade:SetCommerceMode("observe"))
 
     TA.inFlight = nil
@@ -566,9 +553,7 @@ Test("T6: Commerce skill reading & TradePayoutV3 calculation", function()
     Trade:ReleaseConsumer("test_t6")
 end)
 
-------------------------------------------------------------------------
--- Test 7: Material Projection & Identity Resolution
-------------------------------------------------------------------------
+-- 测试 7：材料投影及物品身份解析。
 Test("T7: Material projection, recipe resolution & bounded display", function()
     assert(Trade:AcquireConsumer("test_t7"))
     local TA = Trade.Authority
@@ -618,9 +603,7 @@ Test("T7: Material projection, recipe resolution & bounded display", function()
     Trade:ReleaseConsumer("test_t7")
 end)
 
-------------------------------------------------------------------------
--- Test 8: Multi-row quote jobs stay bounded while Native queue remains shared
-------------------------------------------------------------------------
+-- 测试 8：多行询价任务有界，继续共用原生请求队列。
 Test("T8: multi-row quote jobs coexist, remain bounded & cancel together", function()
     assert(Trade:AcquireConsumer("test_t8"))
     local queue = S.Services.PriceQuoteQueueV3
@@ -634,7 +617,7 @@ Test("T8: multi-row quote jobs coexist, remain bounded & cancel together", funct
         assert((tonumber(jobs.activeCount) or 0) <= 16, "Active row jobs must stay within the explicit bound")
         assert((tonumber(batch.activeJobs) or 0) == (tonumber(jobs.activeCount) or 0), "Aggregate must mirror active RowJob count")
 
-        -- Submitting the same visible list again must not supersede/cancel the existing row jobs.
+        -- 重复提交同一可见列表时，不能替换或取消已有行任务。
         local before = tonumber(jobs.activeCount) or 0
         local ok2, msg2 = Trade:QuotePendingMaterials()
         assert(ok2 == true, "Second list submission should be idempotent/merge with active jobs: " .. tostring(msg2))
@@ -649,9 +632,7 @@ Test("T8: multi-row quote jobs coexist, remain bounded & cancel together", funct
     Trade:ReleaseConsumer("test_t8")
 end)
 
-------------------------------------------------------------------------
--- Test 9: Route Favorites Management & Persistence
-------------------------------------------------------------------------
+-- 测试 9：路线收藏管理与持久化。
 Test("T9: Route favorites toggle, 12-route bound & selection", function()
     assert(Trade:AcquireConsumer("test_t9"))
     local TA = Trade.Authority
@@ -665,7 +646,7 @@ Test("T9: Route favorites toggle, 12-route bound & selection", function()
     assert(Trade:SetFrom(1))
     assert(Trade:SetTo(5))
 
-    -- Toggle favorite (add)
+    -- 切换收藏状态，添加路线。
     local okAdd, msgAdd = Trade:ToggleCurrentFavorite()
     assert(okAdd == true and msgAdd == "已收藏路线", "Must successfully add favorite: " .. tostring(msgAdd))
     assert(Trade:IsFavorite(1, 5) == true, "1->5 must be favorite")
@@ -678,17 +659,17 @@ Test("T9: Route favorites toggle, 12-route bound & selection", function()
     assert(#favItems == 1, "Must have 1 favorite item for dropdown")
     assert(favItems[1].selected == true, "Current route should be marked selected")
 
-    -- Select favorite
+    -- 选择已收藏路线。
     assert(Trade:SelectFavorite("1:5"), "SelectFavorite failed")
     assert(Trade.State.fromZone == 1 and Trade.State.toZone == 5)
 
-    -- Toggle favorite (remove)
+    -- 再次切换收藏状态，移除路线。
     local okRem, msgRem = Trade:ToggleCurrentFavorite()
     assert(okRem == true and msgRem == "已取消收藏", "Must successfully remove favorite")
     assert(Trade:IsFavorite(1, 5) == false, "1->5 must not be favorite")
     assert(#Trade:GetFavorites() == 0, "Favorites must be empty")
 
-    -- Bound: cannot exceed 12 favorites
+    -- 收藏数量不能超过 12。
     Trade.State.favorites = {}
     for i = 1, 12 do
         Trade.State.favorites[#Trade.State.favorites + 1] = { fromZone = i, toZone = i + 10 }
@@ -705,9 +686,7 @@ Test("T9: Route favorites toggle, 12-route bound & selection", function()
     Trade:ReleaseConsumer("test_t9")
 end)
 
-------------------------------------------------------------------------
--- Test 10: HUD Widget, TradeDetailFloatingV3 & Gate Checks
-------------------------------------------------------------------------
+-- 测试 10：HUD 控件、TradeDetailFloatingV3 和门禁检查。
 Test("T10: HUD widget, Floating Detail & FoundationGate / Acceptance verification", function()
     assert(Trade:AcquireConsumer("test_t10"))
     local TA = Trade.Authority
@@ -731,25 +710,25 @@ Test("T10: HUD widget, Floating Detail & FoundationGate / Acceptance verificatio
     assert(TA:OnRatio(mockRatioInfo))
     if S.Scheduler.tasks[TA.materialProjectionTask] then assert(S.Scheduler:RunTask(TA.materialProjectionTask), "deferred material projection failed") end
 
-    -- Widget window state compatibility
+    -- 核对控件窗口状态兼容。
     Trade.State.widgetWindow = { width = 470, height = 374, x = 100, y = 100 }
     local state = Trade:GetWidgetWindowState()
     assert(state.width == 410 and state.height == 306, "470x374 legacy size must be normalized to 410x306")
 
-    -- Row lookup and selection
+    -- 验证行查找和选择。
     local row = TA.rows[1]
     assert(row ~= nil, "Must have at least one row")
     assert(Trade:GetRow(row.key) ~= nil, "GetRow must find row by key")
     assert(Trade:SelectRow(row.key) == true, "SelectRow must succeed")
     assert(Trade:GetSelectedRow() ~= nil, "GetSelectedRow must return selected row")
 
-    -- TradeDetailFloatingV3 open and close
+    -- 验证 TradeDetailFloatingV3 的打开和关闭。
     local detail = S.UIV3.TradeDetailFloatingV3
     assert(detail ~= nil, "TradeDetailFloatingV3 must be present")
     assert(detail:Open(row.key) == true, "TradeDetailFloatingV3:Open must succeed")
     assert(detail.visible == true, "Detail floating must be visible")
     assert(detail.rowKey == row.key, "Detail floating rowKey must match")
-    -- Trade detail must explicitly hand detached material facts to the session-only auction list.
+    -- 交易详情必须显式把独立材料事实传递给仅在当前会话保存的拍卖列表。
     local sessionList = S.Services.AuctionSessionListV3
     sessionList:Clear("trade_detail_test")
     assert(detail.auctionTempButton ~= nil and type(detail.auctionTempButton.onClick) == "function", "Trade detail must expose add-to-auction-temp action")
@@ -763,7 +742,7 @@ Test("T10: HUD widget, Floating Detail & FoundationGate / Acceptance verificatio
     assert(detail:Close() == true, "TradeDetailFloatingV3:Close must succeed")
     assert(detail.visible == false, "Detail floating must be hidden")
 
-    -- FoundationGate check: v3_trade_detail_favorites_contract clauses
+    -- 基础门禁核对 v3_trade_detail_favorites_contract 条款。
     local tradeFeature = S.Features and S.Features.Trade or nil
     local tradePayout = S.Services and S.Services.TradePayoutV3 or nil
     assert(type(tradeFeature) == "table", "tradeFeature must be table")
@@ -787,7 +766,7 @@ Test("T10: HUD widget, Floating Detail & FoundationGate / Acceptance verificatio
     assert(type(detail) == "table" and (tonumber(detail.TradeDetailContractVersion) or 0) >= 2, "TradeDetailContractVersion >= 2")
     assert(type(detail.Open) == "function" and type(detail.Close) == "function", "TradeDetail Open/Close missing")
 
-    -- Acceptance check: trade_dropdown_quote_preflight_contract & trade_detail_favorites_contract
+    -- 验收核对 trade_dropdown_quote_preflight_contract 和 trade_detail_favorites_contract。
     local tradeProjection = tradeFeature:GetProjection()
     assert(type(tradeFeature.GetRouteSettings) == "function", "GetRouteSettings missing")
     assert(type(tradeFeature.Commands.SetFrom) == "function", "Commands.SetFrom missing")
@@ -808,9 +787,7 @@ Test("T10: HUD widget, Floating Detail & FoundationGate / Acceptance verificatio
 end)
 
 
-------------------------------------------------------------------------
--- Test 11: Route switch invalidates stale rows immediately
-------------------------------------------------------------------------
+-- 测试 11：切换路线后立即使旧行失效。
 Test("T11: destination change clears previous route rows before new callback", function()
     assert(Trade:AcquireConsumer("test_t11"))
     local TA = Trade.Authority
@@ -838,9 +815,7 @@ Test("T11: destination change clears previous route rows before new callback", f
     Trade:ReleaseConsumer("test_t11")
 end)
 
-------------------------------------------------------------------------
--- Test 12: Overview trade card exposes an explicit refresh command
-------------------------------------------------------------------------
+-- 测试 12：首页交易卡片提供显式刷新命令。
 Test("T12: overview trade controls expose refresh button wired to Feature.Commands.Refresh", function()
     local spec = S.UIV3.LifeEconomyContent and S.UIV3.LifeEconomyContent.specs and S.UIV3.LifeEconomyContent.specs.Trade
     assert(type(spec) == "table" and type(spec.buildControls) == "function", "Trade content spec missing")
@@ -859,9 +834,7 @@ Test("T12: overview trade controls expose refresh button wired to Feature.Comman
     Trade.Commands.Refresh = oldRefresh
 end)
 
-------------------------------------------------------------------------
--- Test 13: Floating trade HUD exposes refresh and stays compact
-------------------------------------------------------------------------
+-- 测试 13：交易 HUD 浮窗提供刷新入口并保持紧凑。
 Test("T13: floating trade controls expose refresh and use compact three-row header", function()
     local spec = S.UIV3.LifeEconomyContent and S.UIV3.LifeEconomyContent.specs and S.UIV3.LifeEconomyContent.specs.Trade
     assert(type(spec) == "table" and type(spec.buildControls) == "function", "Trade content spec missing")
@@ -887,9 +860,7 @@ Test("T13: floating trade controls expose refresh and use compact three-row head
     Trade.Commands.Refresh = oldRefresh
 end)
 
-------------------------------------------------------------------------
--- Test 14: Favorite button uses explicit add/remove wording
-------------------------------------------------------------------------
+-- 测试 14：收藏按钮明确显示添加或移除文案。
 Test("T14: favorite button says 移除收藏 when current route is favorited", function()
     local spec = S.UIV3.LifeEconomyContent and S.UIV3.LifeEconomyContent.specs and S.UIV3.LifeEconomyContent.specs.Trade
     local instance = { contentPrefix = "trade_favorite_test_", overview = false, Refresh = function() return true end }
@@ -907,9 +878,7 @@ end)
 
 
 
-------------------------------------------------------------------------
--- Test 15: Native specialty-query cooldown must bound response timeout
-------------------------------------------------------------------------
+-- 测试 15：原生特产查询冷却必须限制响应超时。
 Test("T15: native specialty cooldown is recorded but does not extend response SLA", function()
     assert(Trade:AcquireConsumer("test_t15"))
     local TA = Trade.Authority
@@ -945,9 +914,7 @@ Test("T15: native specialty cooldown is recorded but does not extend response SL
     Trade:ReleaseConsumer("test_t15")
 end)
 
-------------------------------------------------------------------------
--- Test 16: Manual refresh during native cooldown is deferred, not spammed
-------------------------------------------------------------------------
+-- 测试 16：原生冷却期间手动刷新应延迟执行，不能反复发请求。
 Test("T16: refresh during native cooldown defers request until allowed", function()
     assert(Trade:AcquireConsumer("test_t16"))
     local TA = Trade.Authority
@@ -1000,9 +967,7 @@ end)
 
 
 
-------------------------------------------------------------------------
--- Test 17: Missing callback gets one bounded automatic retry after late-callback drain
-------------------------------------------------------------------------
+-- 测试 17：回调缺失时，等待迟到回调排空后仅进行一次有界自动重试。
 Test("T17: missing specialty callback retries once after callback quarantine", function()
     assert(Trade:AcquireConsumer("test_t17"))
     local TA = Trade.Authority
@@ -1058,9 +1023,7 @@ Test("T17: missing specialty callback retries once after callback quarantine", f
 end)
 
 
-------------------------------------------------------------------------
--- Test 18: Empty loading state must say querying, not "no ratio"
-------------------------------------------------------------------------
+-- 测试 18：加载期没有结果时显示正在查询，不能显示没有比例。
 Test("T18: loading trade view reports server query in progress", function()
     local Contents = S.UIV3.LifeEconomyContent
     assert(type(Contents) == "table" and type(Contents.Create) == "function")
@@ -1083,9 +1046,7 @@ Test("T18: loading trade view reports server query in progress", function()
 end)
 
 
-------------------------------------------------------------------------
--- Test 19: A long Native button cooldown must not pin the response lane/loading state
-------------------------------------------------------------------------
+-- 测试 19：较长原生按钮冷却不能一直占住响应通道或加载状态。
 Test("T19: native cooldown stays independent from bounded response wait", function()
     assert(Trade:AcquireConsumer("test_t19"))
     local TA = Trade.Authority
@@ -1139,9 +1100,7 @@ Test("T19: native cooldown stays independent from bounded response wait", functi
 end)
 
 
-------------------------------------------------------------------------
--- Test 20: A late callback inside the quarantine is consumed by the timed-out request
-------------------------------------------------------------------------
+-- 测试 20：隔离期内迟到回调应由已超时请求消费。
 Test("T20: safe late callback cancels quarantine and queued retry", function()
     assert(Trade:AcquireConsumer("test_t20"))
     local TA = Trade.Authority
@@ -1194,13 +1153,10 @@ Test("T20: safe late callback cancels quarantine and queued retry", function()
 end)
 
 
-------------------------------------------------------------------------
--- Test 21: first demand with a persisted complete route must request ratios
-------------------------------------------------------------------------
+-- 测试 21：持久化存有完整路线时，首次获取需求必须请求比例。
 Test("T21: first consumer auto-queries persisted complete route", function()
     local TA = Trade.Authority
-    -- Simulate a freshly loaded session: route settings survived persistence,
-    -- but no consumer/ratio rows/native request exist yet.
+    -- 模拟刚加载的会话：路线设置已从存档恢复，但尚无消费者、比例行或原生请求。
     assert((tonumber(Trade.consumerCount) or 0) == 0, "test requires no pre-existing consumers")
     Trade.State.fromZone, Trade.State.toZone = 5, 8
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil

@@ -1,3 +1,8 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 追踪范围测试
+-- 作者：Replicated
+-- QQ群：1104129461
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function T(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS scope '..name)else failed=failed+1;print('FAIL scope '..name..': '..tostring(err))end end
 local Boot=dofile('tools/rs_pvp_hud_test_host.lua')

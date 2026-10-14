@@ -1,4 +1,10 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 模块诊断窗口测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 共享模块诊断悬浮窗契约：验证单实例、显式采集、固定分页和 CopyBox 生命周期。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS module-diag-window '..name)else failed=failed+1;print('FAIL module-diag-window '..name..': '..tostring(err))end end
 local function Boot(options)
@@ -66,9 +72,7 @@ local function Boot(options)
         calls.copy=box;return box
     end
     if options.realCopyBox then
-        -- Production CopyBox + Window, only native edit object is a model.
-        -- The existing global report-delivery regression has this same native
-        -- focus-clears-buffer boundary; module diagnostics must respect it too.
+        -- 使用生产 CopyBox 和 Window，仅原生编辑对象为模型；原有全局报告测试同样模拟获取焦点会清空缓冲区的边界，模块诊断也必须遵守。
         GetFocusedWidgetId=function()return calls.focusId end
         S.UI.CreateMultiEditBox=function(_,parent,id)
             local edit={text='',events={},rsNativePhysicalId='native_'..id,rsNativeGeneration=1}
@@ -193,7 +197,7 @@ Test('rejected focus still publishes complete text without false activation succ
     assert(W.copyPageValid==true and W.copyActivationError~=nil)
     assert(c.surface.status:find('焦点激活失败',1,true),'focus failure was hidden')
 end)
--- 中文维护：导出复用完整快照；Native 正文失败不应迫使用户逐页复制或重新采集业务。
+-- 导出复用完整快照；Native 正文失败不应迫使用户逐页复制或重新采集业务。
 Test('file export uses frozen complete report without editor reads or recapture',function()
     local S,W,c=Boot();assert(W:Open('feature_a'));assert(W:Generate())
     S.DiagnosticsManager={ExportReport=function(_,text,meta)c.exportText=text;c.exportId=meta.id;return true,'saved' end}
@@ -205,7 +209,7 @@ Test('file export captures only on explicit click when no snapshot exists',funct
     S.DiagnosticsManager={ExportReport=function(_,text)c.exportText=text;return true,'saved' end}
     assert(c.capture==0);assert(W:ExportFile());assert(c.capture==1 and c.exportText=='feature_a:REPORT')
 end)
--- 中文维护：沿真实模块控制条 -> 共享窗口 -> 创建时绑定的导出回调执行，
+-- 沿真实模块控制条 -> 共享窗口 -> 创建时绑定的导出回调执行，
 -- 模块切换必须清掉旧报告；复制框失败仍能导出当前模块完整的 pending snapshot。
 Test('module toolbar export button follows module switches and survives editor failures',function()
     local S,W,c=Boot({copyWriteFails=true,actualBytes=0})

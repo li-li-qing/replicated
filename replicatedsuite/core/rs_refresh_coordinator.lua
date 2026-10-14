@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Refresh Coordinator
+-- Replicated Suite · 刷新合并与防抖
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Event-driven bounded sliding debounce/coalescing on top of the Suite's single
--- Scheduler.  There is no additional Tick/OnUpdate authority.  Identity is
--- owner + stable key; callback closure identity is deliberately NOT part of
--- the conflict contract because callers commonly create a fresh closure for
--- each event request.
+-- 刷新协调器在 Suite 单一 Scheduler 上提供事件驱动、有界滑动 debounce/合并，不增加 Tick/OnUpdate 权威。冲突
+-- 身份为 owner+稳定 key，回调闭包身份不参与，因为调用者通常每次事件新建闭包。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -19,7 +18,7 @@ S.RefreshCoordinator = {
     executed = 0,
     cancelled = 0,
     failed = 0,
-    -- 维护（foundation-lifecycle-1）：最大合并窗口防止持续事件饿死刷新；仍只使用共享 Scheduler。
+    -- 最大合并窗口防止持续事件饿死刷新；仍只使用共享 Scheduler。
     -- 此处只拥有 owner+key 的刷新调度权，不拥有 Quest/Instance 事实或窗口可见性。
     boundedDebounceContractVersion = 1,
     reusedSchedules = 0,
@@ -29,7 +28,7 @@ local NIL_OWNER = {}
 local MIN_DELAY_MS = 50
 local DEFAULT_MAX_WAIT_MS = 1000
 
--- 维护：非法 delay/maxWait 不得形成 NaN/无限截止时间；正常有限延迟保持原契约。
+-- 非法 delay/maxWait 不得形成 NaN/无限截止时间；正常有限延迟保持原契约。
 local function Finite(value, fallback)
     value = tonumber(value)
     if value == nil or value ~= value or value == math.huge or value == -math.huge then return fallback end
@@ -54,7 +53,7 @@ local function Count(tbl)
 end
 
 local function RemoveState(self, state)
-    -- 维护：返回是否仍拥有该注册实例；运输层迟到回调不能只凭 owner+key 重用执行权。
+    -- 返回是否仍拥有该注册实例；运输层迟到回调不能只凭 owner+key 重用执行权。
     -- 先消费本次状态再回调，允许回调创建同 key 后继状态且不被旧清理删除。
     if state == nil then return false end
     local bucket, ownerKey = Bucket(self, state.owner, false)
@@ -105,7 +104,7 @@ function R:Request(spec)
             priority = tostring(spec.priority or "P2"),
             cost = math.max(1, math.floor(Finite(spec.cost, 1))),
             generation = S.Generation,
-            -- 维护：首次请求固定 deadline，后续事件只能合并，不能无限向后推。
+            -- 首次请求固定 deadline，后续事件只能合并，不能无限向后推。
             -- maxWait 至少容纳首次明确 delay；默认 1s 是防饥饿合并窗口，不是真机响应 SLA。
             -- 仍受 Scheduler 帧间隔/预算/客户端暂停影响，不在事件热路径直接刷新业务。
             deadlineAtMs = now + math.max(delayMs, Finite(spec.maxWaitMs, DEFAULT_MAX_WAIT_MS)),
@@ -122,7 +121,7 @@ function R:Request(spec)
 
     local reason = tostring(spec.reason or "request")
     state.reasons[reason] = true
-    -- 维护：保留定时任务时仍必须读取最新 reason/callback，禁止闭包冻结最初请求。
+    -- 保留定时任务时仍必须读取最新 reason/callback，禁止闭包冻结最初请求。
     state.latestReason = reason
 
     local scheduler = S.Scheduler
@@ -132,7 +131,7 @@ function R:Request(spec)
     end
 
     local targetAtMs = math.min(now + delayMs, state.deadlineAtMs)
-    -- 维护：达到同一 deadline 后保留已有任务，而不是反复重设 50ms 最小延迟。
+    -- 达到同一 deadline 后保留已有任务，而不是反复重设 50ms 最小延迟。
     -- 否则 16ms 事件流仍会饿死已到期任务，并反复抹掉预算 deferCount；也会无谓分配闭包。
     -- 只读查询确认任务未被外部 RemoveOwner 移除，缺查询能力时保留旧的重排兼容路径。
     if state.scheduledAtMs == targetAtMs and type(scheduler.GetTaskState) == "function"
@@ -203,7 +202,7 @@ function R:Describe()
         executed = self.executed,
         cancelled = self.cancelled,
         failed = self.failed,
-        -- 维护：只读性能/契约证据；Describe 不刷新业务、不启动 Consumer、不修改 deadline。
+        -- 只读性能/契约证据；Describe 不刷新业务、不启动 Consumer、不修改 deadline。
         boundedDebounceContractVersion = self.boundedDebounceContractVersion,
         reusedSchedules = self.reusedSchedules,
     }

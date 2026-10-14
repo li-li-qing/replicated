@@ -1,25 +1,17 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Data Views / Virtualization v2
+-- Replicated Suite · 虚拟列表与表格
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- UMG-like ListView / TableView foundation. Large data sets must not create
--- one native widget per item. VirtualList keeps a bounded row pool sized from
--- the viewport and rebinds pooled rows only when their logical item changes.
---
--- IMPORTANT:
---   * No permanent Tick work. Reconciliation happens on data/scroll/layout.
---     Scrollbar and column-resize gestures borrow the shared ~16 ms interactive
---     scheduler lane only while the mouse gesture is active, then release it.
---   * Row height is fixed in v1 so index -> viewport position is O(1).
---   * Data tables are referenced, not copied. Call RefreshVisible/SetItems when
---     in-place data changes so the visible pool can be rebound explicitly.
+-- UMG 风格 ListView/TableView：大数据集不能每项建 Native。VirtualList 按视口限制行池，仅逻辑条目改变时重绑。
+-- 无永久 Tick，数据/滚动/布局时协调；滚动条/列缩放只在手势期间借共享约 16 ms 交互通道并及时释放。固定行高让下标到视口为 O(1)；
+-- 数据表引用不复制，原地修改需 RefreshVisible/SetItems 显式重绑。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
--- v2 selection callback contract: List/Tile/Table expose GetSelectedKey() on
--- the View and dispatch SelectionChanged as
--- (index, previousIndex, view, model, reason, key, selected, context).
+-- 选择回调契约：List/Tile/Table 的 View 提供 GetSelectedKey()，SelectionChanged 派发 (index, previousIndex, view, model, reason, key, selected, context)。
 RSUI.DataViewSelectionContractVersion = 2
 RSUI.DataViewViewportContractVersion = 2
 RSUI.DataViewOverlayScrollbarContractVersion = 1
@@ -46,10 +38,7 @@ local function Clamp(value, lo, hi)
     return v
 end
 
--- Read the native widget's current on-screen/logical offset without assuming
--- which of GetEffectiveOffset/GetOffset the RU client exposes on a subtype.
--- Kept at file scope because both VirtualList scrollbar and TableView column
--- resize handles must use the same native event-owner drag transaction.
+-- 读取原生控件当前屏幕/逻辑偏移，不假设子类型提供 GetEffectiveOffset 还是 GetOffset；文件级共享让滚动条与列缩放遵循同一原生事件 owner 拖动事务。
 local function WidgetEffectiveOffset(widget)
     if widget == nil then return nil, nil end
     if type(widget.GetEffectiveOffset) == "function" then
@@ -105,17 +94,10 @@ local function NormalizeColumn(column, index)
     local id = tostring(column.id or column.key or column.field or ("column_" .. tostring(index)))
     local size = tostring(column.size or (column.fill and "fill") or (column.width and "fixed") or "auto"):lower()
     if size ~= "fill" and size ~= "fixed" then size = "auto" end
-    -- minWidth is the layout/preferred minimum used by Auto/Fill resolution.
-    -- absoluteMinWidth is the hard interaction floor used when the user explicitly
-    -- resizes a column. Keeping those concepts separate prevents the framework
-    -- from fighting an intentional manual resize while still giving responsive
-    -- layout a sensible preferred width.
+    -- minWidth 是 Auto/Fill 布局偏好最小值，absoluteMinWidth 是用户明确缩放的硬交互下限；二者分离，响应式布局保持合理偏好且不干扰手动缩放。
     local minWidth = math.max(1, tonumber(column.minWidth) or 48)
     local absoluteMinWidth = math.max(1, math.min(minWidth, tonumber(column.absoluteMinWidth) or 1))
-    -- maxWidth is a responsive-layout preference only. Manual dragging must not
-    -- hit that recommendation; only absoluteMaxWidth may impose a real user
-    -- interaction ceiling. This mirrors minWidth/absoluteMinWidth and keeps
-    -- tables freely editable unless a feature explicitly declares a hard cap.
+    -- maxWidth 仅为布局建议，手动拖动不受其约束，只有 absoluteMaxWidth 可限制交互上限；与最小值契约一致，未显式声明硬上限的表格可自由编辑。
     local maxWidth = tonumber(column.maxWidth)
     if maxWidth ~= nil then maxWidth = math.max(absoluteMinWidth, maxWidth) end
     local absoluteMaxWidth = tonumber(column.absoluteMaxWidth)
@@ -176,11 +158,7 @@ local function ClampColumnResizeWidth(column, width)
     return Clamp(tonumber(width) or minimum, minimum, maximum)
 end
 
--- Keep a manually resized Fill column responsive. Converting every dragged
--- Fill column to Fixed makes the table stop consuming newly available width
--- after the outer window is resized. A Fill column therefore stores the
--- committed drag width as a responsive base while preserving its Fill weight;
--- Fixed/Auto columns retain the historical explicit-width semantics.
+-- 手动缩放 Fill 列保留响应能力：提交宽度作为响应基线并保留权重，不能改成 Fixed 而失去外窗变宽后的填充；Fixed/Auto 保留显式宽语义。
 local function CommitColumnResizeWidth(column, width)
     if type(column) ~= "table" then return false, nil end
     local nextWidth = math.floor(ClampColumnResizeWidth(column, width) + 0.5)
@@ -191,14 +169,8 @@ local function CommitColumnResizeWidth(column, width)
     return changed, nextWidth
 end
 
--- Column resize preview must be geometrically stable. Re-running the full Fill
--- solver on every pointer sample makes unrelated Fill columns breathe while a
--- separator is dragged; every pooled text label then changes extent/ellipsis at
--- once and the RU native UI visibly jitters. Freeze the resolved widths at drag
--- start and move one boundary by resizing the adjacent pair only. This keeps the
--- table's total width constant and confines native writes to the two affected
--- cells per row. Widths are quantized to logical pixels to avoid sub-pixel
--- oscillation from GetEffectiveOffset on different RU builds.
+-- 列拖动预览须稳定：起始冻结已解析宽度，仅调整相邻列对，保持总宽固定并把 Native 写限制为每行两格；逐样本重算 Fill 会让其它列、文字 extent/省略抖动。
+-- 宽度量化到逻辑像素，避免不同 RU GetEffectiveOffset 的亚像素摆动。
 local function ResolveAdjacentResizePreview(columns, baselineWidths, index, requestedWidth)
     if type(columns) ~= "table" or type(baselineWidths) ~= "table" then return nil end
     index = math.floor(tonumber(index) or 0)
@@ -211,9 +183,7 @@ local function ResolveAdjacentResizePreview(columns, baselineWidths, index, requ
         local column = columns[candidate]
         if column ~= nil and column.resizable ~= false then compensationIndex = candidate; break end
     end
-    -- A visible boundary always has a right-side column. If every right-side
-    -- column is explicitly non-resizable, use the immediate neighbour only as
-    -- the layout compensation cell so the viewport edge remains stable.
+    -- 可见边界必有右侧列；若全部右侧列明确不可缩放，仅用紧邻列作布局补偿，保持视口边缘稳定。
     compensationIndex = compensationIndex or (index + 1)
     local rightColumn = columns[compensationIndex]
     if rightColumn == nil then return nil end
@@ -233,7 +203,7 @@ local function ResolveAdjacentResizePreview(columns, baselineWidths, index, requ
 
     local minDelta = leftMin - startLeft
     local maxDelta = leftMax ~= nil and (leftMax - startLeft) or math.huge
-    -- Positive delta shrinks the compensation column; negative delta grows it.
+    -- 正 delta 缩小补偿列，负 delta 扩大补偿列。
     maxDelta = math.min(maxDelta, startRight - rightMin)
     if rightMax ~= nil then minDelta = math.max(minDelta, startRight - rightMax) end
     delta = math.max(minDelta, math.min(maxDelta, delta))
@@ -264,8 +234,7 @@ local function ResolveColumnWidths(columns, availableWidth, gap)
     for index, column in ipairs(columns) do
         local width
         if column.manualWidth ~= nil then
-            -- Explicit user geometry is authoritative. Preferred layout caps do
-            -- not silently pull a manually-resized column back on the next reflow.
+            -- 用户明确几何具有权威；布局偏好上限不能在下次重排悄悄拉回手调列。
             width = Clamp(column.manualWidth, column.absoluteMinWidth, column.absoluteMaxWidth)
             if column.size == "fill" then
                 fillWeight = fillWeight + column.fill
@@ -328,8 +297,7 @@ local function ResolveColumnWidths(columns, availableWidth, gap)
         local activeWeight = fillWeight
         local active = {}
         for _, index in ipairs(fillIndexes) do active[index] = true end
-        -- A few bounded passes are enough to respect maxWidth without a generic
-        -- solver. Column count is tiny and this only runs during layout changes.
+        -- 有界少量轮次即可遵循 maxWidth，不需通用求解器；列数很小，且仅布局变化时运行。
         for _ = 1, math.min(4, #fillIndexes + 1) do
             if undistributed <= 0.01 or activeWeight <= 0 then break end
             local consumed = 0
@@ -357,9 +325,7 @@ local function ResolveColumnWidths(columns, availableWidth, gap)
     local preRoundTotal = 0
     for _, width in ipairs(widths) do preRoundTotal = preRoundTotal + width end
     if preRoundTotal > usable + 0.01 and preRoundTotal > 0 then
-        -- Impossible constraint: even configured absolute minima do not fit.
-        -- Safety wins over preferred readability; proportionally compress below
-        -- the normal minimum so columns never overlap the parent viewport.
+        -- 绝对最小值也无法容纳时安全优先，按比例压缩到普通最小值以下，避免列超出父视口重叠。
         emergencyClamp = true
         compressed = true
         local scale = math.max(0, usable) / preRoundTotal
@@ -371,9 +337,7 @@ local function ResolveColumnWidths(columns, availableWidth, gap)
         widths[index] = math.max(1, math.floor(width + 0.5))
         roundedTotal = roundedTotal + widths[index]
     end
-    -- Rounding each column independently can otherwise push the final cell a
-    -- few pixels outside the parent. Pull any rounding excess back from the
-    -- right-most columns while respecting their hard safety minimum.
+    -- 各列独立取整可能让最后一格越界；从最右列回收多余像素，同时遵循硬安全下限。
     local target = math.max(0, math.floor(usable + 0.5))
     local excess = math.max(0, roundedTotal - target)
     if excess > 0 then
@@ -399,7 +363,7 @@ RSUI.DataViewUtil = {
 }
 
 ------------------------------------------------------------------------
--- VirtualList / ListView
+-- VirtualList/ListView 虚拟列表。
 ------------------------------------------------------------------------
 local function NewVirtualList(kind, spec)
     local c, err = Host(kind, spec)
@@ -432,9 +396,7 @@ local function NewVirtualList(kind, spec)
     c.selectable = spec.selectable == true or spec.selectionModel ~= nil or spec.selectionMode ~= nil
     c.selectionMode = tostring(spec.selectionMode or "single"):lower()
     c.wheelTargets = setmetatable({}, { __mode = "k" })
-    -- Shared behavior owns the Native drag proxy; this view owns only logical
-    -- row offset and viewport capacity. Wheel and drag therefore share one
-    -- scroll Authority instead of maintaining parallel state.
+    -- 共享行为持有 Native 拖动代理，视图仅持逻辑行偏移与视口容量；滚轮与拖动共用唯一滚动权威，不建立并行状态。
     c.scrollbarEnabled = spec.scrollbar ~= false
     c.scrollbarReserve = spec.reserveScrollbar == true
     c.scrollbarOverlay = spec.overlayScrollbar == true
@@ -445,11 +407,7 @@ local function NewVirtualList(kind, spec)
     -- 在构造期选定原生父节点；不通过重设锚点冒充 reparent，也不改变正文行容量。
     c.scrollbarViewport = RSUI:IsComponent(spec.scrollbarViewport) and spec.scrollbarViewport or nil
 
-    -- ArcheRage RU dispatches wheel input to the native widget currently under
-    -- the cursor. A virtualized row therefore cannot rely on the ListView root
-    -- receiving bubbled wheel events. Bind the viewport and every pooled row
-    -- root to the same logical scroll Authority. This is event-driven only; no
-    -- focus polling/Tick is introduced.
+    -- RU 滚轮派发到光标下 Native 控件，不能假设向 ListView 根冒泡；视口与全部池行根绑定同一逻辑滚动，事件驱动且不轮询焦点/Tick。
     function c:BindWheelTarget(componentOrRoot)
         local root = type(componentOrRoot) == "table" and componentOrRoot.root or componentOrRoot
         if root == nil then return false, "list_wheel_target_required" end
@@ -754,14 +712,13 @@ local function NewVirtualList(kind, spec)
             return
         end
 
-        -- Overscan is opportunistic. Visible rows always have priority over
-        -- prefetch rows, even when maxPoolSize is configured very small.
+        -- overscan 仅在有余量时使用；即使 maxPoolSize 很小，可见行始终优先于预取行。
         local spare = math.max(0, self.maxPoolSize - visibleCount)
         local before = math.min(self.overscan, math.floor(spare / 2))
         local after = math.min(self.overscan, math.max(0, spare - before))
         local desiredStart = math.max(1, firstVisible - before)
         local desiredEnd = math.min(count, firstVisible + visibleCount - 1 + after)
-        -- Reuse spare capacity from a clipped edge (top/end of data).
+        -- 复用数据顶部/末尾裁切边缘的闲置容量。
         local desiredCount = math.max(0, desiredEnd - desiredStart + 1)
         local spareAfterClamp = math.max(0, math.min(self.maxPoolSize, visibleCount + spare) - desiredCount)
         if spareAfterClamp > 0 and desiredStart > 1 then
@@ -825,7 +782,7 @@ local function NewVirtualList(kind, spec)
     end
 
     function c:SetItems(items, revision, skipUnchanged)
-        -- 中文维护（performance-cache-1）：显式承诺 revision 描述数据的消费者可省去重复测量失效。
+        -- 约束（performance-cache-1）：显式承诺 revision 描述数据的消费者可省去重复测量失效。
         -- Layout/Arrange 仍执行 Native Diff/失败重试；不能把“同 revision”当成几何/显隐已提交。
         -- 普通 SetItems 仍强制刷新，数量/测量/布局变化同样不走快路径。
         local same = skipUnchanged == true and revision ~= nil and self.getCount == nil and self.getItem == nil
@@ -837,7 +794,7 @@ local function NewVirtualList(kind, spec)
         self.dataRevision = revision ~= nil and tostring(revision) or ("items:" .. tostring(self.internalRevision))
         self.scrollOffset = math.max(0, math.min(self.scrollOffset, self:GetMaxOffset()))
         self:_SyncViewState()
-        if not same then self:InvalidateMeasure("items_changed") end -- 中文维护：只省测量失效，保留后续原生提交重试。
+        if not same then self:InvalidateMeasure("items_changed") end -- 只省测量失效，保留后续原生提交重试。
         RSUI.metrics.virtualDataRefreshes = (tonumber(RSUI.metrics.virtualDataRefreshes) or 0) + 1
         if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
         return true
@@ -862,9 +819,7 @@ local function NewVirtualList(kind, spec)
 
     function c:GetSelectionModel() return self.selectionModel end
 
-    -- Presentation should consume the View contract rather than depending on
-    -- SelectionModel callback argument positions. Keys remain stable even when
-    -- a selected row is outside the current virtualized pool.
+    -- 表现层消费 View 契约，不依赖 SelectionModel 参数位置；选中行在虚拟池之外时 key 仍稳定。
     function c:GetSelectedKey()
         if self.selectionModel ~= nil and type(self.selectionModel.GetPrimaryKey) == "function" then
             return self.selectionModel:GetPrimaryKey()
@@ -894,17 +849,13 @@ local function NewVirtualList(kind, spec)
         if nextIndex ~= nil then nextIndex = math.max(1, math.min(count, math.floor(nextIndex))) end
         if self.selectionModel ~= nil then
             if nextIndex == nil then
-                -- SelectionModel notifies synchronously. Clear the local index
-                -- first so the callback cannot observe a stale selectedIndex
-                -- when the selected row is outside the virtualized pool.
+                -- SelectionModel 同步通知，先清本地下标，防止池外选中行回调看到旧 selectedIndex。
                 self.selectedIndex = nil
                 return self.selectionModel:Clear("set_index", { view = self, index = nil })
             end
             local item = self:GetItem(nextIndex)
             local key = self:GetItemKey(item, nextIndex)
-            -- SelectOnly() dispatches synchronously; publish the requested index
-            -- before entering the SelectionModel so callbacks receive the local
-            -- programmatic index even before a pool row has been bound.
+            -- SelectOnly() 同步派发；先发布请求下标再进入 SelectionModel，即使池行尚未绑定，回调也获得本地程序下标。
             local previousIndex = self.selectedIndex
             self.selectedIndex = nextIndex
             local changed = self.selectionModel:SelectOnly(key, "set_index", { view = self, index = nextIndex })
@@ -1134,11 +1085,9 @@ RSUI:RegisterType("VirtualList", function(spec) return NewVirtualList("VirtualLi
 RSUI:RegisterType("ListView", function(spec) return NewVirtualList("ListView", spec) end)
 
 ------------------------------------------------------------------------
--- VirtualGrid / TileView
+-- VirtualGrid/TileView 虚拟网格。
 --
--- Fixed-size virtual tile layout. Like UMG TileView, the data set may be very
--- large while native widgets remain bounded by viewport rows * columns plus a
--- small overscan band.  The view scrolls by logical rows, never by pixels.
+-- 固定尺寸虚拟图块，Native 数量限制为视口行×列加少量 overscan，支持大数据集；按逻辑行滚动，不按像素。
 ------------------------------------------------------------------------
 local function NewTileView(kind, spec)
     local c, err = Host(kind, spec)
@@ -1191,8 +1140,7 @@ local function NewTileView(kind, spec)
     if c.selectionModel ~= nil and type(c.selectionModel.Subscribe) == "function" then
         c.selectionModel:Subscribe(c.id, function(model, reason, key, selected, context)
             for _, slot in ipairs(c.pool) do c:_ApplySelection(slot) end
-            -- Keep SelectionChanged signature aligned with ListView/TableView:
-            -- index, previousIndex, view, model, reason, key, selected, context.
+            -- SelectionChanged 与 ListView/TableView 对齐：index, previousIndex, view, model, reason, key, selected, context。
             SafeCall("rsui:" .. c.id .. ":selection", c.onSelectionChanged, c:GetSelectedIndex(), nil, c, model, reason, key, selected, context)
         end)
     end
@@ -1548,7 +1496,7 @@ local function NewTileView(kind, spec)
     end
 
     function c:SetItems(items, revision, skipUnchanged)
-        -- 中文维护（performance-cache-1）：Tile 与 List 共享显式 revision 契约；不跳过 Native Diff 重试。
+        -- 约束（performance-cache-1）：Tile 与 List 共享显式 revision 契约；不跳过 Native Diff 重试。
         local same = skipUnchanged == true and revision ~= nil and self.getCount == nil and self.getItem == nil
             and type(items) == "table" and type(self.items) == "table" and #items == #self.items
             and self.dataRevision == tostring(revision) and not self.measureDirty and not self.layoutDirty
@@ -1558,7 +1506,7 @@ local function NewTileView(kind, spec)
         self.dataRevision = revision ~= nil and tostring(revision) or ("items:" .. tostring(self.internalRevision))
         self.scrollRowOffset = math.max(0, math.min(self.scrollRowOffset, self:GetMaxScrollRow()))
         self:_SyncViewState()
-        if not same then self:InvalidateMeasure("items_changed") end -- 中文维护：仍通过 Layout 重试此前拒写的几何/显隐。
+        if not same then self:InvalidateMeasure("items_changed") end -- 仍通过 Layout 重试此前拒写的几何/显隐。
         RSUI.metrics.virtualDataRefreshes = (tonumber(RSUI.metrics.virtualDataRefreshes) or 0) + 1
         if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
         return true
@@ -1670,7 +1618,7 @@ local function NewTileView(kind, spec)
         self.columns = columns
         if previousColumns ~= columns then
             RSUI.metrics.tileColumnChanges = (tonumber(RSUI.metrics.tileColumnChanges) or 0) + 1
-            -- Preserve the first visible logical item across a responsive column change.
+            -- 响应式列数变化时保留首个可见逻辑条目。
             local oldColumns = math.max(1, tonumber(previousColumns) or columns)
             local firstIndex = self.scrollRowOffset * oldColumns + 1
             self.scrollRowOffset = math.floor((math.max(1, firstIndex) - 1) / columns)
@@ -1691,8 +1639,7 @@ local function NewTileView(kind, spec)
         local targetPoolRows = math.min(totalRows, self.visibleRows + self.overscanRows * 2)
         local firstPoolRow = math.max(0, self.scrollRowOffset - self.overscanRows)
         local lastPoolRowExclusive = math.min(totalRows, self.scrollRowOffset + self.visibleRows + self.overscanRows)
-        -- Borrow a clipped overscan row from the opposite edge so the pool is
-        -- fully warmed on the first layout and does not grow on the first scroll.
+        -- 从另一侧借用被裁切的 overscan 行，首次布局充分预热池，避免首次滚动扩池。
         local haveRows = math.max(0, lastPoolRowExclusive - firstPoolRow)
         if haveRows < targetPoolRows then
             local addAfter = math.min(targetPoolRows - haveRows, math.max(0, totalRows - lastPoolRowExclusive))
@@ -1761,7 +1708,7 @@ RSUI:RegisterType("VirtualGrid", function(spec) return NewTileView("VirtualGrid"
 RSUI:RegisterType("TileView", function(spec) return NewTileView("TileView", spec) end)
 
 ------------------------------------------------------------------------
--- TableRow
+-- TableRow 表格行。
 ------------------------------------------------------------------------
 local function ColumnValue(column, item, index, row)
     local value = nil
@@ -1796,17 +1743,11 @@ end
 
 local function NewTableRow(kind, spec)
     spec = type(spec) == "table" and spec or {}
-    -- Body rows are the single mouse-hit surface for scrolling/clicking. Keep
-    -- truncation tooltips on that same surface instead of making every label
-    -- pickable (which would steal wheel/click events from the virtual list).
+    -- 正文行是滚动/点击的唯一鼠标命中面，截断提示也绑定该面；不能让每个标签可拾取而抢走虚拟列表事件。
     local autoTooltip = spec.header ~= true and spec.autoTooltip ~= false
     if type(spec.onClick) == "function" or autoTooltip then spec.pickable = true end
-    -- Interactive rows use a native Button root. The RU input system reliably
-    -- dispatches OnClick to Button widgets (every page control in the addon
-    -- proves it), while EmptyWidget surfaces do not receive OnClick on this
-    -- client -- which made table row clicks silently dead. ListView's selectable
-    -- rows already use RSUI:Button; align TableRow with that proven pattern so
-    -- row clicks reach HandleRowClick. Cells stay children of the button root.
+    -- 交互行使用 Native Button 根，RU 可靠派发 OnClick 到 Button，而 EmptyWidget 不收到点击；
+    -- 对齐 ListView 的 RSUI:Button 模型，使点击到达 HandleRowClick，单元格仍为按钮子节点。
     local rowRootFactory = type(spec.onClick) == "function" and function(s)
         return UI:CreateButton(s.parent, s.id, "", N(s.x,0), N(s.y,0),
             math.max(1,N(s.width,1)), math.max(1,N(s.height,1)), tonumber(s.fontSize) or 11, false, false)
@@ -1831,10 +1772,7 @@ local function NewTableRow(kind, spec)
     c.cells = {}
     c.gridLines = {}
 
-    -- M6-v2 visual parity: TableView keeps virtualization, but pooled rows now
-    -- draw the subtle cell grid used by the target ArcheAge-style console. The
-    -- drawables are created once per pooled row/header and only reposition on
-    -- layout; no per-Tick allocation or table-wide widget explosion.
+    -- TableView 保持虚拟化，池行绘制目标 ArcheAge 控制台风格的细网格；drawable 每池行/表头仅创建一次，布局时定位，不逐 Tick 分配或为整表创建控件。
     local gridColor = (S.Constants and S.Constants.Color and (c.header and S.Constants.Color.divider or S.Constants.Color.dividerSoft)) or { 0.12, 0.28, 0.30, 0.5 }
     if c.header and S.Theme and type(S.Theme.AddGradientBackground) == "function" then
         S.Theme:AddGradientBackground(c.root, "header", "background")
@@ -1870,9 +1808,7 @@ local function NewTableRow(kind, spec)
     end
 
     for index, column in ipairs(c.columns) do
-        -- Lua 5.1 generic-for control variables are reused by the loop. Capture
-        -- stable references before installing deferred header callbacks, or every
-        -- header can resolve to the final column after construction.
+        -- Lua 5.1 generic-for 变量被循环复用，安装延迟表头回调前捕获稳定引用，避免全部表头解析到最后一列。
         local columnIndex = index
         local columnRef = column
         local common = {
@@ -1895,7 +1831,7 @@ local function NewTableRow(kind, spec)
                 width = columnRef.iconSize, height = columnRef.iconSize, pickable = false,
             })
         elseif not c.header and columnRef.cellType == "button" then
-            -- 中文维护（2026-10-03）：动作单元格跟随虚拟行复用；点击时读取当前 item，
+            -- 约束（2026-10-03）：动作单元格跟随虚拟行复用；点击时读取当前 item，
             -- 不捕获创建时的货物，也不触发行选择/双击激活。隐藏池行不能执行动作。
             common.compact = true
             common.onClick = function()
@@ -1925,10 +1861,7 @@ local function NewTableRow(kind, spec)
     end
 
     function c:GetTruncatedTooltipText()
-        -- A pooled row can still be hovered while the native visibility diff
-        -- has not run (scroll/resize rebinding is asynchronous at RU cadence).
-        -- Tooltip:Bind already refuses to show an invisible target; enforce the
-        -- same rule here so a stale pool row cannot contribute text.
+        -- RU 节拍滚动/缩放重绑异步，Native 显隐差异未应用时旧池行仍可能悬浮；与 Tooltip:Bind 一样拒绝不可见目标，防止旧行提供文字。
         if self.visible ~= true or self.viewportVisible == false then return "" end
         local clipped = {}
         for index, cell in ipairs(self.cells or {}) do
@@ -1963,9 +1896,7 @@ local function NewTableRow(kind, spec)
         local ok = tooltip:Bind(self, {
             provider = function(row) return row:GetTruncatedTooltipText() end,
             maxWidth = 440,
-            -- Virtualized rows are pooled/re-anchored. Native anchored tooltips
-            -- can therefore appear at a stale row position; cursor-following
-            -- keeps the hint beside the item the user is actually hovering.
+            -- 虚拟行会复用/重锚，原生锚定提示可能出现在旧位置；跟随光标可让提示贴近用户实际悬浮条目。
             cursorFollow = true,
         })
         self.autoTooltipBound = ok == true
@@ -2017,9 +1948,7 @@ local function NewTableRow(kind, spec)
         local nextWidths = type(widths) == "table" and widths or nil
         if SameWidths(self.resolvedWidths, nextWidths) then return false end
         self.resolvedWidths = nextWidths
-        -- Column drag preview is already scoped to visible/pooled rows. Re-layout
-        -- those established rows immediately instead of queueing a root invalidation
-        -- that would not flush until drag commit. This mirrors live window resize.
+        -- 列拖动仅影响可见池行，立即重排已建立行，不等根失效队列拖动提交时才 flush；与窗口实时缩放一致。
         if interactive == true and tonumber(self.width) ~= nil and tonumber(self.height) ~= nil then
             self:Layout(self.x or 0, self.y or 0, self.width, self.height)
             return true
@@ -2049,7 +1978,7 @@ local function NewTableRow(kind, spec)
                     end
                     if type(cell.SetTone) == "function" then cell:SetTone(tone)
                     elseif column.cellType=="button" and type(cell.SetStatusTone)=="function" then
-                        -- 中文维护（紧凑追踪表）：Button 使用语义状态色门面；没有 Text.SetTone。
+                        -- 约束（紧凑追踪表）：Button 使用语义状态色门面；没有 Text.SetTone。
                         -- 绑定复用时每列提交当前颜色，Theme 继续拥有悬停/选中/明暗配色与差分写入。
                         cell:SetStatusTone(tone)
                     end
@@ -2137,7 +2066,7 @@ RSUI:RegisterType("TableHeader", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- TableView / Table
+-- TableView/Table 表格。
 ------------------------------------------------------------------------
 -- 维护（2026-09-23，table-adaptive-tail-fit-1）：可伸缩 TableView 在视口高度不是 rowHeight
 -- 整数倍时，VirtualList 只能生成完整行，底部会留下明显“空白条”。活动模块此前有一份局部算法，
@@ -2190,8 +2119,7 @@ local function NewTableView(kind, spec)
     c.cellPaddingX = math.max(0, tonumber(spec.cellPaddingX) or ((S.VisualTokens ~= nil and S.VisualTokens:Metric("spacing", "sm", 5)) or 4))
     c.rowFontSize = math.max(1, tonumber(spec.rowFontSize or spec.fontSize) or Token("font.body", 11))
     c.headerFontSize = math.max(1, tonumber(spec.headerFontSize or spec.fontSize) or c.rowFontSize)
-    -- Default-on for ellipsized table rows. A view can opt out with
-    -- autoTooltip=false; fully visible rows remain silent.
+    -- 省略表行默认提示，可用 autoTooltip=false 关闭；完整可见行不显示提示。
     c.autoTooltip = spec.autoTooltip ~= false
     c.headerVisible = spec.headerVisible ~= false
     c.headerHeight = math.max(12, tonumber(spec.headerHeight) or Token("size.rowH", 28))
@@ -2261,8 +2189,7 @@ local function NewTableView(kind, spec)
         selectionMode = spec.selectionMode,
         selectionModel = spec.selectionModel,
         onSelectionChanged = function(index, previousIndex, listView, model, reason, key, selected, context)
-            -- TableView owns the public callback surface; read from `c` at dispatch time so post-construction bindings
-            -- are honored. The inner ListView SafeCall already fences this wrapper.
+            -- TableView 持有公开回调，派发时读取 c 以支持构建后绑定；内层 ListView SafeCall 已隔离该封装。
             local callback = c.onSelectionChanged
             if type(callback) ~= "function" then return true end
             return callback(index, previousIndex, c, model, reason, key, selected, context)
@@ -2314,9 +2241,7 @@ local function NewTableView(kind, spec)
         return nil, "table_required_children_create_failed"
     end
 
-    -- Header separators use a preview/commit transaction.  Preview updates only
-    -- header + pooled visible rows and never rebinds table data.  The normalized
-    -- column model is mutated only once on drag commit.
+    -- 表头分隔条使用预览/提交事务：预览只改表头与可见池行，不重绑数据；规范列模型仅在拖动提交时修改一次。
     function c:ApplyColumnResizePreview(index, width, baselineWidths)
         index = math.floor(tonumber(index) or 0)
         local column = self.columns[index]
@@ -2363,8 +2288,7 @@ local function NewTableView(kind, spec)
             if record ~= nil and record.root ~= nil then
                 local handleW = 14
                 local x = p.left + boundary + math.max(0, (index - 1) * self.columnGap) + math.floor(self.columnGap * 0.5) - math.floor(handleW * 0.5)
-                -- The active separator is owned by native StartMoving. Re-anchor
-                -- only its siblings so every visible boundary follows preview live.
+                -- 活跃分隔条归 Native StartMoving；只重锚兄弟，使其它可见边界实时跟随预览。
                 if record.dragging ~= true then UI:SetAnchor(record.root, self.root, x, p.top, self.owner) end
                 UI:SetExtent(record.root, handleW, self.headerHeight, self.owner)
                 UI:SetVisible(record.root, self.headerVisible, self.owner)
@@ -2409,12 +2333,7 @@ local function NewTableView(kind, spec)
                             pcall(function() line:SetColor(color[1],color[2],color[3],color[4] or 1) end)
                         end
                     end
-                    -- Record whether the hover handlers actually attached. The
-                    -- player-facing symptom ("some separators highlight, some do
-                    -- not, but every one still drags") is undiagnosable from static
-                    -- reading because SafeHandler's result was discarded; a failed
-                    -- OnEnter registration looks identical to a z-order problem.
-                    -- Bounded per-table record, diagnostics only.
+                    -- 记录悬浮处理器实际绑定结果供有界表级诊断；丢弃 SafeHandler 返回会无法区分 OnEnter 失败与层级问题，出现部分分隔条不高亮但均可拖动。
                     local enterOk = UI:SafeHandler(handle,"OnEnter",function() SetLine(true) end,"rsui:"..c.id..":col_resize_enter:"..index)
                     local leaveOk = UI:SafeHandler(handle,"OnLeave",function() if not record.dragging then SetLine(false) end end,"rsui:"..c.id..":col_resize_leave:"..index)
                     record.hoverHandlersBound = (enterOk == true and leaveOk == true)
@@ -2469,11 +2388,7 @@ local function NewTableView(kind, spec)
                         record.startResolvedWidths={}
                         for widthIndex,value in ipairs(c.resolvedWidths or {}) do record.startResolvedWidths[widthIndex]=math.max(1,math.floor((tonumber(value) or 1)+0.5)) end
                         record.minWidth,record.maxWidth=ColumnResizeBounds(column)
-                        -- maxWidth/minWidth are responsive layout suggestions.
-                        -- Only absoluteMaxWidth/absoluteMinWidth may constrain a
-                        -- user's live drag gesture. Keep this single source of
-                        -- truth so the native handler cannot reintroduce hidden
-                        -- limits after DataViewUtil has already removed them.
+                        -- maxWidth/minWidth 仅布局建议，用户拖动仅受 absoluteMaxWidth/absoluteMinWidth 约束；统一来源防止 Native 处理器重新添加隐藏限制。
                         record.lastRequestedWidth,record.lastPreviewWidth,record.compensationIndex,record.compensationWidth=nil,nil,nil,nil
                         SetLine(true)
                         StopPreviewTask()
@@ -2481,9 +2396,7 @@ local function NewTableView(kind, spec)
                         if S.Scheduler~=nil and type(S.Scheduler.AddInteractiveTask)=="function" then
                             scheduled = S.Scheduler:AddInteractiveTask(taskName,16,function() if record.dragging then PreviewFromHandle() end return true end,true,c,"P0",1) == true
                         end
-                        -- Older RU builds/scheduler failures still get live preview,
-                        -- but OnUpdate exists only for the active gesture and is
-                        -- released immediately on drag stop. No permanent Tick.
+                        -- 旧 RU 或 Scheduler 失败仍支持实时预览；OnUpdate 只活跃手势期间存在，停止立即释放，不永久 Tick。
                         if scheduled ~= true then
                             record.updateFallback = UI:SafeHandler(handle,"OnUpdate",function() if record.dragging then PreviewFromHandle() end return true end,"rsui:"..c.id..":col_resize_update:"..index) == true
                         end
@@ -2500,9 +2413,7 @@ local function NewTableView(kind, spec)
                         if record.geometryLeased == true and type(UI.EndNativeGeometryLease) == "function" then
                             UI:EndNativeGeometryLease(handle, c.owner)
                         elseif type(UI.InvalidateNativeState) == "function" then
-                            -- Compatibility fallback: StartMoving mutates Native
-                            -- anchors behind DiffRenderer. Force the next layout to
-                            -- physically restore the hit surface to the boundary.
+                            -- 兼容兜底：StartMoving 绕过 DiffRenderer 改 Native 锚点，下次布局须强制把命中面恢复到边界。
                             UI:InvalidateNativeState(handle)
                         end
                         record.geometryLeased=false
@@ -2510,13 +2421,10 @@ local function NewTableView(kind, spec)
                         record.dragging=false
                         SetLine(false)
                         if width~=nil and startWidth~=nil and compensationIndex~=nil and compensationWidth~=nil and math.abs(width-startWidth)>0.5 then
-                            -- Commit the exact pair shown during preview in one layout
-                            -- transaction so DragStop cannot trigger a second Fill solve
-                            -- and visually jump to different geometry.
+                            -- 同一布局事务提交预览中精确列对，避免 DragStop 二次 Fill 求解导致几何跳变。
                             c:CommitColumnResizePair(index,width,compensationIndex,compensationWidth)
                         else
-                            -- Returning to the original boundary is a true no-op: clear
-                            -- preview without converting Auto/Fill columns to Fixed.
+                            -- 返回原边界是真正无操作，清除预览而不把 Auto/Fill 改为 Fixed。
                             c:ClearColumnResizePreview()
                             if c.width and c.height then c:Layout(c.x or 0,c.y or 0,c.width,c.height) end
                         end
@@ -2563,9 +2471,7 @@ local function NewTableView(kind, spec)
     function c:GetViewState() return self.list:GetViewState() end
     function c:SetViewState(state, options) return self.list:SetViewState(state, options) end
     function c:GetColumns() return self.columns end
-    -- Item access proxied to the internal ListView. Consumers (e.g. selection
-    -- callbacks) call tableView:GetItem(index) to resolve the clicked row;
-    -- without these the call silently no-ops and selection bookkeeping breaks.
+    -- 条目访问代理给内层 ListView；Consumer 经 tableView:GetItem(index) 解析点击行，缺此接口会静默无操作并破坏选择记录。
     function c:GetItem(index) return self.list:GetItem(index) end
     function c:GetItemCount() return self.list:GetItemCount() end
     function c:GetItemKey(item, index) return self.list:GetItemKey(item, index) end
@@ -2612,7 +2518,7 @@ local function NewTableView(kind, spec)
         return result
     end
 
-    -- 中文维护：TableView 透传可选快路径；不改变其它调用者的强制刷新行为。
+    -- TableView 透传可选快路径；不改变其它调用者的强制刷新行为。
     function c:SetItems(items, revision, skipUnchanged) return self.list:SetItems(items, revision, skipUnchanged) end
     function c:SetDataSource(source, revision) return self.list:SetDataSource(source, revision) end
     function c:RefreshVisible(revision, force) return self.list:RefreshVisible(revision, force) end
@@ -2642,14 +2548,10 @@ local function NewTableView(kind, spec)
         local leftColumn, rightColumn = self.columns[index], self.columns[compensationIndex]
         if leftColumn == nil or rightColumn == nil or index == compensationIndex then return false end
 
-        -- Preview is the geometry the user actually saw. Seed every column with
-        -- that resolved snapshot before committing the edited pair. Without this,
-        -- an untouched Fill column falls back to minWidth on the next solver pass,
-        -- receives redistributed slack, and pulls the just-dragged boundary away
-        -- from the mouse on DragStop (Trade's 货物/货率 boundary is the canonical
-        -- Fill + Fixed + later-Fill case). Preserve each column's declared size
-        -- mode here; only the explicitly edited pair goes through the historical
-        -- CommitColumnResizeWidth semantics below.
+        -- 预览是用户实际所见几何，提交编辑列对前必须用解析快照初始化全部列。
+        -- 否则未编辑 Fill 会从 minWidth 重分配余量，在 DragStop 拉走刚拖动的边界；
+        -- Trade 货物/货率的 Fill + Fixed + 后续 Fill 布局是标准复现情况。
+        -- 保留各列声明模式，仅明确编辑列对走 CommitColumnResizeWidth 语义。
         local previewWidths = type(self.previewResolvedWidths) == "table" and self.previewResolvedWidths or self.resolvedWidths
         local committedSnapshot = {}
         local snapshotChanged = false
@@ -2675,11 +2577,7 @@ local function NewTableView(kind, spec)
         end
         if snapshotChanged ~= true and leftChanged ~= true and rightChanged ~= true then return false end
 
-        -- Keep the exact DragStop snapshot authoritative while the viewport width
-        -- is unchanged. This prevents an immediate second Fill solve (including
-        -- compressed/emergency layouts) from producing a one-frame or persistent
-        -- jump. Any real viewport-width change invalidates this snapshot and
-        -- resumes the responsive solver from the committed manual baselines.
+        -- 视口宽未变时 DragStop 精确快照保持权威，防止即时二次 Fill（含压缩/紧急布局）导致一帧或持续跳变；真实宽度变化才使快照失效，从已提交手动基线恢复响应求解。
         self.previewResolvedWidths = nil
         if #committedSnapshot == #self.columns then
             self.committedResolvedWidths = committedSnapshot
@@ -2762,8 +2660,7 @@ local function NewTableView(kind, spec)
                 column.size = mode
                 if mode == "fixed" and tonumber(value) ~= nil then column.width = ClampColumnResizeWidth(column, tonumber(value)) end
                 if mode == "fill" and tonumber(value) ~= nil then column.fill = math.max(0.0001, tonumber(value)) end
-                -- Explicit mode/weight changes reset the drag-derived responsive
-                -- baseline; the next layout starts from the newly declared mode.
+                -- 明确模式/权重变更清除拖动响应基线，下次布局从新声明模式开始。
                 if changed or value ~= nil then column.manualWidth = nil end
                 if not changed and value == nil then return false end
                 self.committedResolvedWidths = nil
@@ -2812,10 +2709,7 @@ local function NewTableView(kind, spec)
         local scrollbarReserve = self.list ~= nil and type(self.list.GetScrollbarReserve)=="function" and self.list:GetScrollbarReserve(listH) or 0
         local columnW = math.max(1, innerW - scrollbarReserve)
         self.lastColumnAvailableWidth = columnW
-        -- While a separator is moving, previewResolvedWidths is the sole geometry
-        -- authority. Ambient page/layout refreshes must not re-run the committed
-        -- Fill solver and repaint the old widths between 16ms preview samples; that
-        -- ownership fight is the visible left/right flashing reported on RU.
+        -- 分隔条移动时 previewResolvedWidths 是唯一几何权威；环境刷新不能在 16ms 样本间重算已提交 Fill 并重绘旧宽，否则 RU 会左右闪烁。
         local previewActive = type(self.previewResolvedWidths) == "table"
         local committedActive = type(self.committedResolvedWidths) == "table"
             and tonumber(self.committedResolvedAvailableWidth) ~= nil

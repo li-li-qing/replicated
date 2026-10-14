@@ -1,5 +1,11 @@
--- Developer-only regression: actual Bonds/Store/Demand/Event/Scheduler implementations.
--- Native APIs, clock and SaveData medium are controlled inputs, not client acceptance.
+------------------------------------------------------------------------
+-- Replicated Suite · 债券跨大陆测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 开发期回归使用实际 Bonds、Store、Demand、Event 和 Scheduler。
+-- 原生 API、时钟和 SaveData 介质为受控输入，不能视为客户端验收。
+------------------------------------------------------------------------
 unpack = unpack or table.unpack
 local total, passed = 0, 0
 local function test(name, fn)
@@ -262,8 +268,8 @@ local function corruptedReload(mutator)
     local store=assert(h.S.Persistence:GetStore(h.B.storeId));local key=assert(h.S.Persistence:ResolveStoreKey(store))
     local raw=assert(disk[key]);assert(raw.payload and raw.__rsmeta)
     mutator(raw.payload)
-    -- Reseal the envelope to exercise the inner domain stamp, not just outer byte damage.
-    -- No changed domain fingerprint: altered content still has to fail Core authentication.
+    -- 重新封装传输层以覆盖内部业务盖章校验，避免仅测到外层字节损坏。
+    -- 业务指纹保持不变，篡改后的内容仍必须被 Core 认证拒绝。
     raw.__rsmeta.envelopeFingerprint=nil
     raw.__rsmeta.envelopeFingerprint=assert(h.S.Persistence:FingerprintEnvelopeIntegrity(raw))
     local r=fresh({disk=disk,allowLoadFailure=true})

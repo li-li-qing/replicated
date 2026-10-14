@@ -1,9 +1,15 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 5 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · 报告分页测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 维护：用户明确要求固定报告+独立上一页/下一页。使用实际报告/传输/Page工厂；只模拟Native。
 -- 此测试不在TOC，既不证明RU实机输入框容量，也不解除任何业务Store写保护。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,e=pcall(fn);if ok then passed=passed+1;print('PASS paging '..name)else failed=failed+1;print('FAIL paging '..name..': '..tostring(e))end end
 local function Boot(cap)
@@ -32,7 +38,7 @@ local function Data(text)local n=tonumber(text:match(';DATA_BYTES=(%d+);'));loca
 local function Unescape(s)return (s:gsub('\\(.)',function(c)return ({n='\n',r='\r',['\\']='\\'})[c] or error('bad escape')end))end
 Test('explicit previous and next accompany focused and full report actions',function()
  local S,D,c,r,h=Boot()
- -- 中文维护：新版另有性能采样操作；逐一验证原六个报告/翻页入口，不能用整页按钮总数把正常扩展判为分页失效。
+ -- 新版另有性能采样操作；逐一验证原六个报告/翻页入口，不能用整页按钮总数把正常扩展判为分页失效。
  for _,id in ipairs({'v3_diag_full_check','v3_diag_output','v3_diag_output_full','v3_diag_export_file','v3_diag_report_prev','v3_diag_report_next'})do
   assert(h.widgets[id] and type(h.widgets[id].onClick)=='function','required report action missing: '..id)
  end
@@ -95,10 +101,10 @@ Test('error capture has a bounded string snapshot independent of info eviction',
 end)
 Test('same-process addon reload starts a new generation and captures new failures',function()
  local S,D,c,r,h=Boot();S.RecordLog('error','old','OLD_GENERATION_ONLY');local generation=S.Generation
- dofile('replicatedsuite.lua') -- actual bootstrap keeps the VM and increments Generation
+ dofile('replicatedsuite.lua') -- 真实启动流程保留同一 VM 并递增 Generation。
  assert(S.Generation==generation+1)
  S.RecordLog('error','boot','NEW_EARLY_FAILURE')
- dofile('core/rs_diagnostics.lua') -- actual reload also reloads the dependencies before this module
+ dofile('core/rs_diagnostics.lua') -- 真实重载会先重新加载本模块的依赖。
  dofile('core/rs_self_check_report.lua')
  local snapshot=S.DiagnosticsManager:GetSelfCheckIssueSnapshot()
  assert(#snapshot.rows==1 and snapshot.rows[1].message=='NEW_EARLY_FAILURE')

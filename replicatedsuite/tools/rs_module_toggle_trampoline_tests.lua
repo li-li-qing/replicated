@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - module toolbar late-binding regression tests
--- Synthetic RSUI only. Verifies the logical action remains replaceable while
--- the toolbar Button keeps the same creation-time trampoline for its lifetime.
+-- Replicated Suite · 模块开关转发回调测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 模块工具栏延迟绑定回归，仅模拟 RSUI；逻辑动作应可替换，而 Button 在生命周期内保持创建时的同一转发回调。
 ------------------------------------------------------------------------
 local passed = 0
 local function Eq(a,b,msg) assert(a==b,(msg or 'mismatch')..' expected='..tostring(b)..' actual='..tostring(a)) end

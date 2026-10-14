@@ -1,7 +1,10 @@
--- Replicated Suite regression: GearV3 must use the legacy-proven self-equipment
--- selector for loadout reconciliation.  If the selector is inverted, every
--- already-correct gear slot becomes a phantom mismatch; costume (slot 28) and
--- title are then pushed to the tail of a long transaction.
+------------------------------------------------------------------------
+-- Replicated Suite · 装备时装与称号回归测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- GearV3 方案核对必须采用已证明有效的自身装备选择器；反转选择器会让正确槽位被误判，从而把时装槽 28 和称号拖到长事务尾部。
+------------------------------------------------------------------------
 ReplicatedSuite = {
     BootError = nil,
     Services = {},
@@ -30,9 +33,7 @@ local equipped = {}
 local bag = {}
 X2Equipment = {}
 function X2Equipment:GetEquippedItemTooltipInfo(slot, targetEquippedItem)
-    -- Model the behavior used by the previously working Gear implementation:
-    -- the Gear self-equipment path passes true.  The .18.253 regression changed
-    -- it to false, which makes this client family return no self tooltip.
+    -- 按此前有效的 Gear 实现模拟：自身装备读取传 true；传 false 时，该客户端族不返回自身 tooltip。
     if targetEquippedItem ~= true then return nil end
     return equipped[tonumber(slot)]
 end

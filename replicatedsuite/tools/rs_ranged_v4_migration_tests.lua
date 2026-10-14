@@ -1,5 +1,10 @@
--- Development-only regression for .18.256 ranged release default compatibility.
--- Real BuffDisplay Store + in-memory SaveData host; no Native equipment facts are fabricated.
+------------------------------------------------------------------------
+-- Replicated Suite · 远程配置迁移测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 远程武器发行默认值兼容回归，使用真实 BuffDisplay Store 和内存 SaveData 宿主，不伪造原生装备事实。
+------------------------------------------------------------------------
 local H = dofile('tools/rs_udf_numeric_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)
@@ -33,7 +38,7 @@ Test('persisted untouched v4 false upgrades once to v5 and enables ranged', func
     assert(F2.State.settings.components.ranged.enabled == true, 'v4 persisted ranged=false not repaired')
     assert(tonumber(F2.State.settings.layoutPresetVersion) == 5, 'v4 repair not stamped to v5')
     assert(io2.writes == 1, 'compatibility migration must perform exactly one durable layout write')
-    -- Re-entering the already-loaded layout authority must replay the upgraded snapshot, never the pre-upgrade v4 copy.
+    -- 再次进入已加载的布局管理层时必须应用升级后的快照，不能重放升级前的 v4 副本。
     assert(F2:EnsureHudLayoutStoreLoaded())
     assert(F2.State.settings.components.ranged.enabled == true, 'cached HUD layout snapshot reverted the ranged migration')
     assert(tonumber(F2.State.settings.layoutPresetVersion) == 5, 'cached HUD layout snapshot reverted the v5 stamp')

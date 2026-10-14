@@ -1,3 +1,8 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 功能消费者生命周期运行时测试
+-- 作者：Replicated
+-- QQ群：1104129461
+------------------------------------------------------------------------
 local ROOT = './'
 local function eq(a, b, message)
     if a ~= b then error((message or 'assert') .. ': expected=' .. tostring(b) .. ' actual=' .. tostring(a), 2) end
@@ -49,8 +54,7 @@ function feature:ReleaseConsumer(token)
     return true
 end
 
--- PageHost has no load-time Native dependency; this executes only the shared
--- Presentation lifecycle contract under a strict Demand model.
+-- PageHost 在加载期没有原生依赖；本用例仅在严格 Demand 模型下执行共享表现层生命周期契约。
 dofile(ROOT .. 'presentation/v3/shell/rs_v3_page_host.lua')
 local Host = S.UIV3.PageHost
 truth(type(Host) == 'table', 'PageHost loaded')
@@ -72,8 +76,7 @@ eq(acquireCount, 1, 'initial acquire count')
 truth(held['page:trade'], 'token held after activation')
 truth(page.consumerHeld, 'page mirrors held token')
 
--- FeatureRuntime/Feature Disable owns Demand:Clear and publishes lifecycle only
--- afterwards. Simulate that exact ordering; the page must NOT double-release.
+-- FeatureRuntime 或功能 Disable 负责 Demand:Clear，清理后才发布生命周期事件；按此顺序模拟，页面不能重复释放需求。
 held = {}
 runtimeEnabled = false
 truth(S.Events:Publish('v3.feature.lifecycle', 'life_trade', 'disabled', 'profile_apply'), 'publish disabled')
@@ -82,15 +85,14 @@ eq(page.consumerHeld, false, 'page stale lease flag cleared')
 truth(Host:ReleaseFeatureConsumer(page, binding, 'deactivate_while_disabled'), 'disabled page release is idempotent')
 eq(releaseCount, 0, 'disabled deactivation still does not double release')
 
--- Re-enable while page remains active. The lifecycle edge must reacquire the
--- same token automatically; no page activation or manual toggle is required.
+-- 页面仍激活时重新启用功能，生命周期事件应自动重新获取同一 token，无须重新激活页面或手动切换。
 runtimeEnabled = true
 truth(S.Events:Publish('v3.feature.lifecycle', 'life_trade', 'enabled', 'profile_apply'), 'publish enabled')
 eq(acquireCount, 2, 're-enable reacquires page token')
 truth(held['page:trade'], 'token restored after profile enable')
 truth(page.consumerHeld, 'page lease restored')
 
--- Unrelated feature lifecycle events cannot perturb this page.
+-- 无关功能的生命周期事件不能干扰当前页面。
 truth(S.Events:Publish('v3.feature.lifecycle', 'life_bonds', 'disabled', 'profile_apply'), 'publish unrelated')
 eq(acquireCount, 2, 'unrelated lifecycle no acquire')
 eq(releaseCount, 0, 'unrelated lifecycle no release')

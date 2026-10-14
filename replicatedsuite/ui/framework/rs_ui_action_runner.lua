@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Action Runner v1
+-- Replicated Suite · 用户操作执行器
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared command boundary for user-triggered UI actions. It owns synchronous
--- Busy/duplicate-click protection, button temporary state, exception fencing,
--- diagnostics and optional Toast feedback. Domain functions still own the
--- actual business transaction and return true/false + reason.
+-- 共享用户操作命令边界，负责同步 Busy/重复点击防护、按钮临时状态、异常隔离、诊断和可选 Toast；实际业务事务仍由 Domain 执行并返回 true/false + reason。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Gear / Title Page M5
+-- Replicated Suite · 装备与称号方案页面
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Two-column loadout editor: the left management rail stays compact while the
--- right side shows all 19 equipment slots + title as two semantic 10-row groups.
--- Larger rows prioritize fast visual configuration over dense spreadsheet data.
+-- 双列配装编辑器：左侧管理栏保持紧凑，右侧把 19 个装备槽与称号分为两个各 10 行的语义组；较大行高优先方便快速配置。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -14,10 +14,7 @@ if type(RSUI) ~= "table" or type(D) ~= "table" or type(PageHost) ~= "table" or t
 local ROUTE = "combat.gear"
 
 local Trim = S.Utils.Trim
--- Both edit fields on this page are RSUI TextInput components (WU1 layout
--- migration). Read/write through the component API first so the layout-owned
--- control never gets a text value written behind the component's back; the raw
--- native branch stays as a fallback for any legacy surface.
+-- 页面两个编辑框均为 RSUI TextInput；优先通过组件 API 读写，不能绕过布局组件直接写文本，原生分支仅为旧界面提供兜底。
 local function SetNativeText(widget, text)
     if widget == nil then return false end
     if type(widget.SetValue) == "function" then return widget:SetValue(tostring(text or "")) end
@@ -28,9 +25,7 @@ local function SetNativeText(widget, text)
 end
 local function GetNativeText(widget)
     if widget == nil then return "" end
-    -- GetDraftValue() reads the live native text even before the field commits,
-    -- which is exactly what the Create/Rename actions need when the user clicks
-    -- the button without leaving the edit box.
+    -- GetDraftValue() 在提交前也读取实时原生文本，支持用户未离开输入框就点击创建/改名。
     if type(widget.GetDraftValue) == "function" then return tostring(widget:GetDraftValue() or "") end
     if type(widget.GetText) ~= "function" then return "" end
     local ok, value = pcall(function() return widget:GetText() end)
@@ -106,34 +101,24 @@ local function BuildPage(parent, route)
     })
 
     ------------------------------------------------------------------------
-    -- Left: plan library + all plan-management controls. This deliberately
-    -- consumes the blank area under short plan lists so the right editor can
-    -- devote nearly its full height to the actual equipment configuration.
+    -- 左侧放置方案库与全部管理控件，利用短列表下方空间，让右侧几乎全部高度用于装备配置。
     ------------------------------------------------------------------------
     local left = RSUI:Border({
         id = "v3_gear_left", parent = body, padding = 6, variant = "card", gradient = true,
         slot = { size = "fixed", width = 210, vAlign = "fill" },
     })
-    -- The management rail used to be one flat VerticalBox of 14 controls with no
-    -- visual grouping (the "杂乱/丑陋" the user flagged). It is now a scrollable
-    -- stack of titled GroupBoxes so the rail stays operable at any window height
-    -- and each control cluster reads as a single semantic unit. Priority order:
-    -- data source (方案库) -> edit/commit/apply (当前方案) -> quick participation
-    -- presets (参与范围) -> screen+snap (屏幕快捷与吸附) -> live feedback。
-    -- 维护（gear-selected-delete-1）：方案顺序/删除属于“选中方案”的身份管理，不能继续埋在
-    -- ScrollBox 下方的独立组里，否则短窗口/1024×768 首屏看起来只有“新建”没有“删除”。
-    -- Authority 仍是 Gear Authority + v3.gear.index；页面只把已有 Commands 提升到方案库附近，
-    -- 不复制删除逻辑、不改变 Store/schema。风险边界：删除仍需二次确认，且确认绑定具体 setId。
-    -- Lower groups scroll instead of
-    -- clipping on short windows, so the layout never regresses to the old soup.
+    -- 管理栏由带标题 GroupBox 组成可滚动堆栈，使各高度窗口均可操作，避免 14 个控件无分组平铺。
+    -- 优先顺序：方案库 -> 当前方案的编辑/提交/应用 -> 参与范围预设 -> 屏幕快捷与吸附 -> 实时反馈。
+    -- 方案顺序与删除属于所选方案的身份管理，应位于方案库附近，不能埋在 ScrollBox 下方，
+    -- 否则短窗口/1024×768 首屏会看起来只有新建、没有删除。已有命令仍由 Gear/v3.gear.index 执行，
+    -- 不复制删除逻辑或改变 Store/schema；删除需二次确认且绑定具体 setId。下方分组通过滚动显示，不能裁切。
     local leftStack = RSUI:ScrollBox({
         id = "v3_gear_left_scroll", parent = left, orientation = "vertical", gap = 10, padding = 4,
         scrollbar = true, reserveScrollbar = true, scrollbarWidth = 12, scrollbarGap = 3,
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
     })
 
-    -- Titled section: a soft GroupBox wrapping a single VerticalBox content. The
-    -- helper exists only so every group shares identical header/surface tokens.
+    -- 带标题区域使用柔和 GroupBox 包裹单个 VerticalBox，辅助函数仅用于统一各组的表头与表面 token。
     local function GearGroup(parent, id, title)
         local box = RSUI:GroupBox({ id = id, parent = parent, title = title, variant = "soft", gap = 4, padding = 8, slot = { size = "auto", hAlign = "fill" } })
         local inner = RSUI:VerticalBox({ id = id .. "_inner", parent = box, gap = 4 })
@@ -141,7 +126,7 @@ local function BuildPage(parent, route)
     end
 
     ------------------------------------------------------------------------
-    -- Group 1: 方案库 (plan data source + identity)
+    -- 分组 1：方案库（数据来源与身份管理）。
     ------------------------------------------------------------------------
     local gLib, gLibInner = GearGroup(leftStack, "v3_gear_group_library", "方案库")
     -- 维护（gear-plan-editor-1）：Panel 是装饰原语，Base:Layout 只设置自身尺寸，
@@ -190,7 +175,7 @@ local function BuildPage(parent, route)
     local saveName = RSUI:Button({ id = "v3_gear_name_button", parent = nameRow, text = "改名", compact = true, height = 24, slot = { size = "fixed", width = 55, vAlign = "center" } })
 
     -- 维护（gear-selected-delete-1）：选中方案的排序与删除入口紧跟方案表，保证无需滚动即可发现。
-    -- Authority/数据流：按钮 -> Feature.Commands -> Gear Authority -> v3.gear.index；删除成功后
+    -- 权威归属/数据流：按钮 -> Feature.Commands -> Gear Authority -> v3.gear.index；删除成功后
     -- Authority 再清理 payload 分片并发布 v3.gear.updated，页面本身从不直接改 F.State。
     -- 兼容边界：沿用既有 DeleteSet/MoveSet 与存档格式，旧配置无需迁移。
     local selectedActions = RSUI:HorizontalBox({ id = "v3_gear_selected_actions", parent = gLibInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
@@ -199,7 +184,7 @@ local function BuildPage(parent, route)
     local deleteButton = RSUI:Button({ id = "v3_gear_delete", parent = selectedActions, text = "删除选中", compact = true, slot = { size = "fill", fill = 1 } })
 
     ------------------------------------------------------------------------
-    -- Group 2: 当前方案 (read current -> save -> validate -> apply)
+    -- 分组 2：当前方案（读取当前 -> 保存 -> 校验 -> 应用）。
     ------------------------------------------------------------------------
     local gCur, gCurInner = GearGroup(leftStack, "v3_gear_group_current", "当前方案")
     local action1 = RSUI:HorizontalBox({ id = "v3_gear_actions_1", parent = gCurInner, gap = 4, slot = { size = "fixed", height = 25, hAlign = "fill" } })
@@ -210,7 +195,7 @@ local function BuildPage(parent, route)
     local apply = RSUI:Button({ id = "v3_gear_apply", parent = action2, text = "立即换装", compact = true, slot = { size = "fill", fill = 1 } })
 
     ------------------------------------------------------------------------
-    -- Group 3: 参与范围 (quick participation presets)
+    -- 分组 3：参与范围（快速参与预设）。
     ------------------------------------------------------------------------
     local gPart, gPartInner = GearGroup(leftStack, "v3_gear_group_participation", "参与范围")
     local presets1 = RSUI:HorizontalBox({ id = "v3_gear_presets_1", parent = gPartInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
@@ -222,7 +207,7 @@ local function BuildPage(parent, route)
     local pNone = RSUI:Button({ id = "v3_gear_p_none", parent = presets2, text = "清空参与", compact = true, slot = { size = "fill", fill = 1 } })
 
     ------------------------------------------------------------------------
-    -- Group 4: 屏幕快捷与吸附
+    -- 分组 4：屏幕快捷与吸附。
     ------------------------------------------------------------------------
     local gSnap, gSnapInner = GearGroup(leftStack, "v3_gear_group_screen", "屏幕快捷与吸附")
     local screenButton = RSUI:Button({ id = "v3_gear_screen_button", parent = gSnapInner, text = "屏幕快捷按钮：--", compact = true, slot = { size = "fixed", height = 24, hAlign = "fill" } })
@@ -235,7 +220,7 @@ local function BuildPage(parent, route)
         slot = { size = "fill", fill = 1, hAlign = "fill" },
     })
     local snapSettings = RSUI:Button({ id = "v3_gear_snap_settings", parent = snapActions, text = "设置", compact = true, slot = { size = "fixed", width = 58 } })
-    -- 中文维护：主菜单的快捷设置复用 Gear 既有锁状态；WidgetHost 同步已存在 Native，未创建时只保存偏好。
+    -- 主菜单的快捷设置复用 Gear 既有锁状态；WidgetHost 同步已存在 Native，未创建时只保存偏好。
     local quickLock = RSUI:Toggle({ id = "v3_gear_quick_lock", parent = gSnapInner, compact = true,
         onText = "快捷按钮：已锁定", offText = "快捷按钮：可拖动", slot = { size = "fixed", height = 24, hAlign = "fill" },
         get = function() return Feature:GetQuickHudProjection().locked == true end,
@@ -247,7 +232,7 @@ local function BuildPage(parent, route)
     })
 
     ------------------------------------------------------------------------
-    -- Group 5: 状态与反馈 (live runtime + editor status)
+    -- 分组 5：状态与反馈（运行事实与编辑状态）。
     ------------------------------------------------------------------------
     local gStatus, gStatusInner = GearGroup(leftStack, "v3_gear_group_status", "状态与反馈")
     local runtimeStatus = RSUI:Text({
@@ -260,7 +245,7 @@ local function BuildPage(parent, route)
     })
 
     ------------------------------------------------------------------------
-    -- Right: almost all available height belongs to the actual configuration.
+    -- 右侧：几乎全部可用高度用于实际配置。
     ------------------------------------------------------------------------
     local right = RSUI:Border({
         id = "v3_gear_right", parent = body, padding = 6, variant = "card", gradient = true,
@@ -552,9 +537,8 @@ local function BuildPage(parent, route)
             if row.quick then quickCount = quickCount + 1 end
         end
 
-        -- Business state owns only the stable selected id.  The shared RSUI
-        -- SelectionVisual owns every selected-row highlight; Gear no longer
-        -- injects marker text, special tones, or a feature-specific "当前" row.
+        -- 业务状态仅持有稳定的选中 id；共享 RSUI SelectionVisual 负责所有选中行高亮，Gear 不应再
+        -- 注入标记文字、特殊色调或功能专用“当前”行。
         if selectedId ~= nil and selectedIndex == nil then
             self.selectedId, self.draft, self.validation = nil, nil, nil
             self:ResetDeleteConfirmation("selection_missing")
@@ -575,7 +559,7 @@ local function BuildPage(parent, route)
     end
 
     function root:Refresh()
-        quickLock:Render() -- 中文维护：外部窗口管理入口改锁后，页面只同步当前状态。
+        quickLock:Render() -- 外部窗口管理入口改锁后，页面只同步当前状态。
         self:RefreshPlanList()
         if snapToggle ~= nil and type(snapToggle.Render) == "function" then snapToggle:Render() end
         self:RefreshEditor()
@@ -769,9 +753,7 @@ local function BuildPage(parent, route)
         return true
     end
 
-    -- Buttons keep a single RSUI-owned native OnClick handler. Late-bound page
-    -- actions are assigned to the component action slot so enabled/release/event
-    -- mux fences remain authoritative.
+    -- 按钮仅保留一个 RSUI 持有的原生 OnClick；后绑定的页面操作写入组件 action slot，使 enabled/release/event mux 的边界仍有效。
     -- 维护：新建/改名沿用其余按钮的 ActionRunner 生命周期，原生 OnClick 仍只归 RSUI。
     -- 不以输入失焦触发业务写入；拒绝与忙碌状态必须回传，而非“点击过就成功”。
     local bindings = {

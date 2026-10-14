@@ -1,21 +1,21 @@
 ------------------------------------------------------------------------
--- Phase 3 Batch A 契约测试（2026-09-29，core-feature-decoupling-1）
+-- Replicated Suite · 基础层与功能解耦测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
+-- Phase 3 Batch A 契约测试（2026-09-29，core-feature-decoupling-1）
 -- 目的：证明「把 RaidReadiness 的契约门禁从 Foundation 搬到 Feature 的 acceptance 文件」是**无损搬迁**，
 -- 而且是**严格加强**。对照关系：
---
---   core/rs_foundation_gate.lua（已删除）
---     raid_readiness_v3_contract      （blocker）
---     raid_readiness_runtime_scope    （warning）
---   → features/combat/raid_readiness/rs_raid_readiness_acceptance.lua
---     v3_m16_14_raid_readiness_contract（sequence case；失败 → sequence_harness blocker）
---
+-- core/rs_foundation_gate.lua（已删除）
+-- raid_readiness_v3_contract 是阻断项。
+-- raid_readiness_runtime_scope 是警告项。
+-- 契约实现位于 features/combat/raid_readiness/rs_raid_readiness_acceptance.lua。
+-- v3_m16_14_raid_readiness_contract（sequence case；失败 → sequence_harness blocker）
 -- 本文件用**最小离线替身**直接驱动 acceptance 注册的那个 case，逐个触发搬迁过程中补齐的三个强度点：
---   1. 实现未注册（F = nil）—— 旧 acceptance 会静默 return，等于“没有检查”；现在必须失败。
---   2. dormant roster lease    —— Foundation 原判定要求，旧 acceptance 只查了 auraHeld。
---   3. scan 缺 roster / aura 缺 scan —— Foundation 原判定的依赖顺序，旧 acceptance 完全没有。
+-- 1. 实现未注册（F = nil）—— 旧 acceptance 会静默 return，等于“没有检查”；现在必须失败。
+-- 2. dormant roster lease    —— Foundation 原判定要求，旧 acceptance 只查了 auraHeld。
+-- 3. scan 缺 roster / aura 缺 scan —— Foundation 原判定的依赖顺序，旧 acceptance 完全没有。
 -- 另外做一条静态断言：core/*.lua 不得再出现点名 RaidReadiness 的硬编码访问。
---
 -- 这是纯离线契约测试：不读写用户 UDF，不声明任何 RU 实机行为。
 ------------------------------------------------------------------------
 local passed, failed = 0, 0
@@ -194,7 +194,7 @@ Test('DeathReview：静态 —— core/*.lua 不得再点名该 Feature', functi
 end)
 
 ------------------------------------------------------------------------
--- Phase 3 Batch C：life_bonds
+-- 覆盖 life_bonds 的基础层解耦。
 -- （core/rs_foundation_gate.lua 里 5 条点名 life_bonds 实现的契约版本条件已删除）
 --
 -- 该 Feature 的 acceptance 不仅覆盖原判定，而且**更严**：DropdownPresentationContractVersion
@@ -683,10 +683,10 @@ Test('BatchH 静态：core/*.lua 不得再点名这四个 Feature，且 buff_obs
 end)
 
 ------------------------------------------------------------------------
--- Phase 3 Batch I：tools_auction / tools_market_analysis / tools_craft
+-- 覆盖 tools_auction、tools_market_analysis 和 tools_craft 的基础层解耦。
 --   三个 Feature 原先都没有 acceptance；它们的契约散在 Foundation 的三个 AddCheck 里
---   （v3_auction_query_contract / v3_auction_sidecar_contract / v3_auction_workspace_contract /
---    v3_craft_user_selection_contract / v3_craft_sidecar_contract）。
+-- 拍卖契约包括 v3_auction_query_contract、v3_auction_sidecar_contract、v3_auction_workspace_contract，
+-- 制作契约包括 v3_craft_user_selection_contract 和 v3_craft_sidecar_contract。
 --   **同一条 AddCheck 里的 Service / UIV3 契约留在 Foundation** —— 它们不是 Feature 债。
 ------------------------------------------------------------------------
 local ToolCases = {
@@ -1317,7 +1317,7 @@ end)
 --   （dps_v3_contract 的 Feature 条件已删；dps_skill_proxy_source_contract 与
 --     dps_v3_runtime_scope 的运行期读数改从投影取值表读取）
 --   **保留**：dpsStore（Core Store）、dpsMeta（Registry）、dpsPage / dpsWidget（UIV3）、
---     proxyCatalog / fountainProxy（Data）、CombatRelationV3 / CombatAnalyticsV3（Service）
+-- 数据目录为 proxyCatalog、fountainProxy；服务为 CombatRelationV3、CombatAnalyticsV3。
 --   差集扫描的结论很干净：命令面**无缺口**、Domain 版本下限两边都是 7 —— 可直接搬迁。
 ------------------------------------------------------------------------
 local DPS_PATH = 'features/combat/dps/rs_dps_feature.lua'
@@ -1377,7 +1377,7 @@ end)
 ------------------------------------------------------------------------
 -- Phase 3 Batch Q：Trade 的详情/收藏契约（最后 1 处 CORE_FEATURE）
 --   （v3_trade_detail_favorites_contract 里的 23 条 Feature 条件已删除；
---     TradePayoutV3 / MaterialPriceServiceV3 / PriceQuoteQueueV3 /
+-- 报价相关服务包括 TradePayoutV3、MaterialPriceServiceV3、PriceQuoteQueueV3，
 --     TradeDetailFloatingV3 / LifeM16PagesContract 的 Service 与 UIV3 侧契约留在 Foundation）
 --   本批是本阶段**最后一处**：至此 CORE_FEATURE 债务清零，
 --   剩余 audit 项已全部是 PRESENTATION_STATE 与 GIANT_FILE（别的 Phase 的范围）。

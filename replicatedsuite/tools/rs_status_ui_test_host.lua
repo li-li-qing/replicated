@@ -1,5 +1,10 @@
--- Phase 0 recovered offline host for BuffDisplay/diagnostics presentation regressions.
--- Test infrastructure only; never loaded by toc.g.
+------------------------------------------------------------------------
+-- Replicated Suite · 状态界面测试宿主
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- BuffDisplay 和诊断表现回归的离线宿主，仅为测试基础设施，不进入 toc.g。
+------------------------------------------------------------------------
 return function(S)
     assert(type(S)=='table','suite required')
     local H={widgets={},nativeEnabled=true,visibleWidgets={},factories={}}

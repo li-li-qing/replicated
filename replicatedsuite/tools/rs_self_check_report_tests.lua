@@ -1,11 +1,17 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 4 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · 自身检查报告测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 维护：真实 Diagnostics/Bootstrap/API/Page 工厂；仅替换 Native 和外部快照提供者。
 -- 不进 TOC。不能据此声称 RU 聊天/剪贴板/布局实机通过，也不生成用户实档恢复结论。
 -- 维护：旧测试以SetClipboardText可用为前提，与参考Available/not allowed矛盾；
 -- 现在即使测试Native提供同名函数也必须零调用，正文交付以页面回读为准。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, run)
     local ok,err=pcall(run)
@@ -70,7 +76,7 @@ end
 Test('diagnostics has run print and explicitly requested previous next actions',function()
     local S,D=Boot();local root,h=Page(S);local buttons={}
     for _,v in pairs(h.widgets)do if v.onClick then buttons[#buttons+1]=v.spec.text end end
-    -- 中文维护：保留6个原报告操作，另有性能入口+5个明确手动操作；性能区默认折叠，不自动开始。
+    -- 保留6个原报告操作，另有性能入口+5个明确手动操作；性能区默认折叠，不自动开始。
     table.sort(buttons);assert(#buttons==12,'registered action count='..#buttons)
     assert(h.widgets.v3_diag_perf_actions.visible==false and h.widgets.v3_diag_perf_status.visible==false)
     assert(h.widgets.v3_diag_perf_entry.onClick and h.widgets.v3_diag_perf_start.onClick and h.widgets.v3_diag_perf_stop.onClick and h.widgets.v3_diag_perf_export.onClick)

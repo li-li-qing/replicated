@@ -1,14 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Source Proxy Catalog
+-- Replicated Suite · 战斗来源代理目录
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Static identities for player-placed skill entities whose combat source name
--- is the skill object rather than a player. This catalog classifies the source;
--- it never guesses an owner.
---
--- Hot-path contract:
---   * O(1) exact lookup by source name / ability id
---   * no fuzzy/tag matching and no runtime Native lookup
---   * no owner inference from target, distance, timing or "latest caster"
+-- 玩家放置的技能实体以技能对象名称作为战斗来源；本目录只分类来源，不猜测所属玩家。
+-- 热路径仅按来源名称/ability ID 做 O(1) 精确查询；禁止模糊/标签匹配和运行时 Native 查询，也禁止按目标、距离、时间或最近施法者推断所有者。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -44,12 +40,7 @@ local function Register(spec)
     end
 end
 
--- RU client tooltip verified by the user on 2026-08-31: Healing Fountain is a
--- player-cast skill that persists for 60 seconds and periodically heals nearby
--- allies. The current API bundle exposes no reliable generic owner link from the
--- placed proxy entity back to its caster, so sourceName="治愈之泉" is classified
--- as a SKILL_PROXY and intentionally left unattributed rather than fabricated as
--- a player or guessed owner.
+-- 2026-08-31用户核实RU tooltip：治愈之泉由玩家施放，持续60秒，周期治疗附近盟友。当前API无可靠通用代理实体→施法者关联，因此sourceName=治愈之泉分类为SKILL_PROXY并明确未归属，禁止编造玩家或猜所属者。
 Register({
     id = "healing_fountain",
     kind = "PLAYER_PLACED_SKILL_PROXY",

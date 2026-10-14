@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Raid Readiness Store
+-- Replicated Suite · 团队准备检查设置存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Account-scoped permanent preferences only. Scan results are session facts and
--- are never persisted. Required Aura IDs are user supplied / imported facts;
--- this store intentionally ships with no guessed Buff IDs.
+-- 仅持久化账号偏好；扫描结果是会话事实。必需 Aura ID 来自用户输入/导入，本 Store 禁止预置猜测 Buff ID。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -136,8 +136,7 @@ local function PublishSettingChanged(key)
     end
 end
 
--- Persistent RSUI bindings own the write-fence + MarkDirty transaction. This
--- path only mutates the in-memory setting and publishes the projection change.
+-- RSUI 持久 Binding 拥有写保护/MarkDirty 事务，本路径仅修改内存设置并发布投影。
 function F:ApplySettingFromBinding(key, value)
     local ok, err = self:ApplySettingRaw(key, value)
     if ok ~= true then return false, err end
@@ -145,8 +144,7 @@ function F:ApplySettingFromBinding(key, value)
     return true
 end
 
--- Non-RSUI callers have no persistent binding around them, so queue the Store
--- write here and restore the previous settings atomically if the write is fenced.
+-- 非 RSUI 调用无持久 Binding，此处排队 Store 写入，被写保护时原子恢复旧设置。
 function F:SetSettingValue(key, value)
     local marked, markErr = self:MutateStore(function() return self:ApplySettingRaw(key, value) end, 300, "raid_readiness_setting:" .. tostring(key))
     if marked ~= true then return false, markErr end

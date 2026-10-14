@@ -1,6 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Module page controls
--- 维护（module-controls-diag-2，2026-09-18）：页面开关/诊断原先散落在标题、卡片、保护页里。
+-- Replicated Suite · 共享功能开关与诊断入口
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 约束（module-controls-diag-2）：页面开关与诊断统一由 PageHost 提供。
 -- PageHost 在滚动正文外为每个路由创建一个左上角控制条；业务页只领取同一按钮引用，
 -- 不重设 Native parent、不复制 Enabled 状态、不复制 Consumer 启停流程。原页面 Command/
 -- ActionRunner 仍拥有启停事务；FeatureRuntime 是运行状态 Authority，Registry 是性能预估元数据。
@@ -63,7 +66,7 @@ function M:Create(parent, route, meta)
     local controlMeta = bar.featureId and S.FeatureRegistry and S.FeatureRegistry:Get(bar.featureId) or meta
     bar.controlMeta = controlMeta
     if bar.featureId then
-        -- 中文维护注释（2026-09-20，module-toggle-native-trampoline-1）：和同一控制条里一直可用的
+        -- 约束（2026-09-20，module-toggle-native-trampoline-1）：和同一控制条里一直可用的
         -- “诊断”按钮保持一致，启动按钮在 Native Button 创建当下就必须拥有 OnClick 逻辑。后续页面
         -- 只替换 bar.invoke 指向的业务动作，不再依赖“按钮创建后再装回调”。这样 Authority 仍是
         -- FeatureRuntime，但 Native 事件入口在整个控件生命周期内保持稳定。无 Tick/轮询，仅用户点击执行。
@@ -126,7 +129,7 @@ function M:Finish(bar, page)
     if not bar.toggle then return true end
     local button = bar.toggle
 
-    -- 中文维护注释（2026-09-20，module-toggle-native-trampoline-1）：页面存在三种历史绑定方式：
+    -- 约束（2026-09-20，module-toggle-native-trampoline-1）：页面存在三种历史绑定方式：
     -- DesignSystem 传入 onClick、直接写 component.onClick、只写 component.spec.onClick。这里全部
     -- 兼容，但必须排除 Create() 自己安装的 trampoline；最终 Native/RSUI Button 仍保持 trampoline，
     -- 真正业务动作放在 bar.invoke 后面。这样不会修改页面业务语义，也不会把共享控制条强耦合到模块。

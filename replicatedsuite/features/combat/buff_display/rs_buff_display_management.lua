@@ -1,9 +1,12 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 8 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- 中文维护注释（状态追踪管理 Authority）：
+-- Replicated Suite · 状态显示追踪管理
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并前必须清除冲突标记，核对源码与加载清单完整性。
+-- Authority、调用数据流与存档协议保持下方实现的原有责任，
+-- 禁止通过清配置、跳过加载或恢复Legacy绕过故障；源码与toc.g、UI实现必须成套，
+-- 合并后先检查Lua语法，再做运行时验收。
 -- 问题：旧“冻结”只保留 tracked 行且复用 HUD；未出现的已追踪 ID 无处取消。
 -- 本文件属于 BuffDisplay Feature：只拥有管理投影、持续Session留存与用户追踪命令。
 -- 事实仍来自 AuraObservationV3；只读目录来自 StatusTrackingCatalogV3；写入只经 MutateStore。
@@ -17,7 +20,7 @@ local Catalog=S.Data and S.Data.StatusTrackingCatalogV3
 if type(F)~="table" or type(Catalog)~="table" then return end
 F.ManagementProjectionContractVersion=2
 F.RetentionContractVersion=1
--- 维护：会话留存只保存“观察到过”的状态，不是暂停 Native/HUD；关闭/重载释放。
+-- 会话留存只保存“观察到过”的状态，不是暂停 Native/HUD；关闭/重载释放。
 -- 每 scope 最多 1024 个身份，达到上限保留最早证据并明确 overflow，不静默淘汰。
 local RETAIN_MAX=1024
 local RETAIN_TOKEN="management:retained"
@@ -35,7 +38,7 @@ local function Publish(reason)
     if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish("v3.buff_display.updated",reason) end
 end
 local function PublishSettings(reason)
-    -- 中文维护注释（2026-09-19，cooldown-tracking-reconcile-1）：tracking.meta 的耐久提交完成后，
+    -- tracking.meta 的耐久提交完成后，
     -- 必须通知 Feature 重建 CooldownObservationV3 lease。过去 SetTrackedCooldownId/内置 CD 包只改 Store
     -- 和管理页缓存，没有发布 settings topic；若 Runtime 已经持有 Consumer，它会继续探测旧 ID 集合。
     -- 发布只发生在低频用户写操作成功之后，不进入 Native/50ms/100ms 热路径。
@@ -44,7 +47,7 @@ local function PublishSettings(reason)
 end
 local function Settings() return F.State.settings end
 
--- 中文维护（紧凑追踪表）：四列是独立放置意图，颜色从同一已提交索引读取。
+-- 四列是独立放置意图，颜色从同一已提交索引读取。
 -- 旧 Auto 表示该范围按实测类别自动放置，表中标为“自动”；不在读取/升级时重写旧选择。
 function F:IsTrackedPlacement(id,scope,category)
     if (scope~="player" and scope~="target") or (category~="buff" and category~="debuff") then return false end
@@ -143,10 +146,10 @@ local function Decorate(row,index)
     if meta and type(meta.GetCached)=="function" then
         local info=meta:GetCached(row.id)
         if info then
-            -- 维护（2026-09-20，状态名称 Native Authority）：
+            --
             -- 原因：旧实现只在静态名称为空/等于 ID 时才采用 GetBuffTooltip 名称，导致内置库中
             -- 的英文名、旧译名或人工占位名永久压过 RU 客户端实际本地化名称。
-            -- Authority：BuffMetadataV3/X2Ability:GetBuffTooltip 是运行时展示名称 Authority；
+            -- 权威边界：BuffMetadataV3/X2Ability:GetBuffTooltip 是运行时展示名称 Authority；
             -- SkillEffects/Catalog.name 只是离线 fallback 与搜索种子，不拥有最终显示文案。
             -- 数据流：可见行按需请求 Metadata -> 缓存 -> Decorate 覆盖展示 name/icon；不修改 ID、
             -- Buff/Debuff 分类或用户 tracked 配置，也不把 Native 名称写回持久化配置。
@@ -174,7 +177,7 @@ function F:GetManagementListFreezeState()
     return {active=state.active,revision=state.revision}
 end
 function F:SetManagementListFrozen(value)
-    -- 中文维护：当前列表冻结与持续留存分开。只复制已取得的有界 Aura 投影，不暂停 HUD、扫描 Native 或保存永久配置。
+    -- 当前列表冻结与持续留存分开。只复制已取得的有界 Aura 投影，不暂停 HUD、扫描 Native 或保存永久配置。
     local previous=self.managementListFreeze;local active=value==true
     if previous.active==active then return true end
     if active and self.enabled~=true then return false,"请先启用状态显示" end
@@ -193,7 +196,7 @@ function F:ClearFrozenRows()
     if self.clearingManagementCapture then return true end
     local previous=self.managementFreeze
     self.managementFreeze=EmptyCapture((previous.revision or 0)+1,false)
-    -- 维护：留存是显式消费者，隐藏页面不停止；停止/Feature关闭/重载才释放。
+    -- 留存是显式消费者，隐藏页面不停止；停止/Feature关闭/重载才释放。
     -- Demand在清空消费者的回调里也调用此函数，先置空会话并使用重入门，禁止递归Release。
     if self.Demand and self.Demand:Has(RETAIN_TOKEN) then
         self.clearingManagementCapture=true
@@ -263,7 +266,7 @@ function F:CaptureManagementFreeze()
     if held~=true then return false,err end
     local previous=self.managementFreeze
     if not previous.active then self.managementFreeze=EmptyCapture((previous.revision or 0)+1,true) end
-    -- 维护：先读入有界暂存，双方读取均失败时不破坏已有留存；临时 lease 始终释放。
+    -- 先读入有界暂存，双方读取均失败时不破坏已有留存；临时 lease 始终释放。
     -- 后续状态由原 aura lane / 事件边继续调用 ObserveManagementRows，不依赖 UI 是否正显示本页。
     local captured={};local count=0
     local ok,captureErr=pcall(function()
@@ -302,13 +305,13 @@ function F:ResetManagementCapture()
     return true,active and "记录已清空，继续留存随后观察到的状态。" or "记录已清空。"
 end
 
--- 维护（图标只读链）：目录不嵌复制资源表。行绑定仅请求ID，绝不在渲染回调调用 Native。
+-- 目录不嵌复制资源表。行绑定仅请求ID，绝不在渲染回调调用 Native。
 -- Feature 用一个可取消的 one-shot 分批请求共享 BuffMetadataV3；每批最多8个、队列最多64个。
 -- 仅页面可见期间运行，隐藏/销毁取消；命中或未命中都由共享服务缓存，不产生整库热遍历。
 local META_TASK="v3_buff_management_metadata"
 F.managementMetadata={active=false,queue={},pending={},queued=0,revision=0,batches=0,generation=0}
 function F:SetManagementPageActive(active,token)
-    -- 维护（compact-tracker-1）：大页面和小窗各持有元数据消费者；隐藏任一不能停止另一方。
+    -- 大页面和小窗各持有元数据消费者；隐藏任一不能停止另一方。
     -- 限定两种token，防止任意视图创建无限引用；仅最后释放才取消批处理，旧bool调用默认page。
     token=token=="widget" and "widget" or "page"
     local m=self.managementMetadata;m.consumers=m.consumers or {}
@@ -328,7 +331,7 @@ function F:SetCooldownManagementActive(active)
     active=active==true
     if self.cooldownManagementActive==active then return true end
     self.cooldownManagementActive=active
-    -- 中文维护注释（2026-09-19，CD 管理页 Demand）：只有“技能 CD”管理视图本身可见时，
+    -- 只有“技能 CD”管理视图本身可见时，
     -- 才把管理页计入 CooldownObservationV3 Demand。自动入口只识别本机施放成功的 Skill ID，
     -- 手动追踪/真实倒计时保持 Native GetCooldown/GetMateCooldown Authority，不读 Aura、不扫描技能库。
     -- 最后一个消费者释放后回收两条 Scheduler 任务与临时缓存，Store 中的 Skill ID 收藏保持不变。
@@ -338,8 +341,7 @@ end
 function F:QueueManagementMetadata(id)
     local m=self.managementMetadata;local service=S.Services and S.Services.BuffMetadataV3
     id=tonumber(id)
-    -- Bounded counters distinguish a binder/lifecycle issue from an unavailable
-    -- native icon. No logging or tooltip reads are performed on this render edge.
+    -- 有界计数区分绑定/生命周期问题与 Native 图标不可用；此渲染边沿不打印日志，也不读取 tooltip。
     m.requests=math.min(2147483647,(m.requests or 0)+1)
     if not m.active then m.inactiveSkips=math.min(2147483647,(m.inactiveSkips or 0)+1);return false end
     if not id or not service or type(service.GetInfo)~="function" then return false end
@@ -378,7 +380,7 @@ local function CatalogRow(entry)
     -- 缓存peek不触发Native；真正读取由页面可见行的延迟队列发起，禁止393+行逐帧查询。
     local meta=S.Services and S.Services.BuffMetadataV3
     local info=entry.kind=="effect" and meta and type(meta.GetCached)=="function" and meta:GetCached(entry.id) or nil
-    -- 维护：目录静态 name 只做未解析 fallback；一旦客户端 Tooltip 已缓存，优先展示当前 RU
+    -- 目录静态 name 只做未解析 fallback；一旦客户端 Tooltip 已缓存，优先展示当前 RU
     -- 构建返回的真实名称，避免静态英文/旧译名继续覆盖 Native 本地化名称。
     local displayName=(info and type(info.name)=="string" and info.name~="") and info.name or entry.name
     return {id=entry.id,key=entry.key,name=displayName,category=entry.category,iconPath=info and info.iconPath or "",
@@ -417,7 +419,7 @@ function F:GetManagementProjection(options)
     if view~="live" and view~="frozen" and view~="tracked" and view~="library" and view~="cooldowns" then view="live" end
     local frozen=self.managementFreeze
     local listFreeze=self.managementListFreeze
-    -- 维护：小窗有明确“当前/留存”两个入口；保留旧页面live随冻结切换的兼容行为。
+    -- 小窗有明确“当前/留存”两个入口；保留旧页面live随冻结切换的兼容行为。
     if view=="live" and not listFreeze.active and frozen.active and options.preserveLive~=true and options.compact~=true then view="frozen" end
     local revision=(view=="live" and (listFreeze.active and ("snapshot:"..listFreeze.revision) or self.revision)) or (view=="frozen" and frozen.revision) or Catalog.version
     local metaService=S.Services and S.Services.BuffMetadataV3
@@ -428,10 +430,10 @@ function F:GetManagementProjection(options)
     local cooldownRevision=type(cooldownHealth)=="table" and tonumber(cooldownHealth.revision) or 0
     local key=table.concat({view,tostring(options.filter or "all"),tostring(options.sort or "tracked"),
         tostring(options.query or ""),tostring(options.scope or "all"),tostring(options.pack or "all"),tostring(self.settingsRevision),tostring(revision),tostring(self.managementMetadata.revision),tostring(metaRevision),tostring(cooldownRevision),tostring(options.compact==true)},"|")
-    -- 中文维护注释：页面 live 与悬浮窗 tracked 是独立消费者。单槽缓存会使两者交错时每 50ms 重建 393 行。
+    -- 页面 live 与悬浮窗 tracked 是独立消费者。单槽缓存会使两者交错时每 50ms 重建 393 行。
     -- 固定八槽（含悬浮窗当前/留存/追踪）、每槽单查询，既阻止热路径整库复制，也避免任意筛选字符串形成无限缓存。
     self.managementCaches=self.managementCaches or {}
-    -- 中文维护注释：同为 tracked 时，页面筛选与悬浮窗全量选择也不能共用一槽；仅允许固定 widget 标识。
+    -- 同为 tracked 时，页面筛选与悬浮窗全量选择也不能共用一槽；仅允许固定 widget 标识。
     local cacheSlot=(options.cacheOwner=="widget" and (view=="tracked" or view=="live" or view=="frozen")) and (view.."_widget") or view
     local cached=self.managementCaches[cacheSlot]
     if cached and cached.key==key then return cached.rows,key,cached.coverage end
@@ -481,7 +483,7 @@ function F:GetManagementProjection(options)
                 -- 对应的真实 mate 行；显式同时追踪自身和坐骑时仍保留两个独立选择。
                 local hiddenCandidate=runtime.kind=="skill" and runtime.automatic==true
                     and not self:IsTrackedCooldownId(runtime.id,"skill") and self:IsTrackedCooldownId(runtime.id,"mate")
-                -- 中文维护（CD 来源诊断）：自身已有真实正读数、坐骑没有正读数时，不能把自身候选隐藏。
+                -- 自身已有真实正读数、坐骑没有正读数时，不能把自身候选隐藏。
                 -- 保留证据和显式纠正入口；不自动迁移用户选择，也不把自身倒计时伪装成坐骑冷却。
                 local sourceMismatch=hiddenCandidate and runtime.active==true and not mateActive[runtime.id]
                 hiddenCandidate=hiddenCandidate and not sourceMismatch and options.compact~=true
@@ -543,7 +545,7 @@ function F:GetManagementProjection(options)
         rows=merged
     end
     local filtered={};for _,row in ipairs(rows) do if Matches(row,options) then filtered[#filtered+1]=row end end
-    local sort=view=="live" and listFreeze.active and "id" or options.sort or "tracked" -- 中文维护：冻结期间点击追踪不按 tracked 重排行序，避免下一次点击落到别的状态。
+    local sort=view=="live" and listFreeze.active and "id" or options.sort or "tracked" -- 冻结期间点击追踪不按 tracked 重排行序，避免下一次点击落到别的状态。
     table.sort(filtered,function(a,b)
         if sort=="tracked" and a.tracked~=b.tracked then return a.tracked==true end
         if sort=="category" and a.category~=b.category then return tostring(a.category)<tostring(b.category) end
@@ -557,11 +559,11 @@ function F:GetManagementProjection(options)
     self.managementCaches[cacheSlot]={key=key,rows=filtered,coverage=coverage}
     return filtered,key,coverage
 end
--- 维护（library-eventbus-2）：调用没成功时以前可能只留下旧的lastImport成功记录，
+-- 调用没成功时以前可能只留下旧的lastImport成功记录，
 -- Core虽已记录保存失败，但缺少导入阶段/包名上下文，预检失败也可能只在短提示中。Feature拥有命令结果；
 -- 每次点击从validate开始记录，只有Core耐久保存/回读完成后才标committed；不新增写入旁路。
 -- 上下文只存数量/阶段，不复制目录或用户配置；未知包/容量/写保护/保存失败均进入既有分页报告。
-F.LibraryIntegrationPatch="status-library-durable-3" -- Core now preserves long ID sequences on disk
+F.LibraryIntegrationPatch="status-library-durable-3" -- Core 在磁盘中完整保留长 ID 序列。
 function F:ImportBuiltinPack(key,newOnly)
     key=tostring(key or "")
     self.libraryImportAttempts=(self.libraryImportAttempts or 0)+1
@@ -582,7 +584,7 @@ function F:ImportBuiltinPack(key,newOnly)
     local loaded,loadErr=self:EnsureStoreLoaded();if loaded~=true then return Failed(loadErr) end
     local result={included=#pack.entries,buff=0,debuff=0,auto=0,cooldown=0,existing=0,rejected=0}
     attempt.result=result
-    -- 中文维护注释（.18.243 内置库导入）：recommended/all 包只属于 Tracking Authority。
+    -- recommended/all 包只属于 Tracking Authority。
     -- 一次用户点击现在物理上会写 inactive player/target/meta + manifest 四次，这是有意的两阶段提交，
     -- 不能为了恢复“单次 SaveData”测试指标而写回旧 monolith。只有 manifest 成功才把 attempt 标为 committed；
     -- 任一 inactive 写失败都保留上一代配置，准确率优先于写次数。
@@ -625,17 +627,17 @@ function F:ImportBuiltinPack(key,newOnly)
     if ok~=true then return Failed(err) end
     attempt.ok=true;attempt.stage="committed"
     self.trackedIndex=self:BuildTrackedIndex(Settings());self:SyncTrackedProjectionFlags()
-    -- 中文维护：成功结果来自持久化事务之后的真实选择，不以实时出现数量冒充导入数。
+    -- 成功结果来自持久化事务之后的真实选择，不以实时出现数量冒充导入数。
     result.total=0
     for _,scope in ipairs({"player","target"}) do for _,category in ipairs({"buff","debuff","auto"}) do result.total=result.total+#Settings().tracked[scope][category] end end
-    -- 维护：成功提交后立即刷新 Runtime 的 skill/mate 集合；失败事务绝不发布，防止内存/磁盘错代。
+    -- 成功提交后立即刷新 Runtime 的 skill/mate 集合；失败事务绝不发布，防止内存/磁盘错代。
     if result.cooldown>0 then PublishSettings("tracked_cooldown_import") else Publish("builtin_pack_import") end
     return true,string.format("已保存：新增追踪通道 Buff %d / Debuff %d / 自动识别 %d / CD %d；已有 %d，状态通道合计 %d。",result.buff,result.debuff,result.auto,result.cooldown,result.existing,result.total),result
 end
 function F:SetTrackedCooldownId(id,kind,enabled)
     id=tonumber(id)
     if (kind~="skill" and kind~="mate") or not id or id<=0 or id~=math.floor(id) or id>2147483647 then return false,"冷却技能 ID/类型无效" end
-    -- 中文维护注释（2026-09-19，cooldown-skill-id-only-1）：状态 ID 与技能 ID 是两个不同 namespace。
+    -- 状态 ID 与技能 ID 是两个不同 namespace。
     -- BuffDisplay 可以观察到坐骑/宠物技能产生的 Aura，但 Aura/Effect ID 绝不能直接写入
     -- trackedCooldowns；X2Skill:GetCooldown/GetMateCooldown 的参数 Authority 是 Skill ID。
     -- 启用时先让 CooldownObservationV3 做只读身份校验：已知 Effect-only ID 明确拒绝，
@@ -675,11 +677,11 @@ function F:GetManagementHealth()
         },
         classification=S.Services.StatusClassificationV3:GetHealth(),
         catalog=Catalog:GetHealth(),lastImport=Copy(self.lastLibraryImport),
-        -- 中文维护注释（.18.243 诊断 Authority）：状态显示持久化已拆成多个 Store，诊断必须
+        -- 状态显示持久化已拆成多个 Store，诊断必须
         -- 直接暴露 manifest generation/slot 与一次性 legacyMigration 结果；禁止再用旧
         -- v3.buff_display 的 loadStatus 推断当前运行 Authority，否则旧损坏证据会被误报成当前故障。
         persistence=type(self.GetTrackingPersistenceHealth)=="function" and self:GetTrackingPersistenceHealth() or nil,
-        -- 维护：只读已有解析结果/返回形态，用于区分未调度、Native未提供图标、界面未更新。
+        -- 只读已有解析结果/返回形态，用于区分未调度、Native未提供图标、界面未更新。
         -- GetHealth绝不触发新的tooltip读取；采样表有界，不能把整份tooltip正文塞进诊断。
         libraryPatch=self.LibraryIntegrationPatch,
         metadata={requests=self.managementMetadata.requests or 0,cacheSkips=self.managementMetadata.cacheSkips or 0,
@@ -695,5 +697,5 @@ F.Commands.SetTrackedCooldownId=function(_,id,kind,enabled) return F:SetTrackedC
 F.Commands.SetTrackedPlacement=function(_,id,scope,category,enabled) return F:SetTrackedPlacement(id,scope,category,enabled) end
 F.Commands.SetUnifiedCooldownTracked=function(_,id,enabled) return F:SetUnifiedCooldownTracked(id,enabled) end
 
--- 中文维护注释：只读 revision 供导入预览防陈旧提交，不暴露 Store/私有缓存。
+-- 只读 revision 供导入预览防陈旧提交，不暴露 Store/私有缓存。
 function F:GetManagementSettingsRevision() return tonumber(self.settingsRevision) or 0 end

@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Task Tracker Store
+-- Replicated Suite · 任务追踪设置存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Persistent presentation policy only. Quest completion/progress remains owned
--- by QuestProgressService V3. Tracking is account-permanent and defaults to
--- "all curated groups tracked" until the user makes an explicit selection.
+-- 仅持久表现策略；任务完成/进度归 QuestProgressService。追踪为账号永久偏好，用户显式选择前默认追踪全部整理组。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -25,12 +25,8 @@ local STORE_ID = "v3.tasks"
 local TASK_CODEC_VERSION = 2
 local VALID_SCOPE = { daily = true, weekly = true }
 
--- Domain code keeps O(1) membership maps. SaveData does not need that shape:
--- RU has now produced a real cross-reload fingerprint mismatch on this Store
--- while the independent metadata envelope remained healthy. The only dynamic
--- associative tables here are tracked group sets, so the persistence codec
--- writes them as sorted arrays. This removes serializer-dependent map shape
--- without changing the Feature's in-memory Authority or lookup complexity.
+-- Domain 保留 O(1) 成员 map；RU 已发生元数据封装健康但跨重载指纹不匹配事故，SaveData 不应保存动态追踪集合 map。
+-- codec 改写排序数组消除序列化器相关形态，不能改变内存权威或查询复杂度。
 local function NormalizeKeys(value)
     local result = {}
     for key, enabled in pairs(type(value) == "table" and value or {}) do
@@ -38,7 +34,7 @@ local function NormalizeKeys(value)
         if enabled == true then
             candidate = key
         elseif type(key) == "number" and type(enabled) == "string" then
-            -- Codec v2 / RU-normalized sequence form: { "guild", "pack20" }.
+            -- codec v2 使用 RU 归一化序列形态，例如 {guild,pack20} 字符串数组。
             candidate = enabled
         end
         candidate = tostring(candidate or "")
@@ -107,10 +103,7 @@ local function EncodeTaskState(value)
     }
 end
 
--- Migration-safe decode (§ old-user upgrade): accepts the current codec
--- envelope, the intermediate { payload = ... } wrapper build, and the original
--- pre-codec bare-Domain shape. Normalize() is strict about content, so shape
--- tolerance here cannot smuggle corrupted values into the Domain.
+-- 升级 decode 接受当前 codec 封装、中间 {payload=...} 包装和最早裸 Domain；Normalize 严格校验内容，形态容忍不能将损坏值带入 Domain。
 local function DecodeTaskState(raw)
     if type(raw) ~= "table" then return nil, "task_encoded_payload_required" end
     local payload = raw
@@ -121,15 +114,8 @@ local function DecodeTaskState(raw)
     return Normalize(payload), nil
 end
 
--- This hook exists only to recover an already-written pre-canonical Store from
--- a proven RU representation change. Persistence does NOT trust the result: it
--- hashes each reconstructed candidate and accepts it only if it exactly equals
--- the fingerprint stamped before the native serializer round-trip. Current
--- codec payloads are never eligible, so future corruption cannot use this path.
--- Two historical on-disk shapes existed before the typed codec: the bare
--- normalized Domain (the original no-encode contract) and an intermediate
--- { payload = ... } wrapper build; each was stamped over its own shape, so both
--- reconstructions are offered and only an exact stamp match wins.
+-- hook 仅恢复已写入旧 canonical 前 Store 的已证明 RU 表示变化；Persistence 不直接信任结果，候选哈希必须精确等于 Native 往返前指纹。
+-- 当前 codec payload 不合格，未来损坏不能借此恢复。历史裸归一化 Domain 与中间 {payload=...} 各按自身形态盖章，提供两种重建候选，仅精确 stamp 匹配可接受。
 local function RebuildLegacyEncodedForIntegrity(raw)
     if type(raw) ~= "table" then return nil, "not_pre_codec_task_payload" end
     if raw.codec ~= nil then return nil, "codec_payload_not_eligible" end
@@ -190,7 +176,7 @@ function F:EnsureStoreLoaded()
 end
 
 function F:MarkStoreDirty(delayMs, reason)
-    -- 中文维护（2026-10-04）：位置/折叠提交当场写入并回读；delay=0 仍是待保存，不能保证重载耐久。
+    -- 位置/折叠提交当场写入并回读；delay=0 仍是待保存，不能保证重载耐久。
     if reason == "task_widget_geometry" or reason == "task_widget_layout_reset" or reason == "task_widget_minimized" then
         return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason })
     end

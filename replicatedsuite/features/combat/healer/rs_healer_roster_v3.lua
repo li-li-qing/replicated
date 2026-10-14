@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Healer Roster Domain
+-- Replicated Suite · 治疗助手名单投影
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Healer-specific projection over TeamRosterV3. TeamRoster remains the only
--- Authority that discovers team unit tokens. This Domain adds only the Healer
--- stable key / self flag / optional role classification required by the legacy
--- recommendation formula. X2Team:GetRole is read only when role scoring is on
--- and is refreshed in bounded slices (5s TTL), never per health scan.
+-- TeamRosterV3 是发现团队 unit token 的唯一权威；本 Domain 仅增加旧推荐公式要求的稳定 key、自身标志和可选职责分类。
+-- X2Team:GetRole 仅在职责评分开启时按有界切片刷新，TTL5s，禁止每次健康扫描读取。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -136,9 +135,7 @@ function R:SyncFromShared(reason, forceRoles)
         end
     end
 
-    -- Identity diff: same member set (order-insensitive) means the roster did
-    -- not actually change. Callers (Healer OnRosterUpdated) use this to skip
-    -- the expensive full ResetTransient that wipes every team color.
+    -- 名单身份差分不考虑顺序；成员集合相同就没有实际变更，Healer OnRosterUpdated 据此跳过会清除所有团队颜色的完整 ResetTransient。
     local changed = false
     local keyCount, previousKeyCount = 0, 0
     for key in pairs(nextKeys) do

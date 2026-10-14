@@ -1,29 +1,15 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Fishing Hotkey Transaction Service
+-- Replicated Suite · 钓鱼热键恢复事务
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Authority: this service owns ONLY reversible action-bar hotkey mutation for
--- the Fishing feature. Fish/Buff recognition stays in the Feature; persistence
--- stays in the Fishing store. The service never polls and never owns UI.
---
--- Maintenance contract (RU ArcheRage):
---   * Every Native write crosses S.Api capability gating.
---   * Combat is fail-closed: if PlayerInCombat cannot be read, no hotkey write.
---   * The caller MUST durably persist the recovery snapshot before the first
---     write and before first touching each destination slot.
---   * Empty original slots are restored with RemoveOptionBinding; if that API is
---     unavailable the transaction refuses to arm instead of guessing.
---   * A failed write never discards the snapshot. Recovery remains authoritative
---     until exact source/destination restoration succeeds and the caller clears
---     the durable record.
-------------------------------------------------------------------------
--- 中文维护总约束（2026-09-13 Fishing Auto-R 恢复）：
--- 1) 问题原因：V3 重构曾把旧版可工作的自动 R 全局封死，只留下动作提示；用户侧表现就是“钓鱼功能没用”。
--- 2) Authority：本 Service 只拥有“动作栏按键的可逆事务”；鱼 Buff/区域判断属于 Fishing Feature，持久化属于 v3.life.fishing Store，UI 只能读 projection。
--- 3) 数据流：Feature 先构造完整槽位快照 -> durable SaveData/readback -> AdoptRecovery -> MoveR -> SaveHotKey -> Native readback；任一步失败都保留恢复权威。
--- 4) 兼容边界：只使用 core/rs_api_capabilities.lua 已 OfficialEnabled 的 Hotkey/PlayerInCombat 能力；禁止因为旧代码能调用就绕过 S.Api，也禁止读取 not-allowed Getter。
--- 5) 战斗边界：RU 对热键写 API 有战斗限制。无法可靠读取战斗状态时一律按“在战斗中”处理，不做任何写入；恢复可延迟到脱战，但恢复快照不能丢。
--- 6) 空槽边界：只有 RemoveOptionBinding 可用时才允许把 R 移入原本未绑定的槽；否则拒绝 Arm，避免关闭后无法精确还原用户键位。
--- 7) 维护风险：不要把本 Service 改成轮询器、页面状态源或独立 SaveData key；否则会重新制造双 Authority、常驻 CPU 和升级恢复不一致。
+-- 钓鱼热键事务只拥有可逆动作栏按键修改；鱼/Buff/区域识别归 Fishing Feature，持久化归 v3.life.fishing Store
+-- ，UI 只读 projection。无轮询、不拥有 UI、不另建 SaveData key。每次 Native 写通过 S.Api 能力门禁，只使用
+-- OfficialEnabled Hotkey/PlayerInCombat，禁止 not-allowed getter。Feature 先完整槽位快照 -> 耐久 SaveData/
+-- 读回 -> AdoptRecovery -> MoveR -> SaveHotKey -> Native 读回；首次写及首次触碰每个目标槽前都须持久化恢复快
+-- 照。战斗状态读不到视为战斗中，不写热键；恢复可延至脱战但快照保留。空槽只能用 RemoveOptionBinding 精确恢复
+-- ，接口不可用时拒绝 Arm。写失败不丢快照，精确恢复来源/目标且调用者清除耐久记录后才释放恢复权威。不能将服务
+-- 变成轮询器、页面状态源或第二持久化权威。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -105,9 +91,7 @@ function H:IsCapabilityAllowed(name)
 end
 
 function H:IsSupported()
-    -- Maintenance: read + set + save + combat guard are mandatory. Remove is
-    -- conditionally mandatory only when a snapshotted destination is unbound;
-    -- BuildSessionSnapshot performs that exact preflight.
+    -- read/set/save/战斗 guard 必需；仅快照目标未绑定时 Remove 才必需，BuildSessionSnapshot 进行精确预检。
     for _, name in ipairs({
         "X2Hotkey:GetOptionBinding",
         "X2Hotkey:SetOptionBindingWithIndex",
@@ -140,7 +124,7 @@ function H:ReadActionSlotBinding(slot)
             if text ~= nil then return text, true end
         end
     end
-    -- 中文维护（2026-10-07）：第二返回值区分“确实未绑定”和“Getter 全部失败”。
+    -- （2026-10-07）第二返回值区分“确实未绑定”和“Getter 全部失败”。
     -- 原有快照调用仍取第一返回值；同槽复核不能把读取失败当成缺键授权重写。
     return nil, readSucceeded
 end
@@ -203,7 +187,7 @@ function H:BuildSessionSnapshot(originalRSlot)
     if originalRSlot == nil then return nil, "原 R 槽位无效" end
     originalRSlot = math.floor(originalRSlot)
 
-    -- 中文维护（2026-10-07，发布复核）：恢复依据必须是成功读取的原键位，
+    -- （2026-10-07，发布复核）恢复依据必须是成功读取的原键位，
     -- 不把 Getter 失败补成 R/空槽；否则关闭时可能删除用户原有的非 R 按键。
     local sourceBinding, sourceReadOk = self:ReadActionSlotBinding(originalRSlot)
     if sourceReadOk ~= true then return nil, "原 R 槽位读取失败，拒绝建立恢复快照" end
@@ -244,7 +228,7 @@ end
 function H:BindingMatches(slot, expected)
     self.stats.readbackChecks = (tonumber(self.stats.readbackChecks) or 0) + 1
     local actual, readOk = self:ReadActionSlotBinding(slot)
-    -- 中文维护（发布复核）：未能读回与“确认空槽”不同；不能凭失败 nil
+    -- 未能读回与“确认空槽”不同；不能凭失败 nil
     -- 宣告恢复成功并清除 durable 快照，等待原生读回可验证后再完成恢复。
     if readOk ~= true then
         self.stats.readbackFailures = (tonumber(self.stats.readbackFailures) or 0) + 1
@@ -336,7 +320,7 @@ function H:MoveR(slot, persistTouch)
     slot = math.floor(slot)
     local snapshot = self.sessionSnapshot
     if type(snapshot) ~= "table" then self.stats.moveFailures = self.stats.moveFailures + 1; return false, "缺少钓鱼改键恢复快照" end
-    -- 中文维护（2026-10-07，多鱼切换）：currentSlot 只记录上次成功事务，不证明原生
+    -- （2026-10-07，多鱼切换）currentSlot 只记录上次成功事务，不证明原生
     -- 动作栏仍保留 R。切到另一条鱼（含相同 Buff），或切换事件后动作栏才重设时，
     -- 由现有 Feature 事件/100ms 兜底复核当前槽位；保持 R 时只读，丢失时重走原事务。
     -- 不清 currentSlot：它仍负责恢复上一槽位；不建新轮询，也不重复写稳定键位。

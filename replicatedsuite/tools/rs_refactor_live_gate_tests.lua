@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 重构实时门禁测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 重构复核回归：真实 FoundationGate + TOC 顺序 + 通用存档 apply。
 -- 只在离线 runner 执行；不会装进游戏 TOC，不读取用户存档。
 -- 2026-09-30：先在提交包观察失败，再修复，避免只测试假的注册器。
@@ -123,7 +127,7 @@ Test('enabled task live contract never acquires consumers or refreshes the autho
     s.Services = {QuestProgressV3={GetProgress=forbidden,GetGroupDetail=forbidden,GetHealth=forbidden}}
     s.UIV3 = {PageHost={factories={['life.tasks']=forbidden}}, WidgetHost={GetSpec=function() return {} end}}
     dofile('features/life/tasks/rs_task_acceptance.lua')
-    -- Isolate Feature-owned checks from unrelated Foundation dependencies in this minimal boundary host.
+    -- 最小边界宿主中隔离 Feature 自有检查，避免无关基础层依赖干扰。
     local report = {checks={},blockers=0,warnings=0}
     g:RunRuntimeContracts(report)
     local row = Find(report, 'runtime_contract:v3_m1_tasks')

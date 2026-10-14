@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Phase 0: recursively audit literal Lua dofile/loadfile dependencies for regression suites.
+# ---------------------------------------------------------------------
+# Replicated Suite · 测试依赖审查
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+"""递归审查回归套件中 Lua dofile/loadfile 的字面依赖。
 
-This is test/build infrastructure only. It never edits toc.g and never fabricates missing fixtures.
-The purpose is to fail the full runner before partial execution when a nested historical host/fixture
-is absent, so a later early failure cannot hide additional missing dependencies.
-"""
+仅供测试和构建使用，不修改 toc.g，不伪造缺失测试数据。
+嵌套历史宿主或数据文件缺失时，在完整运行器开始执行前失败，避免后续早期错误掩盖其它缺失依赖。"""
 from __future__ import annotations
 import argparse
 import re
@@ -33,16 +36,16 @@ def audit(entries: list[str]) -> tuple[list[str], dict[str, list[str]]]:
             continue
         visited.add(rel)
         path = ROOT / rel
-        # This gate is intentionally a Lua dependency audit. Python runners may contain
-        # dynamic format strings or inventory literals that are not load-time dependencies.
+        # 本门禁只审查 Lua 依赖；Python 运行器可能包含
+        # 动态格式字符串或盘点字面量，它们不属于加载期依赖。
         if path.suffix.lower() != '.lua':
             continue
         if not path.is_file():
             missing_parents.setdefault(rel, set()).add('<entry>')
             continue
         for dep in literal_dependencies(path):
-            # Only repository-relative Lua/tool/data dependencies participate.
-            # Dynamic/runtime paths remain the responsibility of their owning tests.
+            # 仅统计仓库相对路径的 Lua、工具和数据依赖。
+            # 动态及运行时路径仍由相应用例负责。
             if dep.startswith('/') or ':' in dep[:3]:
                 continue
             dpath = ROOT / dep

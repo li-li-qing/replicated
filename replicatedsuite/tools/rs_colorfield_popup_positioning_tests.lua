@@ -1,6 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - ColorField V2 popup positioning behavioral tests
--- Offline only: validates viewport-logical solver + final UIParent anchor lane.
+-- Replicated Suite · 颜色输入框弹窗位置测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- ColorField V2 弹窗位置离线行为测试，覆盖视口逻辑坐标求解和最终 UIParent 锚定。
 ------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
@@ -59,7 +62,7 @@ Test("right trigger clamps within viewport", function()
     context.logicalWidth, context.logicalHeight = 1920, 1080
     local anchor = { x=1820,y=100,width=90,height=26,right=1910,bottom=126,coordinateSpace="viewport-logical-v1",source="suite_native_state_anchor_chain" }
     local result = assert(P:ResolveAnchored(anchor, 300, 270, { id="cf_right", gap=4, preferred="bottom-start" }))
-    assert(result.x == 1616, tostring(result.x)) -- 1920 - safeRight(4) - 300
+    assert(result.x == 1616, tostring(result.x)) -- 右边界计算为 1920-safeRight(4)-300。
 end)
 
 Test("2560x1440 bottom-right trigger stays fully on screen", function()

@@ -1,26 +1,13 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Layout Editor Preview Adapter v1
+-- Replicated Suite · 布局编辑投影适配器
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Coordinator/model bridge between stable-key SelectionModel and the editor
--- transform foundations.  It deliberately owns NO Feature Store persistence:
--- callers provide onPreview/onCommit/onCancel adapters for their own projection
--- and persistence boundaries.
---
--- Responsibilities:
---   * keep one working rect projection for the current selection;
---   * single selection -> AnchorPivotModel;
---   * multi selection  -> MultiSelectionTransformModel + projection session;
---   * expose one rect-model interface to TransformInspector;
---   * reject selection-revision changes during an active gesture;
---   * Preview is reversible; external Commit must accept before local session
---     state is finalized.
---
--- Coordinate contract:
---   all rects supplied to this adapter MUST already share one declared editor
---   coordinate space. It does not guess viewport<->canvas conversion.
---
--- Performance contract:
---   no Tick / polling; O(selected) only on explicit Sync/Preview/Commit.
+-- 稳定 key SelectionModel 与编辑变换基础间的协调桥，不持有 Feature Store 持久化；调用方提供自身投影/持久边界的 onPreview/onCommit/onCancel。
+-- 职责：当前选择保留统一 working rect 投影；单选用 AnchorPivotModel，多选用 MultiSelectionTransformModel/投影会话；
+-- 向 TransformInspector 暴露统一 rect 接口；手势中拒绝 selection revision 变化；预览可逆，外部 Commit 接受后才完成本地状态。
+-- 所有输入 rect 必须已在同一声明的编辑坐标空间，适配器不猜 viewport/canvas 转换。
+-- 无 Tick/轮询，仅明确 Sync/Preview/Commit 执行 O(selected)。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -236,8 +223,7 @@ function Adapter:SetHistoryModel(model, ownsModel)
         return false, "layout_editor_adapter_history_model_invalid"
     end
 
-    -- Stage callback attachment before detaching the previous model so a bad
-    -- external History implementation cannot leave the adapter half-switched.
+    -- 先暂存新回调附着再分离旧模型，防止外部 History 出错留下半切换适配器。
     if model ~= nil then
         local ok, err = model:SetApplyCallbacks(
             function(items, context) return self:ApplyHistoryState(items, context) end,
@@ -401,8 +387,7 @@ function Adapter:SyncSelection(source)
     if type(rawKeys) ~= "table" then return false, "layout_editor_adapter_selection_keys_invalid" end
     if #rawKeys > self.maxSelected then return false, "layout_editor_adapter_max_selected_exceeded" end
 
-    -- Stage the complete next selection state first. Nothing on the live
-    -- adapter changes until every rect and the mode-specific model validates.
+    -- 先暂存完整新选择，全部 rect 和模式模型验证后才改活跃状态。
     local nextKeys, nextWorking = {}, {}
     for index, rawKey in ipairs(rawKeys) do
         local key = tostring(rawKey)
@@ -448,9 +433,7 @@ function Adapter:SyncSelection(source)
         nextMultiModel = model
     end
 
-    -- Atomic live-state commit. SelectionGeometry resolves only from the staged
-    -- working rects after this point, so a failed model build above cannot leave
-    -- a half-switched adapter.
+    -- 原子提交活跃状态后 SelectionGeometry 才从暂存 working rect 解析；前面模型失败不能留下半切换适配器。
     self.keys = nextKeys
     self.workingRects = nextWorking
     self.syncedSelectionRevision = SelectionRevision(selection)
@@ -461,8 +444,7 @@ function Adapter:SyncSelection(source)
 
     local resolved, geometryErr = self.geometryModel:Resolve()
     if resolved ~= true and self.mode ~= "none" then
-        -- This should be unreachable after the staged rect validation above;
-        -- fail closed and prevent gestures rather than expose partial geometry.
+        -- 上方暂存校验后应不可达；仍严格拒绝并阻止手势，不能暴露部分几何。
         self.mode = "none"
         self.anchorModel, self.multiModel, self.multiSession = nil, nil, nil
         self.lastError = geometryErr
@@ -631,8 +613,7 @@ function Adapter:CancelGesture(source)
     return true, startItems
 end
 
--- Rect-model interface consumed by TransformInspector. An explicit inspector
--- edit is a short transaction: preview -> external commit -> local finalize.
+-- TransformInspector 消费的 rect-model 接口；明确编辑为短事务：预览 -> 外部提交 -> 本地完成。
 function Adapter:SetRect(rect, source)
     if self.activeGesture == true then return false, "layout_editor_adapter_gesture_active" end
     rect = CopyRect(rect)
@@ -696,9 +677,7 @@ function Adapter:SetRect(rect, source)
     return true, nil
 end
 
--- Called after TransformInspector mutates the single AnchorPivotModel directly.
--- This keeps the inspector binding simple while preserving the same external
--- commit contract as rect edits.
+-- TransformInspector 直接改单选 AnchorPivotModel 后调用，保持简单绑定并复用 rect 编辑的外部提交契约。
 function Adapter:CommitSingleAnchorEdit(source, previousSnapshot)
     if self.mode ~= "single" or self.anchorModel == nil then return false, "layout_editor_adapter_single_required" end
     if self.activeGesture == true then return false, "layout_editor_adapter_gesture_active" end

@@ -1,5 +1,7 @@
 ------------------------------------------------------------------------
--- Replicated Suite - UI Binding v2
+-- Replicated Suite · 持久化设置绑定
+-- 作者：Replicated
+-- QQ群：1104129461
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -194,10 +196,8 @@ end
 
 
 
--- Persistence-aware setting binding. The Domain setter still owns the in-memory
--- value; this adapter owns the store dirty/commit contract so NumericField,
--- ToggleField and future settings do not each repeat MarkDirty/SaveStore glue.
--- MarkDirty uses the Persistence delayed/coalesced save lane; no field owns its own scheduler.
+-- 持久化感知设置绑定：Domain setter 持有内存值，本适配器持有 Store 脏标记/提交契约，避免各字段重复 MarkDirty/SaveStore。
+-- MarkDirty 使用 Persistence 延迟合并保存通道，字段不持有私人 Scheduler。
 function UI:CreatePersistentSettingBinding(options)
     options = type(options) == "table" and options or {}
     local storeId = tostring(options.storeId or options.persistenceStore or "")
@@ -206,9 +206,7 @@ function UI:CreatePersistentSettingBinding(options)
     if type(P) ~= "table" or type(P.GetStore) ~= "function" or P:GetStore(storeId) == nil then
         return nil, "persistent binding store unavailable: " .. storeId
     end
-    -- Read-before-render is as important as load-before-write. A page may be
-    -- constructed while its Feature is disabled; exposing a binding before the
-    -- Store has applied would render Lua defaults as persisted truth.
+    -- 渲染前读取与写入前加载同样重要；停用 Feature 也可能构建页面，Store 应用前不能公开绑定而把 Lua 默认值当成存档事实。
     if type(P.PrepareRead) ~= "function" then
         Binding.metrics.persistenceFailures = (tonumber(Binding.metrics.persistenceFailures) or 0) + 1
         Binding.metrics.persistenceLoadFailures = (tonumber(Binding.metrics.persistenceLoadFailures) or 0) + 1
@@ -246,11 +244,7 @@ function UI:CreatePersistentSettingBinding(options)
             self:SetError("persistent store unavailable", source)
             return false
         end
-        -- Load-before-write is a hard persistence invariant. Settings pages can
-        -- remain available while their Feature runtime is disabled, so the UI
-        -- binding must make sure the permanent Store has been applied BEFORE it
-        -- mutates Domain memory. This closes the old "edit defaults, then erase
-        -- the user's saved config" failure mode.
+        -- 写入前加载是硬约束：设置页可在 Feature 停用时存在，UI 绑定修改 Domain 内存前须确认永久 Store 已应用，避免编辑默认值再抹掉用户配置。
         local ready = type(P.IsStoreLoaded) == "function" and select(1, P:IsStoreLoaded(self.storeId)) or store.loaded == true
         if ready ~= true then
             local prepared, prepareErr = false, "PrepareWrite unavailable"
@@ -263,12 +257,10 @@ function UI:CreatePersistentSettingBinding(options)
             end
             Binding.metrics.persistenceAutoLoads = (tonumber(Binding.metrics.persistenceAutoLoads) or 0) + 1
             store = P:GetStore(self.storeId)
-            -- Any previous value captured by a control before the Store load is
-            -- stale by definition; re-read the now-authoritative Domain value.
+            -- Store 加载前控件捕获的旧值已失效，重新读取当前权威 Domain 值。
             previous = nil
         end
-        -- Persistence is the write authority. Refuse the Domain mutation before
-        -- touching in-memory state when the store is fenced.
+        -- Persistence 负责写权限；Store 被隔离时必须在触碰内存前拒绝 Domain 修改。
         if store.writeFenced == true then
             Binding.metrics.persistenceFailures = (tonumber(Binding.metrics.persistenceFailures) or 0) + 1
             self:SetError(store.writeFenceReason or "write fenced", source)
@@ -289,11 +281,7 @@ function UI:CreatePersistentSettingBinding(options)
         if marked ~= true then
             Binding.metrics.persistenceFailures = (tonumber(Binding.metrics.persistenceFailures) or 0) + 1
             Binding.metrics.persistenceRollbacks = (tonumber(Binding.metrics.persistenceRollbacks) or 0) + 1
-            -- MarkDirty is the persistence ownership hand-off. If it fails after
-            -- Domain mutation, restore the previous authoritative value before
-            -- reporting rejection. A Lua pcall succeeding is not enough: Domain
-            -- setters may explicitly return false, and local-value bindings need
-            -- their backing option restored too.
+            -- MarkDirty 是持久化所有权交接；Domain 修改后若失败，须恢复旧权威值再报告拒绝。pcall 成功不足以证明 setter 接受，显式 false 仍拒绝，本地值绑定的后备选项也须恢复。
             local rollbackOk, rollbackErr = true, nil
             if type(self.domainSet) == "function" then
                 local callOk, accepted, detail = xpcall(function()
@@ -322,8 +310,7 @@ function UI:CreatePersistentSettingBinding(options)
             return false
         end
         Binding.metrics.persistenceMarks = (tonumber(Binding.metrics.persistenceMarks) or 0) + 1
-        -- Persistent dirty truth lives in Persistence Store; avoid a second stale
-        -- dirty flag that would stay true after the debounce save completes.
+        -- 持久脏状态归 Persistence Store，不能另建防抖保存完成后仍为 true 的陈旧脏标志。
         self:ResetDirty()
         if final == true and options.autoCommit == true then return self:Commit(source) end
         return true

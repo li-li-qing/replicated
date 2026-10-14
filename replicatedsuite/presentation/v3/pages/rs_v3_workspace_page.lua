@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 工作台页面
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 个人工作台编辑器（2026-09-18）。仅管理表示偏好；所有业务写入走 Commands。
 -- 导航/首页/外观归 Workspace；关注归 Tasks/Activities；启停归 Runtime；窗口归 Host。
 -- 控件池固定，操作与可见期事件刷新，无 Tick/Native 采样/GetHealth；重载时无旧订阅。
@@ -139,7 +143,7 @@ function Page:Build(parent,route,initialTab)
  end
  function root:SetTab(tab)
   local known=false;for _,item in ipairs(TABS)do if item.value==tab then known=true end end;if not known then return false,'未知页面'end
-  -- 中文维护：标题栏入口可以切换已打开的工作台，分类切换统一关闭本页弹层，避免旧菜单遮住主题列表。
+  -- 标题栏入口可以切换已打开的工作台，分类切换统一关闭本页弹层，避免旧菜单遮住主题列表。
   for _,control in ipairs({tabs,source,filter})do
    if control.open then local ok,why=control:Close();if ok~=true then return false,why end end
   end
@@ -147,7 +151,7 @@ function Page:Build(parent,route,initialTab)
   query:CancelEditing('workspace_tab');self.tab=tab;self.filter=tab=='features' and 'enabled' or 'all';self.query='';self.selectedId=nil
   query:SetValue('',false);tabs:Render()
   local refreshed,refreshErr=self:Refresh();if refreshed~=true then return false,refreshErr end
-  -- 中文维护（2026-10-09）：已有工作台首次切“界面外观”只刷新数据，四个惰性 NumericField 还停留在默认锚点。
+  -- 约束（2026-10-09）：已有工作台首次切“界面外观”只刷新数据，四个惰性 NumericField 还停留在默认锚点。
   -- 此路径不经过 Shell:Navigate 的额外排版；若等共享队列的下一帧，Native 已显示的滑块会暂时堆在同一位置。
   -- 仅在本页已有有效边界且可见时同步完成布局；冷创建的尺寸仍由 PageHost/Shell 首次布局提供，不猜宽高、不新建定时器。
   if tab=='appearance' and not self:IsCollapsed() and (tonumber(self.width) or 0)>1 and (tonumber(self.height) or 0)>1 then

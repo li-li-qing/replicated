@@ -1,7 +1,13 @@
+------------------------------------------------------------------------
+-- Replicated Suite · PVP信息面板测试宿主
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 中文维护（2026-10-07）：完整 Native 替身/真实 Runtime 宿主恢复自 044ffed；
 -- 只有 runtimeHud=true 显式使用，防止领域/CD 回归被额外 Renderer 和 Native 生命周期污染。
 -- 维护（pvp-hud-1）：开发期宿主。保留真实 Store/Demand/Events/Scheduler/FrameBudget/
 -- Feature/Renderer；只替换 Native 图形、游戏事实与内存磁盘。不进入 toc.g，不声称 RU 实测。
+------------------------------------------------------------------------
 local function BootHudRuntime(options)
     options=options or {}
     local h=dofile('tools/rs_gear_page_test_host.lua')({width=1280,height=768})
@@ -65,7 +71,7 @@ local function BootHudRuntime(options)
     dofile('features/combat/buff_display/rs_buff_display_feature.lua')
     local F=S.Features.BuffDisplay;h.F=F;assert(F:EnsureStoreLoaded());F.enabled=true
     F.State.settings.headEnabled=true;F.State.settings.headPlayer=true;F.State.settings.headTarget=true
-    -- No unknown Native cast API is needed for these tests.
+    -- 本组测试不需要未知的原生施法 API。
     F.State.settings.components.castBar.enabled=false;F.State.settings.targetLayout.components.castBar.enabled=false
     F:InvalidateSettingsCache()
     if options.noRenderer then assert(F:AcquireConsumer('test:observer'))
@@ -80,9 +86,7 @@ local function BootHudRuntime(options)
     return h,S,F,h.P
 end
 
--- Phase 0 recovered lightweight BuffDisplay domain host used by scoped tracking regressions.
--- Test infrastructure only; it deliberately stops before transfer/presentation modules so each owning
--- regression can load the exact production layer it intends to test without double-wrapping APIs.
+-- BuffDisplay 轻量业务宿主仅用于测试，在传输和表现模块之前停止加载；各回归可以加载其负责的真实生产层，避免重复包装 API。
 local function Copy(value,seen)
     if type(value)~='table' then return value end
     seen=seen or {};if seen[value] then return seen[value] end

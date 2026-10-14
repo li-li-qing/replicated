@@ -1,17 +1,17 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Feature Profile Screen Buttons
+-- Replicated Suite · 功能方案快捷按钮
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- One user profile -> one compact draggable screen button. The Feature owns
--- profile data/lifecycle intent; this widget only projects and forwards clicks.
---
--- 维护（2026-09-25，feature-profile-quick-relog-1）:
---  * 恢复优先级：source-viewport intent（logical-free-v2，同分辨率精确、跨分辨率按中心比例
---    重投影）> 旧 logical-edge-v1 边锚点 > 旧 quickX/quickY 绝对坐标 > 默认出生点。
---    旧存档只在内存里做兼容投影，加载/重排阶段绝不写 Store、绝不升级格式。
---  * 组级去重叠：同一 screen_buttons 组先各自 ResolvePlacement，再交给 Layout 纯 solver
---    消解重叠；无重叠时结果逐像素不变。
---  * 可见性 fail-soft：原生几何被拒绝不再隐藏按钮、也不再让整个 widget 显示失败（否则
---    WidgetHost 会把它从 ApplyResponsiveLayout 名单里排除，临时 viewport 投影永远无法自愈）。
+-- 每个用户方案对应一个紧凑可拖动屏幕按钮；Feature 持有方案数据/生命周期意图，组件仅投影并转发点击。
+-- 约束（feature-profile-quick-relog-1）：
+-- * 恢复优先级：source-viewport intent（logical-free-v2，同分辨率精确、跨分辨率按中心比例
+-- 重投影）> 旧 logical-edge-v1 边锚点 > 旧 quickX/quickY 绝对坐标 > 默认出生点。
+-- 旧存档只在内存里做兼容投影，加载/重排阶段绝不写 Store、绝不升级格式。
+-- * 组级去重叠：同一 screen_buttons 组先各自 ResolvePlacement，再交给 Layout 纯 solver
+-- 消解重叠；无重叠时结果逐像素不变。
+-- * 可见性 fail-soft：原生几何被拒绝不再隐藏按钮、也不再让整个 widget 显示失败（否则
+-- WidgetHost 会把它从 ApplyResponsiveLayout 名单里排除，临时 viewport 投影永远无法自愈）。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -104,7 +104,7 @@ local function CreateWidget()
             createFailures = 0, fallbackPlacements = 0,
         } }
 
-    -- 中文维护注释（2026-09-25，feature-profile-screen-snap-1）：功能方案按钮与换装按钮属于同一
+    -- 约束（2026-09-25，feature-profile-screen-snap-1）：功能方案按钮与换装按钮属于同一
     -- screen_buttons 吸附组；Layout 只负责几何/邻居发现，方案 Store 仍独立保存最终位置。隐藏按钮会被
     -- ScreenSnapRegistry 自动排除，因此不会因保留 Native 实例而产生不可见吸附目标。
     function instance:RegisterSnapRecord(record)
@@ -228,7 +228,7 @@ local function CreateWidget()
         if type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function" then
             return FailInteraction("critical_interaction_contract_unavailable")
         end
-        local dragEnabled, dragErr = UI:TryInteractionCall(button, "EnableDrag", Feature:GetProjection().quickButtonsLocked ~= true) -- 中文维护：新建按钮立即应用已保存的锁偏好。
+        local dragEnabled, dragErr = UI:TryInteractionCall(button, "EnableDrag", Feature:GetProjection().quickButtonsLocked ~= true) -- 新建按钮立即应用已保存的锁偏好。
         if dragEnabled ~= true then return FailInteraction("feature_profile_enable_drag_failed:" .. tostring(dragErr or "rejected")) end
         if button.SetDragCondition ~= nil and DC_ALWAYS ~= nil then
             local conditionOk, conditionErr = UI:TryInteractionCall(button, "SetDragCondition", DC_ALWAYS)
@@ -236,10 +236,10 @@ local function CreateWidget()
         end
 
         local dragStartOk, dragStartErr = UI:RequireHandler(button, "OnDragStart", function()
-            if instance.visible ~= true or Feature:GetProjection().quickButtonsLocked == true then return false end -- 中文维护：Native 可能继续发送拖动通知，入口必须再核实当前锁状态。
+            if instance.visible ~= true or Feature:GetProjection().quickButtonsLocked == true then return false end -- Native 可能继续发送拖动通知，入口必须再核实当前锁状态。
             local moving = UI:TryInteractionCall(button, "StartMoving")
             if moving ~= true then return false end
-            -- 中文维护：以 Native 实际起点判断移动；未移动的 drag 通知仍属于一次普通点击。
+            -- 以 Native 实际起点判断移动；未移动的 drag 通知仍属于一次普通点击。
             local startX, startY, _, _, unit = LogicalRect(button)
             record.dragStartX, record.dragStartY = startX, startY
             record.geometryUnitScale = unit and unit.effectiveScale or nil
@@ -253,7 +253,7 @@ local function CreateWidget()
             if type(button.StopMovingOrSizing) == "function" then pcall(button.StopMovingOrSizing, button) end
             record.dragging, record.ignoreClick = false, true
             local x2, y2, width, height = LogicalRect(button, record.geometryUnitScale)
-            -- 中文维护：只有位移超过 3 个逻辑像素才抑制拖动后的点击；静止手势不写位置存档。
+            -- 只有位移超过 3 个逻辑像素才抑制拖动后的点击；静止手势不写位置存档。
             local moved = x2 ~= nil and y2 ~= nil and record.dragStartX ~= nil and record.dragStartY ~= nil
                 and (math.abs(x2 - record.dragStartX) >= 3 or math.abs(y2 - record.dragStartY) >= 3)
             record.ignoreClick = moved == true
@@ -264,7 +264,7 @@ local function CreateWidget()
             record.dragViewport, record.pendingPlacement = nil, nil
             if changed then return instance:ApplyLayout(true) end
             if x2 == nil or y2 == nil then return false, "feature_profile_drag_rect_unavailable" end
-            if moved ~= true then return true end -- 中文维护：不把点击引起的空拖动保存为用户自定义位置。
+            if moved ~= true then return true end -- 不把点击引起的空拖动保存为用户自定义位置。
             if S.Layout ~= nil and type(S.Layout.ResolveScreenSnap) == "function" then
                 local sx, sy, snapped = S.Layout:ResolveScreenSnap(record.snapId, x2, y2, width, height, {
                     group = "screen_buttons", kind = "button",
@@ -294,7 +294,7 @@ local function CreateWidget()
             if record.dragging == true then return false end
             if record.ignoreClick == true then record.ignoreClick = false; return false end
             local ok, applyErr = Feature.Commands:ApplyProfile(record.profileId)
-            -- 中文维护：屏幕按钮无页面状态栏；显式操作必须给出成功/真实失败原因，不能只返回 false。
+            -- 屏幕按钮无页面状态栏；显式操作必须给出成功/真实失败原因，不能只返回 false。
             instance:PushDiagnostic("apply_result", { profileId = record.profileId, ok = ok == true, error = ok ~= true and applyErr or nil })
             if type(S.SafeChat) == "function" then S.SafeChat(tostring(applyErr or (ok == true and "功能方案已应用" or "功能方案应用失败，请查看模块诊断")), "info", "feature_profiles_v3") end
             instance:Refresh()
@@ -379,16 +379,16 @@ local function CreateWidget()
 
     function instance:Refresh()
         self.rows = Feature:GetQuickRows() or {}
-        local locked = Feature:GetProjection().quickButtonsLocked == true -- 中文维护：刷新只应用 Feature 已提交的偏好，不保存或重排位置。
+        local locked = Feature:GetProjection().quickButtonsLocked == true -- 刷新只应用 Feature 已提交的偏好，不保存或重排位置。
         local plan = self:BuildPlan(true)
         local planned, failures = {}, {}
         for _, row in ipairs(plan) do planned[tostring(row.meta.profileId or "")] = true end
         for _, row in ipairs(plan) do
             local record, meta = row.record, row.meta
             local prefix = meta.active and "● " or (meta.dirty and "* " or "")
-            UI:SetText(record.button, (locked and "锁 " or "") .. prefix .. tostring(meta.name or "方案"), OWNER) -- 中文维护：锁定保留原方案激活颜色，以短文字明确反馈。
-            local dragOk = UI:TryInteractionCall(record.button, "EnableDrag", not locked) -- 中文维护：已存在按钮同步锁偏好；点击应用方案仍可用。
-            if dragOk ~= true then failures[#failures + 1] = tostring(meta.name or meta.profileId) .. "(锁状态)" end -- 中文维护：原生拒绝必须保留在既有降级诊断里。
+            UI:SetText(record.button, (locked and "锁 " or "") .. prefix .. tostring(meta.name or "方案"), OWNER) -- 锁定保留原方案激活颜色，以短文字明确反馈。
+            local dragOk = UI:TryInteractionCall(record.button, "EnableDrag", not locked) -- 已存在按钮同步锁偏好；点击应用方案仍可用。
+            if dragOk ~= true then failures[#failures + 1] = tostring(meta.name or meta.profileId) .. "(锁状态)" end -- 原生拒绝必须保留在既有降级诊断里。
             if type(UI.EnsureEnabled) == "function" then
                 local enabled = UI:EnsureEnabled(record.button, true, OWNER)
                 if enabled ~= true then failures[#failures + 1] = tostring(meta.name or meta.profileId) .. "(启用状态)" end
@@ -618,7 +618,7 @@ local registered, registerErr = Host:Register(WIDGET_ID, {
 })
 if registered ~= true then error(registerErr) end
 
--- 中文维护注释（2026-09-25，feature-profile-quick-diagnostics-1）：方案 Store 是否真的落盘、
+-- 约束（2026-09-25，feature-profile-quick-diagnostics-1）：方案 Store 是否真的落盘、
 -- 三个快捷按钮最终落在哪个 Native 矩形，必须能从模块诊断页直接读到。Provider 只读取已经存在的
 -- widget 实例与缓存 rows，不 EnsureInstance、不创建 Native、不写 Store、不采样 metrics。
 if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
@@ -634,8 +634,7 @@ if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.Regis
 end
 
 ------------------------------------------------------------------------
--- Presentation-owned visibility reaction. Profile mutations publish one
--- projection event; Host owns show/hide and lifecycle reactions.
+-- 可见响应归表现层；方案修改发布一次投影事件，Host 负责显隐及生命周期响应。
 ------------------------------------------------------------------------
 if S.Events and type(S.Events.SubscribeInternal) == "function" then
     local Reaction = { id = "v3:feature_profile_quick:host_reaction" }

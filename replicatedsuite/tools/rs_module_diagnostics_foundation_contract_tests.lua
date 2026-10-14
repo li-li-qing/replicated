@@ -1,5 +1,10 @@
--- Partial overlay protection: Foundation Gate must block if any module diagnostics
--- architecture component is missing, so users never get a half-upgraded UI.
+------------------------------------------------------------------------
+-- Replicated Suite · 模块诊断基础层契约测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 防止部分覆盖更新：任一模块诊断架构组件缺失时，基础门禁必须阻止启动，不能呈现半升级界面。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS module-diag-foundation '..name)else failed=failed+1;print('FAIL module-diag-foundation '..name..': '..tostring(err))end end
 local f=assert(io.open('core/rs_foundation_gate.lua','rb'));local s=f:read('*a');f:close()

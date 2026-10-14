@@ -1,8 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Death Review Page
-------------------------------------------------------------------------
--- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- Replicated Suite · 死亡回顾页面
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
 -- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -68,8 +71,7 @@ local function Build(parent, route)
 
     local top = RSUI:HorizontalBox({ id = "v3_death_review_top", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
     local featureToggle = D:ModuleToggleButton({ id = "v3_death_review_enable", parent = top, text = "启用死亡回顾", compact = true, slot = { size = "fixed", width = 118 } })
-    -- FloatingSurface owns `v3_death_review_widget`; keep the page action on a
-    -- distinct logical identity so auto-show and page creation can coexist.
+    -- FloatingSurface 持有 `v3_death_review_widget`；页面操作使用独立逻辑身份，使自动显示与页面创建可以共存。
     local showWidget = RSUI:Button({ id = "v3_death_review_widget_toggle", parent = top, text = "查看最近记录", compact = true, slot = { size = "fixed", width = 110 } })
     local layoutButton = RSUI:Button({ id = "v3_death_review_layout_toggle", parent = top, text = "弹窗布局", compact = true, slot = { size = "fixed", width = 88 } })
     local deleteSelected = RSUI:Button({ id = "v3_death_review_delete_selected", parent = top, text = "删除选中", compact = true, enabled = false, slot = { size = "fixed", width = 88 } })
@@ -77,7 +79,7 @@ local function Build(parent, route)
     local settingsButton = RSUI:Button({ id = "v3_death_review_settings_toggle", parent = top, text = "展开设置", compact = true, slot = { size = "fixed", width = 88 } })
     local healthText = RSUI:Text({ id = "v3_death_review_health", parent = top, text = "--", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
 
-    -- 中文维护：布局入口复用死亡自动弹出的同一个 FloatingSurface；不创建第二份预览窗口或布局配置。
+    -- 布局入口复用死亡自动弹出的同一个 FloatingSurface；不创建第二份预览窗口或布局配置。
     local widgetHost = S.UIV3.WidgetHost
     local widgetId = "combat.death_review"
     local layoutControls = RSUI:VerticalBox({ id = "v3_death_review_layout_controls", parent = root, gap = 4, slot = { size = "auto", hAlign = "fill" } })

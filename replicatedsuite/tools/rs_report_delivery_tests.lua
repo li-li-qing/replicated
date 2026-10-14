@@ -1,9 +1,15 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 24 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · 报告交付测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 维护：取证报告交付回归；真实 Backend/Page/Codec，Native 仅替换为可控接收端。
 -- 不进入 TOC。验证失效交付的复现，不把模拟结果当作 RU 画面/剪贴板实测。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn,function(err)return tostring(err).."\n"..debug.traceback()end)
@@ -225,7 +231,7 @@ Test('actual RSUI layouts keep report visible in small and large page viewports'
         assert(UI.testEdit.width==host.width-8 and UI.testEdit.height==host.height-8,'Native editor missed host resize')
         assert(buttons.v3_diag_output_full.onClick(),'actual layout report not delivered')
         assert(UI.focused==UI.testEdit)
-        -- 中文维护：折叠性能入口也须在窄视口内可点；性能/系统模式切换不能挤掉报告区或清正文。
+        -- 折叠性能入口也须在窄视口内可点；性能/系统模式切换不能挤掉报告区或清正文。
         local entry=assert(Find(root,'v3_diag_perf_entry'));assert(entry.x+entry.width<=size[1]+0.01,'performance entry outside viewport')
         local frozen=root.selfCheckText;assert(entry.onClick());root:Layout(0,0,size[1],size[2])
         local perf=assert(Find(root,'v3_diag_perf_status'));assert(perf.height>50 and perf.y+perf.height<=size[2]+0.01)
@@ -273,7 +279,7 @@ Test('explicit next delivers all pages and previous returns without rereading',f
     assert(h.widgets.v3_diag_output_full.onClick());local session=assert(root.selfCheckDelivery)
     local first=h.edit.text;local total=session.parts;local collected={first}
     local buttons=0;for _,w in pairs(h.widgets)do if w.onClick then buttons=buttons+1 end end
-    assert(buttons==12 and h.widgets.v3_diag_export_file,'pagination and independent file export actions missing') -- 中文维护：6个原操作+折叠性能入口/5个手动操作；新增操作不能删除翻页和普通导出。
+    assert(buttons==12 and h.widgets.v3_diag_export_file,'pagination and independent file export actions missing') -- 6个原操作+折叠性能入口/5个手动操作；新增操作不能删除翻页和普通导出。
     for i=2,total do
         assert(h.widgets.v3_diag_report_next.onClick());assert(root.selfCheckPart==i)
         assert(h.edit.text:find('PAGE='..i..'/'..total,1,true));assert(#h.edit.text<=9215)
@@ -440,7 +446,7 @@ Test('first failure retries same frozen report and compression is not repeated d
     assert(root.selfCheckDelivery==session and root.selfCheckPart==1 and calls.checks==1 and encodes==0)
 end)
 
--- 中文维护：文件出口须独立于旧 Native 编辑框，无编辑框也能保存完整冻结报告。
+-- 文件出口须独立于旧 Native 编辑框，无编辑框也能保存完整冻结报告。
 Test('file export works without native editor and captures complete report once',function()
     local S,D,calls=Boot({text=('中文完整报告\n'):rep(2000)})
     local saved

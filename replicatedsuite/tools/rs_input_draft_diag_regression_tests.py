@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# ---------------------------------------------------------------------
+# Replicated Suite · 输入草稿诊断回归测试
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,8 +27,8 @@ require("InputActionDraftReadContractVersion = 1" in controls, "TextInput action
 require("function c:GetActionValue() return self:GetDraftValue() end" in controls, "TextInput action read does not use current draft")
 require("local name = ReadActionText(createInput)" in profiles, "feature profile create still reads committed binding")
 require("local name = ReadActionText(renameInput)" in profiles, "feature profile rename still reads committed binding")
-# 2026-10-07: user removed hotkey profiles; preserve active profile draft checks
-# above and assert the retired input/native feature cannot silently return.
+# 用户于 2026-10-07 移除热键预设；保留上方当前功能预设的草稿检查，
+# 并验证已停用的输入及原生功能不能悄然恢复。
 require("hotkeyNameInput" not in business, "retired hotkey profile input remains")
 require('Add("tools_hotkey_profiles"' not in read("features/rs_feature_registry.lua"), "retired hotkey feature returned")
 require("features/tools/rs_hotkey_profiles_feature.lua" not in read("toc.g"), "retired hotkey feature still loads")

@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 工作区主题配置
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 工作台配色预设（2026-09-18）。Theme owns 色彩；Workspace 仅保存预设名。
 -- 不修改 AppState 老存档/Canonical，不覆盖用户字号/透明度/几何。色表原位更新，
 -- 保持 UITokens 引用。只在初始化/显式切换遍历当前 UI.controls，先查代内可用性，
@@ -21,7 +25,7 @@ local palettes={
   border={0.67,0.49,0.23,0.65},borderSoft={0.34,0.27,0.16,0.65},text={0.96,0.92,0.83,1},textMuted={0.72,0.68,0.59,1},accent={0.97,0.76,0.38,1},accentLine={0.97,0.75,0.36,0.75}},
  contrast={panel={0.009,0.012,0.017,1},panelAlt={0.030,0.036,0.044,1},card={0.020,0.026,0.034,1},cardHeader={0.060,0.073,0.085,1},
   border={0.64,0.70,0.77,0.90},borderSoft={0.42,0.48,0.55,0.86},text={1,1,1,1},textMuted={0.83,0.86,0.90,1},accent={1,0.84,0.39,1},accentLine={1,0.84,0.39,0.94}},
- -- 中文维护（2026-10-05）：中性灰白 + 低饱和蓝灰。状态文字采用深色，浅底不沿用荧光黄/绿。
+ -- （2026-10-05）中性灰白 + 低饱和蓝灰。状态文字采用深色，浅底不沿用荧光黄/绿。
  light={panel=Hex('EEF0F2',.98),panelAlt=Hex('E9EDF0',.98),card=Hex('F7F8F9',.97),cardHeader=Hex('E1E6EA',.98),
   border=Hex('B5C1CB',.85),borderSoft=Hex('C6CFD6',.78),text=Hex('28333D'),textMuted=Hex('56636F'),
   accent=Hex('41657E'),blue=Hex('41657E'),green=Hex('356846'),yellow=Hex('7A6024'),orange=Hex('87502B'),red=Hex('9A403C'),purple=Hex('705280'),
@@ -48,7 +52,7 @@ local function LightBand(base)
  local function Shift(delta)local v={};for i=1,3 do v[i]=math.max(0,math.min(1,base[i]+delta))end;return v end
  return {Shift(.008),Shift(0),Shift(-.012)}
 end
--- 中文维护（2026-10-05）：参考 Nord / Catppuccin / Rosé Pine 的表面层次，按游戏小字号加深浅色文字、调亮深色状态字。
+-- （2026-10-05）参考 Nord / Catppuccin / Rosé Pine 的表面层次，按游戏小字号加深浅色文字、调亮深色状态字。
 -- 仅扩充既有 Theme 的常量色表；旧四种主题原样保留。所有新主题为轻渐变，交互/滚动/输入仍由原组件所有。
 local paletteModes={light='light',nord='dark',dusk='dark',dawn='light',sage='light'}
 local tokenPalettes={light=lightTokens};local statusPalettes={}

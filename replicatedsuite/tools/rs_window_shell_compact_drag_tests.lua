@@ -1,4 +1,10 @@
--- WindowShell compact-minimize regression: the visible + square must not eat the shared drag surface.
+------------------------------------------------------------------------
+-- Replicated Suite · 窗口外壳紧凑拖拽测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- WindowShell 紧凑最小化回归：可见的 + 方块不能占用共享拖拽区域。
+------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -13,7 +19,7 @@ local function Boot(options)
     S.Generation = 901
     S.PhysicalId = function(value) return tostring(value) end
     UIParent = h.Native(nil, "UIParent", 0, 0, 1280, 768)
-    -- 中文维护：WindowShell 现已调用真实 placement Authority；旧三方法桩缺
+    -- WindowShell 现已调用真实 placement Authority；旧三方法桩缺
     -- StorePlacementRect/ResolvePlacement。只替换本测试的 Native 视口和几何读取，不反造定位算法。
     dofile("data/rs_data_registry.lua")
     dofile("data/ids/rs_item_ids.lua");dofile("data/ids/rs_quest_ids.lua");dofile("core/rs_constants.lua")
@@ -25,7 +31,7 @@ local function Boot(options)
         local n = h.Native(UIParent, id, 0, 0, 1, 1)
         function n:SetUILayer() return true end
         function n:SetCloseOnEscape(value) self.nativeCloseOnEscape=value;return true end
-        -- 中文维护：模拟原生直接隐藏及 OnHide，仍使用真实 Shell 的显隐与关闭通知链。
+        -- 模拟原生直接隐藏及 OnHide，仍使用真实 Shell 的显隐与关闭通知链。
         local originalShow=n.Show
         function n:Show(value)
             local wasVisible=self.shown==true;local result=originalShow(self,value)
@@ -42,8 +48,7 @@ local function Boot(options)
     UI.InvalidateNativeState = function() return true end
     R.ApplyOpacityChannels = function() return true end
     R.ApplyFontScale = function() return true end
-    -- Windowing itself is already separately tested. Here we preserve the real dragHandle
-    -- identity and verify compact chrome hit testing exposes that handle to it.
+    -- Windowing 已有独立测试；这里保留真实 dragHandle 身份，验证紧凑窗口外壳命中检测能把该拖拽句柄交给 Windowing。
     dofile("ui/framework/rs_ui_windowing.lua")
     local applyGeometry = R.Windowing.ApplyGeometry
     R.Windowing = {
@@ -115,7 +120,7 @@ Test("compact state passes hit testing to title bar and title click restores", f
     assert(shell.minimizeButton.root.pickable == true, "restored minimize button did not regain click hit testing")
 end)
 
--- Identity is now visible even while collapsed; no window-sized business surface remains running here.
+-- 折叠时标识仍可见，但不能继续运行原尺寸业务界面。
 Test("compact title remains visible and normal geometry is retained",function()
  local S,shell=Boot();shell:SetTitle("跑商货率")
  local w,h=shell.normalWidth,shell.normalHeight

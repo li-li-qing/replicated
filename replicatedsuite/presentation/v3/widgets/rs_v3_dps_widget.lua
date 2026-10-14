@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - DPS Floating Widget
+-- Replicated Suite · 伤害统计悬浮组件
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation-only live meter. Statistics remain owned by the DPS Feature.
--- Floating geometry/opacity/minimize state is persisted through the DPS store.
+-- 仅负责实时计量表现，统计归 DPS Feature；悬浮几何、透明度、最小化状态通过 DPS Store 持久化。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -26,7 +27,7 @@ local function CompactNumber(value)
     return string.format(abs >= 100000 and "%.0fK" or "%.1fK", n / 1000)
 end
 local function Policy()
-    -- 中文维护注释：Widget 不再维护第二套几何默认值，避免保存后 Reload 被
+    -- Widget 不再维护第二套几何默认值，避免保存后 Reload 被
     -- Feature 的另一套 policy 二次规范化。只复制 Store-owned policy，Presentation
     -- 可消费但不能成为配置 Authority。
     return S.Utils.DeepCopy(Feature.WidgetWindowPolicy or {})
@@ -41,7 +42,7 @@ local function CreateWidget()
         statePolicy = Policy(), getState = function() return Feature:GetWidgetWindowState() end,
         setState = function(value, reason) return Feature.Commands:SetWidgetWindowState(value, reason) end, persist = Persist,
         onClosed = function(_, reason)
-            -- 中文维护注释：关闭是用户明确的 durable visibility 选择。过去 persist=false
+            -- 关闭是用户明确的 durable visibility 选择。过去 persist=false
             -- 只隐藏当前实例，Store 仍保留 widgetVisible=true，Reload/下次登录会再次弹出。
             return Host:NotifyWindowClosed(WIDGET_ID, { persist = true, source = tostring(reason or "widget_close") })
         end,
@@ -52,11 +53,7 @@ local function CreateWidget()
 
     local stack = RSUI:VerticalBox({ id = "v3_dps_widget_stack", parent = surface:GetContentRoot(), gap = 5 })
 
-    -- HUD quick filters share the same Feature settings authority as the full
-    -- page. There is no widget-only shadow state: switching here immediately
-    -- updates the page, persists through the DPS store and only changes the
-    -- projection being displayed (statistics continue accumulating in every
-    -- PVE/PVP + relation bucket).
+    -- HUD 快速筛选与完整页面共用 Feature 设置，不维护组件影子状态；切换立即更新页面、经 DPS Store 持久化，仅改变显示投影，统计仍累积全部 PVE/PVP 与关系桶。
     instance.quickBar = RSUI:HorizontalBox({ id = "v3_dps_widget_quickbar", parent = stack, gap = 6,
         slot = { size = "fixed", height = 26, hAlign = "fill" } })
     instance.modeSelector = RSUI:SegmentedSelector({
@@ -97,10 +94,8 @@ local function CreateWidget()
         slot = { size = "auto", hAlign = "left", vAlign = "fill" },
     })
 
-    -- Window appearance is owned by the shared FloatingSurface / WindowShell
-    -- title chrome. Do not build a second DPS-specific appearance editor here:
-    -- duplicate visual authorities waste native widgets and make failed builds
-    -- unrecoverable within the same Generation because native ids are retained.
+    -- 窗口外观由共享 FloatingSurface/WindowShell 标题外框持有；
+    -- 不能另建 DPS 专用外观编辑器，重复权威会浪费 Native 控件，且保留的原生 id 使同 Generation 的构建失败无法恢复。
 
     instance.summary = RSUI:Text({ id = "v3_dps_widget_summary", parent = stack, text = "尚未开始统计", fontSize = 10,
         tone = "strong", overflow = "wrap", maxLines = 3, minHeight = 28, slot = { size = "auto", minHeight = 28, hAlign = "fill" } })
@@ -137,8 +132,7 @@ local function CreateWidget()
         local sideUnknown = type(p.sides) == "table" and type(p.sides.unknown) == "table" and p.sides.unknown or {}
         local sideUnknownTotals = type(sideUnknown.totals) == "table" and sideUnknown.totals or {}
         local truncatedNote = p.truncated == true and (" · 前 " .. tostring(#rows) .. "/" .. tostring(p.totalRows or #rows)) or ""
-        -- Render selectors on every projection refresh so changes made on the
-        -- full DPS page are reflected in the floating window immediately.
+        -- 每次投影刷新渲染选择器，使 DPS 完整页修改立即反映在悬浮窗口。
         self.modeSelector:Render()
         self.sideSelector:Render()
         self.metricSelector:Render()
@@ -161,9 +155,7 @@ local function CreateWidget()
                 .. "/治 " .. CompactNumber(sideUnknownTotals.heal) .. "]")
             self.detail:SetTone("warn")
         else
-            -- Technical replay diagnostics should not permanently consume HUD
-            -- height. Reveal them only when the player actually has unresolved
-            -- data that may affect the ranking.
+            -- 技术回放诊断不应永久占用 HUD 高度；仅玩家有可能影响排行的未解决数据时显示。
             self.detail:SetVisible(false)
         end
         if coverage ~= "FULL" then
@@ -262,8 +254,7 @@ if ok ~= true then error(err) end
 local bindOk, bindErr = Host:BindFeatureLifecycle(WIDGET_ID, {
     featureId = FEATURE_ID,
     enabled = function() return S.FeatureRuntime:IsEnabled(FEATURE_ID) == true end,
-    -- Feature enablement and Presentation visibility are independent.  Only a
-    -- user-persisted visible preference may reopen the meter on reload.
+    -- Feature 启用与表现可见性独立；重载时仅用户持久化可见偏好可重新打开计量表。
     preference = function() return Feature:GetWidgetVisible() == true end,
     onShowFailed = function(reason)
         Feature.Commands:SetWidgetVisible(false, "auto_show_failed")

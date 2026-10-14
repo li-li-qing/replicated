@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native Foundation Capabilities
+-- Replicated Suite · 原生能力检查
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 原生基础能力。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite

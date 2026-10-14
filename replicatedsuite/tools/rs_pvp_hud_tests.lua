@@ -1,12 +1,18 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 1 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · PVP信息面板测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 维护：回归必须经过实际任务与事件队列；连续事件不是测试中直接调用 EquipmentTick。
 -- 显示位置用父链计算；Native纹理拒写是明确模型，不代替 RU 的渲染/网络时延测量。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,e=pcall(fn);if ok then passed=passed+1;print('PASS pvp-hud '..name)else failed=failed+1;print('FAIL pvp-hud '..name..': '..tostring(e))end end
--- 中文维护：本套件实际验证事件/Scheduler/Renderer，显式选择完整宿主，领域测试默认不变。
+-- 本套件实际验证事件/Scheduler/Renderer，显式选择完整宿主，领域测试默认不变。
 local Host=dofile('tools/rs_pvp_hud_test_host.lua')
 local function Boot(options) options=options or {};options.runtimeHud=true;return Host(options) end
 Test('continuous aura events cannot erase or postpone weapon invalidation',function()

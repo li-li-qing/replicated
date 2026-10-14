@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Unit Identity Facts
+-- Replicated Suite · 单位身份事实
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared conservative identity facts for combat/target consumers.
--- This service never owns faction/relation/PVP-PVE/business classification.
--- Stable IDs are accepted only from native getters; COMBAT_MSG's raw unit id
--- is bound to source/target only after GetUnitNameById verifies exactly one
--- visible endpoint name.
+-- 战斗与目标消费者共享保守身份事实，不拥有阵营、关系或 PVP-PVE 业务分类。稳定 ID 仅接受原生 getter；
+-- COMBAT_MSG raw unit ID 只有 GetUnitNameById 精确验证一个可见端点名称后，才绑定 source/target。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -63,9 +62,7 @@ local function NamesEquivalent(left, right)
     local rf, rb, rw = SplitWorldName(right)
     if lf == "" or rf == "" then return false end
     if lf == rf then return true end
-    -- COMBAT_MSG commonly emits the short name while official unit getters may
-    -- return Name@World. Never merge two explicitly different world-qualified
-    -- names; accept short<->qualified only.
+    -- COMBAT_MSG 常为短名，官方 getter 可为 Name@World；不能合并两个明确不同的世界限定名，只允许短名与限定名匹配。
     if lb ~= rb then return false end
     return (lw == nil) ~= (rw == nil)
 end

@@ -1,20 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Multi Selection Transform Model v1
+-- Replicated Suite · 多选矩形变换
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Pure editor model for group-transforming 2+ selected rectangles.
---
--- Authority split:
---   * SelectionModel                 = who is selected.
---   * SelectionGeometryModel         = where the group bounds/handles are.
---   * RectTransformTransaction       = group bounds move/resize math.
---   * MultiSelectionTransformModel   = how a resolved group rect maps back to
---                                      each selected child rect.
---   * Feature/Store                  = persistence after a successful commit.
---
--- This model deliberately does NOT own Native widgets, pointer capture, Tick,
--- Snap discovery, Anchor/Pivot, or Feature persistence.  A future editor
--- coordinator can feed the final/snap-resolved group rect from Gesture into a
--- ProjectionSession and commit all child rects atomically once.
+-- 两个以上选择矩形的纯分组变换模型。
+-- SelectionModel 负责选择身份，SelectionGeometryModel 负责分组边界/把手，RectTransformTransaction 负责分组移动/缩放数学，MultiSelectionTransformModel 映射分组 rect 到各子 rect，Feature/Store 负责成功提交后持久化。
+-- 不持 Native、指针捕获、Tick、Snap 发现、Anchor/Pivot 或 Feature 持久化；
+-- 编辑协调器可把 Gesture 最终/吸附 rect 送 ProjectionSession，一次原子提交全部子 rect。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -283,7 +275,7 @@ function Session:Commit(targetBounds, source)
         self.lastError = "multi_transform_revision_changed"
         return nil, self.lastError
     end
-    -- Atomic commit: all projected rows were validated before this assignment.
+    -- 原子提交：赋值前全部投影行已验证。
     self.model.items = projected
     self.model.revision = self.baseRevision + 1
     self.model.lastSource = tostring(source or "multi_transform_commit")

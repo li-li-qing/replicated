@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Static regression checks for Feature/Profile -> Presentation consumer lifecycle.
+# ---------------------------------------------------------------------
+# Replicated Suite · 功能消费者生命周期测试
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+"""功能或预设切换与表现层消费者生命周期的静态回归。
 
-The ArcheAge client is Lua 5.1 and owns Native runtime behavior, so this test does
-not pretend to emulate game APIs. It protects the source-level ownership contract
-that prevents stale Presentation booleans from surviving FeatureRuntime Disable.
-"""
+ArcheAge 客户端采用 Lua 5.1，原生运行行为由客户端负责，本测试不模拟游戏 API。
+保护源码中的所有权契约，避免 FeatureRuntime Disable 后表现层保留过期布尔状态。"""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,8 +43,8 @@ def main() -> None:
         "V3_PAGE_CONSUMER_REACQUIRE_FAILED",
     )
 
-    # These pages may remain constructed/active while Feature Profiles changes
-    # Runtime state. They must all use the shared lease/lifecycle bridge.
+    # 功能预设改变 Runtime 状态时，这些页面可能仍已构建或保持激活；
+    # 所有页面必须通过共享需求租约及生命周期桥接管理消费者。
     bridged_pages = [
         "presentation/v3/pages/rs_v3_life_m16_pages.lua",
         "presentation/v3/pages/rs_v3_business_pages.lua",
@@ -56,15 +59,15 @@ def main() -> None:
     for rel in bridged_pages:
         require(rel, "BindFeatureConsumerLifecycle", "SyncFeatureConsumer", "ReleaseFeatureConsumer")
 
-    # User retired Butler on 2026-10-02. Its old lifecycle must not be revived.
+    # 用户于 2026-10-02 停用 Butler，不能恢复其旧生命周期。
     assert not (ROOT / "presentation/v3/pages/rs_v3_butler_page.lua").exists()
     forbid("features/rs_feature_registry.lua", 'Add("life_butler"')
     forbid("toc.g", "features/life/butler/rs_butler_feature.lua")
 
-    # The four M1.16 life routes share one Build() closure. Marker-only checks were
-    # insufficient: 18.310 contained lifecycle calls but no local binding object,
-    # so every page failed only when activated in the client. Pin both the binding
-    # declaration and the legacy-stable per-kind Demand token.
+    # 四个 M1.16 生活路由共用同一 Build() 闭包，仅检查标记不足以验证契约；
+    # 旧 18.310 虽包含生命周期调用，却没有本地绑定对象，
+    # 因此各页面仅在客户端激活时失败；必须同时核对绑定对象声明
+    # 和每种类型原有稳定的 Demand token。
     require(
         "presentation/v3/pages/rs_v3_life_m16_pages.lua",
         "LifeM16PagesContract",
@@ -74,9 +77,9 @@ def main() -> None:
         'token = "page:" .. tostring(kind)',
     )
 
-    # Once a page adopts PageHost's lease contract it must not keep an independent
-    # Feature:Acquire/Release path, otherwise Feature Profiles can reintroduce
-    # duplicate ownership and strict-Demand double release.
+    # 页面采用 PageHost 租约契约后，不能再保留独立的
+    # Feature:Acquire/Release 路径，否则功能预设会重新引入
+    # 重复所有权和严格 Demand 下的重复释放。
     for rel in bridged_pages:
         forbid(rel, "Feature:AcquireConsumer(", "Feature:ReleaseConsumer(")
 
@@ -88,8 +91,8 @@ def main() -> None:
         'token = "page:buff_display"',
     )
 
-    # Auxiliary windows that bypass normal PageHost need an explicit lifecycle
-    # boundary of their own, or a WidgetHost binding.
+    # 绕过普通 PageHost 的辅助窗口必须自行声明生命周期边界，
+    # 或使用 WidgetHost 绑定。
     require(
         "presentation/v3/widgets/rs_v3_trade_detail_floating.lua",
         "feature-profile-lifecycle-1",

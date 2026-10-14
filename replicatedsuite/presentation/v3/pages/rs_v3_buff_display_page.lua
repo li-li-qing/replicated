@@ -1,21 +1,19 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Page (UI_IMPLEMENTING / HUD calibration v1)
+-- Replicated Suite · 状态追踪与显示设置页面
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 中文维护注释：四个页面面向不同读模型；显示内容与HUD调整共用入口。
--- Four presentation surfaces:
---   1) 状态追踪  : current facts / saved selections / recorded states / local CD.
---   2) 显示内容  : scoped visibility, policies and in-world HUD calibration.
---                  Calibration owns a detached player/target draft and only
---                  Save & Exit crosses the Persistence boundary.
---   3) 导入导出  : one full export and one validated durable import.
---   4) 内置库    : visible preset groups, one durable group action and row toggles.
---
--- Presentation consumes only BuffDisplay projection/commands.  The page loads
--- the Store before constructing editable controls, so a disabled Feature can
--- never edit defaults over an unread saved payload.
-------------------------------------------------------------------------
--- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 四个页面面向不同读模型；显示内容与HUD调整共用入口。
+-- 四个表现页面：
+-- 1) 状态追踪：当前事实、保存选择、记录状态、本机 CD。
+-- 2) 显示内容：分作用域显隐、显示策略及游戏画面 HUD 校准。
+-- 校准器持有分离的玩家/目标草稿，只有“保存并退出”才越过持久化边界。
+-- 3) 导入导出：一次完整导出与一次校验后的耐久导入。
+-- 4) 内置库：可见预设组、一次耐久分组操作与行内开关。
+-- 表现层只消费 BuffDisplay 的投影与命令；必须先加载 Store 再构造可编辑控件，防止停用的 Feature 用默认值覆盖尚未读取的存档。
+-- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
 -- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -25,7 +23,7 @@ local Feature = S.Features and S.Features.BuffDisplay or nil
 if type(RSUI) ~= "table" or type(D) ~= "table" or type(PageHost) ~= "table" or type(WidgetHost) ~= "table" or type(Feature) ~= "table" then return end
 
 local ROUTE = "combat.buff_display"
--- 中文维护注释：显示内容只调现有 Store Commands；UI 不直接写 Store 或访问 Native。
+-- 显示内容只调现有 Store Commands；UI 不直接写 Store 或访问 Native。
 local TAB_KEYS = { "track", "visibility", "transfer", "library" }
 local function MatchRow(row, query)
     query = tostring(query or ""):lower()
@@ -51,7 +49,7 @@ local function WriteNativeText(widget, text)
     return true
 end
 
--- 中文维护注释（只读取证 UI）：旧 Hash 和 sequence=unchanged 不能还原字段，必须取得真实
+-- 约束（只读取证 UI）：旧 Hash 和 sequence=unchanged 不能还原字段，必须取得真实
 -- LoadData 输入。用户明确选择并点击后才读取；不绑定 Store，不调用 Feature Commands 或 Save。
 -- Native 输入框只是可复制的临时文本；可能包含玩家名/状态 ID，禁止自动发送聊天或上传。
 -- 故障页不能因可选文本控件失败再次触发构建隔离；隐藏页面即清缓存，分页不再次读磁盘。
@@ -146,7 +144,7 @@ local function AttachEvidenceReader(root)
     end
 end
 
--- 中文维护注释：存档拒绝是业务故障，不是控件构造异常。原先 return nil 让 PageHost
+-- 存档拒绝是业务故障，不是控件构造异常。原先 return nil 让 PageHost
 -- 叠加 rollback/quarantine；现在只展示读取失败，不套默认值、不清 fence、不建配置 Binding
 -- 或 Consumer；取证复制框不绑定业务配置。真正构造失败仍报错，恢复使用“重新加载文件”。
 local function BuildPersistenceUnavailablePage(parent, route, reason)
@@ -174,11 +172,10 @@ local function BuildPersistenceUnavailablePage(parent, route, reason)
 end
 
 local function BuildPage(parent, route)
-    -- Editable pages must load their Store before controls are created.  This is
-    -- deliberately earlier than Feature enable/consumer acquisition.
+    -- 可编辑页面必须先加载 Store 再创建控件；此步骤应早于启用 Feature 或获取 Consumer。
     if type(Feature.EnsureStoreLoaded) == "function" then
         local loaded, loadErr = Feature:EnsureStoreLoaded()
-        if loaded ~= true then return BuildPersistenceUnavailablePage(parent, route, loadErr) end -- 中文维护注释：保留写保护，隔离读失败和构建失败。
+        if loaded ~= true then return BuildPersistenceUnavailablePage(parent, route, loadErr) end -- 保留写保护，隔离读失败和构建失败。
     end
 
     local root, rootErr = D:PageRoot(parent, "v3_page_buff_display")
@@ -206,10 +203,8 @@ local function BuildPage(parent, route)
     local function ApplyComponentSetting(componentKey, field, value)
         local ok, err = Feature.Commands:SetComponentField(componentKey, field, value)
         if ok == true then
-            -- SetComponentField owns durable HUD-layout persistence. The click is an explicit low-frequency user
-            -- action, so after lane reconciliation we may run one bounded equipment refresh immediately; this avoids
-            -- waiting for the 200ms backstop while adding no scan to Page Refresh/Tick. EquipmentTick itself no-ops
-            -- without a consumer, preserving the feature lifecycle contract.
+            -- SetComponentField 负责 HUD 布局的耐久持久化。点击是显式低频操作，通道协调后可立即执行一次有界装备刷新，避免等待 200ms 兜底，且不在页面 Refresh/Tick 添加扫描；
+            -- 没有 Consumer 时 EquipmentTick 不执行工作，保持原生命周期契约。
             if type(Feature.ReconcileLanes) == "function" then Feature:ReconcileLanes() end
             if type(Feature.EquipmentTick) == "function" then Feature:EquipmentTick(true) end
             root:Refresh()
@@ -259,7 +254,7 @@ local function BuildPage(parent, route)
         placeholder="搜索名称 / ID",onSubmit=function(value)root.filterText=tostring(value or "");return root:Refresh()end,
         slot={size="fill",fill=1,minWidth=90}})
     local searchClear=RSUI:Button({id="v3_buff_display_track_search_clear",parent=toolbar,text="清除",compact=true,slot={size="fixed",width=52}})
-    -- 中文维护：冻结直接放在当前状态入口旁，固定名单方便逐条追踪；持续记录仍由独立记录按钮控制。
+    -- 冻结直接放在当前状态入口旁，固定名单方便逐条追踪；持续记录仍由独立记录按钮控制。
     local listFreezeButton=RSUI:Button({id="v3_buff_display_track_freeze",parent=toolbar,text="冻结列表",compact=true,slot={size="fixed",width=84}})
     local recordRow=RSUI:HorizontalBox({id="v3_buff_record_actions",parent=tabTrack,gap=5,slot={size="fixed",height=27,hAlign="fill"}})
     local freezeButton=RSUI:Button({id="v3_buff_capture_record",parent=recordRow,text="开始记录",compact=true,slot={size="fixed",width=100}})
@@ -390,8 +385,7 @@ local function BuildPage(parent, route)
     searchClear.onClick=function()root.filterText="";if searchInput then searchInput:SetValue("",false,"search_clear")end;return root:Refresh()end
 
     ------------------------------------------------------------------
-    -- Visibility is a cold command surface over the existing scoped layout.
-    -- No geometry draft, tracking mutation, Native scan or page-owned task.
+    -- 显隐设置是现有作用域布局上的低频命令入口，不创建几何草稿、不修改追踪、不扫描 Native，也不持有页面任务。
     ------------------------------------------------------------------
     local tabVisibility = RSUI:VerticalBox({ id="v3_buff_display_tab_visibility", parent=switcher, gap=5,
         slot={hAlign="fill",vAlign="fill"} })
@@ -427,7 +421,7 @@ local function BuildPage(parent, route)
     end
     local function ApplyVisibility(key,value)
         local ok,err=Feature.Commands:SetHudVisibility(root.visibilityScope,key,value==true)
-        -- Always reread committed state, including persistence rollback. Never keep a UI-only checked value.
+        -- 始终重读已提交状态，包括持久化回滚结果；不能保留仅属于 UI 的勾选值。
         root:RefreshVisibilityControls()
         local item=root.visibilityByKey[key]
         local label=key=="images" and "全部图标" or (item and item.label or key)
@@ -519,7 +513,7 @@ local function BuildPage(parent, route)
     end
     RSUI:Text({ id = "v3_buff_display_layout_policy_hint", parent = policyStack, text = "“全部”开启时显示所有已识别状态；关闭时按追踪清单显示。", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
 
-    -- 中文维护注释（2026-09-27，target-alias-hud-2）：目标自定义名字的编辑与几何调整已全部
+    -- 约束（2026-09-27，target-alias-hud-2）：目标自定义名字的编辑与几何调整已全部
     -- 收敛到“调整 HUD → 目标 HUD → 自定义名字”。显示内容页仅复用同一显隐 Command；
     -- 不复制备注编辑器、几何草稿或 Alias Store，目标切换事件仍由原生命周期按需消费。
 
@@ -530,7 +524,7 @@ local function BuildPage(parent, route)
     local refreshGrid = RSUI:UniformGrid({ id = "v3_buff_display_layout_refresh_grid", parent = refreshStack, minCellWidth = 320, minCellHeight = 34, maxColumns = 1, gap = 4, slot = { size = "auto", hAlign = "fill" } })
     -- 维护（pvp-hud-1）：位置已独立逐帧跟随；旧headRefreshMs继续控制距离/读条，不能仍标成全HUD刷新。
     local refreshField = D:CompactNumericSetting(refreshGrid, {
-        -- 中文维护：仅距离/读条表现滑块提速，Aura事实采样仍由原观察通道决定，不能混作每帧全量Buff扫描。
+        -- 仅距离/读条表现滑块提速，Aura事实采样仍由原观察通道决定，不能混作每帧全量Buff扫描。
         id = "v3_buff_display_layout_refresh", label = "距离/读条刷新", min = 1, max = 100, fixedSliderRange = true, hardMin = 1, hardMax = 2000, step = 1, integer = true, unit = "ms", slider = true,
         get = function() return tonumber((Feature:GetSettingsProjection() or {}).headRefreshMs) or 50 end,
         set = function(v) return ApplySetting("headRefreshMs", math.floor((tonumber(v) or 50) + 0.5)) end,
@@ -565,7 +559,7 @@ local function BuildPage(parent, route)
     root:RefreshLayoutControls()
 
     ------------------------------------------------------------------
-    -- Tab 3: Import / Export.
+    -- 页签 3：导入与导出。
     ------------------------------------------------------------------
     local tabTransfer = RSUI:VerticalBox({ id = "v3_buff_display_tab_transfer", parent = switcher, gap = 6, slot = { hAlign = "fill", vAlign = "fill" } })
     RSUI:Text({id="v3_buff_display_transfer_help",parent=tabTransfer,
@@ -659,7 +653,7 @@ local function BuildPage(parent, route)
     end
 
     ------------------------------------------------------------------
-    -- Refresh / tab switching.
+    -- 刷新与页签切换。
     ------------------------------------------------------------------
     function root:RefreshTransferStatus()
         transferStatus:SetText(self.transferFeedback or "导入会加入分享的追踪，并应用其中的显示设置与 HUD 布局。")
@@ -728,7 +722,7 @@ local function BuildPage(parent, route)
         if RSUI.PopupCoordinator and type(RSUI.PopupCoordinator.CloseAll)=="function" then RSUI.PopupCoordinator:CloseAll()end
         local index = 1
         for i, key in ipairs(TAB_KEYS) do if key == value then index = i break end end
-        -- 中文维护注释：页签 Authority 同步模型和 switcher；程序化导航不能只换 Native 可见页。
+        -- 页签 Authority 同步模型和 switcher；程序化导航不能只换 Native 可见页。
         self.activeTab=TAB_KEYS[index]
         value=self.activeTab
         -- 页面离开目录/管理表即取消图标队列；不影响Feature采集和留存。
@@ -744,7 +738,7 @@ local function BuildPage(parent, route)
         return true
     end
 
-    -- 中文维护（2026-10-07，release-metadata-lifecycle）：页面只在可见期间订阅生命周期。
+    -- 约束（2026-10-07，release-metadata-lifecycle）：页面只在可见期间订阅生命周期。
     -- Feature 停用释放 Aura/CD 业务 Demand；仍可见的管理/内置库只保留静态名称图标补全，
     -- 不会隐式启用 Feature。离开页面的 OnDeactivated 统一取消该元数据需求与 one-shot。
     local consumerBinding = {
@@ -787,7 +781,7 @@ local function BuildPage(parent, route)
     end
 
     ------------------------------------------------------------------
-    -- Handlers.
+    -- 事件处理。
     ------------------------------------------------------------------
     featureButton.onClick = function()
         local enabled = S.FeatureRuntime:IsEnabled("combat_buff_display") == true
@@ -843,8 +837,7 @@ local function BuildPage(parent, route)
     end
 
     ------------------------------------------------------------------
-    -- Lifecycle. HUD calibration draft is owned by the standalone overlay, not
-    -- by this page; page navigation therefore never commits or replays geometry.
+    -- 生命周期：HUD 校准草稿归独立覆盖层持有；页面导航不会提交或重放几何。
     ------------------------------------------------------------------
     function root:OnActivated()
         local loaded, loadErr = Feature:EnsureStoreLoaded()
@@ -874,12 +867,12 @@ local function BuildPage(parent, route)
     return root
 end
 
--- 中文维护注释（页面 Measure 契约）：v1 证明 HUD 布局三卡片把 minHeight 写入组件 spec，
+-- 约束（页面 Measure 契约）：v1 证明 HUD 布局三卡片把 minHeight 写入组件 spec，
 -- 而不是只写父 slot。Foundation/Acceptance 只读该声明来阻止热重载残留 .205 页面继续运行；
 -- 不创建额外 UI、不改变 Store Authority。
 Feature.HudLayoutPageMeasureContractVersion = 1
 Feature.HudVisibilityPageContractVersion = 1
-Feature.TargetAliasPageContractVersion = 2 -- .18.322：主页面不再单独编辑别名，入口统一收敛到目标 HUD 校准器。
+Feature.TargetAliasPageContractVersion = 2 -- 主页面不再单独编辑别名，入口统一收敛到目标 HUD 校准器。
 
 local ok, err = PageHost:RegisterFactory(ROUTE, BuildPage)
 if ok ~= true then error(err) end

@@ -1,5 +1,11 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 装备分数格式测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 中文维护注释（gear-score-format-1）：本回归覆盖用户可见文字、双 HUD 配置与 schema6->7 兼容。
 -- 测试只使用现有 Store/PVP HUD 开发宿主，不读取 Native，不进入 toc.g；RU 实机显示仍需用户验收。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = pcall(fn)

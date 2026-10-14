@@ -1,9 +1,15 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 3 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
--- Maintenance: comprehensive regression suite for Activity feature, authority, store,
--- live zone mapping (Whalesong/Aegis), independent quest progress, and floating widget lifecycle.
+------------------------------------------------------------------------
+-- Replicated Suite · 活动测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
+-- 完整覆盖活动 Feature、业务数据层、Store、
+-- 鲸歌湾及庇护岛实时区域映射、独立任务进度和浮窗生命周期。
+------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -50,7 +56,7 @@ local function ActivityBoot(options)
         GetZoneStateInfoByZoneId = function(_, zoneId)
             if options.failZoneScan then return nil end
             return {
-                conflictState = options.zoneState or 6, -- WAR
+                conflictState = options.zoneState or 6, -- 战争状态。
                 remainTime = options.remainTime or 3600,
             }
         end,
@@ -103,7 +109,7 @@ local function ActivityBoot(options)
         return options.serverTime or {
             year = 2026,
             month = 9,
-            day = 13, -- Sunday
+            day = 13, -- 星期日。
             hour = 12,
             minute = 0,
             second = 0,
@@ -167,10 +173,9 @@ Test("activating live zone row opens QuestDetailFloating with correct questKey",
 end)
 
 Test("unfinished follow-up quests preserve progress but do not hide the next activity start", function()
-    -- 中文维护：12:20 场次的计划窗口已结束；即使仍有后续任务，也必须显示 16:20 开场。
+    -- 12:20 场次的计划窗口已结束；即使仍有后续任务，也必须显示 16:20 开场。
     local S, F, h = ActivityBoot({ crimsonTailInFlight = 1 })
-    -- Set server clock anchor at Sunday 12:45:00
-    -- day 1 (Sunday), hour 12, minute 45
+    -- 服务器时钟锚点设为星期日 12:45:00：day=1、hour=12、minute=45。
     F.Authority.clockAnchor = {
         weekSeconds = (0 * 86400) + (12 * 3600) + (45 * 60),
         atMs = h.ms,
@@ -216,8 +221,7 @@ Test("activity status text removes 进行中 while timeline active is red and li
 end)
 
 Test("upcoming timeline turns red at ten minutes and stays default above ten minutes", function()
-    -- 2026-09-19 UI policy: upcoming activities inside the final 10 minutes are urgent and must be red.
-    -- Authority owns this threshold so Activity page / Home / floating widget consume one consistent row.tone.
+    -- 距离开始不足 10 分钟的活动按紧急状态显示红色；阈值由活动数据层统一管理，活动页、首页和浮窗共同读取 row.tone。
     local S, F, h = ActivityBoot()
 
     F.Authority.clockAnchor = {
@@ -262,9 +266,8 @@ Test("whalesong boss becomes a timed timeline occurrence while live row keeps wa
 end)
 
 Test("whalesong boss flips active at 77m war remainder and stays active until 76m", function()
-    -- 2026-09-19 RU live observation: the old 76m trigger was one minute late.
-    -- Keep this as a server-calibration regression: at 76m30s the Boss has already spawned,
-    -- so the projection must be active rather than still claiming a future countdown.
+    -- 2026-09-19 RU 实机观测证明旧 76 分钟触发点晚了一分钟。
+    -- 保留服务器时间校准回归：到 76 分 30 秒时首领已刷新，投影应为进行中，不能继续显示未来倒计时。
     local S, F, h = ActivityBoot({ zoneState = 6, remainTime = (76 * 60) + 30 })
     assert(F.Authority:ScanTrackedZones())
     assert(F.Authority:Refresh("whalesong_live_calibration"))
@@ -340,10 +343,8 @@ Test("cinderstone and ynystere conflict states derive purification timeline occu
 end)
 
 Test("garden migrates from timeline countdown to live row when war starts", function()
-    -- 2026-09-19 product rule: Garden must never be duplicated across the two presentation sections.
-    -- Before WAR, keep the authoritative countdown in the timeline so players can prepare for the four Garden bosses.
-    -- Once Native zone state confirms WAR, remove that countdown occurrence and show Garden only in the live section.
-    local S1, F1, h1 = ActivityBoot({ zoneState = 5, remainTime = 20 * 60 }) -- BATTLE / 20m until WAR
+    -- 花园活动不能同时出现在两个展示区：战争开始前在时间线显示倒计时，便于准备四个花园首领；原生区域状态确认 WAR 后，移除该倒计时，仅在实时区域显示。
+    local S1, F1, h1 = ActivityBoot({ zoneState = 5, remainTime = 20 * 60 }) -- BATTLE 状态，距离 WAR 还有 20 分钟。
     assert(F1.Authority:ScanTrackedZones())
     assert(F1.Authority:Refresh("garden_prewar"))
     local upcoming = assert(F1.Authority:GetRow("dynamic:zone:133:garden_boss"), "Garden countdown missing before WAR")
@@ -352,7 +353,7 @@ Test("garden migrates from timeline countdown to live row when war starts", func
     assert(upcoming.secondsUntilStart == 20 * 60, "Garden pre-WAR countdown mismatch: " .. tostring(upcoming.secondsUntilStart))
     assert(F1.Authority:GetRow("zone:133:garden_boss") == nil, "Garden must not also appear in live section before WAR")
 
-    -- Same Authority instance receives the next Native snapshot: verify the row actually migrates, not merely that cold boots differ.
+    -- 同一数据实例接收后续原生快照，验证活动行确实迁移，而非仅比较两次冷启动。
     F1.Authority.zoneStates[133] = 6
     F1.Authority.zoneRemainSeconds[133] = 110 * 60
     F1.Authority.zoneObservedAtMs[133] = h1.ms
@@ -405,14 +406,14 @@ Test("hide and restore events persists properly", function()
     local initialRows = F.Authority:GetRows()
     local initialCount = #initialRows
 
-    -- Hide Grimghast Rift
+    -- 隐藏幽灵裂隙，用于验证活动筛选。
     local hideOk, hideErr = F.Commands:HideEvent("event:迷雾战争")
     assert(hideOk == true, "HideEvent failed: " .. tostring(hideErr))
     local hiddenRows = F.Authority:GetRows()
     assert(#hiddenRows == initialCount - 1, "row count should decrease by 1")
     assert(F.Authority:GetRow("event:迷雾战争") == nil, "hidden event should not be in rows")
 
-    -- Restore
+    -- 恢复测试前的配置。
     local restoreOk, restoreErr = F.Commands:RestoreHiddenEvents()
     assert(restoreOk == true, "RestoreHiddenEvents failed: " .. tostring(restoreErr))
     local restoredRows = F.Authority:GetRows()

@@ -1,5 +1,7 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Interactive Controls v1
+-- Replicated Suite · 交互控件与草稿
+-- 作者：Replicated
+-- QQ群：1104129461
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -63,26 +65,20 @@ local function RequireBinding(component, spec, kind)
     return nil, tostring(kind or "control") .. "_binding_failed:" .. tostring(bindingErr or "unknown")
 end
 
--- Interactive Draft Contract v1
+-- 交互草稿契约。
 --
--- RU text inputs do not expose a verified OnTextChanged event, while Slider
--- preview intentionally does not commit its binding until drag-stop.  Any
--- unrelated page/projection refresh that blindly calls Render() during those
--- active interactions would therefore overwrite the user's draft with the last
--- committed binding value.  Controls themselves own this fence so every page
--- gets the same behavior without inventing local "don't refresh while typing"
--- flags or permanent polling.
+-- RU 文本输入未验证 OnTextChanged，Slider 预览到拖动停止才提交 Binding；交互时其它页面/投影 Refresh 不能无条件 Render 覆盖草稿。
+-- 控件自行持有边界，各页共享，无需本地抑制标志或永久轮询。
 RSUI.InteractiveDraftContractVersion = 4
 RSUI.InputDraftCommitContractVersion = 3
-RSUI.InputDraftSessionContractVersion = 2 -- 中文维护注释：DraftSession V2 将 Lua 草稿寿命与 RU Native Focus 分离；显式确认输入失焦只挂起，不再提交/恢复 Authority。
-RSUI.InputActionDraftReadContractVersion = 1 -- 中文维护（2026-09-25）：按钮 OnClick 与 Native OnLostFocus 的先后顺序不是稳定 ABI；业务确认动作必须读取当前草稿/Native 可见值，不能只读尚未提交的 Binding。
+RSUI.InputDraftSessionContractVersion = 2 -- DraftSession V2 将 Lua 草稿寿命与 RU Native Focus 分离；显式确认输入失焦只挂起，不再提交/恢复 Authority。
+RSUI.InputActionDraftReadContractVersion = 1 -- 约束（2026-09-25）：按钮 OnClick 与 Native OnLostFocus 的先后顺序不是稳定 ABI；业务确认动作必须读取当前草稿/Native 可见值，不能只读尚未提交的 Binding。
 RSUI.NumericInputDraftReadContractVersion = 1
 RSUI.InputFocusVisualContractVersion = 1
 RSUI.InputDisableDraftCleanupContractVersion = 1
 RSUI.ControlTransactionContractVersion = 1
 RSUI.PopupVisibilityTransactionContractVersion = 1
--- Popup hit-test quiescence: Close() unpicks the popup surface and every
--- Open()/Show() must re-pick before the surface can receive input again.
+-- 弹层命中静默契约：Close() 取消拾取，每次 Open()/Show() 必须先恢复拾取才能收输入。
 RSUI.PopupHitTestQuiescenceContractVersion = 1
 RSUI.PopupNativeWindowContractVersion = 1
 
@@ -106,11 +102,7 @@ local function IsFocusedDraft(component)
     return ok == true and focused == true
 end
 
--- While a user owns a draft, every Render source is treated as ambient unless
--- it is the final result of this input's own transaction. This is deliberately
--- an allow-list for overrides rather than a deny-list for refresh names: new
--- page/projection refresh sources can therefore never resurrect old Binding
--- text just because their source label was not known when the control shipped.
+-- 用户持有草稿时，除自身事务最终结果外全部 Render 来源视为环境刷新；以允许列表决定覆盖，新刷新来源不能因未知标签而恢复旧 Binding 文本。
 local function CanOverrideActiveDraft(source)
     source = tostring(source or "binding_refresh")
     return source == "commit" or source == "rejected" or source == "restore_authority"
@@ -123,7 +115,7 @@ end
 
 local function ShouldPreserveDraft(component, source)
     if component == nil or CanOverrideActiveDraft(source) == true then return false end
-    -- 中文维护注释（DraftSession V2）：ambient Render 是否可覆盖输入，Authority 是 Lua draft session，
+    -- 约束（DraftSession V2）：ambient Render 是否可覆盖输入，Authority 是 Lua draft session，
     -- 不能再依赖 RU Native Focus。LostFocus 后显式确认型输入仍保留 draftActive，页面/投影刷新必须继续让路。
     if type(component.HasDraftSession) == "function" and component:HasDraftSession() == true then return true end
     return type(component.IsEditing) == "function" and component:IsEditing() == true
@@ -138,10 +130,7 @@ local function CountDraftSuppression()
     RSUI.metrics.interactiveDraftRenderSuppressions = (tonumber(RSUI.metrics.interactiveDraftRenderSuppressions) or 0) + 1
 end
 
--- Deferred EditBox keyboard ownership. RU can capture movement/skill keys when
--- EnableKeyboard(true) is applied during construction, even before a real text
--- edit begins. Every input therefore starts inert and arms only on explicit
--- click; LostFocus always disarms again. No Tick/polling is introduced.
+-- 延迟 EditBox 键盘所有权：构建时 EnableKeyboard(true) 可能抢走移动/技能键；输入初始静默，仅明确点击激活，LostFocus 总是解除，不增加 Tick/轮询。
 RSUI.DeferredKeyboardActivationContractVersion = 1
 RSUI.InputLostFocusRecheckContractVersion = 1
 
@@ -158,7 +147,7 @@ local function EndEditInteraction(component, source)
     return ok == true, detail
 end
 
--- 中文维护注释（2026-09-14，single-line copy/focus ordering）：RU 的 OnLostFocus 与
+-- 约束（2026-09-14，single-line copy/focus ordering）：RU 的 OnLostFocus 与
 -- GetFocusedWidgetId 更新顺序不是稳定 ABI。实机可出现“先收到 LostFocus，但焦点 identity 仍是当前
 -- EditBox”的一帧窗口；旧 TextInput/NumericInput 会立即 EnableKeyboard(false)，于是 caret/选区还在，
 -- Ctrl+C 却偶发失效。这里只在 identity 明确仍属于本框时安排一次 1ms high-frequency one-shot；
@@ -205,10 +194,7 @@ local function DeferAmbiguousLostFocus(component, finalizer, label)
     return false
 end
 
--- Component-local edit ownership is the authoritative draft lifetime.  The
--- coordinator is intentionally event-driven and weak: it lets a newly clicked
--- input finalize another still-active Suite input without retaining released
--- components or adding polling.
+-- 组件本地编辑所有权决定草稿寿命；弱引用事件协调器让新点击输入结束另一活跃 Suite 输入，不持有已释放组件或轮询。
 local DraftCoordinator = type(RSUI.InputDraftCoordinator) == "table" and RSUI.InputDraftCoordinator or {}
 DraftCoordinator.active = type(DraftCoordinator.active) == "table" and DraftCoordinator.active or setmetatable({}, { __mode = "k" })
 DraftCoordinator.metrics = type(DraftCoordinator.metrics) == "table" and DraftCoordinator.metrics or {
@@ -225,7 +211,7 @@ function DraftCoordinator:Forget(component)
     if component ~= nil then self.active[component] = nil end
 end
 
--- 中文维护注释（DraftSession V2 / input switch）：旧版 Begin() 会 CommitAndEndEditing 其它输入，
+-- 约束（DraftSession V2 / input switch）：旧版 Begin() 会 CommitAndEndEditing 其它输入，
 -- 导致用户只是点击第二个编辑框就把第一个未确认草稿写进 Feature/Store。现在只撤销其它输入的 Native
 -- 键盘权，并要求组件把当前 Native 文本捕获到 Lua draftText；业务 Authority 完全不写。多个显式草稿可
 -- 同时存在，页面离开/Cancel 时再丢弃，Apply/Enter 才提交。风险边界：blur-commit 组件仍由自身 LostFocus
@@ -242,8 +228,7 @@ function DraftCoordinator:SuspendOthers(component, reason)
             if tostring(active.draftCommitMode or "blur") == "explicit" and type(active.SuspendEditing) == "function" then
                 active:SuspendEditing(reason or "input_switch")
             elseif type(active.CommitAndEndEditing) == "function" then
-                -- Blur-mode compatibility: switching fields historically commits the previous field. DraftSession V2
-                -- changes only explicit-confirm inputs; legacy blur fields keep that behavior.
+                -- 兼容 blur 模式：切换字段仍提交上一字段；DraftSession V2 仅改变明确确认输入。
                 active:CommitAndEndEditing(reason or "input_switch")
             elseif type(active.EndEditing) == "function" then
                 active:EndEditing(reason or "input_switch")
@@ -259,7 +244,7 @@ function DraftCoordinator:Begin(component)
     return true
 end
 
--- 中文维护注释（DraftSession V2 / page fence）：高频 UnitLines/RangeAssist Presentation 刷新
+-- 约束（DraftSession V2 / page fence）：高频 UnitLines/RangeAssist Presentation 刷新
 -- 必须看 draftActive，而不是 Native Focus。真实 RU LostFocus 可以先于用户完成输入；若这里只看 IsEditing，
 -- blur 后页面会立即恢复 Authority 文本，正是“删一个字符过一会又变回来”的根因。
 RSUI.InputDraftScopeContractVersion = 2
@@ -334,9 +319,7 @@ RSUI:RegisterType("Toggle", function(spec)
         value = value == true
         local ok = Write(self.binding, value, true, source or "toggle", spec)
         if ok then self.value = value end
-        -- Always redraw from the authoritative binding.  A rejected write must
-        -- never publish onChanged or leave the control visually claiming that
-        -- an unapplied value succeeded.
+        -- 始终从权威 Binding 重绘；写入拒绝不能发布 onChanged，也不能视觉宣称未应用值成功。
         self:Render()
         if ok and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, self) end
         return ok
@@ -348,13 +331,9 @@ RSUI:RegisterType("Toggle", function(spec)
 end)
 
 
--- Compact one-of-many selector for HUD/toolbars. This is deliberately a
--- reusable RSUI control instead of a DPS-only button row: mode/side/metric
--- selectors are common in floating widgets, and they need one consistent
--- selected-state, persistence and idempotence contract.
+-- HUD/工具条的紧凑多选一复用控件，模式/关系/指标选择器共用统一选中状态、持久化与幂等契约。
 --
--- No Tick/OnUpdate is used. Clicking the already-selected segment is an
--- idempotent success and does not write the persistent binding again.
+-- 不使用 Tick/OnUpdate；点击已选分段为幂等成功，不再写持久 Binding。
 RSUI.SegmentedSelectorContractVersion = 1
 RSUI:RegisterType("SegmentedSelector", function(spec)
     local rowFactory = RSUI.types and RSUI.types.HorizontalBox or nil
@@ -522,7 +501,7 @@ RSUI:RegisterType("TextInput", function(spec)
     end
     function c:GetValue() return Normalize(Read(self.binding, self.value)) end
     function c:HasDraftSession() return self.draftActive == true end
-    -- 中文维护注释（DraftSession V2 / detached draft）：Native EditBox 只在当前持有焦点时作为输入载体；
+    -- 约束（DraftSession V2 / detached draft）：Native EditBox 只在当前持有焦点时作为输入载体；
     -- 失焦后的 Authority 是 Lua draftText，不能重新读取可能被 RU/页面刷新改写过的 Native 文本。
     function c:GetDraftValue()
         if self.draftActive == true then
@@ -531,7 +510,7 @@ RSUI:RegisterType("TextInput", function(spec)
         end
         return NativeText(self)
     end
-    -- 中文维护（InputActionDraftRead v1）：RU 中“点击按钮”与输入框 OnLostFocus 的派发顺序
+    -- 约束（InputActionDraftRead v1）：RU 中“点击按钮”与输入框 OnLostFocus 的派发顺序
     -- 不稳定。若 Presentation 在按钮回调里调用 GetValue()，可能读到上一次已提交 Binding，
     -- 即使用户屏幕上已经输入了新文本。ActionValue 的 Authority 是当前用户可见草稿：有 draft
     -- 时读取 Lua/Native draft，无 draft 时读取 Native 当前文本。它只用于显式业务动作取值，
@@ -559,8 +538,7 @@ RSUI:RegisterType("TextInput", function(spec)
         if ok then
             self.value = value
             self:Render(value, "commit")
-            -- Programmatic SetValue is an explicit Authority replacement (row select / clear / import).
-            -- It supersedes any pending draft so a stale Lua transaction cannot later resurrect old text.
+            -- 程序 SetValue 是明确权威替换（选行/清除/导入），取代待处理草稿，防止旧 Lua 事务稍后恢复旧文本。
             local wasEditing = self:IsEditing()
             ClearDraft(self, "ended", tostring(source or "text_input_api") .. ":set_value")
             self.editing = false
@@ -606,7 +584,7 @@ RSUI:RegisterType("TextInput", function(spec)
             DraftCoordinator:Bump("began")
         end
         DraftCoordinator:Begin(self)
-        -- If RU repainted the dormant EditBox after blur, restore the Lua-owned draft before rearming keyboard.
+        -- 失焦后若 RU 重绘休眠 EditBox，重启键盘前先恢复 Lua 持有草稿。
         if self.draftText ~= nil then UI:SetText(self.root, tostring(self.draftText), self.owner) end
         local ok, err = BeginEditInteraction(self, source or ("text_input:" .. tostring(self.id)))
         if ok == true then
@@ -619,7 +597,7 @@ RSUI:RegisterType("TextInput", function(spec)
         end
         return ok, err
     end
-    -- 中文维护注释（DraftSession V2 / suspend）：LostFocus 对显式确认输入只代表 Native keyboard ownership
+    -- 约束（DraftSession V2 / suspend）：LostFocus 对显式确认输入只代表 原生键盘所有权
     -- 结束，不代表业务事务结束。先捕获 Native 文本到 Lua，再撤键盘/焦点；不写 Binding、不恢复 Authority。
     function c:SuspendEditing(source)
         CancelInputLostFocusRecheck(self)
@@ -635,8 +613,7 @@ RSUI:RegisterType("TextInput", function(spec)
         if self.draftActive == true then DraftCoordinator.active[self] = true; DraftCoordinator:Bump("suspended") end
         return ok, err
     end
-    -- EndEditing is an explicit caller boundary (successful create/rename, page deactivation): drop draft without
-    -- writing Authority or forcing a restore. LostFocus must use SuspendEditing instead for explicit-mode controls.
+    -- EndEditing 是成功创建/改名或页面停用等明确边界，只丢弃草稿，不写权威或强制恢复；明确模式 LostFocus 应调用 SuspendEditing。
     function c:EndEditing(source)
         CancelInputLostFocusRecheck(self)
         if self.draftActive == true and self:IsEditing() == true then CaptureDraft(self, source or "text_input_end") end
@@ -849,7 +826,7 @@ RSUI:RegisterType("NumericInput", function(spec)
         end
         return ok, err
     end
-    -- 中文维护注释（DraftSession V2 / numeric suspend）：显式 Apply 数值框在真实/伪 LostFocus 后只把
+    -- 约束（DraftSession V2 / numeric suspend）：显式 Apply 数值框在真实/伪 LostFocus 后只把
     -- Native 文本存入 Lua draftText 并释放 keyboard；不调用 Binding:Set，不把 Feature Authority 回写进框。
     function c:SuspendEditing(source)
         CancelInputLostFocusRecheck(self)
@@ -1056,9 +1033,9 @@ RSUI:RegisterType("Slider", function(spec)
 end)
 
 RSUI.DropdownContractVersion = 4
-RSUI.DropdownCloseBeforeCommitContractVersion = 1 -- 中文维护注释（2026-09-24）：Dropdown 必须先关闭/取消 Native popup 交互所有权，再提交同步业务 mutation；防止 Feature Publish -> Refresh -> SetItems 在同一 option click 栈中重入仍打开的 popup。
-RSUI.PopupCoordinateConsumerContractVersion = 3 -- 中文维护注释：Controls v3 按 Popup 类型选择安全车道：Dropdown 保留 Native-relative；ColorField V2 使用 Suite 父链 resolved viewport→UIParent，禁止跨层级顶层 Window→Button Anchor。
-RSUI.PopupCoordinateConsumerLane = "popup-mixed-safe-v1" -- 中文维护注释：这是能力集合标签，不代表所有控件共享同一最终 Anchor 方式。
+RSUI.DropdownCloseBeforeCommitContractVersion = 1 -- 约束（2026-09-24）：Dropdown 必须先关闭/取消 Native popup 交互所有权，再提交同步业务 mutation；防止 Feature Publish -> Refresh -> SetItems 在同一 option click 栈中重入仍打开的 popup。
+RSUI.PopupCoordinateConsumerContractVersion = 3 -- Controls v3 按 Popup 类型选择安全车道：Dropdown 保留 Native-relative；ColorField V2 使用 Suite 父链 resolved viewport→UIParent，禁止跨层级顶层 Window→Button Anchor。
+RSUI.PopupCoordinateConsumerLane = "popup-mixed-safe-v1" -- 这是能力集合标签，不代表所有控件共享同一最终 Anchor 方式。
 RSUI.DropdownDegradedFailClosedContractVersion = 1
 RSUI.DropdownRuntimeInteractionContractVersion = 1
 RSUI.PopupCoordinatorContractVersion = 1
@@ -1068,8 +1045,7 @@ local PopupCoordinator = RSUI.PopupCoordinator or {
     instances = setmetatable({}, { __mode = "k" }),
 }
 RSUI.PopupCoordinator = PopupCoordinator
--- Compatibility alias only. Both names reference the exact same registry;
--- DropdownService must never become a second popup authority.
+-- 仅兼容别名，两个名称引用同一注册表；DropdownService 不能成为第二弹层权威。
 RSUI.DropdownService = PopupCoordinator
 
 function PopupCoordinator:Register(component)
@@ -1094,7 +1070,7 @@ function PopupCoordinator:CloseAll(except)
     return closed
 end
 
--- 中文维护（外部点击收起弹层）：普通按钮/输入事件也要结束其它弹层的交互所有权。
+-- 约束（外部点击收起弹层）：普通按钮/输入事件也要结束其它弹层的交互所有权。
 -- 下拉选项、颜色预设/应用按钮属于弹层自身，沿逻辑父链识别，不能提前取消它们的草稿。
 -- 仅现有OnClick边调用，无全局鼠标钩子/轮询/新增Native事件。
 function PopupCoordinator:BeforeComponentClick(component)
@@ -1156,8 +1132,7 @@ local function InstallDropdownFallback(c, spec, reason)
     end
 
     function c:SetSelectedValue(value, silent, source)
-        -- Rendering may mirror the authoritative bound value into the disabled
-        -- presentation. Any user/API mutation path remains fail-closed.
+        -- 渲染可将权威绑定值映入禁用表现；用户/API 修改路径仍严格拒绝。
         if source ~= "render" and silent ~= true then return false, "dropdown_degraded_fail_closed" end
         self.value = value
         self.selectedIndex = DropdownFindValue(self.items, value) or 0
@@ -1232,10 +1207,7 @@ RSUI:RegisterType("Dropdown", function(spec)
         return InstallDropdownFallback(c, spec, "dropdown_trigger_degraded:" .. tostring(triggerErr or trigger.rsUiDegradedReason or "unknown"))
     end
 
-    -- The popup is a top-level presentation surface so it is never clipped by a
-    -- ScrollBox/card.  Logical ownership remains the V3 page/widget owner of the
-    -- trigger.  CreatePanel's explicit owner path registers it under strict V3
-    -- identity before any child controls are created.
+    -- 弹层为顶层表面避免 ScrollBox/卡片裁切，逻辑归触发器所属 V3 页/组件；CreatePanel 显式 owner 在子控件创建前按严格 V3 身份注册。
     local popup, popupErr = UI:CreatePanel(UIParent, spec.id .. "_popup", 0, 0, width, height, "soft", {
         gradient = true,
         owner = c.owner,
@@ -1248,17 +1220,14 @@ RSUI:RegisterType("Dropdown", function(spec)
         return InstallDropdownFallback(c, spec, "dropdown_popup_create_failed:" .. tostring(popupErr or (popup and popup.rsUiDegradedReason) or "unknown"))
     end
     c.popup = popup
-    -- UILayer is an optional RU capability. Never let an absent legacy-only
-    -- helper invalidate a successfully created popup/page.
+    -- UILayer 属可选 RU 能力；缺少旧专用 helper 不能否定已成功创建的弹层/页面。
     if type(UI.TrySetUILayer) == "function" then UI:TrySetUILayer(popup, "system") end
     if type(popup.SetDrawPriority) == "function" then pcall(function() popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
     if type(UI.EnsurePickable) ~= "function" or type(UI.EnsureEnabled) ~= "function" then
         UI:SetVisible(popup, false, c.owner)
         return InstallDropdownFallback(c, spec, "dropdown_popup_interaction_contract_unavailable")
     end
-    -- Hidden top-level surfaces start explicitly unpickable. The old build
-    -- armed hit-testing before the initial hide, which left a hidden native
-    -- surface able to intercept clicks on some RU clients.
+    -- 隐藏顶层表面初始须明确不可拾取；初次隐藏前启用命中会在部分 RU 留下隐藏拦截面。
     local popupPickOk, _, popupPickErr = UI:EnsurePickable(popup, false, c.owner)
     local popupEnableOk, _, popupEnableErr = UI:EnsureEnabled(popup, true, c.owner)
     if popupPickOk ~= true or popupEnableOk ~= true then
@@ -1337,9 +1306,7 @@ RSUI:RegisterType("Dropdown", function(spec)
             local button = self.optionButtons[index]
             local itemIndex = self.scrollOffset + index
             local item = self.items[itemIndex]
-            -- PopupPositioning may reduce visibleRows on 768p or near a screen
-            -- edge.  Keep the preallocated pool, but never leave rows beyond
-            -- the resolved popup height visible/pickable.
+            -- 768p 或屏幕边缘 PopupPositioning 可减少 visibleRows；保留预分配池，但解析高度以外行不能可见或可拾取。
             local visible = index <= rowCapacity and type(item) == "table"
             button.rsItemIndex = visible and itemIndex or nil
             button.rsDropdownSelectable = visible and item.selectable ~= false and item.kind ~= "header"
@@ -1453,8 +1420,8 @@ RSUI:RegisterType("Dropdown", function(spec)
         self.visibleRows = math.max(1, math.min(self.maxVisible, math.floor(tonumber(meta and meta.visibleRows) or self.maxVisible)))
         self.scrollOffset = math.max(0, math.min(tonumber(self.scrollOffset) or 0, MaxScrollOffset()))
         local popupW, popupH = math.max(1, tonumber(resolved.width) or triggerW), math.max(optionH, tonumber(resolved.height) or optionH)
-        local relativeOk, relativeErr = positioning:ApplyNativeRelativePopup(self.popup, self, self.owner, { id = tostring(self.id or spec.id or "dropdown"), width = popupW, height = popupH, triggerWidth = triggerW, triggerHeight = triggerH, gap = 2, placement = "bottom-start" }) -- 中文维护注释：Dropdown 顶层 Window 直接相对自身 Trigger 建立 Native Anchor，Shell/ScrollBox/分辨率/UI Scale 均交由 RU Anchor 系统处理。
-        if relativeOk ~= true then return self:FailDropdownInteraction("dropdown_native_relative_anchor_failed:" .. tostring(relativeErr or "unknown")) end -- 中文维护注释：原生相对锚定失败必须 fail-closed，禁止再次回退到 UIParent 绝对坐标猜测路径。
+        local relativeOk, relativeErr = positioning:ApplyNativeRelativePopup(self.popup, self, self.owner, { id = tostring(self.id or spec.id or "dropdown"), width = popupW, height = popupH, triggerWidth = triggerW, triggerHeight = triggerH, gap = 2, placement = "bottom-start" }) -- Dropdown 顶层 Window 直接相对自身 Trigger 建立 Native Anchor，Shell/ScrollBox/分辨率/UI Scale 均交由 RU Anchor 系统处理。
+        if relativeOk ~= true then return self:FailDropdownInteraction("dropdown_native_relative_anchor_failed:" .. tostring(relativeErr or "unknown")) end -- 原生相对锚定失败必须 fail-closed，禁止再次回退到 UIParent 绝对坐标猜测路径。
 
         local rowCapacity = VisibleRowCapacity()
         local scrollW = #self.items > rowCapacity and 26 or 0
@@ -1478,16 +1445,15 @@ RSUI:RegisterType("Dropdown", function(spec)
         if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
         local layoutOk, layoutErr = self:ApplyPopupLayout()
         if layoutOk ~= true then return false, layoutErr end
-        -- Popup hit-test quiescence contract: Close() unpicks the popup, so
-        -- every Open must re-establish pickable before it can receive input.
+        -- Close() 取消弹层拾取，每次 Open 都须重新建立 pickable 才能接收输入。
         local repickOk, _, repickErr = UI:EnsurePickable(self.popup, true, self.owner)
         if repickOk ~= true then return self:FailDropdownInteraction("dropdown_popup_repick_failed:" .. tostring(repickErr or "unknown")) end
-        local visibleOk, visibleErr = EnsureRawVisible(self.popup, true, self.owner) -- 中文维护注释：先让 Native Window 真正进入可见状态，随后 CorrectOffsetByScreen 才能基于最终窗口尺寸执行屏幕边缘修正。
-        if visibleOk ~= true then return self:FailDropdownInteraction("dropdown_popup_show_failed:" .. tostring(visibleErr or "unknown")) end -- 中文维护注释：显示事务失败时立即停止，不发布 open=true，也不继续 Raise。
-        local correctionOk, correctionErr = RSUI.PopupPositioning:CorrectNativePopupToScreen(self.popup, tostring(self.id or spec.id or "dropdown")) -- 中文维护注释：相对 Trigger 锚定完成后只让 RU Native 修正屏幕边缘，不再由 Lua 计算绝对 X/Y。
-        if correctionOk ~= true then return self:FailDropdownInteraction("dropdown_screen_correction_failed:" .. tostring(correctionErr or "unknown")) end -- 中文维护注释：Native 修正方法存在却抛异常时 fail-closed，并保留诊断原始坐标证据。
-        self.open = true -- 中文维护注释：只有 Anchor、Show、边缘修正全部成功后才提交 Presentation open Authority，避免 Lua 状态领先 Native。
-        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end -- 中文维护注释：维持既有 Popup Priority 契约，坐标修复不得改变层级所有权。
+        local visibleOk, visibleErr = EnsureRawVisible(self.popup, true, self.owner) -- 先让 Native Window 真正进入可见状态，随后 CorrectOffsetByScreen 才能基于最终窗口尺寸执行屏幕边缘修正。
+        if visibleOk ~= true then return self:FailDropdownInteraction("dropdown_popup_show_failed:" .. tostring(visibleErr or "unknown")) end -- 显示事务失败时立即停止，不发布 open=true，也不继续 Raise。
+        local correctionOk, correctionErr = RSUI.PopupPositioning:CorrectNativePopupToScreen(self.popup, tostring(self.id or spec.id or "dropdown")) -- 相对 Trigger 锚定完成后只让 RU Native 修正屏幕边缘，不再由 Lua 计算绝对 X/Y。
+        if correctionOk ~= true then return self:FailDropdownInteraction("dropdown_screen_correction_failed:" .. tostring(correctionErr or "unknown")) end -- Native 修正方法存在却抛异常时 fail-closed，并保留诊断原始坐标证据。
+        self.open = true -- 只有 Anchor、Show、边缘修正全部成功后才提交 Presentation open Authority，避免 Lua 状态领先 Native。
+        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end -- 维持既有 Popup Priority 契约，坐标修复不得改变层级所有权。
         if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
         return true
     end
@@ -1496,9 +1462,7 @@ RSUI:RegisterType("Dropdown", function(spec)
         if self.open ~= true then return false end
         local visibleOk, visibleErr = EnsureRawVisible(self.popup, false, self.owner)
         if visibleOk ~= true then return self:FailDropdownInteraction("dropdown_popup_hide_failed:" .. tostring(visibleErr or "unknown")) end
-        -- Hidden popups must not rely on native "hidden skips hit-test" alone:
-        -- explicitly unpick so a future engine change can never leave an
-        -- invisible intercepting surface behind.
+        -- 隐藏弹层不能只依赖原生跳过命中；显式取消拾取，防止未来引擎变化留下透明拦截面。
         local unpickOk, _, unpickErr = UI:EnsurePickable(self.popup, false, self.owner)
         if unpickOk ~= true then return self:FailDropdownInteraction("dropdown_popup_unpick_failed:" .. tostring(unpickErr or "unknown")) end
         self.open = false
@@ -1554,8 +1518,7 @@ RSUI:RegisterType("Dropdown", function(spec)
     c:On(popup, "OnWheelUp", function() return c:Scroll(-1) end, "rsui:" .. spec.id .. ":wheel_up")
     c:On(popup, "OnWheelDown", function() return c:Scroll(1) end, "rsui:" .. spec.id .. ":wheel_down")
     for index, button in ipairs(c.optionButtons) do
-        -- Lua 5.1 closures capture the loop variable itself. Capture each native
-        -- option button explicitly so every row keeps its own click target.
+        -- Lua 5.1 闭包捕获循环变量本身；为每个原生选项按钮捕获稳定局部值，使各行保持自身点击目标。
         local optionButton = button
         local optionIndex = index
         c:RequireOn(optionButton, "OnClick", function()
@@ -1594,7 +1557,7 @@ RSUI:RegisterType("Dropdown", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- ColorField V2 (shared color picker control)
+-- ColorField 共享颜色选择控件。
 --
 -- 维护契约（2026-09-13）：
 -- 1) Authority：业务只提供 get/set/defaultColor；RSUI 拥有 Draft、Popup、预览和提交事务。
@@ -1628,8 +1591,8 @@ RSUI:RegisterType("ColorField", function(spec)
     if binding == nil then return nil, bindingErr end
 
     c.open = false
-    c.color = { 1, 1, 1 } -- authoritative/persisted projection
-    c.draftColor = { 1, 1, 1 } -- popup-local transaction draft
+    c.color = { 1, 1, 1 } -- 权威/持久化投影。
+    c.draftColor = { 1, 1, 1 } -- 弹层本地事务草稿。
     c.defaultColor = type(spec.defaultColor) == "table"
         and { tonumber(spec.defaultColor[1]) or 1, tonumber(spec.defaultColor[2]) or 1, tonumber(spec.defaultColor[3]) or 1 }
         or { 1, 1, 1 }
@@ -1897,7 +1860,7 @@ RSUI:RegisterType("ColorField", function(spec)
         if self.open == true then self:Close() end
         return true
     end
-    function c:Commit() return self:ApplyDraft() end -- 中文维护注释：兼容旧调用名，但 V2 只允许用户显式“应用”进入该事务。
+    function c:Commit() return self:ApplyDraft() end -- 兼容旧调用名，但 V2 只允许用户显式“应用”进入该事务。
     function c:GetValue() return Read(self.binding, self.value) end
     function c:SetValue(color, notify)
         if self.enabled == false or type(color) ~= "table" then return false end
@@ -1942,7 +1905,7 @@ RSUI:RegisterType("ColorField", function(spec)
             id = tostring(self.id or spec.id or "colorfield"), gap = 4, preferred = "bottom-start",
         })
         if resolved == nil then return false, "colorfield_popup_position_failed:" .. tostring(resolveErr or "unknown") end
-        -- 中文维护注释：body 是 Popup 的 Native child，不属于页面 Layout Tree；旧版从未显式 Layout 它，导致 1×1 Host 内的子控件互相覆盖。每次打开按最终 resolved 尺寸显式排版一次。
+        -- body 是 Popup 的 Native child，不属于页面 Layout Tree；旧版从未显式 Layout 它，导致 1×1 Host 内的子控件互相覆盖。每次打开按最终 resolved 尺寸显式排版一次。
         if self.popupBody ~= nil and type(self.popupBody.Layout) == "function" then
             self.popupBody:Layout(0, 0, resolved.width, resolved.height)
         end
@@ -1959,7 +1922,7 @@ RSUI:RegisterType("ColorField", function(spec)
     function c:Open()
         if self.enabled == false or self.released == true or self.rsUiDegraded == true then return false end
         if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
-        self:Render() -- 中文维护注释：打开前重新读取 Authority，避免其他页面已改色而本 Popup 仍显示旧值。
+        self:Render() -- 打开前重新读取 Authority，避免其他页面已改色而本 Popup 仍显示旧值。
         self:BeginDraft()
         local layoutOk, layoutErr = self:ApplyPopupLayout()
         if layoutOk ~= true then return false, layoutErr end
@@ -2010,7 +1973,7 @@ RSUI:RegisterType("ColorField", function(spec)
             return false, unpickErr
         end
         self.open = false
-        -- 中文维护注释：任何非 Apply 关闭都以 Authoritative 为准重置 Draft，保证点击外部/再次点 Trigger/页面销毁都不会偷写配置。
+        -- 任何非 Apply 关闭都以 Authoritative 为准重置 Draft，保证点击外部/再次点 Trigger/页面销毁都不会偷写配置。
         self.draftColor = CopyColor(self.color)
         self:SyncDraftPreview(true)
         return true
@@ -2048,7 +2011,7 @@ RSUI:RegisterType("ColorField", function(spec)
     if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:Register(c) end
 
     c:SetEnabled(spec.enabled ~= false)
-    -- 中文维护注释：Popup body 不属于页面布局树，首次构建后立即显式 Layout，保证隐藏态也有正确子控件几何；打开时仍会按 resolved 尺寸再次 Layout。
+    -- Popup body 不属于页面布局树，首次构建后立即显式 Layout，保证隐藏态也有正确子控件几何；打开时仍会按 resolved 尺寸再次 Layout。
     if type(body.Layout) == "function" then body:Layout(0, 0, COLORFIELD_POPUP_WIDTH, COLORFIELD_POPUP_HEIGHT) end
     c:Render()
     return c

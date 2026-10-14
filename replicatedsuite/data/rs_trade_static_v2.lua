@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Trade Static Data V2
+-- Replicated Suite · 贸易静态身份数据
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Canonical trade-material identity lives here, not inside TradeService.
--- compactId is legacy recipe compatibility only; itemId is the real server
--- item identity used by Auction/Inventory/V3. Runtime prices never live here.
+-- 标准贸易材料身份归本表，不放入 TradeService；compactId 仅用于旧配方兼容，itemId 才是 Auction/Inventory 使用的服务器物品身份。运行时价格禁止存于此处。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -11,7 +11,7 @@ S.Data = S.Data or {}
 local SharedItemIds=(S.GameIds and S.GameIds.Item) or {}
 local SharedBondMaterials=SharedItemIds.BOND_MATERIAL or {}
 
--- 中文维护（2026-10-02）：212459 实机挂单证明普通材料的 Native itemGrade 是 0，长脑参是 3。
+-- 212459 实机挂单证明普通材料的 Native itemGrade 是 0，长脑参是 3。
 -- 普通图标/提示显示 Lv.1 并不代表拍卖请求品质 1，不能再用 gradeOffset+1 或缺省 1 推导身份。
 -- 全表固定品质按官方 https://wiki.archerage.to/ru-cn/db/items/<itemType> 主物品品质核对；
 -- 普通材料映射 Native 0，其余固定品质保留对应等级。itemGrade 才是询价/缓存的品质 Authority；
@@ -84,7 +84,7 @@ local RESOURCE_AUCTION_META = {
     ["Cultivated Ginseng"]={itemType=3680,itemGrade=3,gradeOffset=0},
     ["Quality Certificate"]={itemType=4747,itemGrade=0,gradeOffset=0},
     ["Cedar Hardwood"]={itemType=3426,itemGrade=4,gradeOffset=0},
-    -- itemType values verified against the official ArcheRage wiki item DB.
+    -- itemType 已按官方 ArcheRage Wiki 物品数据库核实。
     ["Time-Space Rift Shard"]={itemType=45045,itemGrade=5,gradeOffset=0},
     ["Iron Ingot"]={itemType=SharedBondMaterials.iron,itemGrade=0,gradeOffset=0},
     ["Blue Salt Bond"]={itemType=SharedItemIds.BLUE_SALT_BOND,itemGrade=2,gradeOffset=0},
@@ -114,14 +114,14 @@ end
 
 local COST_POLICY = {
     ["Gilda Star"] = { includeInCost=false, auctionable=false, costKind="bound_resource", note="绑定制作资源；保留配方需求数量，但默认不折算金币成本", itemType=23633, gradeOffset=0 },
-    -- 中文维护（2026-10-02）：用户确认 RU 当前客户端 41488 绑定且不可上架。
+    -- 用户确认 RU 当前客户端 41488 绑定且不可上架。
     -- 222712 报告反复空列表只是症状，不作为其他材料不可交易的判据。共享运输/Live ItemID
     -- 均读取此统一规则，保留债券真实需求，只排除拍卖询价与金币折算，不能伪造零单价。
     ["Blue Salt Bond"] = { includeInCost=false, auctionable=false, costKind="bound_resource", note="绑定债券，无法上架拍卖；保留配方需求数量，未折算金币成本", itemType=SharedItemIds.BLUE_SALT_BOND, gradeOffset=0 },
     ["Quality Certificate"] = { includeInCost=false, auctionable=false, costKind="non_market", note="当前不可购买；保留配方需求数量，但不进入拍卖成本" },
 }
 
--- 维护（2026-09-23，trade-material-itemid-authority-1）：Live X2Craft 只保证给出 itemType，未必保留
+-- Live X2Craft 只保证给出 itemType，未必保留
 -- English materialKey/compactId。绑定资源策略（例如德翡纳之星 23633）必须能按 ItemID 回到同一静态记录，
 -- 否则静态配方正确、Live 配方却会把绑定资源误判为可拍卖材料。反向表仅在启动静态注册时构建一次。
 local materialKeyByLegacyName, materialKeyByCompactId, materialKeyByItemId = {}, {}, {}
@@ -146,7 +146,7 @@ for name in pairs(allNames) do
         gradeOffset = tonumber(meta.gradeOffset or policy.gradeOffset) or 0,
         includeInCost = policy.includeInCost ~= false,
         auctionable = policy.auctionable ~= false and itemId ~= nil,
-        -- 维护（2026-09-23，trade-material-resource-kind-1）：“不计金币成本”与“配方不需要”不是同一语义。
+        -- “不计金币成本”与“配方不需要”不是同一语义。
         -- 绑定货币/不可交易凭证仍必须进入材料需求 Projection，只禁止拍卖询价并标明资源类型。
         costKind = tostring(policy.costKind or ((policy.auctionable == false) and "non_market" or "market")),
         note = policy.note,
@@ -160,8 +160,7 @@ for name in pairs(allNames) do
         if compactId ~= nil then materialKeyByCompactId[compactId] = record.key end
         if itemId ~= nil then materialKeyByItemId[math.floor(itemId)] = record.key end
 
-        -- Shared item identity follows the same Registry path as Skills/Buffs.
-        -- Compact trade IDs are compatibility-only and never become server IDs.
+        -- 共享物品身份与 Skills/Buffs 共用 Registry 路径；贸易 compact ID 仅供兼容，禁止当作服务器 ID。
         local registry = S.GameDataRegistry
         if registry ~= nil and itemId ~= nil then
             local itemKey = "TRADE_MATERIAL_" .. Key(name):upper():gsub("[%.-]", "_")
@@ -198,8 +197,7 @@ local tradeCraftStats = {
     ingredientSignatureFailures = 0,
 }
 
--- Deterministic audit signature over legacy compact material IDs. This runs only
--- during StaticDataV2 construction; runtime trade refresh paths use O(1) indexes.
+-- 按历史 compact 材料 ID 计算确定性审计签名，仅在 StaticDataV2 构建时执行；运行时贸易刷新使用 O(1) 索引。
 local function BuildIngredientSignature(ingredients)
     local parts = {}
     for _, ingredient in ipairs(type(ingredients) == "table" and ingredients or {}) do
@@ -253,8 +251,7 @@ local function RegisterRecipeTable(tbl, family)
             local originZoneId = type(originZone) == "table" and tonumber(originZone.zoneId) or nil
             local originZoneKey = type(originZone) == "table" and originZone.key or nil
 
-            -- Craft IDs and product item IDs are deliberately different namespaces.
-            -- A Local Specialty may have both Plaza and Community Center craft IDs.
+            -- craft ID 与产物 item ID 属于不同命名空间；同一本地特产可能同时有 Plaza 和 Community Center craft ID。
             local craftRows = type(TradeCraftIds.GetByLegacyName) == "function" and TradeCraftIds:GetByLegacyName(legacyName) or {}
             local primaryCraft = type(TradeCraftIds.GetPrimaryByLegacyName) == "function" and TradeCraftIds:GetPrimaryByLegacyName(legacyName) or nil
             local craftId = type(primaryCraft) == "table" and tonumber(primaryCraft.craftId) or nil

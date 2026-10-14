@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Application Shell
+-- Replicated Suite · 主应用窗口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- The V3 shell is the only active application window. It owns chrome,
--- navigation, PageHost/ModalHost and responsive geometry only. All top-level
--- movement/resizing is delegated to the shared RSUI Windowing foundation.
+-- V3 Shell 是唯一活跃应用窗口，仅负责外框、导航、PageHost/ModalHost 与响应式几何；顶层移动/缩放交给共享 RSUI Windowing。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -55,7 +55,7 @@ V3.Shell = V3.Shell or {
     buildQuarantinedRejects = 0,
 }
 local Shell = V3.Shell
--- 中文维护：区分本 Shell 的主动显隐与引擎 Esc 隐藏；同步 OnHide 不能重入 Close 或把最小化/失败回滚记成用户关闭。
+-- 区分本 Shell 的主动显隐与引擎 Esc 隐藏；同步 OnHide 不能重入 Close 或把最小化/失败回滚记成用户关闭。
 local function SetWindowVisible(shell,visible)
     local before=shell.visibilityMutation;shell.visibilityMutation=true
     local ok,result,why=pcall(Adapter.SetVisible,Adapter,shell.window,shell.owner,visible)
@@ -69,11 +69,11 @@ Shell.NavigationCallbackCaptureContractVersion = 1
 Shell.StateMutationTransactionContractVersion = 1
 Shell.TopmostLayerContractVersion = 1
 Shell.CommittedGeometryPersistenceContractVersion = 1
-Shell.DevelopmentNavigationPresentationContractVersion = 1 -- 中文维护注释：Shell v1 开始只用 navigationTitle 展示“未完成”后缀，页面 title/route/Feature identity 均保持原语义。
+Shell.DevelopmentNavigationPresentationContractVersion = 1 -- Shell v1 开始只用 navigationTitle 展示“未完成”后缀，页面 title/route/Feature identity 均保持原语义。
 
 local SCROLL_CATEGORY_ORDER = { "home", "combat", "life", "tools" }
 local SYSTEM_ROUTES = { "system.workspace", "system.widgets", "system.features", "system.settings", "system.diagnostics" }
--- 中文维护：提示仅是主菜单展示内容，按成功的隐藏→显示边沿循环；不读取 Feature 状态，也不写入配置。
+-- 提示仅是主菜单展示内容，按成功的隐藏→显示边沿循环；不读取 Feature 状态，也不写入配置。
 local MENU_TIPS = {
     "“债券功能”需要在西、东大陆任意一个区域，方可获取到本地区的所有的债券信息",
     "装备升级或者翻新之后，记得在“换装”中重新保存应用喔",
@@ -129,7 +129,7 @@ end
 function Shell:AdvanceMenuTip()
     if self.menuTip == nil then return false end
     local nextIndex = ((tonumber(self.menuTipIndex) or 0) % #MENU_TIPS) + 1
-    -- 中文维护：先写当前可见文本，再推进索引；失败时下次打开仍显示这一条，不让轮换越过未展示内容。
+    -- 先写当前可见文本，再推进索引；失败时下次打开仍显示这一条，不让轮换越过未展示内容。
     if self.menuTip:SetText("小提示：" .. MENU_TIPS[nextIndex]) ~= true then return false end
     self.menuTipIndex = nextIndex
     if type(RSUI.FlushLayoutQueue) == "function" then RSUI:FlushLayoutQueue(16) end
@@ -234,7 +234,7 @@ function Shell:BuildSystemNavigation()
         if route ~= nil then
             local routeRef = route
             local button = RSUI:Button({
-                id = "v3_nav_" .. routeRef.id:gsub("[^%w]", "_"), parent = stack, text = tostring(routeRef.navigationTitle or routeRef.title), compact = true, -- 中文维护注释：系统导航同样消费专用 navigationTitle；当前系统项均为完成态，因此视觉文本保持原样。
+                id = "v3_nav_" .. routeRef.id:gsub("[^%w]", "_"), parent = stack, text = tostring(routeRef.navigationTitle or routeRef.title), compact = true, -- 系统导航同样消费专用 navigationTitle；当前系统项均为完成态，因此视觉文本保持原样。
                 onClick = function() return self:Navigate(routeRef.id, { source = "system_navigation" }) end,
                 slot = { size = "fixed", height = 27, hAlign = "fill" },
             })
@@ -263,11 +263,7 @@ end
 function Shell:ApplyMinimizedState(persist)
     local state = V3.ShellState or {}
     local minimized = state.minimized == true
-    -- The main application minimizes back to the persistent R launcher. It no
-    -- longer compresses into a title-only strip, which was visually ambiguous
-    -- and consumed screen space without providing useful content. Every Native
-    -- or Component state transition must be accepted before this projection is
-    -- considered applied; callers own the ShellState transaction itself.
+    -- 主应用最小化回到持久 R 启动器，不压成意义不清且占空间的仅标题条；全部 Native/Component 状态转换被接受后，投影才算应用成功，ShellState 事务由调用方持有。
     local bodyOk, bodyErr = EnsureComponentVisibility(self.body, "visible", "shell_body")
     if bodyOk ~= true then return false, bodyErr end
     local footerOk, footerErr = EnsureComponentVisibility(self.footer, "visible", "shell_footer")
@@ -323,7 +319,7 @@ function Shell:SetLocked(locked, persist)
         if accepted ~= true then return false, detail or "主窗口锁定状态应用失败" end
     end
     state.locked = nextValue
-    self:RefreshLockFeedback() -- 中文维护：主菜单使用自有 Shell，标题小锁只映射现有 ShellState，不另存位置或锁偏好。
+    self:RefreshLockFeedback() -- 主菜单使用自有 Shell，标题小锁只映射现有 ShellState，不另存位置或锁偏好。
     if persist ~= false then MarkDirty("window_locked") end
     return true, true
 end
@@ -363,8 +359,7 @@ function Shell:CommitWindowGeometry(_, x, y, width, height, reason)
         pcall(function() self:ApplyLayout(false) end)
         return false, layoutErr or "主窗口几何提交失败"
     end
-    -- Geometry is a low-frequency commit edge. Mark due immediately so a user
-    -- who drags the window and exits the client right away does not lose the final rect.
+    -- 几何是低频提交边界，应立即标记到期，避免用户拖动窗口后立刻退出客户端而丢失最终矩形。
     if type(V3.MarkShellStoreDirty) == "function" then V3:MarkShellStoreDirty(0, "window_" .. tostring(reason or "geometry")) end
     return true
 end
@@ -482,7 +477,7 @@ function Shell:Create()
     local window, createErr = Adapter:CreateRootWindow(self.logicalId, self.owner, self.topmost and "system" or "normal",{closeOnEscape=true})
     if window == nil then return FailBuild(createErr) end
     self.window = window
-    -- 中文维护：Esc 是原生隐藏边沿，先交回 Diff 和输入所有权，再执行与 X 相同的预览取消、菜单/弹层清理；不写窗口偏好。
+    -- Esc 是原生隐藏边沿，先交回 Diff 和输入所有权，再执行与 X 相同的预览取消、菜单/弹层清理；不写窗口偏好。
     local bound,bindErr=UI:RequireHandler(window,"OnHide",function()
         if Shell.visibilityMutation or Shell.nativeShown~=true then return true end
         Shell.nativeShown=false;Shell.nativeHideCount=(Shell.nativeHideCount or 0)+1
@@ -493,7 +488,7 @@ function Shell:Create()
     end,"main_shell_native_escape")
     if bound~=true then return FailBuild(bindErr or "主菜单关闭事件绑定失败")end
     self.window.rsUiTopmost = self.topmost == true
-    -- DrawPriority orders Replicated Suite roots only inside the selected Native layer.
+    -- DrawPriority 仅在选定原生层级内排列 Replicated Suite 根节点。
     local shellPriority = (S.UITokens and type(S.UITokens.Number) == "function"
         and S.UITokens:Number("layer.shellPriority", 100)) or 100
     if type(window.SetDrawPriority) == "function" then pcall(function() window:SetDrawPriority(shellPriority) end) end
@@ -522,11 +517,11 @@ function Shell:Create()
     -- 后续维护：联系信息仅在此展示；窄窗沿用省略规则，不扩大拖动命中区或挤占右侧按钮。
     self.brandTitle=RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461   正式版5.4", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
     self.supportText=RSUI:Text({ id = "v3_shell_support_text", parent = brand, text = "如果觉得功能好用，可以邮件给作者提供一点打赏", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 14 } })
-    -- 中文维护：窄窗可省略顶栏文字，悬停时仍能读到完整文案；不改变右侧按钮的命中区域。
+    -- 窄窗可省略顶栏文字，悬停时仍能读到完整文案；不改变右侧按钮的命中区域。
     if RSUI.Tooltip and type(RSUI.Tooltip.BindOverflowText) == "function" then RSUI.Tooltip:BindOverflowText(self.brandTitle,self.brandTitle,{cursorFollow=true,maxWidth=440}); RSUI.Tooltip:BindOverflowText(self.supportText,self.supportText,{cursorFollow=true,maxWidth=440}) end
     self.runningButton=RSUI:Button({id="v3_shell_running",parent=topRow,text="已开启 0 · 异常 0",compact=true,
         onClick=function()return self:Navigate("system.features",{source="running_summary"})end,slot={size="fixed",width=138}})
-    -- 中文维护（2026-10-05）：外观快捷入口移到 Shell 标题栏，从任意模块复用工作台原页面与保存路径。
+    -- 约束（2026-10-05）：外观快捷入口移到 Shell 标题栏，从任意模块复用工作台原页面与保存路径。
     -- 窄窗只允许此按钮在 50..78 内收缩，既有诊断/置顶/关闭尺寸和标题省略规则保持不变；不扩大拖动命中区。
     RSUI:Button({id="v3_shell_appearance_button",parent=topRow,text="界面外观",compact=true,
         slot={size="auto",minWidth=50,maxWidth=78},onClick=function()
@@ -536,12 +531,12 @@ function Shell:Create()
         end})
     RSUI:Button({ id = "v3_shell_diag_button", parent = topRow, text = "诊断", compact = true,
         onClick = function() return self:Navigate("system.diagnostics", { source = "topbar" }) end,
-        slot = { size = "auto", minWidth = 36, maxWidth = 64 } }) -- 中文维护：新增小锁后，窄窗允许短标签收缩，保留关闭按钮的完整命中区域。
+        slot = { size = "auto", minWidth = 36, maxWidth = 64 } }) -- 新增小锁后，窄窗允许短标签收缩，保留关闭按钮的完整命中区域。
     self.topmostButton = RSUI:Button({ id = "v3_shell_topmost_button", parent = topRow, text = "顶", compact = true,
         onClick = function() return self:SetTopmost(not self.topmost, true) end,
         slot = { size = "fixed", width = 36 } })
     SetButtonSelected(self.topmostButton, self.topmost == true)
-    -- 中文维护：主菜单自有标题栏也暴露同一小锁；设置页与标题按钮共同消费 Shell:SetLocked。
+    -- 主菜单自有标题栏也暴露同一小锁；设置页与标题按钮共同消费 Shell:SetLocked。
     self.lockButton = RSUI:Button({ id = "v3_shell_lock_button", parent = topRow, text = self:IsLocked() and "锁" or "开", compact = true,
         slot = { size = "fixed", width = 22 }, onClick = function() return self:SetLocked(not self:IsLocked(), true) end })
     self:RefreshLockFeedback()
@@ -603,16 +598,15 @@ function Shell:Create()
     self.contentRoot = RSUI:Overlay({ id = "v3_shell_content_root", parent = self.contentFrame })
     if PageHost:Attach(self.contentRoot) ~= true then return FailBuild("页面宿主挂载失败") end
 
-    -- 中文维护：底栏增加两行提示空间；状态保留左侧，提示占右侧剩余宽度，缩窗时由 Text 有界换行。
+    -- 底栏增加两行提示空间；状态保留左侧，提示占右侧剩余宽度，缩窗时由 Text 有界换行。
     self.footer = RSUI:Border({ id = "v3_shell_footer", parent = self.appStack, variant = "soft", padding = 6, slot = { size = "fixed", height = 44, hAlign = "fill" } })
     local footerRow = RSUI:HorizontalBox({ id = "v3_shell_footer_row", parent = self.footer, gap = 8 })
     self.status = RSUI:Text({ id = "v3_shell_status", parent = footerRow, text = "就绪", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", width = 150 } })
     self.menuTip = RSUI:Text({ id = "v3_shell_menu_tip", parent = footerRow, text = "小提示：", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "fill", fill = 1, hAlign = "fill" } })
-    -- 中文维护：两行仍截断时才显示悬停全文，不把提示铺到页面内容或覆盖窗口操作区。
+    -- 两行仍截断时才显示悬停全文，不把提示铺到页面内容或覆盖窗口操作区。
     if RSUI.Tooltip and type(RSUI.Tooltip.BindOverflowText) == "function" then RSUI.Tooltip:BindOverflowText(self.menuTip,self.menuTip,{cursorFollow=true,maxWidth=440}) end
 
-    -- Toast is above normal page chrome but below the modal scrim. This keeps
-    -- notifications visible without allowing them to bypass a blocking modal.
+    -- Toast 位于普通页面外框上方、模态遮罩下方，使通知可见但无法越过阻塞模态层。
     local toastLayer = RSUI:Overlay({ id = "v3_shell_toast_layer", parent = self.root, slot = { hAlign = "fill", vAlign = "fill" } })
     local toastOk, toastErr = ToastHost:Attach(toastLayer)
     if toastOk ~= true then return FailBuild("通知宿主挂载失败：" .. tostring(toastErr or "未知错误")) end
@@ -712,9 +706,7 @@ function Shell:ApplyLayout(fromMetricsChange, designWidth, designHeight)
         local handlesOk, handlesErr = self.windowController:LayoutHandles(width, height)
         if handlesOk ~= true then return false, handlesErr or "主窗口缩放句柄布局失败" end
     end
-    -- Scroll visibility is known only after the first arrangement. Updating the
-    -- hint can invalidate text/button measure, so do it BEFORE the final bounded
-    -- stabilization flush; otherwise ApplyLayout would return a dirty tree.
+    -- 滚动可见性首次排列后才能确定；提示更新可能使文字/按钮测量失效，须在最终有界稳定 flush 前进行，避免 ApplyLayout 返回脏树。
     self:RefreshNavScrollHint()
     if type(RSUI.FlushLayoutQueue) == "function" then RSUI:FlushLayoutQueue(32) end
     self.lastRect = { x = x, y = y, width = width, height = height, designWidth = dw, designHeight = dh, metricsChange = fromMetricsChange == true, minimized = (V3.ShellState or {}).minimized == true }
@@ -756,7 +748,7 @@ function Shell:Open()
         return false, showErr or "主窗口显示失败"
     end
     if not wasVisible then
-        -- 中文维护（2026-10-05）：隐藏时的布局已建立 Diff 镜像，但 Native Show 仍可能
+        -- 约束（2026-10-05）：隐藏时的布局已建立 Diff 镜像，但 Native Show 仍可能
         -- 调整出生锚点。只在真实显示边沿通过 Windowing 重新提交同一矩形；不能等到
         -- 下一次导航才把这个合法交接记为 strict 越权，也不能强制跳过可见窗口的校验。
         local rect = self.lastRect
@@ -772,7 +764,7 @@ function Shell:Open()
             return false, detail
         end
     end
-    -- 中文维护：Navigate 也会调用 Open；只有本次真正从隐藏变为可见才轮换，显示失败不消费提示。
+    -- Navigate 也会调用 Open；只有本次真正从隐藏变为可见才轮换，显示失败不消费提示。
     if not wasVisible then self:AdvanceMenuTip() end
     if wasMinimized then MarkDirty("minimized_changed") end
     Adapter:Raise(self.window)
@@ -871,10 +863,10 @@ function Shell:Navigate(routeId, context)
     end
     self.lastRoute = resolved.id
     Router.current = resolved.id
-    -- 中文维护注释：隐藏子页属于语义子导航；这里仅修正侧栏选中态，PageHost 仍以 resolved.id 持有独立页面生命周期，禁止把子页业务合并进父 Feature。
-    local navigationRoute = tostring(resolved.navigationParentRoute or "") -- 中文维护注释：优先采用 Registry/Router 明确声明的父导航路由，避免 Shell 写死团队中心等业务标识。
-    if navigationRoute == "" or self.navButtons[navigationRoute] == nil then navigationRoute = resolved.id end -- 中文维护注释：没有合法父导航按钮时退回真实路由，保证普通页面和未知元数据继续按旧逻辑工作。
-    for route, button in pairs(self.navButtons) do SetButtonSelected(button, route == navigationRoute) end -- 中文维护注释：只切换主导航视觉状态，不触发二次 Navigate、Consumer 获取或 Authority 读取。
+    -- 隐藏子页属于语义子导航；这里仅修正侧栏选中态，PageHost 仍以 resolved.id 持有独立页面生命周期，禁止把子页业务合并进父 Feature。
+    local navigationRoute = tostring(resolved.navigationParentRoute or "") -- 优先采用 Registry/Router 明确声明的父导航路由，避免 Shell 写死团队中心等业务标识。
+    if navigationRoute == "" or self.navButtons[navigationRoute] == nil then navigationRoute = resolved.id end -- 没有合法父导航按钮时退回真实路由，保证普通页面和未知元数据继续按旧逻辑工作。
+    for route, button in pairs(self.navButtons) do SetButtonSelected(button, route == navigationRoute) end -- 只切换主导航视觉状态，不触发二次 Navigate、Consumer 获取或 Authority 读取。
     self:RefreshFeatureStates()
     local state = V3.ShellState or {}
     if state.lastRoute ~= resolved.id then state.lastRoute = resolved.id; MarkDirty("route_changed") end

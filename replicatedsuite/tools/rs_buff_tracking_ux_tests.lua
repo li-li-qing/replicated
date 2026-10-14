@@ -1,4 +1,10 @@
--- Approved Buff tracking UX: real Store / Commands / projections, Native disk replaced in memory.
+------------------------------------------------------------------------
+-- Replicated Suite · Buff追踪交互测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- Buff 追踪交互测试使用真实 Store、Commands 和投影，仅原生磁盘以内存替代。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function T(name,fn) local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS buff-ux '..name) else failed=failed+1;print('FAIL buff-ux '..name..': '..tostring(err)) end end
 local Boot=dofile('tools/rs_pvp_hud_test_host.lua')
@@ -97,7 +103,7 @@ T('scope validation capacity rejection and all-scope cancel failure preserve dat
     local before=h.io.writes;local save=S.Api.SaveData;S.Api.SaveData=function()return false,'blocked disk' end
     assert(F.Commands:RemoveTrackedEffect(21)==false);assert(F:IsTrackedId(21,nil,'player') and F:IsTrackedId(21,nil,'target'))
     S.Api.SaveData=save
-    for i=1,1024 do F.State.settings.tracked.player.auto[i]=i+1000 end -- bounded-capacity input fixture
+    for i=1,1024 do F.State.settings.tracked.player.auto[i]=i+1000 end -- 输入控件测试替身保留容量上限。
     assert(F.Commands:SetTrackedScope(99999,'player',true)==false,'capacity was silently truncated')
     assert(not F:IsTrackedId(99999) and F:IsTrackedId(21,nil,'target'))
 end)
@@ -123,14 +129,13 @@ local function BuildReal()
     local h,S,F=Boot({runtimeHud=true,noRenderer=true})
     for _,file in ipairs({'data/rs_skill_effects.lua','data/rs_combat_ability_catalog.lua','data/ids/rs_buff_ids.lua','data/rs_status_tracking_catalog.lua','features/combat/buff_display/rs_buff_display_management.lua','features/combat/buff_display/rs_buff_display_transfer_v2.lua','ui/framework/rs_ui_forms.lua'}) do dofile(file) end
     S.UIV3.WidgetHost={IsVisible=function()return false end,SetVisible=function()return true end}
-    S.UI.CreateMultiEditBox=function()return nil end -- optional Native export editor is outside the tested surfaces
+    S.UI.CreateMultiEditBox=function()return nil end -- 可选原生导出编辑器不属于本次测试界面。
     dofile('presentation/v3/pages/rs_v3_buff_display_page.lua')
     local parent=h.Native(nil,'buff-ux-parent',0,0,640,560)
     local page=assert(S.UIV3.PageHost.factories['combat.buff_display'](parent,'combat.buff_display'))
     local widgets={};local function Index(n)widgets[n.id]=n;for _,child in ipairs(n.children or {})do Index(child)end end;Index(page)
     assert(F.Commands:SetTrackedScope(21,'player',true));assert(F.Commands:SetTrackedScope(82,'target',true));assert(page:Refresh())
-    -- Use the real layout transaction; direct repeated Layout with an undrained queue leaves test-only
-    -- sticky invalidations coalesced into an already arranged root, unlike the production flush lifecycle.
+    -- 使用真实布局事务；反复直接 Layout 而不排空队列，会把测试中的未清理失效标记合并到已布局根节点，偏离生产刷新生命周期。
     local function Layout(w,ht)
         parent:SetExtent(w,ht);page:SetBounds(0,0,w,ht);page:InvalidateMeasure('test_viewport');S.RSUI:FlushLayoutQueue(32)
         assert(S.RSUI:GetLayoutQueueSnapshot().pending==0,'layout queue did not stabilize')

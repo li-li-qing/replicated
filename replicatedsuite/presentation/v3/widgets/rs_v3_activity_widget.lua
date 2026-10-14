@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Activity Floating Widget
--- Presentation content only. Outer HUD chrome/state is owned by RSUI
--- FloatingSurface -> WindowShellV3 -> Windowing.
+-- Replicated Suite · 活动悬浮组件
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 仅负责表现内容；外层 HUD 外框/状态归 RSUI FloatingSurface -> WindowShellV3 -> Windowing。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -100,9 +102,7 @@ local function CreateActivityWidget()
     })
 
     function instance:Refresh()
-        -- Feed the virtualized view the full bounded Activity projection. The
-        -- viewport (not a pre-truncated data slice) owns how many rows are
-        -- visible, so vertical window resizing immediately reveals/hides rows.
+        -- 虚拟视图接收完整有界 Activity 投影；视口决定可见行数，不预先截断数据，窗口纵向缩放会立即显示/隐藏行。
         local rows, revision = Feature:GetRows()
         -- 个人关注排序是 Presentation 投影；不修改 Authority 的共享行，首页/悬浮共用一份偏好。
         local authorityRevision=revision -- 业务修订号与表示偏好版本必须分离，不把复合字符串误记为数值。
@@ -117,7 +117,7 @@ local function CreateActivityWidget()
             self.table:SetViewState("ready")
         end
         local summary = Feature:GetSummary()
-        -- 中文维护注释（2026-09-18，Activity Timeline v2）：悬浮窗与主页面必须消费同一 Summary 语义；
+        -- 约束（2026-09-18，Activity Timeline v2）：悬浮窗与主页面必须消费同一 Summary 语义；
         -- 只显示 timelineActive/withinTwoHours/liveZones，禁止再用 summary.active 把 live 战争状态混入“当前活动”。
         self.surface:SetStatus("当前 " .. tostring(summary.timelineActive or 0) .. " · 两小时内 " .. tostring(summary.withinTwoHours or 0)
             .. " · 实时 " .. tostring(summary.liveZones or 0), "muted")
@@ -172,14 +172,9 @@ local function CreateActivityWidget()
         return true
     end
 
-    -- FeatureRuntime:Disable clears the whole Demand lease before the widget
-    -- hide reaction runs, so the widget's own token is already gone by then.
-    -- Treat "feature no longer enabled" as "nothing left to release" instead of
-    -- failing the hide, which used to leave the window stuck on screen.
+    -- FeatureRuntime:Disable 在组件响应隐藏前已清除全部 Demand 租约，组件 token 已不存在；Feature 已停用应视为无需释放，不能让隐藏失败导致窗口滞留。
     local function ReleaseWidgetConsumer()
-        -- Capture the concrete instance. The old helper referenced an undefined
-        -- `self`, throwing before widgetVisible/Host state could be cleared and
-        -- allowing the lifecycle bridge to resurrect a just-closed window.
+        -- 捕获具体实例，不能引用未定义 `self`；否则 widgetVisible/Host 状态清除前抛错，生命周期桥可能重新显示刚关闭的窗口。
         if instance.visible ~= true then return true end
         if not (S.FeatureRuntime and S.FeatureRuntime:IsEnabled("life_activities") == true) then return true end
         return Feature:ReleaseConsumer("widget:activities")
@@ -210,8 +205,7 @@ local function CreateActivityWidget()
     end
 
     function instance:ApplyProjection(kind)
-        -- Visible row count is viewport-owned. Historical widgetRows remains a
-        -- persisted compatibility field only; never re-apply it as a runtime cap.
+        -- 可见行数归视口决定；历史 widgetRows 仅为存档兼容字段，不能重新用作运行上限。
         if tostring(kind or "") == "size" then
             if self.shell.minimized == true then self.surface:SetMinimized(false, false) end
             return self.surface:ApplyLayout(false)
@@ -279,11 +273,9 @@ local ok, registerErr = Host:Register(WIDGET_ID, {
 if ok ~= true then error(registerErr) end
 
 ------------------------------------------------------------------------
--- Presentation-owned lifecycle reaction.
+-- 由表现层持有的生命周期响应。
 --
--- Domain publishes facts only (`v3.feature.lifecycle`, `v3.activities.*`);
--- the widget decides what to do with them. This replaces the previous
--- Domain → WidgetHost calls inside the Activity Feature.
+-- Domain 仅发布事实（`v3.feature.lifecycle`、`v3.activities.*`），组件自行决定响应；Activity Feature 不能直接调用 WidgetHost。
 ------------------------------------------------------------------------
 if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
     Host:BindFeatureLifecycle(WIDGET_ID, {

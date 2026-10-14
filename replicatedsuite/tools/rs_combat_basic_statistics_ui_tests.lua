@@ -1,4 +1,10 @@
--- Real RSUI layout and feature commands, with the existing native widget test host.
+------------------------------------------------------------------------
+-- Replicated Suite · 战斗基础统计界面测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用真实 RSUI 布局和功能命令，复用已有原生控件测试宿主。
+------------------------------------------------------------------------
 local h=dofile('tools/rs_gear_page_test_host.lua')({width=820,height=680})
 local S=h.S
 dofile('features/rs_feature_registry.lua')

@@ -1,5 +1,11 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 拍卖完整通道安全测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 维护（2026-10-01，auction-full-lane-safety-1）：实际加载服务，Native/时钟/持久化使用既有边界宿主。
 -- 复现本轮全 nil 可见性、前半段市场价仍发包、SWR 周期复活和后台需求未释放；不证明 RU 实机验收。
+------------------------------------------------------------------------
 local Boot = dofile('tools/rs_trade_requote_test_host.lua')
 local passed,total=0,0
 local function Eq(a,b,m) assert(a==b,(m or 'value')..': expected='..tostring(b)..' actual='..tostring(a)) end
@@ -114,7 +120,7 @@ Test('manual protocol probe respects quote ownership and shared interval',functi
 end)
 Test('native visibility is rechecked at the Ask boundary after local dequeue',function()
  local h=Boot();assert(h:quote('row',101));h:advance(1000)
- -- Next drain sees closed at entry, but the last-boundary probe observes the user's window.
+ -- 下一次队列处理在入口观察到关闭，但末端边界检查能看到用户已打开的窗口。
  local reads=h.visibilityReads;h.onVisibilityRead=function(n)if n>=reads+2 then h.visible=true end end
  h:advance(1000);NoRequests(h);Eq(#h.deliveries,0)
  h.onVisibilityRead=nil;h.visible=false;h.lowest[101]=594;h:advance(10000)

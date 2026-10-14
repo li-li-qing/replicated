@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - shared reuse primitives
+-- Replicated Suite · 共享复用原语
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- This file intentionally has no State/Storage dependency.  Professional
--- addons can use the globally published primitives when embedded, while the
--- helpers themselves stay valid for their standalone runtime as well.
+-- 共享复用原语不依赖 State/Storage；专业插件嵌入时可使用全局发布的原语，辅助函数也适用于独立运行体。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -150,9 +150,7 @@ end
 function NativeSafe.CreateDriver(id, parent, visible)
     local factory = S.NativeObjectFactory
     if type(factory) ~= "table" or type(factory.CreateWindow) ~= "function" then return nil, "NativeObjectFactory unavailable" end
-    -- Logical runtime-host IDs must cross the same compact identity boundary as
-    -- RSUI widgets. Passing a semantic ID directly into the native factory would
-    -- bypass the collision/length registry introduced in M1.14.1.
+    -- 逻辑运行宿主 ID 必须经过与 RSUI 控件相同的紧凑身份边界；直接把语义 ID 传给原生工厂会绕过碰撞和长度登记。
     local physicalId = type(S.PhysicalId) == "function" and S.PhysicalId("runtime_driver_" .. tostring(id or "host")) or nil
     if physicalId == nil then return nil, "native runtime driver identity unavailable" end
     local window, createErr = factory:CreateWindow(physicalId, parent or "UIParent", "")
@@ -238,9 +236,7 @@ function OwnerScope.Release(scope, owner, moduleId)
     return released
 end
 
--- Keep the Suite utility surface as the canonical convenience API for normal
--- modules. Old call sites remain compatible while new code has no reason to
--- introduce private Clamp/UTF-8 helpers.
+-- Suite 工具面是普通模块的标准便利 API；旧调用点保持兼容，新代码不要私建 Clamp/UTF-8 辅助函数。
 S.Utils.Clamp = Value.Clamp
 S.Utils.NormalizeValue = Value.Normalize
 S.Utils.FormatValue = Value.Format

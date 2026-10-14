@@ -1,18 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite - UI Framework v14
+-- Replicated Suite · 原生界面差异与生命周期
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Incremental upper layer over the limited ArcheAge/RU native UI API.
---
--- Authority rules:
---   * Native widgets remain render objects only; business state never lives here.
---   * DiffRenderer owns cached presentation state for migrated fields.
---   * Lifecycle owns handler release / hide / logical-reference cleanup.  The RU
---     API has no validated generic DestroyWidget operation, so release MUST NOT
---     pretend that a native widget can be safely destroyed.
---   * Hot-path diagnostics are cheap counters only; no log formatting happens
---     on every UI write.
+-- 有限 ArcheAge/RU 原生 UI API 上的增量框架层。
+-- Native 仅渲染对象，不存业务；DiffRenderer 持迁移字段表现缓存；Lifecycle 负责处理器释放、隐藏、逻辑引用清理，RU 无已验证通用 DestroyWidget，不能宣称安全销毁。
+-- 热路径诊断仅廉价计数，不每写格式化日志。
 ------------------------------------------------------------------------
-
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI = S.UI
@@ -26,17 +20,11 @@ local authorityClaims = setmetatable({}, { __mode = "k" })
 local geometryLeases = setmetatable({}, { __mode = "k" })
 local lifecycle = {
     owners = {},
-    -- Physical-id keyed weak values let focus cleanup prove that the currently
-    -- focused native widget belongs to Suite before touching it. Never clear an
-    -- external game/chat focus merely because a Suite window is hiding.
+    -- 物理 id 弱值索引证明当前焦点 Native 属 Suite 才清理；Suite 窗口隐藏不能清外部游戏/聊天焦点。
     focusTargetsByPhysicalId = setmetatable({}, { __mode = "v" }),
-    -- RU GetFocusedWidgetId has returned both generated physical ids and logical
-    -- ids across client/UI paths. Keep a second weak identity index so focus
-    -- ownership can be proven without guessing or scanning the whole UI tree.
+    -- RU GetFocusedWidgetId 可返回生成物理 id 或逻辑 id；第二弱身份索引用于证明焦点归属，不猜或全树扫描。
     focusTargetsByIdentity = setmetatable({}, { __mode = "v" }),
-    -- Deferred keyboard activation keeps edit boxes inert until an explicit
-    -- user click arms them. Weak keys prevent released Native widgets from
-    -- being retained by the lifecycle authority.
+    -- 输入默认键盘静默，明确点击才启用；弱 key 防生命周期权威留存已释放 Native。
     armedInputs = setmetatable({}, { __mode = "k" }),
 }
 
@@ -79,16 +67,10 @@ UI.FrameworkVersion = FRAMEWORK_VERSION
 UI.CompositeEnabledAdapterContractVersion = 2
 UI.EnabledStateTransactionContractVersion = 1
 UI.PickableStateTransactionContractVersion = 1
--- RU Native Widget setters have no documented success-return contract. A
--- boolean setter may return the resulting state, so applying false may itself
--- return false and must not be globally classified as rejection. False while
--- requesting true still fails closed; explicit Lua callback false=veto
--- semantics remain owned by their higher-level transaction boundaries.
+-- RU setter 无文档化成功返回，布尔 setter 可返回最终状态，设置 false 返回 false 不能全局当拒绝；
+-- 请求 true 返回 false 仍拒绝，Lua 回调显式 false 否决语义归上层事务。
 UI.NativeBooleanSetterReturnContractVersion = 1
--- Keyboard focus is a Native-lifecycle resource. Hidden/disabled/released
--- Suite subtrees must relinquish focus, while unrelated game/chat focus is
--- never touched. Input widgets register once at adoption; ancestors carry a
--- small subtree count so ordinary non-input visibility writes stay O(1).
+-- 键盘焦点属 Native 生命周期资源，隐藏/禁用/释放 Suite 子树须放弃，但不动游戏/聊天焦点。输入收养时一次注册，祖先维护小子树计数，使普通非输入显隐 O(1)。
 UI.InputFocusLifecycleContractVersion = 3
 UI.HiddenInputFocusIsolationContractVersion = 2
 UI.InputFocusIdentityCompatibilityContractVersion = 1
@@ -108,9 +90,7 @@ UI.FrameworkMetrics = metrics
 
 local function NativeBooleanSetterAccepted(ok, result, requested)
     if ok ~= true then return false, result end
-    -- RU may return the resulting boolean state instead of a success flag.
-    -- Therefore false is only ambiguous/valid when false was requested. A
-    -- false result while requesting true still fails closed.
+    -- RU 可返回最终布尔状态，只有请求 false 时返回 false 可接受；请求 true 返回 false 仍拒绝。
     if result == false and requested ~= false then return false, "native_rejected" end
     return true, nil
 end
@@ -161,9 +141,7 @@ local function WidgetUsable(widget)
 end
 
 local function ResolveAnchorParent(parent)
-    -- UIParent is a special root identity in the ArcheAge native API.  Keep the
-    -- logical/cache side as the real UIParent object so effective-offset checks
-    -- still work, but never let the literal string drift into cache authority.
+    -- UIParent 为原生特殊根身份；逻辑/缓存仍存实际对象以验证 Effective 偏移，不能让字面字符串混入缓存权威。
     if parent == "UIParent" and UIParent ~= nil then return UIParent end
     local rsui = S.RSUI
     if type(rsui) == "table" and type(rsui.IsComponent) == "function" and rsui:IsComponent(parent) then
@@ -177,10 +155,7 @@ local function ResolveAnchorParent(parent)
 end
 
 local function ResolveNativeAnchorTarget(parent)
-    -- RU root widgets (Window / top-level Button) accept "UIParent" as the
-    -- root anchor identity. Passing the UIParent userdata can return success but
-    -- leave the widget at its native creation origin (0,0), after which the diff
-    -- cache incorrectly believes the requested position was applied.
+    -- RU Window/顶层 Button 根锚用 "UIParent"；传 userdata 可能报告成功却留原点 (0,0)，让 Diff 误认位置已应用。
     if parent == UIParent or parent == "UIParent" then return "UIParent" end
     return parent
 end
@@ -342,14 +317,8 @@ function UI:ActivateInputWidget(widget, owner, reason)
         return false, tostring(armErr or "keyboard_arm_failed")
     end
 
-    -- RU dispatch order matters here. A mouse click can publish this EditBox as
-    -- the global focused widget while it is still keyboard-inert. OnClick then
-    -- runs, arms EnableKeyboard(true), and a naive "already focused" fast path
-    -- would incorrectly skip SetFocus. The result looks focused but accepts no
-    -- text. Whenever this activation actually promoted Keyboard false -> true,
-    -- force one SetFocus AFTER the promotion so Native enters text-edit mode.
-    -- Only a repeat click on an already-armed + already-focused input may keep
-    -- the native caret placement without another SetFocus.
+    -- RU 点击可在输入仍键盘静默时先发布全局焦点；OnClick 把 Keyboard false -> true 后必须强制 SetFocus，不能因“已聚焦”跳过，否则看似聚焦却无文本。
+    -- 仅已启用且已聚焦的重复点击可保留原生光标位置而不再 SetFocus。
     if keyboardChanged ~= true and type(self.IsInputWidgetFocused) == "function" then
         local alreadyFocused = self:IsInputWidgetFocused(widget)
         if alreadyFocused == true then
@@ -387,9 +356,7 @@ local function FocusedInputDescendsFrom(focused, root, focusedId)
         if parent == nil or parent == current then break end
         current = parent
     end
-    -- rsUiParent is the cheap/authoritative path for Suite primitives. The
-    -- verified Native ancestry API is only a fallback for adopted widgets whose
-    -- historical constructor did not publish the Lua parent chain.
+    -- rsUiParent 是 Suite 原语的廉价权威路径；已验证 Native 祖先 API 仅兜底旧构造未发布 Lua 父链的收养控件。
     if focusedId ~= nil and type(root.IsDescendantWidget) == "function" then
         local ok, result = pcall(function() return root:IsDescendantWidget(focusedId) end)
         if ok == true and result == true then return true end
@@ -399,7 +366,7 @@ end
 
 function UI:DisarmInputWithin(widget, owner, reason)
     if widget == nil then return true, 0, nil end
-    -- 中文维护（performance-cache-1）：无输入子树的 HUD 隐藏不能扫描其它窗口的输入框。
+    -- 约束（performance-cache-1）：无输入子树的 HUD 隐藏不能扫描其它窗口的输入框。
     -- 计数由 Register/UnregisterInputTarget 沿真实父链维护；全局停用与输入框自身仍执行清理，
     -- 不把“已隐藏”当成失去键盘权限的证明，保留原有焦点/重载安全边界。
     local allSuiteInputs = widget == UIParent or widget == "UIParent"
@@ -455,9 +422,7 @@ local function ScheduleCopyFocusRecheck(ui, widget, owner, eventLabel)
     return false
 end
 
--- Raw multiline inputs are rare and intentionally stay outside the generic
--- Component factory. This helper gives them the same explicit-click activation
--- contract without allowing Presentation to bind Native handlers directly.
+-- 少量裸多行输入有意不入通用组件工厂；此 helper 提供同样明确点击激活，表现仍不能直接绑 Native。
 function UI:BindDeferredInputActivation(widget, owner, label, options)
     if not IsInputTarget(widget) then return false, "input_target_required" end
     if type(self.SafeHandler) ~= "function" then return false, "handler_contract_unavailable" end
@@ -516,8 +481,7 @@ local function ResolveTrackedFocusedInput(focusedId)
     local key = tostring(focusedId)
     local direct = lifecycle.focusTargetsByIdentity[key] or lifecycle.focusTargetsByPhysicalId[key]
     if direct ~= nil then return direct end
-    -- NativeIdentity is an identity registry, not a focus Authority. It is only
-    -- used to translate a known Suite logical id into the exact generated id.
+    -- NativeIdentity 仅身份注册表，不是焦点权威；只把已知 Suite 逻辑 id 转成精确生成 id。
     local identities = S.NativeIdentity
     local physical = type(identities) == "table" and type(identities.logicalToPhysical) == "table"
         and identities.logicalToPhysical[key] or nil
@@ -547,8 +511,7 @@ function UI:GetCopyInputSnapshot(widget)
     return out
 end
 
--- Clear focus only when the global focus id resolves to a registered Suite
--- EditBox proven to be inside the subtree becoming inactive. Never steal chat focus.
+-- 全局焦点 id 解析为已注册 Suite EditBox 且证明在失活子树内才清理，不能抢聊天焦点。
 function UI:ReleaseFocusWithin(widget, owner, reason)
     if widget == nil then return true, false, nil end
     local subtreeInputs = tonumber(widget.rsUiKeyboardInputSubtreeCount) or 0
@@ -572,8 +535,7 @@ function UI:ReleaseFocusWithin(widget, owner, reason)
         RecordNativeSafetyFailure("CLEAR_FOCUS", focused, result, owner)
         return false, false, "clear_focus_failed"
     end
-    -- ClearFocus has no documented success-return ABI. Verify the observable
-    -- focus identity instead of interpreting false/nil as failure.
+    -- ClearFocus 无文档化成功 ABI；验证可观察焦点身份，不能把 false/nil 当失败。
     local afterId = select(1, ReadFocusedWidgetId())
     if afterId ~= nil and tostring(afterId) == focusedId then
         metrics.lifecycle.focusClearFailures = (tonumber(metrics.lifecycle.focusClearFailures) or 0) + 1
@@ -585,11 +547,7 @@ function UI:ReleaseFocusWithin(widget, owner, reason)
     return true, true, nil
 end
 
--- Explicit edit completion is a single lifecycle transaction: first release
--- Native focus only when the focused physical id proves it belongs to this
--- Suite input, then disable its keyboard capture regardless of whether focus
--- telemetry was available.  This keeps ArcheAge chat/game focus isolated while
--- preventing a committed EditBox from continuing to consume movement/skill keys.
+-- 结束编辑是单一生命周期事务：焦点物理身份证明属本输入才释放 Native 焦点，无论是否有焦点诊断均停键盘捕获，隔离聊天/游戏同时防已提交输入吞移动/技能键。
 function UI:DeactivateInputWidget(widget, owner, reason)
     if widget == nil then return true, false, nil end
     local focusOk, focusChanged, focusErr = self:ReleaseFocusWithin(widget, owner, reason or "input_commit")
@@ -600,9 +558,7 @@ function UI:DeactivateInputWidget(widget, owner, reason)
     return true, focusChanged == true or disarmChanged == true, focusErr
 end
 
--- Permanent input retirement is reserved for component/owner teardown and old
--- hot-reload generations. Live hide/disable paths only disarm Keyboard; a later
--- explicit user click can arm the surviving input again without re-registering it.
+-- 永久输入退休仅拆组件/owner 或旧热重载代际；活跃隐藏/禁用只解除 Keyboard，下次明确点击可再启，无需注册。
 function UI:RetireInputWidget(widget, owner, reason)
     if not IsInputTarget(widget) then return true end
     if widget.rsUiInputLifecycleRetired == true then return true end
@@ -625,9 +581,7 @@ function UI:RetireInputWidget(widget, owner, reason)
     return true
 end
 
--- Runtime/bootstrap quiescence fence. With retire=false it clears current Suite
--- focus when provable and disarms every armed Suite input. With retire=true it
--- also permanently retires all tracked edits from the replaced generation.
+-- 运行/启动静默边界：retire=false 清可证明 Suite 焦点并停所有已启输入；retire=true 还永久退休替代代际全部追踪输入。
 function UI:QuiesceKeyboardInput(reason, retire)
     local focusedId = select(1, ReadFocusedWidgetId())
     if focusedId ~= nil then
@@ -653,8 +607,7 @@ local function TouchOwnerMetric(owner)
     local row = metrics.byOwner[owner]
     if row ~= nil then return row end
 
-    -- Keep owner cardinality bounded.  "other" is intentionally a hot-path
-    -- fallback rather than evicting arbitrary rows while the UI is refreshing.
+    -- owner 数量有界，other 是热路径兜底，不能刷新时任意驱逐记录。
     if #metrics.ownerOrder >= MAX_OWNER_METRICS then
         owner = "other"
         row = metrics.byOwner[owner]
@@ -725,17 +678,13 @@ local function TryNativeVisible(widget)
     if widget == nil or type(widget.IsVisible) ~= "function" then return nil, false end
     local ok, value = pcall(function() return widget:IsVisible() end)
     if not ok then return nil, false end
-    -- On RU builds IsVisible() may report EFFECTIVE visibility. A locally shown
-    -- child under a hidden V3 shell then returns false even though its own Show
-    -- state is correct. Treat that case as unverifiable instead of generating a
-    -- false strict-authority violation. Geometry remains fully verifiable.
+    -- RU IsVisible() 可能为有效可见性，隐藏 Shell 下局部已 Show 子仍 false；此情况视不可验证，不能误报严格权威违规，几何仍可完整验证。
     if value ~= true and HasKnownHiddenAncestor(widget) then return nil, false end
     return value == true, true
 end
 
--- Public readback for render diagnostics (v13): the overlay presenters report
--- what the engine THINKS a dot's visibility is, so "API 写入成功但屏幕无点"
--- can be separated from "坐标落到屏外" in one paste.
+-- 渲染诊断公开读回引擎实际认为的点可见状态，使“API 写入成功但屏幕无点”与
+-- “坐标落到屏外”可在一次粘贴中区分。
 function UI:NativeVisibleReadback(widget)
     local value, known = TryNativeVisible(widget)
     return value, known == true
@@ -745,11 +694,10 @@ local function TryNativeAnchorMatches(widget, parent, x, y)
     if widget == nil or parent == nil then return nil, false end
     local parentState = stateCache[parent]
     if HasKnownHiddenAncestor(widget) or (parentState ~= nil and parentState.visible == false) then
-        -- Effective offsets are not a reliable local-anchor probe while an
-        -- ancestor is hidden on RU clients; defer verification until visible.
+        -- RU 祖先隐藏时 Effective 偏移不能可靠探测局部锚，等可见后再验证。
         return nil, false
     end
-    -- 中文维护（2026-10-04）：Windowing 顶层窗必须用已校准的逻辑矩形核对位置。
+    -- 约束（2026-10-04）：Windowing 顶层窗必须用已校准的逻辑矩形核对位置。
     -- RU 的 UIParent 可能只有字符串身份，没有 GetEffectiveOffset；且 raw/scaled 两者
     -- 任意命中会把 x/uiScale 的真实偏移当成正确。仅此显式窗口车道使用 Layout readback，
     -- 不增加 HUD 热路径探测；缓存回退不能证明缓存本身正确。
@@ -772,16 +720,10 @@ local function TryNativeAnchorMatches(widget, parent, x, y)
     local scale = 1
     if S.Layout ~= nil and type(S.Layout.GetContext) == "function" then
         local ok, context = pcall(function() return S.Layout:GetContext() end)
-        -- SetAnchor receives logical coordinates that already include the
-        -- Suite addonScale chosen by layout. Native getters may additionally
-        -- expose the client's UI scale. Multiplying by addonScale a second time
-        -- produced thousands of false strict-authority repairs when uiScale != 1.
+        -- SetAnchor 已含布局 addonScale 的逻辑坐标，Native getter 还可能含客户端 UI scale；不能二次乘 addonScale，否则 uiScale 非 1 时大量误报修复。
         if ok and type(context) == "table" then scale = math.max(0.01, tonumber(context.uiScale) or 1) end
     end
-    -- RU builds have returned effective offsets in both logical and native
-    -- UI-scaled spaces. Accept either coordinate contract here; strict V3
-    -- ownership is enforced by the writer fence, not by double-applying the
-    -- Suite's addonScale to a value that is already laid out.
+    -- RU Effective 偏移可为逻辑或 Native UI 缩放空间，二者均接受；严格 V3 所有权由写入边界执行，不重复 addonScale。
     local epsilon = math.max(1.0, scale)
     local rawMatch = math.abs(wx - (px + ax)) <= epsilon and math.abs(wy - (py + ay)) <= epsilon
     local scaledMatch = math.abs(wx - (px + ax * scale)) <= epsilon and math.abs(wy - (py + ay * scale)) <= epsilon
@@ -822,9 +764,7 @@ local function SameAnchor(row, parent, x, y)
     if row.anchorParent ~= nil or row.anchorX ~= nil or row.anchorY ~= nil then
         return row.anchorParent == parent and row.anchorX == x and row.anchorY == y
     end
-    -- Compatibility with widgets primed by UI Factory v1.  Once the anchor is
-    -- touched through DiffRenderer we migrate to scalar fields so hot HUDs do
-    -- not allocate a table every time their screen position changes.
+    -- 兼容 UI Factory v1 初始化锚表；DiffRenderer 触锚后转标量字段，避免高频 HUD 每次位置变化分配表。
     local legacy = row.anchorTopLeft
     return type(legacy) == "table" and legacy.parent == parent and legacy.x == x and legacy.y == y
 end
@@ -836,9 +776,7 @@ function UI:PrimeNativeState(widget, values)
     return true
 end
 
--- Call this whenever legacy code must write a field directly on a widget that is
--- otherwise managed by DiffRenderer.  During migration it is preferable to
--- invalidate one field rather than clearing every cached presentation value.
+-- 旧代码需直接写 Diff 管理字段时调用，只失效一个字段，避免清全部表现缓存。
 function UI:InvalidateNativeState(widget, field)
     if widget == nil then return false end
     if field == nil then
@@ -850,9 +788,7 @@ function UI:InvalidateNativeState(widget, field)
     return true
 end
 
--- V3 Native Authority contract. Legacy widgets may coexist during migration,
--- but a strict claim means DiffRenderer is the sole presentation writer. Any
--- later cache repair on that widget is a hard architecture violation.
+-- 严格 V3 claim 表示 DiffRenderer 唯一表现写入者；迁移可共存旧控件，但严格控件后续缓存修复是架构硬违规。
 function UI:ClaimNativeAuthority(widget, owner, mode)
     if widget == nil then return false, "widget required" end
     owner = NormalizeOwner(owner)
@@ -940,8 +876,7 @@ function UI:SetText(widget, value, owner)
     local text = tostring(value or "")
     local row = GetState(widget)
     if row.text == text then
-        -- Legacy pages may still mutate native labels directly. Verify only on
-        -- the cache-hit path so normal writes stay allocation-free and cheap.
+        -- 旧页仍可直接改原生标签，仅缓存命中时验证，使普通写无分配且低成本。
         local nativeText, known = TryNativeText(widget)
         if not known or nativeText == text then
             RecordAttempt("SET_TEXT", widget, false, 0, owner)
@@ -1001,11 +936,7 @@ function UI:SetVisible(widget, visible, owner)
     return true
 end
 
--- Transactional visibility facade. SetVisible keeps its historical "changed"
--- return contract, while EnsureVisible distinguishes a cache-hit/no-op from a
--- rejected Native transition. Component visibility publishes logical state only
--- after this method confirms that the requested presentation state is cached by
--- an accepted Native call.
+-- 事务显隐 facade：SetVisible 保留 changed 语义，EnsureVisible 区分缓存无操作与 Native 拒绝；确认已接受写入并缓存后，组件才发布逻辑可见。
 function UI:EnsureVisible(widget, visible, owner)
     local usable, usableErr = WidgetUsable(widget)
     if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
@@ -1029,11 +960,7 @@ function UI:EnsureVisible(widget, visible, owner)
     return false, false, "native_visibility_rejected"
 end
 
--- Generic color diff for native drawables, text styles and small composite
--- adapters that expose SetColor(r,g,b,a).  Keeping this in the framework is
--- important for high-frequency HUDs such as Healer markers: color animation
--- may legitimately repaint, while static states should produce zero native
--- writes after the first application.
+-- Native drawable、文字 style、SetColor(r,g,b,a) 小组合适配器的共享颜色 Diff；治疗标记动画可重绘，静态状态首次应用后应零 Native 写。
 function UI:SetColor(widget, red, green, blue, alpha, owner)
     local usable = WidgetUsable(widget)
     if usable ~= true then return false end
@@ -1044,7 +971,7 @@ function UI:SetColor(widget, red, green, blue, alpha, owner)
     local row = GetState(widget)
     local sameColor = row.colorR == r and row.colorG == g and row.colorB == b and row.colorA == a
     if not sameColor and row.colorR == nil then
-        -- Compatibility with early v1 callers that primed a compact array.
+        -- 兼容早期调用方初始化紧凑数组。
         local legacy = row.color
         sameColor = type(legacy) == "table" and legacy[1] == r and legacy[2] == g and legacy[3] == b and legacy[4] == a
     end
@@ -1052,13 +979,8 @@ function UI:SetColor(widget, red, green, blue, alpha, owner)
         RecordAttempt("SET_COLOR", widget, false, 0, owner)
         return false
     end
-    -- v13: LABEL widgets carry text color on their style object (RU TextStyle
-    -- SetColor(r,g,b,a)); the widget itself has none -- widget-level SetColor
-    -- only exists on drawables. Every working reference colors labels via
-    -- style (easypull.lua:267, plates rp_ui.lua:2348, theme ApplyTextColor),
-    -- so callers that pass the label widget directly (combat visual guide
-    -- dots) must resolve to the style here, or they gate visibility behind a
-    -- write that can never succeed.
+    -- LABEL 颜色在 TextStyle:SetColor，不在 widget（widget SetColor 仅 drawable）；
+    -- easypull.lua:267、rp_ui.lua:2348、Theme 均通过 style。直接传标签的世界引导点须在此解析 style，避免用永不会成功的写阻止显现。
     local target = widget
     if type(target.SetColor) ~= "function" then
         local style = target.style
@@ -1076,9 +998,7 @@ function UI:SetColor(widget, red, green, blue, alpha, owner)
     return true
 end
 
--- Icon drawables in RU expose ClearAllTextures/AddTexture rather than a
--- universal SetTexture contract. Cache the path here so HUD/list components can
--- refresh the same icon snapshot without repeated native texture writes.
+-- RU 图标 drawable 用 ClearAllTextures/AddTexture，不假设通用 SetTexture；缓存路径，使 HUD/列表重用同图标快照不重复纹理写。
 -- 维护（pvp-hud-1）：pcall成功只表示未抛Lua错误，不表示原生接受纹理。
 -- 旧实现吞掉AddTexture的false并缓存新路径，装备切换后便不再重试。清除与添加视为
 -- 一次提交：任何失败都作废缓存；调用方隐藏不确定图标，待下次内容刷新重试。
@@ -1125,11 +1045,8 @@ function UI:EnsureIconTexture(drawable, path, owner)
 end
 
 
--- Native interaction geometry lease. During StartMoving/StartSizing the client
--- temporarily owns the top-level window geometry so the strict diff renderer
--- must not immediately write the pre-gesture anchor/extent back. The lease is
--- deliberately narrow: only SetAnchor/SetExtent are deferred, all other V3
--- presentation fields remain under normal strict authority.
+-- Native 交互几何租约：StartMoving/StartSizing 期间客户端暂持顶层几何，严格 Diff 不能立即写回手势前锚/尺寸；
+-- 仅延后 SetAnchor/SetExtent，其余字段仍严格管理。
 function UI:BeginNativeGeometryLease(widget, owner, reason)
     if widget == nil then return false, "widget required" end
     local normalizedOwner = NormalizeOwner(owner)
@@ -1157,8 +1074,7 @@ function UI:EndNativeGeometryLease(widget, owner)
         return false, "geometry lease owner mismatch"
     end
     geometryLeases[widget] = nil
-    -- Native movement has changed the physical state behind the diff cache. The
-    -- next committed V3 write must re-prime from the final native rectangle.
+    -- Native 移动已绕缓存改物理状态；下个提交 V3 写须从最终 Native 矩形重新初始化。
     self:InvalidateNativeState(widget)
     metrics.geometryLease.ends = (tonumber(metrics.geometryLease.ends) or 0) + 1
     return true
@@ -1184,10 +1100,7 @@ end
 
 local function RefreshCompositeExtent(widget)
     if widget == nil then return false end
-    -- Custom horizontal sliders own child geometry (rail/thumb/drag surface).
-    -- A Native root SetExtent therefore is not a complete layout transaction.
-    -- Keep this hook centralized so both RSUI Slider and older framework fields
-    -- receive identical resize semantics, including after a code hot-reload.
+    -- 自定义横滑块持有 rail/thumb/drag 子几何，根 SetExtent 不完整；统一钩子让 RSUI 和旧字段在热重载后也共用缩放语义。
     if widget.rsCustomHorizontal == true and type(UI.UpdateSliderVisual) == "function" then
         local ok, changed = pcall(function() return UI:UpdateSliderVisual(widget, widget.rsValue) end)
         return ok == true and changed == true
@@ -1207,16 +1120,10 @@ function UI:SetExtent(widget, width, height, owner)
         local scale = 1
         if S.Layout ~= nil and type(S.Layout.GetContext) == "function" then
             local ok, context = pcall(function() return S.Layout:GetContext() end)
-            -- Width/height passed into SetExtent are already Suite logical
-            -- coordinates (including addonScale). Native getters may return the
-            -- same logical extent or that extent multiplied by the client
-            -- UI:GetUIScale value. addonScale must not be applied twice.
+            -- SetExtent 宽高已为含 addonScale 的 Suite 逻辑坐标，Native getter 可返回同逻辑值或乘 UI:GetUIScale，不能再次应用 addonScale。
             if ok and type(context) == "table" then scale = math.max(0.01, tonumber(context.uiScale) or 1) end
         end
-        -- RU clients have exposed GetWidth/GetHeight in both logical space and
-        -- client-UI-scaled physical space. Either getter contract is valid.
-        -- Comparing against addonScale here used to report an external writer on
-        -- almost every layout cache hit whenever UI scale differed from 1.0.
+        -- RU GetWidth/GetHeight 可为逻辑或客户端物理空间，两契约均有效；不能拿 addonScale 比较而在 UI scale 非 1 时几乎每缓存命中都误报外部写。
         local epsilon = math.max(0.75, scale)
         local rawMatch = known and math.abs(nativeW - w) <= epsilon and math.abs(nativeH - h) <= epsilon
         local scaledMatch = known and math.abs(nativeW - w * scale) <= epsilon and math.abs(nativeH - h * scale) <= epsilon
@@ -1225,8 +1132,7 @@ function UI:SetExtent(widget, width, height, owner)
             RecordAttempt("SET_EXTENT", widget, false, 0, owner)
             return false
         end
-        -- Do not copy an unknown native unit-space back into the logical cache.
-        -- The authoritative write below restores the requested logical extent.
+        -- 未知 Native 单位空间不能回写逻辑缓存，下方权威写恢复请求逻辑 extent。
         RecordCacheRepair("extent", widget, owner)
     end
     -- 维护（viewport-recovery-1）：原生 false 与抛错同为拒绝；nil 仍是历史成功。
@@ -1242,11 +1148,8 @@ end
 
 UI.GeometryStateTransactionContractVersion = 1
 
--- Geometry writes historically returned only "changed", making cache-hit/no-op
--- indistinguishable from a rejected Native write to callers that need to commit
--- persistent placement. EnsureExtent/EnsureAnchor provide accepted/changed/error
--- semantics for low-frequency window/layout transactions without changing the
--- hot-path SetExtent/SetAnchor contract used by diff renderers.
+-- EnsureExtent/EnsureAnchor 为低频窗口/布局提交提供 accepted/changed/error，区分缓存无变化与 Native 拒绝；
+-- 热 Diff 的 SetExtent/SetAnchor 保留 changed 契约。
 function UI:EnsureExtent(widget, width, height, owner)
     local usable, usableErr = WidgetUsable(widget)
     if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
@@ -1334,12 +1237,9 @@ function UI:EnsureAnchor(widget, parent, x, y, owner)
     return false, false, "native_anchor_rejected"
 end
 
--- Screen Snap Adapter -------------------------------------------------------
+-- 屏幕吸附适配器。
 --
--- Top-level controls should not duplicate sibling discovery or geometry math.
--- Persistence remains owned by the feature/domain; this adapter only registers
--- visible screen controls and commits a snap result through the normal diff
--- renderer so UIParent root-anchor semantics stay centralized.
+-- 顶层控件不重复发现兄弟或计算几何；Feature/Domain 持久化，适配器仅登记可见屏幕控件并经普通 Diff 提交吸附，集中 UIParent 根锚语义。
 function UI:RegisterScreenSnap(id, widget, options)
     if S.Layout == nil or type(S.Layout.RegisterScreenSnap) ~= "function" or widget == nil then return false end
     options = type(options) == "table" and options or {}
@@ -1404,9 +1304,7 @@ end
 function UI:SetEnabled(widget, enabled, owner)
     local usable = WidgetUsable(widget)
     if usable ~= true then return false end
-    -- Composite controls may own their actual hit surface on a child widget.
-    -- A native WidgetBase:Enable() on the root is therefore insufficient. Only
-    -- controls that explicitly publish this adapter bypass the native root path.
+    -- 组合真实命中面可为子控件，根 WidgetBase:Enable() 不够；仅显式发布适配器的控件绕根路径。
     local enabledAdapter = widget.rsUiSetEnabledAdapter
     local hasAdapter = type(enabledAdapter) == "function"
     local hasEnable = type(widget.Enable) == "function"
@@ -1419,8 +1317,7 @@ function UI:SetEnabled(widget, enabled, owner)
     local ok, result
     if hasAdapter then
         ok, result = pcall(function() return enabledAdapter(widget, value) end)
-        -- Composite adapters are Lua transaction callbacks, not opaque Native
-        -- setters. Their explicit false remains an authoritative veto.
+        -- 组合适配器为 Lua 事务回调，显式 false 保持权威否决，不能按不透明 Native setter 处理。
         if ok ~= true or result == false then
             RecordNativeSafetyFailure("ENABLE_ADAPTER", widget, ok and "adapter_rejected" or result, owner)
             return false
@@ -1441,11 +1338,7 @@ function UI:SetEnabled(widget, enabled, owner)
     return true
 end
 
--- Transactional facade for component/runtime callers that need to know whether
--- the requested native enabled state is actually established. SetEnabled keeps
--- its historical "changed" return contract (false also means cache hit), while
--- EnsureEnabled disambiguates cache-hit success from native rejection. This is
--- deliberately cold/event-driven; it never polls native state.
+-- EnsureEnabled 确认请求 Native 状态，区分缓存成功与拒绝；SetEnabled 保留 changed（false 也可缓存命中）。低频事件驱动，不轮询 Native。
 function UI:EnsureEnabled(widget, enabled, owner)
     local usable, usableErr = WidgetUsable(widget)
     if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
@@ -1458,8 +1351,7 @@ function UI:EnsureEnabled(widget, enabled, owner)
     end
     local changed = self:SetEnabled(widget, value, owner)
     if changed == true then return true, true, nil end
-    -- SetEnabled only updates the cache after an accepted native write. If the
-    -- desired value is still absent here, the native transition was rejected.
+    -- SetEnabled 仅接受写后更新缓存，此处目标值仍缺则原生转换已拒绝。
     row = GetState(widget)
     if row.enabled == value then return true, false, nil end
     return false, false, "native_enable_rejected"
@@ -1486,9 +1378,7 @@ function UI:SetPickable(widget, enabled, owner)
         if accepted ~= true then RecordNativeSafetyFailure("CLICKABLE", widget, acceptErr, owner); return false end
         calls = calls + 1
     end
-    -- Do not cache a successful presentation state when the native widget does
-    -- not expose any hit-test method. Otherwise a later real adapter/method can
-    -- be skipped forever because the cache already claims the value was applied.
+    -- Native 无命中方法时不能缓存成功，否则以后真实适配器/方法会因缓存宣称已应用而永久跳过。
     if calls == 0 then
         RecordAttempt("PICKABLE", widget, false, 0, owner)
         return false
@@ -1498,9 +1388,7 @@ function UI:SetPickable(widget, enabled, owner)
     return true
 end
 
--- Same disambiguation contract as EnsureEnabled for hit-test state. This is
--- useful for runtime calibration/lock transitions where a silent pickable-state
--- mismatch would leave a visible control behaving opposite to its logical state.
+-- 命中状态与 EnsureEnabled 共用消歧契约，供校准/锁定转换确认 pickable，避免可见控件行为与逻辑相反。
 function UI:EnsurePickable(widget, enabled, owner)
     local usable, usableErr = WidgetUsable(widget)
     if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
@@ -1518,12 +1406,8 @@ function UI:EnsurePickable(widget, enabled, owner)
     return false, false, "native_pickable_rejected"
 end
 
--- RETURN CONTRACT (v13): SetFontSize returns false BOTH for a REJECTED native
--- write AND for a cached no-op ("already at this size"). Visibility-critical
--- render chains must NOT treat that ambiguous false as fatal — the .18.133
--- unit-line outage was exactly PlaceUnitDot bailing on a no-op false before
--- showing the dot. Use EnsureFontSize when the distinction matters; style
--- writers should stay best-effort.
+-- SetFontSize false 同时指拒绝与缓存无操作，显隐关键渲染不能当致命失败；需区分时用 EnsureFontSize，普通样式尽力写。
+-- PlaceUnitDot 不能在显示前因无操作 false 退出。
 function UI:SetFontSize(widget, size, owner)
     local usable = WidgetUsable(widget)
     if usable ~= true or widget.style == nil or type(widget.style.SetFontSize) ~= "function" then return false end
@@ -1539,12 +1423,8 @@ function UI:SetFontSize(widget, size, owner)
     return true
 end
 
--- Disambiguating facade for SetFontSize (same (ok, changed, err) contract as
--- EnsureVisible/EnsureAnchor/EnsurePickable). "ok=true, changed=false" is a
--- cached no-op; "ok=false" is a genuine rejection. Added after the .18.133
--- unit-line outage: CreateLabel primes row.fontSize via PrimeNativeState, so
--- the first SetFontSize(sameValue) legitimately returns false and a caller
--- that conflated the two meanings hid every dot in the pool.
+-- EnsureFontSize 与 EnsureVisible/EnsureAnchor/EnsurePickable 共用 (ok,changed,err)：ok=true,changed=false 为缓存无操作，ok=false 才拒绝。
+-- CreateLabel 通过 PrimeNativeState 初始化字体，首次同值 SetFontSize 合法 false，不能因此隐藏整个点池。
 function UI:EnsureFontSize(widget, size, owner)
     local usable, usableErr = WidgetUsable(widget)
     if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
@@ -1576,10 +1456,7 @@ function UI:SetAlpha(widget, alpha, owner)
     return true
 end
 
--- Transactional alpha facade for low-frequency settings/window state changes.
--- SetAlpha retains the historical changed/no-op return value, while EnsureAlpha
--- tells callers whether the requested native state is established before they
--- publish an Authority-side opacity value.
+-- 低频透明事务：SetAlpha 保留 changed/无操作语义，EnsureAlpha 确认 Native 状态后再允许发布权威透明度。
 function UI:EnsureAlpha(widget, alpha, owner)
     local usable, usableErr = WidgetUsable(widget)
     if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
@@ -1597,10 +1474,7 @@ function UI:EnsureAlpha(widget, alpha, owner)
     return false, false, "native_alpha_rejected"
 end
 
--- ScaleBox is event/layout driven; cache native SetScale so repeated layout at
--- the same resolution produces zero writes. SetScale is present in the RU UI
--- allowlist, but callers should still provide a non-scale fallback because
--- individual widget classes may omit the method.
+-- ScaleBox 事件/布局驱动，缓存 SetScale 使同分辨率重复布局零写；虽在 RU allowlist，个别控件可能缺方法，须提供不缩放兜底。
 function UI:SetScale(widget, scale, owner)
     local usable = WidgetUsable(widget)
     if usable ~= true or type(widget.SetScale) ~= "function" then return false end
@@ -1614,8 +1488,7 @@ function UI:SetScale(widget, scale, owner)
     return true
 end
 
--- Tone/button styling is delegated to Theme so there is still only one color
--- Authority. Theme v1 now returns whether a real native repaint was needed.
+-- 色调/按钮样式交 Theme，保持唯一颜色权威；Theme 返回是否实际需要 Native 重绘。
 function UI:SetLabelTone(widget, tone, owner)
     if WidgetUsable(widget) ~= true then return false end
     if S.Theme == nil or type(S.Theme.SetLabelTone) ~= "function" then return false end
@@ -1637,9 +1510,7 @@ function UI:SetButtonActive(widget, active, owner)
     if WidgetUsable(widget) ~= true then return false end
     if S.Theme == nil or type(S.Theme.SetButtonActive) ~= "function" then return false end
     local changed = S.Theme:SetButtonActive(widget, active == true) == true
-    -- A gradient button repaints two drawables (six band calls) internally, but
-    -- expose one logical style write here; Theme remains the detailed native
-    -- styling Authority.
+    -- 渐变按钮内部重绘两个 drawable（六次 band 调用），此处计一次逻辑样式写，详细 Native 样式统计归 Theme。
     RecordAttempt("BUTTON_ACTIVE", widget, changed, changed and 1 or 0, owner)
     return changed
 end
@@ -1676,8 +1547,7 @@ local function EnsureOwner(ownerId)
     return row
 end
 
--- Adopt means "this owner is responsible for the Lua/native references".  It
--- does not transfer business state Authority and it does not destroy widgets.
+-- Adopt 表示 owner 负责 Lua/Native 引用，不转移业务权威，也不销毁控件。
 function UI:AdoptWidget(widget, ownerId, logicalId)
     if widget == nil then return false end
     ownerId = OwnerOf(widget, ownerId)

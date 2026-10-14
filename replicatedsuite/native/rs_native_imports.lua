@@ -1,9 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native Import Registry
+-- Replicated Suite · 原生导入登记
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Single Authority for ADDON:ImportAPI / ADDON:ImportObject. Foundation imports
--- only the minimum objects/APIs required to boot. Migrated Features acquire
--- business APIs lazily through this same registry.
+-- ADDON:ImportAPI/ImportObject 的唯一权威。Foundation 仅导入启动所需最小对象和 API；已迁移 Feature 通过同一
+-- 登记表延迟取得业务 API。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite
@@ -41,9 +42,7 @@ end
 
 function M:EnsureGeneration()
     if tonumber(self.generation) == tonumber(S.Generation) then return true end
-    -- A reload may reuse the Lua table while the addon generation advances. Do
-    -- not let an old optional probe suppress a capability probe in the new
-    -- generation; imported object/API identities are generation-local too.
+    -- 重载可能复用 Lua 表但代际已推进，旧可选探测不能抑制新代际能力探测；已导入对象/API 身份同样只在代际内有效。
     self.generation = S.Generation
     self.optionalObjectFailures = {}
     self.optionalFailureCacheHits = 0
@@ -77,10 +76,8 @@ function M:AcquireObject(ownerId, name, required)
         return false, err
     end
     if self:IsObjectImported(name) then return true end
-    -- Optional native objects are capability probes. A failed optional import is
-    -- stable for the current addon generation, so do not repeatedly cross the
-    -- Lua/C++ boundary on every control construction. Required callers still
-    -- retry so an optional probe can never suppress a later hard dependency.
+    -- 可选原生对象导入属于能力探测；失败在当前插件代际稳定，不在每次控件构造时反复跨 Lua/C++。必需调用者仍
+    -- 可重试，防止可选探测抑制后续硬依赖。
     if required ~= true and self.optionalObjectFailures[name] ~= nil then
         self.optionalFailureCacheHits = (tonumber(self.optionalFailureCacheHits) or 0) + 1
         return false, tostring(self.optionalObjectFailures[name])
@@ -151,8 +148,7 @@ function M:AcquireApi(ownerId, name, core)
     return true
 end
 
--- Compatibility-shaped API used by FeatureRuntime. It is intentionally an
--- alias of the Native registry, not a second import Authority.
+-- FeatureRuntime 使用的兼容形状接口只是 Native 登记表别名，不能形成第二套导入权威。
 function M:Acquire(ownerId, dependencies)
     local list = type(dependencies) == "table" and dependencies or {}
     for _, value in ipairs(list) do
@@ -229,7 +225,7 @@ function M:Describe()
     }
 end
 
--- Preserve the FeatureRuntime-facing name while keeping one Authority.
+-- 保留面向 FeatureRuntime 的名称，同时维持唯一权威。
 S.ApiImports = M
 
 S.BootStage = "native_imports"

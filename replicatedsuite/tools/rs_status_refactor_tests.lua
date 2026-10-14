@@ -1,9 +1,15 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 12 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · 状态重构测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 中文维护注释：仅开发期执行的真实 Lua 模块回归，不进入 TOC。
 -- Native 游戏事实由合成样本注入；不把此结果当作 RU 返回形态/布局实机证明。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, run)
     local ok, err = pcall(run)
@@ -46,7 +52,7 @@ end)
 Test('manual classification outranks native lane', function()
     assert(C:ClassifyEntry({id=21,sources={debuff=true}},{[21]='buff'}).category == 'buff')
 end)
--- Use the real persistence and floating-state normalizers, not test versions.
+-- 使用真实持久化及浮窗状态归一化逻辑，不能替换为测试版本。
 dofile('core/rs_persistence_transport.lua')
 dofile('core/rs_persistence.lua')
 dofile('core/rs_demand.lua')
@@ -108,9 +114,7 @@ Test('historical hook rejects wrong identity and future generation', function()
 end)
 Test('catalog includes current 425 effects 14 trees and 463 skills', function()
     local c=S.Data.StatusTrackingCatalogV3
-    -- Phase 0 baseline refresh (2026-09-28): current data authority contains the later
-    -- manually verified status IDs and control-immunity entries. Keep exact counts as a
-    -- regression tripwire; do not retain the 2026-09-12 393/464 snapshot as current truth.
+    -- 2026-09-28 核对的数据包含后来人工确认的状态 ID 和控制免疫条目；精确数量作为回归哨兵，不能把 2026-09-12 的 393/464 快照继续当作当前事实。
     assert(c.counts.effects==425,'effect count '..tostring(c.counts.effects))
     assert(c.counts.trees==14 and c.counts.skills==463,'catalog counts drifted')
     assert(c.Packs['tree:joy'] and #c.Packs['tree:joy'].entries==0)
@@ -127,8 +131,7 @@ end
 Test('builtin import uses four-write generation transaction and persistent scoped tracking', function()
     Reset();local before=writes
     local ok,err,result=F:ImportBuiltinPack('all',false);assert(ok,err)
-    -- .18.243+ Tracking Authority writes inactive player/target/meta plus manifest.
-    -- Four physical writes are intentional; manifest publication is the commit point.
+    -- 追踪存储先写未激活的 player、target、meta，再发布 manifest。四次物理写入有意保留，manifest 发布才是提交点。
     assert(writes==before+4,'tracking generation transaction write count changed: '..tostring(writes-before))
     assert(type(result)=='table' and result.total==850,'current all-pack channel total changed')
     assert(#F.State.settings.tracked.player.auto==388 and #F.State.settings.tracked.target.auto==388)
@@ -249,9 +252,8 @@ Test('management health exposes schema catalog and cooldown runtime state',funct
     local health=F:GetHealth()
     assert(health.schemaVersion==8 and type(health.management)=='table' and type(health.management.tracked.player)=='table')
     assert(health.management.catalog.effectCount==425)
-    -- This isolated fixture does not load CooldownObservationV3; the current
-    -- full TOC reports native_v4 (Skill-ID-only Native authority), while this fixture correctly reports unavailable.
-    -- The old event-coupled native_v1/v2/v3 release states are no longer current contracts.
+    -- 此隔离宿主未加载 CooldownObservationV3，应报告 unavailable；完整 TOC 使用仅以 Skill ID 为键的原生 native_v4。
+    -- 旧的事件耦合 native_v1/v2/v3 不再属于当前契约。
     assert(health.management.cooldownRuntime=='unavailable' or health.management.cooldownRuntime=='native_v4')
 end)
 -- 中文维护注释：以下使用真实 Persistence 的元数据封印、物理传输、LoadStore/SaveStore 链。
@@ -352,7 +354,7 @@ Test('page builds four tabs and browses inactive tracked entries',function()
     assert(#uiHost.widgets.v3_buff_display_tab_switcher.children==4)
     assert(uiHost.widgets.v3_buff_manage_view.spec.set('tracked'))
     assert(#uiHost.widgets.v3_buff_display_tracking_table.items==1)
-    page.libraryPack='recommended' -- explicitly browse catalog through the single source picker
+    page.libraryPack='recommended' -- 通过唯一来源选择器显式浏览目录。
     assert(page:SwitchTab('library'));assert(page.activeTab=='library','programmatic source switch did not update model')
     -- 当前默认推荐并集包含隐藏/特殊状态；旧all包仍单独保持393职业效果兼容。
     assert(#uiHost.widgets.v3_buff_library_table.items==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries)

@@ -1,4 +1,10 @@
--- 中文维护：真实页面/嵌入内容/RSUI；Feature Native货率边界用模式感知替身，真实计算由 rs_trade_tests 覆盖。
+------------------------------------------------------------------------
+-- Replicated Suite · 交易比例选择界面测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 真实页面/嵌入内容/RSUI；Feature Native货率边界用模式感知替身，真实计算由 rs_trade_tests 覆盖。
+------------------------------------------------------------------------
 local Boot=dofile('tools/rs_workspace_home_test_host.lua')
 local S,_,_,_,_,h=Boot({enabled={life_trade=true},skipLayout=true})
 local F=S.Features.Trade;local mode,revision,calls='current',1,0

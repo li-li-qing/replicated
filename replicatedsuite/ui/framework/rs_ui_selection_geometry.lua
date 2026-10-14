@@ -1,19 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Selection Geometry + Layout Guides v1
+-- Replicated Suite · 选择几何与对齐引导
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared editor math for HUD/layout tools.  SelectionModel remains the sole
--- authority for *which* logical keys are selected; this module derives only
--- *where* those selections are and how editor handles/guides should resolve.
---
--- Coordinate contract inherited from S.Layout:
---   origin = top-left, +X = right, +Y = down.
--- Therefore "move up" always means negative Y.
---
--- Performance contract:
---   * no Tick / permanent OnUpdate;
---   * selection geometry resolves only on explicit caller request;
---   * guide candidates are bounded (default 256, hard cap 1024);
---   * all handle/snap math is O(selected + bounded candidates).
+-- 共享编辑数学只推导位置和把手/引导；SelectionModel 仍是选中逻辑 key 的唯一权威。
+-- 继承 S.Layout 坐标：左上原点，+X 向右、+Y 向下，上移始终负 Y。
+-- 无 Tick/永久 OnUpdate；选择几何仅明确请求解析，候选默认 256、硬上限 1024，把手/吸附数学 O(selected + 有界候选)。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -93,7 +85,7 @@ function SelectionGeometry:UnionRects(rects, maxRects)
 end
 
 ------------------------------------------------------------------------
--- 8-way editor handle geometry
+-- 八向编辑把手几何。
 ------------------------------------------------------------------------
 local HANDLE_POINTS = {
     top_left = function(r) return r.x, r.y end,
@@ -147,7 +139,7 @@ function SelectionGeometry:HitTestHandle(x, y, rect, options)
 end
 
 ------------------------------------------------------------------------
--- SelectionGeometryModel: derives geometry from SelectionModel; never owns keys.
+-- SelectionGeometryModel 从 SelectionModel 推导几何，不持有 key。
 ------------------------------------------------------------------------
 local SelectionGeometryModel = {}
 SelectionGeometryModel.__index = SelectionGeometryModel
@@ -254,11 +246,9 @@ end
 RSUI.SelectionGeometryModel = SelectionGeometryModel
 
 ------------------------------------------------------------------------
--- LayoutGuideResolver v1
+-- LayoutGuideResolver 引导解析器。
 --
--- Caller first computes a proposed rect (normally RectTransformTransaction),
--- then asks this resolver to align the active move/resize anchors.  The resolver
--- returns a new rect + at most one X and one Y guide. It never mutates widgets.
+-- 调用方先用 RectTransformTransaction 等计算建议 rect，再解析活跃移动/缩放锚的对齐；返回新 rect 与最多各一条 X/Y 引导，不修改控件。
 ------------------------------------------------------------------------
 local GuideResolver = { version = 1 }
 RSUI.LayoutGuideResolver = GuideResolver
@@ -508,12 +498,9 @@ function SelectionGeometry:GetSnapshot()
 end
 
 ------------------------------------------------------------------------
--- Selection / Guide visual surfaces v1
+-- 选择/引导视觉表面。
 --
--- These are presentation-only surfaces. They expose native move/resize hit
--- targets but deliberately do not own drag capture or transform transactions.
--- LayoutEditorGestureController binds those targets through the same proven
--- StartMoving/OnDragStart path used elsewhere; this surface remains visual only.
+-- 仅表现并暴露原生移动/缩放命中目标，不持拖动捕获/变换事务；LayoutEditorGestureController 经已验证 StartMoving/OnDragStart 绑定。
 ------------------------------------------------------------------------
 RSUI.SelectionOverlayContractVersion = 1
 RSUI.LayoutGuideOverlayContractVersion = 1
@@ -557,9 +544,7 @@ if type(UI) == "table" and type(RSUI.RegisterType) == "function" then
         local handleSize = Clamp(spec.handleSize or 8, 4, 32)
         local handleHitSlop = Clamp(spec.handleHitSlop or 3, 0, 12)
         local inset = handleSize * 0.5 + handleHitSlop
-        -- The native root is expanded around the selected rect so handle hit
-        -- targets remain inside their physical parent and cannot be clipped at
-        -- the selection edge. The visible frame itself stays exact.
+        -- Native 根向选区外扩，让把手留在物理父内而不在选区边裁切；可见边框保持精确。
         local root = UI:CreateEmptyWidget(spec.parent, spec.id,
             N(spec.x, 0) - inset, N(spec.y, 0) - inset,
             width + inset * 2, height + inset * 2, false)
@@ -576,10 +561,7 @@ if type(UI) == "table" and type(RSUI.RegisterType) == "function" then
             AddEdge(c.frame, "left", 1, c.owner), AddEdge(c.frame, "right", 1, c.owner),
         }
 
-        -- Full-frame move surface. It is created before resize handles so the
-        -- eight handles keep hit-test priority at the perimeter. A tiny-alpha
-        -- drawable gives RU clients a real hit surface without changing the
-        -- visible selection frame.
+        -- 全框移动面在缩放把手前创建，八把手在外围保持命中优先；极低 alpha drawable 提供真实 RU 命中面，不改变可见选框。
         c.moveHit = UI:CreateEmptyWidget(c.frame, spec.id .. "_move_hit", 0, 0, width, height, true, c.owner)
         if c.moveHit == nil then return nil, "selection_move_hit_create_failed" end
         c.moveHit.rsSelectionHandle = "move"

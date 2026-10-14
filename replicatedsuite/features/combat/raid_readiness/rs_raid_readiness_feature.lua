@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Raid Readiness Feature Lifecycle
+-- Replicated Suite · 团队准备检查功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Page visibility holds only the lightweight TeamRoster consumer. Expensive
--- Aura observation is acquired exclusively for an explicit scan and released
--- immediately when the scan completes/cancels. Closing the page therefore
--- leaves no high-frequency observation running.
+-- 页面可见只持有轻量 TeamRoster 消费端；昂贵 Aura 观察仅在显式扫描时获取，完成/取消立即释放，关页后无高频观察残留。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -130,9 +129,7 @@ function F:RunScan(reason)
     return self.Authority:StartScan(reason or "manual")
 end
 
--- Public Projection/Commands boundary for Active V3. The Page never keeps a
--- reference to the readiness Authority or releases its temporary Aura lease
--- independently of this command.
+-- 公共 Projection/Commands 边界；页面禁止持有 readiness Authority，也不能绕过命令独立释放临时 Aura 租约。
 function F:GetRows(showOnlyIssues)
     return self.Authority:GetRows(showOnlyIssues == true)
 end

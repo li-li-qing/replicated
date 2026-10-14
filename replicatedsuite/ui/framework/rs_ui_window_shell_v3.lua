@@ -1,10 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Window Shell v3
+-- Replicated Suite · 共享窗口外框
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Generic top-level window composition for future V3 dialogs/tools.  It uses
--- the common RSUI Windowing authority instead of the retired ManagedWindow path
--- (S.State 已删除, 旧版架构).  Feature/application code may supply persistence callbacks,
--- but this shell never owns domain state and never creates a private Tick.
+-- V3 对话框/工具通用顶层组合，使用共享 RSUI Windowing，替代废弃 ManagedWindow 路径
+-- （S.State 属已删除旧架构）；功能/应用代码可提供持久化回调，
+-- Shell 不持领域状态或私人 Tick。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -34,7 +35,7 @@ local Shell = {
 }
 UI.WindowShell = Shell
 
--- 中文维护：仅可见主菜单的置顶影响浮窗会话层级，不写入各窗口的用户置顶偏好。
+-- 仅可见主菜单的置顶影响浮窗会话层级，不写入各窗口的用户置顶偏好。
 local function EffectiveTopmost(value,role)
     if value==true then return true end
     if role~="floating" then return false end
@@ -73,10 +74,7 @@ local function ReadExtent(window, fallbackW, fallbackH)
     local width, height = tonumber(fallbackW) or 620, tonumber(fallbackH) or 520
     if window ~= nil and type(window.GetWidth) == "function" then pcall(function() width = tonumber(window:GetWidth()) or width end) end
     if window ~= nil and type(window.GetHeight) == "function" then pcall(function() height = tonumber(window:GetHeight()) or height end) end
-    -- WindowShell Layout() consumes the same logical/native UI units that
-    -- Windowing and UI:SetExtent use. Dividing the live extent by addonScale
-    -- here caused every parameterless Layout() (SettingsPage does this) to
-    -- shrink the window again when addonScale ~= 1.
+    -- WindowShell Layout() 与 Windowing/UI:SetExtent 共用逻辑/原生单位；不能再除 addonScale，否则非 1 倍时每次无参数 Layout() 都继续缩窗。
     return math.max(1, width), math.max(1, height)
 end
 
@@ -86,7 +84,7 @@ local function EnsureWindowVisible(shell, visible, reason)
     -- 维护：Show/Reset 是显式 Native 可见性事务，不能让旧 logical visible 缓存屏蔽
     -- 客户端自行隐藏后的恢复。不改变关闭/最小化语义，不主动启动隐藏模块。
     if visible == true and type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(shell.window,"visible") end
-    -- 中文维护：所有显隐事务（包括最小化/初始化）统一标记来源；原生同步 OnHide 不得把内部隐藏误报为用户关闭。
+    -- 所有显隐事务（包括最小化/初始化）统一标记来源；原生同步 OnHide 不得把内部隐藏误报为用户关闭。
     local previousMutation = shell.visibilityMutation
     shell.visibilityMutation = true
     local accepted, _, detail = UI:EnsureVisible(shell.window, visible == true, shell.owner)
@@ -201,7 +199,7 @@ function Shell:Create(spec)
         local layerOk, layerErr = ApplyNativeLayer(topmost)
         if layerOk ~= true then return false, layerErr end
         for _, row in ipairs({
-            -- 中文维护：只有明确选择原生 Escape 关闭的工具窗进入该机制；普通浮窗保持现有策略。
+            -- 只有明确选择原生 Escape 关闭的工具窗进入该机制；普通浮窗保持现有策略。
             { method = "SetCloseOnEscape", value = spec.closeOnEscape == true },
             { method = "SetWindowModal", value = false },
         }) do
@@ -256,18 +254,13 @@ function Shell:Create(spec)
     local footerH = spec.footer == false and 0 or math.max(shell.compactChrome and 20 or 24, tonumber(spec.footerHeight) or (shell.compactChrome and 22 or 28))
     local gap = math.max(2, tonumber(spec.gap) or 8)
     local padding = math.max(0, tonumber(spec.padding) or 10)
-    -- Floating surfaces use a compact chrome profile, while ordinary dialogs
-    -- keep the historical defaults. Keep these dimensions declarative so HUD
-    -- windows do not need to fork WindowShell or manually reposition controls.
+    -- 悬浮用紧凑外框，普通对话框保留默认；尺寸声明化，使 HUD 不需复制 Shell 或手调控件。
     local titlePadding = math.max(0, tonumber(spec.titlePadding) or 5)
     local titleGap = math.max(0, tonumber(spec.titleGap) or 6)
     local titleControlWidth = math.max(22, tonumber(spec.titleControlWidth) or 30)
     local footerPadding = math.max(0, tonumber(spec.footerPadding) or 4)
 
-    -- WindowShell is a custom chrome compositor: title/body/footer own explicit
-    -- geometry in shell:Layout(). Its logical root must never be auto-arranged by
-    -- the generic Overlay invalidation queue, otherwise a late child invalidation
-    -- can stretch bodyFrame over the title bar until the next drag/resize.
+    -- WindowShell 是显式标题/正文/页脚组合；逻辑根不能由通用 Overlay 失效队列排列，否则延迟子失效可把 bodyFrame 拉过标题直到下次拖动。
     shell.root = RSUI:Overlay({ id = id .. "_window_root", parent = window, autoRelayout = false, slot = { hAlign = "fill", vAlign = "fill" } })
     shell.chrome = RSUI:Border({ id = id .. "_window_chrome", parent = shell.root, variant = "card", padding = 0, slot = { hAlign = "fill", vAlign = "fill" } })
     shell.titleBar = RSUI:Border({ id = id .. "_title_bar", parent = shell.root, variant = "header", padding = titlePadding, pickable = true,
@@ -275,7 +268,7 @@ function Shell:Create(spec)
     shell.titleRow = RSUI:HorizontalBox({ id = id .. "_title_row", parent = shell.titleBar, gap = titleGap, slot = { hAlign = "fill", vAlign = "fill" } })
     shell.titleText = RSUI:Text({ id = id .. "_title", parent = shell.titleRow, text = shell.title, fontSize = tonumber(spec.titleFontSize) or 13,
         tone = "accent", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-    -- 中文维护：标题栏只呈现 Shell 的既有锁状态；锁定继续走 Windowing/NotifyState，禁止第二份位置状态。
+    -- 标题栏只呈现 Shell 的既有锁状态；锁定继续走 Windowing/NotifyState，禁止第二份位置状态。
     shell.lockButton = spec.lockControl ~= false and (spec.movable ~= false or spec.resizable ~= false) and RSUI:Button({
         id = id .. "_title_lock", parent = shell.titleRow, text = shell.locked and "锁" or "开", compact = true,
         slot = { size = "fixed", width = 22 }, onClick = function() return shell:SetLocked(not shell.locked, true) end,
@@ -287,7 +280,7 @@ function Shell:Create(spec)
         end
         if shell.appearanceLock then shell.appearanceLock:SetText(shell.locked and "解锁" or "锁定") end
     end
-    SyncLockFeedback() -- 中文维护：首次显示也反映已保存的锁状态，不能等到第一次点击才高亮。
+    SyncLockFeedback() -- 首次显示也反映已保存的锁状态，不能等到第一次点击才高亮。
     if shell.lockButton and RSUI.Tooltip and type(RSUI.Tooltip.Bind) == "function" then
         RSUI.Tooltip:Bind(shell.lockButton, { provider = function()
             return shell.locked and "已锁定：禁止拖动和缩放。点击解锁。" or "未锁定：可拖动和缩放。点击锁定位置。"
@@ -311,20 +304,12 @@ function Shell:Create(spec)
             tone = "muted", overflow = "ellipsis", slot = { hAlign = "fill", vAlign = "fill" } })
     end
 
-    -- Appearance controls are intentionally lazy. Every FloatingSurface gets a
-    -- tiny title-bar entry, but the heavier Slider/NumericInput panel is only
-    -- constructed after the user asks for it. This keeps closed/unused HUDs
-    -- cheap and prevents a visual preference surface from becoming a window
-    -- construction dependency.
+    -- 外观控件延迟创建；每 FloatingSurface 仅小标题入口，用户请求后才构造重 Slider/NumericInput，未用 HUD 保持低成本，外观不能成为窗体构建依赖。
     shell.appearanceOpen = false
     shell.appearancePanelHeight = 154
 
     if shell.root == nil or shell.titleBar == nil or shell.body == nil then
-        -- Keep construction-failure cleanup on the same Native Authority path
-        -- as every other WindowShell visibility mutation.  The build scope
-        -- will perform the final idempotent hide as well; this early hide only
-        -- prevents a partially-created native window from flashing before the
-        -- transaction reports failure.
+        -- 构建失败清理沿相同 Native 可见权威；scope 最终也会幂等隐藏，此处提前隐藏仅防半创建窗口在报告失败前闪现。
         if type(UI.SetVisible) == "function" then UI:SetVisible(window, false, owner) end
         return FailBuild("window shell component create failed")
     end
@@ -367,7 +352,7 @@ function Shell:Create(spec)
 
     local function ApplyMinimizedChrome(self)
         local compact = IsCompactMinimized(self)
-        -- 中文维护注释（2026-09-15，compact-drag-surface-1）：compact 最小化后 30x30 的“+”按钮
+        -- 约束（2026-09-15，compact-drag-surface-1）：compact 最小化后 30x30 的“+”按钮
         -- 会覆盖整个 titleBar。旧实现仍让子 Button 参与命中，导致 Windowing 的共享 titleBar OnDragStart
         -- 永远收不到鼠标手势，所以所有悬浮窗最小化后位置固定。Authority 仍是 Windowing：这里仅在
         -- compact 状态把“+”变成纯视觉子控件，让鼠标命中穿透到 titleBar；恢复普通状态立即恢复 Button
@@ -394,7 +379,7 @@ function Shell:Create(spec)
         return true, compact, nil
     end
 
-    -- 中文维护注释（2026-09-15）：compact 状态下恢复点击由 titleBar 自己处理；“+”只负责视觉。
+    -- 约束（2026-09-15）：compact 状态下恢复点击由 titleBar 自己处理；“+”只负责视觉。
     -- 这样同一个 30x30 Surface 同时支持“单击恢复”和“按住拖动”，不再让子按钮吞掉 Windowing 手势。
     -- Border 已拥有单一 OnClick mux，禁止直接 RequireHandler 覆盖 RSUI 的事件治理。
     if shell.titleBar ~= nil and type(shell.titleBar.SetOnClick) == "function" then
@@ -464,7 +449,7 @@ function Shell:Create(spec)
         -- 维护：顶层 extent 拒绝必须阻断 Layout/Store，不能只判断 diff changed。
         local extentOk,_,extentErr = UI:EnsureExtent(self.window,currentW,currentH,self.owner)
         if extentOk ~= true then return false,extentErr or "window_extent_rejected" end
-        -- 中文维护（2026-10-04）：首次真正可见的布局核对强制摆放后的原生锚点；隐藏时的
+        -- 约束（2026-10-04）：首次真正可见的布局核对强制摆放后的原生锚点；隐藏时的
         -- Native 返回值不能确认显示后的结果。复用现有布局，不另开任务；一次验证后内容刷新
         -- 不再探测顶层坐标。活动手势/隐藏窗保留 pending，不能抢用户拖动或写 Feature。
         local cache=UI.NativeStateCache and UI.NativeStateCache[self.window]
@@ -514,10 +499,7 @@ function Shell:Create(spec)
         return true
     end
 
-    -- Descendant Measure changes are routed back through WindowShell's explicit
-    -- title/body/footer compositor instead of generic Overlay layout. Coalesce
-    -- bursts (table row virtualization, wrapped text updates) into one bounded
-    -- one-shot reflow; when Scheduler is unavailable, fail open synchronously.
+    -- 后代 Measure 变化回到 Shell 显式组合，不用通用 Overlay；虚拟行/换行等突发合成一个有界 one-shot，Scheduler 不可用时同步兜底。
     shell.layoutTaskName = "rsui_window_shell_reflow:" .. tostring(S.Generation or 0) .. ":" .. id
     function shell:_RequestLayout(reason)
         if self.destroyed == true then return false end
@@ -666,7 +648,7 @@ function Shell:Create(spec)
         return true
     end
 
-    -- 中文维护：按钮关闭和原生 Escape 隐藏共用关闭后通知；业务清理失败不阻止已完成的视觉关闭。
+    -- 按钮关闭和原生 Escape 隐藏共用关闭后通知；业务清理失败不阻止已完成的视觉关闭。
     function shell:NotifyClosed(reason)
         if type(self.spec.onClosed) == "function" then
             local ok, result, detail = pcall(self.spec.onClosed, self, reason)
@@ -687,10 +669,7 @@ function Shell:Create(spec)
         reason = tostring(reason or "close")
         Shell.metrics.closeRequests = (tonumber(Shell.metrics.closeRequests) or 0) + 1
 
-        -- Closing a user-facing window is fail-open by default. Historically a
-        -- callback returning false vetoed the close, which made FloatingSurface
-        -- windows impossible to dismiss whenever a domain cleanup path failed.
-        -- Only windows that explicitly opt into allowCloseVeto may block X.
+        -- 用户窗口默认允许关闭，仅显式 allowCloseVeto 可阻止 X；普通业务清理回调返回 false 不能让 FloatingSurface 无法关闭。
         if type(self.spec.onClose) == "function" then
             local ok, result, detail = pcall(self.spec.onClose, self, reason)
             if ok ~= true then
@@ -710,10 +689,8 @@ function Shell:Create(spec)
         return self:NotifyClosed(reason)
     end
 
-    -- SettingsPage owns a WindowShell when it is created without an explicit
-    -- parent, and its Release() contract calls shell:Destroy(). Keep teardown
-    -- idempotent: stop native drag/resize first, detach Windowing handlers, then
-    -- release the logical RSUI tree and hide the retained native window wrapper.
+    -- 无显式父的 SettingsPage 持有 WindowShell，Release 调用 shell:Destroy()；
+    -- 拆除幂等，先停 Native 拖动/缩放，再分离 Windowing、释放逻辑树、隐藏保留 Native 包装。
     function shell:Destroy()
         if self.destroyed == true then return 0 end
         self.destroyed = true
@@ -747,8 +724,7 @@ function Shell:Create(spec)
         local previous = self.minimized == true
         local previousVisible = self.visible == true
 
-        -- Establish Native/layout state first. Only after every required step
-        -- succeeds do we publish self.minimized/self.visible and persist it.
+        -- 先建立 Native/布局，全部必需步骤成功后才发布并持久化 self.minimized/self.visible。
         if self.minimizeMode == "collapse" or self.minimizeMode == "compact" then
             self.minimized = nextValue
             local layoutOk, layoutErr = self:Layout(self.normalWidth, self.normalHeight)
@@ -823,13 +799,13 @@ function Shell:Create(spec)
             if accepted ~= true then return false, detail or "window_lock_native_rejected" end
         end
         self.locked = nextValue
-        SyncLockFeedback() -- 中文维护：标题小锁与外观面板显示同一已接受的状态。
+        SyncLockFeedback() -- 标题小锁与外观面板显示同一已接受的状态。
         if persist ~= false then
             local stateOk, stateErr = self:NotifyState("lock")
             if stateOk ~= true then
                 if self.windowController ~= nil then self.windowController:SetLocked(previous) end
                 self.locked = previous
-                SyncLockFeedback() -- 中文维护：持久化拒绝时，颜色与文字必须随真实锁状态回滚。
+                SyncLockFeedback() -- 持久化拒绝时，颜色与文字必须随真实锁状态回滚。
                 return false, stateErr or "window_lock_state_rejected"
             end
         end
@@ -991,9 +967,7 @@ function Shell:Create(spec)
                 id = id .. "_appearance_" .. suffix, parent = stack, label = label, inline = true, slider = true,
                 min = minimum, max = maximum, step = 1, integer = true, unit = "%",
                 padding = 1, labelFontSize = 9,
-                -- Appearance labels are only two Chinese characters. Keep them
-                -- compact and reserve the majority of a narrow HUD row for the
-                -- actual drag target; exact percentage entry remains on the right.
+                -- 外观标签仅两中文字符，紧凑排列，把窄 HUD 行主要空间给拖动，精确百分比输入在右。
                 labelWidth = 26, labelMinWidth = 24, labelMaxShare = 0.18,
                 inputWidth = 46, inputMinWidth = 42, sliderMinWidth = 52, sliderPreferredShare = 0.46,
                 controlGap = 2, controlHeight = 20, minHeight = 27,
@@ -1127,10 +1101,8 @@ function Shell:Create(spec)
         if tone ~= nil then self.statusText:SetTone(tostring(tone)) end
         return true
     end
-    -- Preserve the historical Native-root accessor for low-level callers, but
-    -- expose the logical RSUI content component separately. Presentation code
-    -- must parent RSUI components to the logical body so parentComponent /
-    -- children / Measure / Layout / Release remain connected to the shell tree.
+    -- 保留低层 Native 根访问器，另公开逻辑 RSUI 内容；
+    -- 表现组件以逻辑 body 为父，保持 parentComponent/children/Measure/Layout/Release 连通 Shell 树。
     function shell:GetContentRoot() return self.body.root end
     function shell:GetNativeContentRoot() return self.body.root end
     function shell:GetContentComponent() return self.body end
@@ -1178,13 +1150,13 @@ function Shell:Create(spec)
         shell.closeButton.onClick = function() return shell:Close("button") end
     end
     if spec.closeOnEscape == true then
-        -- 中文维护：只观察 Suite 自己创建的原生窗口，不覆盖游戏社交窗口的处理器。
+        -- 只观察 Suite 自己创建的原生窗口，不覆盖游戏社交窗口的处理器。
         -- SafeHandler 负责 owner/generation 防护；外部隐藏必须同步逻辑显隐和 Native Diff，才能正确重新打开。
         local bound, bindErr = UI:RequireHandler(window, "OnHide", function()
             if shell.destroyed or shell.visibilityMutation or shell.visible ~= true then return true end
             shell.visible = false
             if type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(window) end
-            -- 中文维护：原生直接隐藏绕过 EnsureVisible，也须释放本窗口输入；不能清理游戏聊天或其它窗的焦点。
+            -- 原生直接隐藏绕过 EnsureVisible，也须释放本窗口输入；不能清理游戏聊天或其它窗的焦点。
             if type(UI.ReleaseFocusWithin) == "function" then UI:ReleaseFocusWithin(window, shell.owner, "native_hide") end
             if type(UI.DisarmInputWithin) == "function" then UI:DisarmInputWithin(window, shell.owner, "native_hide") end
             Shell.metrics.hidden = (tonumber(Shell.metrics.hidden) or 0) + 1

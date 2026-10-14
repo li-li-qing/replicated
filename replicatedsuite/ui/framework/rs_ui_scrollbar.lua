@@ -1,14 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Shared Scrollbar Behavior v3
+-- Replicated Suite · 共享滚动条
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- One reusable scrollbar contract for ScrollBox/ListView/TileView.  The
--- visible thumb is presentation geometry owned by RSUI.  A transparent native
--- drag proxy owns input capture only; native StartMoving is never allowed to
--- become the visual geometry authority.
---
--- No permanent OnUpdate/Tick is created. While a drag is active the behavior
--- borrows Scheduler:AddInteractiveTask (~16 ms). Scheduler absence/rejection
--- falls back to a gesture-only OnUpdate on the dedicated drag proxy.
+-- ScrollBox/ListView/TileView 共用滚动条契约；RSUI 持有可见滑块几何，透明 Native 代理仅持输入捕获，StartMoving 不能成为视觉几何权威。
+-- 无永久 OnUpdate/Tick；拖动借 Scheduler:AddInteractiveTask（约 16 ms），缺失/拒绝时在专用代理手势期 OnUpdate 兜底。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -69,9 +65,7 @@ local function ReleaseHandler(widget, eventName)
     end
 end
 
--- Pure geometry policy. In particular, when the thumb fills the track there is
--- exactly zero travel; we never fabricate a 1px drag range that can push the
--- input proxy outside an extremely small viewport.
+-- 纯几何策略；滑块填满轨道时可移动距离严格为零，不能造 1px 拖动范围把代理推出极小视口。
 function Scrollbar:ComputeGeometry(primary, minThumb, visibleUnits, totalUnits, offset, maxOffset)
     primary = math.max(0, tonumber(primary) or 0)
     minThumb = math.max(0, tonumber(minThumb) or 0)
@@ -93,8 +87,7 @@ function Scrollbar:Attach(host, spec)
     local orientation = tostring(spec.orientation or "vertical"):lower()
     if orientation ~= "horizontal" then orientation = "vertical" end
     local thickness = math.max(6, tonumber(spec.thickness or spec.width) or 14)
-    -- Keep the visual thumb usable without making small viewports non-draggable.
-    -- Callers may still request a larger explicit minimum.
+    -- 保持滑块可用且小视口可拖；调用方可显式请求更大最小值。
     local minThumb = math.max(6, tonumber(spec.minThumb) or 12)
     local hitPadding = math.max(0, tonumber(spec.hitPadding) or 3)
     local parent = spec.parent or host.root
@@ -122,7 +115,7 @@ function Scrollbar:Attach(host, spec)
         end
     end
 
-    -- 中文维护（2026-10-05）：ChangeColor1/2/3 只接收 RGB，不能传第四参设置 alpha；
+    -- 约束（2026-10-05）：ChangeColor1/2/3 只接收 RGB，不能传第四参设置 alpha；
     -- 原实现也在渐变 factory 返回 nil 时跳过实色回退，导致只见黑轨道。所有滚动容器
     -- 统一采用已在原生 Slider 验证的 ColorDrawable，双锚点随滑块实际尺寸变化。
     -- 绘制不跟随输入代理移动，不在 Layout/拖动中反复分配 Drawable。
@@ -130,7 +123,7 @@ function Scrollbar:Attach(host, spec)
     local trackDrawable = ColorFill(track, palette.track or {0.015, 0.035, 0.042, 1}, 'background')
     local thumbDrawable = ColorFill(thumb, palette.thumb or {0.065, 0.090, 0.102, 1}, 'artwork')
     if S.Theme and S.Theme.BindColorDrawable then
-        -- 中文维护（2026-10-08）：轨道/滑块的绘制仍锚定原 Native，外观绑定交给 RSUI 宿主 root。
+        -- 约束（2026-10-08）：轨道/滑块的绘制仍锚定原 Native，外观绑定交给 RSUI 宿主 root。
         -- 宿主在悬浮框组件树内，背景透明度、晚创建及主题切换都走同一通道；拖动代理保持独立可用。
         S.Theme:BindColorDrawable(host.root,trackDrawable,'scrollbar.track',nil,'background')
         S.Theme:BindColorDrawable(host.root,thumbDrawable,'scrollbar.thumb',nil,'background')
@@ -307,9 +300,7 @@ function Scrollbar:Attach(host, spec)
         if type(drag.StopMovingOrSizing) == "function" then pcall(function() drag:StopMovingOrSizing() end) end
         behavior.dragging = false
         behavior.dragStartAxis, behavior.dragStartOffset = nil, nil
-        -- Host layout restores the input proxy to the visual thumb.  A direct
-        -- call is intentional here: it is the finite end of the gesture, not a
-        -- background polling path.
+        -- 宿主布局把输入代理恢复到视觉滑块；此直接调用是有限手势结束，不是后台轮询。
         if host.width and host.height and type(host.Layout) == "function" then
             pcall(function() host:Layout(host.x or 0, host.y or 0, host.width, host.height) end)
         end

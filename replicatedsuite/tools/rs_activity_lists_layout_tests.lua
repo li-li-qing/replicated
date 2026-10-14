@@ -1,8 +1,13 @@
--- Replicated Suite V3 - ActivityLists split-layout regression
+------------------------------------------------------------------------
+-- Replicated Suite · 活动列表布局测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 开发期离线测试；不进入 toc.g。验证活动时间/实时区域的表示层几何，不模拟 RU Native。
 -- 维护（2026-09-22，activity-row-quantized-split-1）：除了“内容已全部显示后的剩余空间”，还要覆盖
 -- “距离下一完整行只差几像素”的窗口高度。ListView 不绘制半行，因此 timeline 视口必须按整行量化，
 -- 否则余数会夹在最后一条活动与“实时区域”表头之间。
+------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -130,9 +135,8 @@ end)
 Test("one-pixel-before-next-row threshold leaves no middle band", function()
     local lists = Boot()
     lists:SetItems(Rows(5,5), 7)
-    -- With a 22px header and 24px rows, 4 timeline rows need 118px and the
-    -- fifth needs 142px. Heights between those thresholds must never produce
-    -- a 1..23px empty tail inside the timeline viewport.
+    -- 表头为 22px、行高为 24px 时，4 行时间线需要 118px，第 5 行需要 142px。
+    -- 处于两个阈值之间的高度不能在时间线视口尾部留下 1..23px 的空白。
     for height = 244, 267 do
         lists:Layout(0,0,180,height)
         if lists.timeline.visible then

@@ -1,12 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - tools_bag Feature Authority
+-- Replicated Suite · 背包整理功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 1 Batch E（2026-09-28）：从 features/rs_business_bridge.lua 机械搬迁（最后一批）。
--- 只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、UpdateTopic、Demand owner、
--- Commands、Projection shape、ApiDependencies、三个 Scheduler task name
+-- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
 -- （v3_business_bag_category_batch / v3_business_bag_quick_observe / v3_business_bag_quick_move）、
 -- 黑名单/搬运事务/快捷按钮语义全部与被搬迁前逐字一致。
---
 -- Authority 边界：背包/仓储事实来自 InventorySnapshotV3 与 X2Bag/X2Bank/X2Coffer 只读接口；
 -- 搬运类 Native 调用仍走能力门 + 冷却契约。背包扫描上界来自 features/shared/rs_shared_bounds.lua，
 -- 禁止在本文件另写数字。
@@ -37,10 +36,7 @@ local BAG_QUICK_LIMIT = 40
 local BAG_MOVE_INTERVAL_MS = 200
 local BAG_VERIFY_GRACE_MS = 250
 
--- The active V3 contract can safely observe the native bag window, but it
--- does not prove a supported native parent/embedding operation. Keep this
--- diagnostic read-only and fail closed when any part of the getter contract
--- is unavailable or malformed.
+-- 当前契约可安全观察 Native 背包窗，但没有证明原生父级/嵌入操作受支持；诊断只读，getter 缺失或畸形时安全拒绝。
 local function ReadBagWindowContext()
     local context = { status = "unknown", visible = nil, surfaceVisible = false, follow = "diagnostic_only", embed = "fail_closed", source = "none", surfaceSource = "none", visibilityConflict = false, reason = nil }
     local addonApi = AddonApi or rawget(_G, "ADDON")
@@ -64,9 +60,7 @@ local function ReadBagWindowContext()
         if x < -width or y < -height or x > logicalWidth + width or y > logicalHeight + height then return false end
         return true
     end
-    -- RU native getters are inconsistent about boolean shape.  Treat only
-    -- explicit boolean-like values as authoritative; unknown values remain
-    -- unknown instead of being collapsed to false.
+    -- RU getter 布尔形态不一致，只接受明确布尔等价值；未知保持未知，禁止归成 false。
     local function NativeFlag(value)
         if type(value) == "boolean" then return true, value == true end
         if type(value) == "number" and (value == 0 or value == 1) then return true, value == 1 end
@@ -113,14 +107,14 @@ local function ReadBagWindowContext()
         for depth = 0, 8 do
             if node == nil or node == UIParent then break end
             if S.Layout ~= nil and (type(S.Layout.ResolveViewportLogicalRect) == "function" or type(S.Layout.GetLogicalRect) == "function") then
-                -- 维护（2026-09-22，external-surface-geometry-1）：外部原生内容坐标最终用于 UIParent 侧栏锚定，
+                -- 外部原生内容坐标最终用于 UIParent 侧栏锚定，
                 -- 必须优先走已校准的 viewport-logical-v1；旧 GetLogicalRect 会在部分 RU UI Scale 语义下
                 -- 重复除缩放。兼容测试/旧引导环境时才退回 legacy helper，不改变 Native ADDON Authority。
                 local ok, x, y, width, height, geometry = pcall(function()
                     if type(S.Layout.ResolveViewportLogicalRect) == "function" then return S.Layout:ResolveViewportLogicalRect(node) end
                     return S.Layout:GetLogicalRect(node)
                 end)
-                -- 中文维护（2026-10-03）：UIC_BAG 可能是零点/全屏代理，不能把它或
+                -- UIC_BAG 可能是零点/全屏代理，不能把它或
                 -- UIParent 当成背包。最多向上找 8 层实际窗口，坐标只由 Layout 校准一次。
                 local scale=type(geometry)=="table" and tonumber(geometry.effectiveScale) or 1
                 scale=scale or 1
@@ -133,7 +127,7 @@ local function ReadBagWindowContext()
                 local viewportSized = (tonumber(width) or 0) >= logicalWidth - 2 and (tonumber(height) or 0) >= logicalHeight - 2
                 if ok == true and PlausibleRect(x, y, width, height)
                     and (tonumber(width) or 0) >= 32 and (tonumber(height) or 0) >= 32 and not proxyOrigin and not viewportSized then
-                    -- 中文维护（2026-10-04）：GetContent 也可能返回有效但带内边距的物品格子。
+                    -- GetContent 也可能返回有效但带内边距的物品格子。
                     -- 优先匹配 MainScript 外窗矩形（逻辑或已校准 Native 单位），否则继续沿同一
                     -- 父链选最外层有效窗；不能见到第一个非零矩形就把内部区域当背包左上角。
                     candidate = { x=Number(x), y=Number(y), width=Number(width), height=Number(height),
@@ -167,21 +161,14 @@ local function ReadBagWindowContext()
     elseif contentVisible == true then
         resolvedVisible = true
     elseif mainRect == true then
-        -- A hidden/non-visual ADDON content proxy must not veto a valid native
-        -- MainScript rectangle.  This was the remaining RU bag/bank failure:
-        -- GetContent() could expose a proxy whose IsVisible=false while the
-        -- actual MainScript window was open and returned valid geometry.
+        -- 隐藏/非视觉 ADDON content 代理不能否决有效 Native MainScript 矩形；GetContent() 的 IsVisible=false 可与真实窗已开且几何有效同时存在。
         resolvedVisible = true
     elseif contentKnown == true then
         resolvedVisible = false
     else
         resolvedVisible = false
     end
-    -- Presentation and native writes deliberately use different facts. During
-    -- the RU open animation MainScript may still report explicit hidden/0 for
-    -- one beat after the ADDON content chain is already visibly on screen. That
-    -- stale native flag must not suppress the harmless 取/放 surface, but it
-    -- remains authoritative for every inventory write (`visible`).
+    -- Presentation与Native写入使用各自事实；RU开窗动画中ADDON content已可见而MainScript暂为hidden/0时，陈旧Native标志不能压制取/放表现，但每次背包写入仍以visible为权威。
     local surfaceVisible = nativeVisible == true or contentVisible == true
         or (nativeKnown ~= true and mainRect == true)
     local px, py, pw, ph, source, geometry, anchor = ContentRect(content, x, y, width, height)
@@ -189,7 +176,7 @@ local function ReadBagWindowContext()
         context.status, context.visible, context.surfaceVisible = "ready", resolvedVisible, surfaceVisible
         context.visibilityConflict = surfaceVisible == true and resolvedVisible ~= true
         context.mainScriptRect = { x = x, y = y, width = width, height = height }
-        -- 中文维护（2026-10-03）：MainScript 继续决定可见性和搬运安全；摆放优先
+        -- MainScript 继续决定可见性和搬运安全；摆放优先
         -- 使用实际 Native 窗口的 viewport-logical 几何。没有可证明控件时保留既有
         -- MainScript 回退并在诊断中明确标为未校准，不能对未知单位一律再除 UI Scale。
         context.x, context.y, context.width, context.height = px or x, py or y, pw or width, ph or height
@@ -291,9 +278,7 @@ local function ReadStorageWindowContext(target)
         result.surfaceSource = result.visibilityConflict and "content-visible-over-native-hidden" or result.source
         return result
     end
-    -- Storage geometry is not required to anchor the quick bar; the bag owns
-    -- presentation geometry. A positively visible content chain is sufficient
-    -- to prove that bank/coffer actions are currently meaningful.
+    -- 快捷条锚点使用背包表现几何，不要求仓库几何；明确可见 content 链足以证明 bank/coffer 动作当前有意义。
     if contentVisible == true then
         result.status, result.visible, result.surfaceVisible, result.source, result.surfaceSource = "ready", true, true, "content-visible", "content-visible"
         return result
@@ -323,7 +308,7 @@ local function RequireStorageWindow(target)
     return true
 end
 
--- 中文维护注释（2026-09-28，Phase 1 Batch A）：Trim 已由工厂提供。
+-- Trim 已由工厂提供。
 
 local function NormalizeBoolean(value)
     if value == true or value == 1 then return true end
@@ -405,9 +390,7 @@ local function NormalizeBlacklist(value)
     local normalized = {
         enabled = NormalizeBoolean(source.enabled) == true,
         activeScope = NormalizeScope(source.activeScope) or "bank",
-        -- itemName is Presentation metadata only. Runtime blocking continues to
-        -- use itemType/category as the sole Authority, so a localized-name
-        -- change can never make a blacklisted item pass the write gate.
+        -- itemName 仅为 Presentation 元数据；运行阻止只以 itemType/category 为权威，本地化改名不能让黑名单物品通过写门槛。
         bank = { itemType = {}, category = {}, itemName = {} },
         coffer = { itemType = {}, category = {}, itemName = {} },
     }
@@ -436,9 +419,7 @@ local function ApplyBlacklistState(value, state)
 end
 
 local function BlacklistEntryCount(config)
-    -- User-facing blacklist rules are global to the organizer. A single item is
-    -- mirrored into bank+coffer for backwards-compatible runtime enforcement,
-    -- but it must count as one logical rule rather than consuming two slots.
+    -- 黑名单规则全局适用于整理器；单物品为运行兼容镜像到 bank+coffer，但仅算一条逻辑规则，不能占两槽。
     local total, seen = 0, {}
     for _, scope in ipairs({ "bank", "coffer" }) do
         local bucket = type(config) == "table" and config[scope] or nil
@@ -458,7 +439,7 @@ local function MutateBlacklist(feature, reason, mutator)
         local result, changedOrError = mutator(feature.State.blacklist)
         if result ~= true then return false, tostring(changedOrError or "黑名单修改失败") end
         return true, nil, changedOrError == true
-    -- 中文维护（2026-10-03）：黑名单是全放的保护条件；点击成功时必须耐久保存，
+    -- 黑名单是全放的保护条件；点击成功时必须耐久保存，
     -- 不能在退出后悄悄失去保护。共享事件只发布已提交事实，不在此增加背包扫描。
     end, { durable = true, reason = tostring(reason or "blacklist_changed") })
     if marked ~= true then return false, tostring(mutationErr or "黑名单未保存，已回滚") end
@@ -486,13 +467,8 @@ local function SourceIdentity(info)
     return nil, nil
 end
 
--- Same-item quick take/put must survive RU builds that occasionally omit
--- itemType on bag-like container rows.  The preferred identity remains the
--- numeric itemType.  Only when that field is absent do we fall back to the
--- client-provided localized name + grade + category tuple that the previous
--- production implementation already used.  This fallback is used only to
--- compare two read-only slot records; it never invents an itemType and never
--- bypasses the per-storage blacklist check before a native write.
+-- RU 类背包行可能省 itemType。优先用数值 itemType，缺失时才回退客户端本地化名称+grade+category 元组。
+-- 回退仅比较两份只读槽记录，禁止编造 itemType，也不能绕过 Native 写前各仓库黑名单。
 local function StableItemIdentity(info)
     local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
     if type(inventory) == "table" and type(inventory.StableIdentity) == "function" then
@@ -569,20 +545,11 @@ SourceSlot = function(value)
     if slot == nil or slot < 1 or slot ~= math.floor(slot) then return nil, "源槽位必须是正整数" end
     return slot
 end
--- NOTE: the declaration of `BagMoveRuntime` moved here from further down.  This
--- chunk is one function scope and Lua allows 200 locals per function; the file
--- already sits at that ceiling (195 top-level declarations).  Every quick-run
--- helper below therefore lives as a BagMoveRuntime *field* instead of a new
--- file-scope local, which is also why CheckedMove/BatchMove/Refresh can reach
--- the reclaim without a forward-declared local.
+-- Lua5.1 每函数最多200个 local，本文件已有195个顶层声明；快捷运行助手必须作为 BagMoveRuntime 字段，禁止新增文件级 local。CheckedMove/BatchMove/Refresh 由字段访问回收，无需前置 local。
 local BagMoveRuntime = {}
 BagMoveRuntime.QuickObserverIntervalMs = 100
 
--- Product UX helpers for the organizer blacklist. These live on BagMoveRuntime
--- instead of adding more file-scope locals: rs_business_bridge.lua is already
--- close to Lua 5.1's 200-local main-chunk ceiling. All scans below are bounded
--- and only run after an explicit user action or page refresh; never from the
--- 100ms native-window observer.
+-- 黑名单 UX 助手放在 BagMoveRuntime，避免逼近 Lua5.1 主块200个 local上限；所有扫描有界，仅显式用户动作或页面刷新后运行，禁止在100ms Native 窗口观察器执行。
 function BagMoveRuntime.NormalizeBlacklistItemName(value)
     local name = Trim(value)
     if name == "" or #name > 96 or name:find("[%c]") ~= nil then return nil end
@@ -651,16 +618,13 @@ function BagMoveRuntime.ResolveAndAddBlacklistItem(feature, query)
     local raw = Trim(query)
     if raw == "" or #raw > 96 or raw:find("[%c]") ~= nil then return false, "请输入物品ID或物品名称" end
 
-    -- A numeric ItemID is already an authoritative identity. Do not make the
-    -- explicit-ID workflow depend on a readable bag/storage snapshot: this is
-    -- important for users who know the ID but do not currently own the item.
+    -- 数值 ItemID 已是权威身份，显式 ID 流程不能依赖可读背包/仓库快照，用户可能知道 ID 但暂未持有物品。
     local numeric = NormalizeItemType(raw)
     if numeric ~= nil then
         return BagMoveRuntime.AddGlobalBlacklistItem(feature, numeric, BagMoveRuntime.KnownBlacklistItemName(feature, numeric))
     end
 
-    -- Name lookup is intentionally evidence-bound to the current bag and the
-    -- currently open storage. It runs only on this explicit button press.
+    -- 名称查询仅依据当前背包与已打开仓库证据，并只在显式按钮操作时执行。
     local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
     if type(inventory) ~= "table" or type(inventory.BuildSnapshot) ~= "function" then return false, "背包快照服务不可用；可直接输入物品ID" end
 
@@ -723,12 +687,7 @@ function BagMoveRuntime.BlacklistRows(feature)
     return rows
 end
 
--- An installed queue table is NOT proof of a running move: BeginBagQuick used to
--- assign the (empty) queue table before its `plannedMoves == 0` early return, so
--- one click that matched nothing held the quick mutex for the rest of the
--- session.  Every later 取/放 click, direct move and category batch was then
--- refused with "已经在运行" while the refused click still reported success -
--- exactly the reported "sometimes 取/放 does nothing, it must be stuck".
+-- 已安装队列表不能证明移动运行中；plannedMoves==0时不能持有快捷互斥锁，也不能让拒绝点击报告成功，否则后续取/放、直接移动和分类批处理整会话被阻塞。
 function BagMoveRuntime.QuickQueueActive(feature)
     if type(feature) ~= "table" then return false end
     if feature._quickPending ~= nil then return true end
@@ -743,11 +702,7 @@ local function BagQuickRunning(feature)
     return status == "正在取出" or status == "正在放入"
 end
 
--- Evidence window for the serialized 250 ms queue.  A healthy step touches the
--- task every 250 ms, so eight seconds of silence can only mean the queue stopped
--- progressing.  Reclaiming loses nothing: no item is dropped, only the mutex is
--- released and the reason published; the next click rebuilds the plan from live
--- container state, which is how every single step already works.
+-- 串行250ms队列健康步骤每250ms触碰任务，8s无动静证明停止推进。回收仅释放互斥锁并发布原因，不丢物品；下次点击从实时容器重建计划，每步骤也按实时状态执行。
 BagMoveRuntime.QuickRunStaleMs = 8000
 BagMoveRuntime.QuickDirectionLabel = { withdraw = "取出", deposit = "存入", deposit_all = "全部存入" }
 
@@ -755,14 +710,10 @@ function BagMoveRuntime.QuickRunEvidence(feature)
     local state = (S.Scheduler ~= nil and type(S.Scheduler.GetTaskState) == "function")
         and S.Scheduler:GetTaskState(BAG_QUICK_MOVE_TASK) or nil
     local telemetry = type(state) == "table"
-    -- `registered ~= true` is an immediate orphan: AddTask happens synchronously
-    -- with acquiring the mutex, so a missing task can only mean a reload/owner
-    -- cleanup removed it while the queue state survived.
+    -- registered~=true 立即视为孤立队列：AddTask 与获取互斥锁同步，任务缺失说明重载/owner清理移除任务但队列状态残留。
     if telemetry == true and state.registered ~= true then return false, "移动任务未注册（已被重载或关闭清理）" end
     local now = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
-    -- Without scheduler telemetry the queue's own step stamp is the only honest
-    -- evidence.  "no data" must never mean "reclaim": that would kill every
-    -- healthy run on a scheduler build that stops exposing GetTaskState.
+    -- 无 Scheduler 遥测时只用队列自身 step stamp 作为证据；无数据不能代表应回收，否则不暴露 GetTaskState 的版本会杀掉健康运行。
     local anchor = math.max(tonumber(telemetry and state.lastRunAtMs) or 0, tonumber(feature._quickLastStepAt) or 0)
     if anchor <= 0 then return false, "没有任何执行证据" end
     local idle = now - anchor
@@ -786,18 +737,11 @@ function BagMoveRuntime.ResolveBatchTarget()
     return storage.kind, nil
 end
 
--- The floating bar status label is at least 132 px wide (240 - 104 - 4), i.e.
--- roughly twelve 9 px CJK glyphs.  Long technical detail stays in
--- `overlay.error` (page status line + diagnostics); the bar shows one short,
--- still meaningful clause.
+-- 浮条状态标签至少132px（240-104-4），约容纳12个9px中文字符；长技术详情保存在 overlay.error，供页面状态/诊断使用，浮条只显示简短但有意义的原因。
 BagMoveRuntime.QuickStatusSeparators = { "（", "，", ",", "；", ";", "。", ":", "：" }
 function BagMoveRuntime.QuickStatusText(reason)
     local text = tostring(reason or "失败")
-    -- Split on the first separator with plain (whole-string) find.  A negated
-    -- byte class like `[^（，。]` looks equivalent but is not: Lua patterns work
-    -- on bytes, so every CJK character that happens to contain one of those
-    -- bytes (刻 = E5 88 BB shares 0x88 with 「（」) gets cut in half and the
-    -- label renders mojibake.  Proven by the behaviour simulator.
+    -- 用plain find按第一个完整分隔符切割；Lua pattern按字节工作，[^（，。]会切断含共享字节的中文码点，例如刻E5 88 BB与（共0x88，产生乱码。
     local head, headAt = text, nil
     for _, separator in ipairs(BagMoveRuntime.QuickStatusSeparators) do
         local at = string.find(text, separator, 1, true)
@@ -805,11 +749,7 @@ function BagMoveRuntime.QuickStatusText(reason)
     end
     if head == nil or head == "" then head = text end
     local out, count = "", 0
-    -- One UTF-8 codepoint per iteration: an ASCII byte, or a lead byte 192-244
-    -- plus its continuation bytes.  A "[\1-\127]" class alone silently skips
-    -- every CJK glyph, which made the first version of this counter report
-    -- length 0 for Chinese text (caught by the behaviour simulator, not by the
-    -- eye -- the truncated label looked "short" and passed).
+    -- 每次迭代一个 UTF-8 码点：ASCII字节，或192-244首字节加续字节。只匹配 ASCII 范围会漏所有中文，使中文长度被误计0，必须完整计数。
     for glyph in string.gmatch(head, "[\1-\127\192-\244][\128-\191]*") do
         count = count + 1
         if count > 11 then return out .. "…" end
@@ -884,9 +824,7 @@ local function BatchProjection(feature)
     end
     table.sort(categoryOptions, function(a, b) return tostring(a.text or "") < tostring(b.text or "") end)
 
-    -- Presentation projection for the product page: one row per itemType, not one
-    -- row per physical slot. This is derived from the already-demanded bag
-    -- Authority, so no extra inventory scan is introduced by rendering the page.
+    -- 产品页每 itemType 一行，不能每物理槽一行；从已有 Demand 的背包权威派生，渲染页面不增加扫描。
     local bagItemRows, bagItemOptions, bagKeys = {}, {}, {}
     for key in pairs(bagById) do bagKeys[#bagKeys + 1] = key end
     table.sort(bagKeys, function(a, b) return (tonumber(a) or math.huge) < (tonumber(b) or math.huge) end)
@@ -920,15 +858,13 @@ local function BatchProjection(feature)
     local openStorage = CurrentStorageContext()
     local resolvedTarget = type(openStorage) == "table" and openStorage.kind or nil
     local quickOverlay = Copy(feature._quickOverlay or { visible=false, storageKind=nil, status="等待仓库/箱子", moved=0, skipped=0, queued=0 })
-    -- running/direction are derived facts, never stored state: an orphaned queue
-    -- must not keep advertising itself as running to the presentation layer.
+    -- running/direction 是派生事实，不持久保存；孤立队列不能继续向表现层宣称运行中。
     quickOverlay.running = BagQuickRunning(feature) == true
     quickOverlay.direction = feature._quickDirection
     return { blacklist = feature.State.blacklist, blacklistRows = blacklistRows, blacklistOptions = blacklistOptions,
         blacklistLegacyCategoryCount = legacyCategoryCount, bagItemRows = bagItemRows, bagItemOptions = bagItemOptions,
         bagItemCount = #bagItemRows, batchCategory = feature.State.batchCategory,
-        -- Legacy category-batch state/Commands remain public for upgrade/API
-        -- compatibility, but the normal player page no longer exposes them.
+        -- 旧分类批处理状态/Commands 仅为升级/API兼容公开，普通玩家页不再暴露。
         batchTarget = feature.State.batchTarget, batchTargetMode = "auto_open_storage",
         batchTargetResolved = resolvedTarget,
         batchTargetLabel = resolvedTarget == "coffer" and "箱子" or (resolvedTarget == "bank" and "银行" or nil),
@@ -942,7 +878,7 @@ local function BatchProjection(feature)
             actions = { "QuickWithdraw", "QuickDeposit", "QuickDepositAll" },
         }, }
 end
--- 中文维护注释（2026-09-28，Phase 1 Batch A）：原 `local PersistStateMutation` 前向声明已删除，
+-- 原 `local PersistStateMutation` 前向声明已删除，
 -- 现在指向工厂实现（见文件顶部别名），调用点行为不变。
 
 local function SetBatchConfig(feature, category, target, limit)
@@ -1017,18 +953,13 @@ local function StopBagQuick(feature, status, errorText)
     feature._quickOverlay.status = status or "停止"
     feature._quickOverlay.error = errorText
     feature._quickOverlay.queued = 0
-    -- Timestamp every status write: the floating bar shows a refusal/stop line
-    -- for a bounded window and then goes quiet again (quiet-by-default surface).
+    -- 每次状态写入都记录时刻；浮条拒绝/停止原因仅展示有界时间，随后恢复安静。
     feature._quickOverlay.statusAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
     PublishBagOverlay(feature,"bag_quick_stop")
     return true
 end
 
--- Self-heal: a quick queue that lost its executor (reload, owner cleanup, a
--- permanently faulted scheduler task) used to block the whole Feature until a
--- reload, because the only unlock was the third 停 button the user reports as
--- useless.  With two buttons the state machine has to recover on its own, so
--- this runs from the 100 ms window observer and from every click.
+-- 快捷队列失去执行器（重载、owner清理或Scheduler永久故障）时必须自行恢复；从100ms窗口观察器与每次点击回收，不能依赖第三个停止按钮或阻塞到重载。
 function BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
     if BagQuickRunning(feature) ~= true then return false end
     local alive, evidence = BagMoveRuntime.QuickRunEvidence(feature)
@@ -1083,10 +1014,7 @@ local function BagIdentitySet(scope)
     return Copy(snapshot.identitySet or {}), rows, readErrors, err, Copy(snapshot.identityCount or {}), snapshot.bagId, snapshot
 end
 
--- MoveToEmpty* can compact/reproject slots.  The plan therefore keeps only
--- stable identity/category intent plus a scan hint.  InventorySnapshotV3 checks
--- the hinted slot first and wraps through the bounded container only when the
--- hint is stale; slot numbers never become persistent identity.
+-- MoveToEmpty* 可压缩/重投影槽位，计划仅保留稳定身份/分类意图与扫描提示；InventorySnapshotV3 先查提示槽，失效才有界环查，槽号不能成为持久身份。
 function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope, identity, category, bagId, startSlot, blockedIdentities, alternateSlot)
     local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
     if type(inventory) ~= "table" or type(inventory.FindLiveRow) ~= "function" then
@@ -1103,9 +1031,7 @@ function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope,
     return row.slot, row, nil
 end
 
--- A false return from an existing native MoveToEmpty* method is a per-item
--- rejection (most commonly: no empty slot and the destination stack for this
--- identity cannot accept more). Missing capability/API errors remain fatal.
+-- 已存在 MoveToEmpty* 返回false表示单物品拒绝，常见为无空槽且目标同身份堆叠已满；能力缺失/API错误仍为致命失败。
 function BagMoveRuntime.IsNativeMoveRejected(err)
     return type(err) == "string" and string.find(err, " returned false", 1, true) ~= nil
 end
@@ -1131,8 +1057,7 @@ function BagMoveRuntime.BlockBatchIdentity(feature, entry, identity, reason)
     feature._batchBlockedIdentities = type(feature._batchBlockedIdentities) == "table" and feature._batchBlockedIdentities or {}
     feature._batchBlockedIdentities[identity] = true
     entry.remaining = math.max(0, (tonumber(entry.remaining) or 0) - skipCount)
-    -- The rejected stacks remain in the bag; do not decrement the actual
-    -- category source count. They are excluded only by identity for this run.
+    -- 被拒绝堆叠仍在背包，不能扣真实分类来源计数；仅本次运行按身份排除。
     feature.State.batch.skipped = (tonumber(feature.State.batch.skipped) or 0) + skipCount
     feature.State.batch.error = reason
     feature._batchPending = nil
@@ -1168,18 +1093,13 @@ end
 
 local function BeginBagQuick(feature, direction)
     if BagBatchRunning(feature) then return false, "高级整理正在运行，请先停止批量" end
-    -- Last-resort guard: StartBagQuick resolves a live run by stop/switch before
-    -- reaching here, so hitting this means a caller bypassed the action path.
+    -- 最终防御：StartBagQuick 到此处前应通过停止/切换处理实时运行，命中说明调用者绕过动作入口。
     if BagQuickRunning(feature) then return false, "快捷取放正在运行，再点一次「取」或「放」可停止" end
     local storage = CurrentStorageContext()
     if type(storage) ~= "table" then return false, "请先打开银行或箱子（窗口刚打开时请稍后再试）" end
 
-    -- Action Authority is the open storage session plus the physical container
-    -- reads below, not UIC_BAG's presentation visibility bit. RU can show the
-    -- physical bag beside a coffer while UIC_BAG still reports hidden/proxy; in
-    -- that state the old preflight rejected a perfectly readable bag before the
-    -- bounded InventorySnapshot had a chance to prove it. If either container
-    -- is unreadable, BagIdentitySet still fails closed before any native write.
+    -- 动作权威为已开仓库会话与下方物理容器读取，不是 UIC_BAG 表现可见位。RU可同时显示真实背包与箱子，但 UIC_BAG仍报告隐藏代理。
+    -- 必须让有界 InventorySnapshot 证明物理可读；任一容器不可读时 BagIdentitySet 仍在 Native 写前安全拒绝。
     local target = storage.kind
     local planLimit = direction == "deposit_all" and BAG_SCAN_LIMIT or BAG_QUICK_LIMIT
     local bagSet, bagRows, bagErrors, bagErr, bagCounts, bagId = BagIdentitySet("bag")
@@ -1187,10 +1107,7 @@ local function BeginBagQuick(feature, direction)
     if bagSet == nil or storageSet == nil then return false, bagErr or storageErr or "容器读取失败" end
     if bagErrors > 0 or storageErrors > 0 then return false, bagErr or storageErr or "物品槽位存在读取失败，已安全拒绝取放" end
 
-    -- One-click transfer plan v7: group by stable identity instead of storing one
-    -- queue record per physical slot.  The `remaining` count is the business
-    -- intent; `slotHint` is only an optimization and is revalidated before every
-    -- write.  This survives slot compaction and avoids a large duplicate queue.
+    -- 一键计划按稳定身份分组，不为每个物理槽建队列项。remaining为业务意图，slotHint仅优化且写前重新验证，适应槽压缩并避免大量重复队列。
     local queue, queueByIdentity, sourceCounts, plannedMoves = {}, {}, nil, 0
     local function AddIntent(row, source, dest)
         if plannedMoves >= planLimit or type(row) ~= "table" or row.identity == nil then return end
@@ -1232,9 +1149,7 @@ local function BeginBagQuick(feature, direction)
     feature._quickOverlay.moved = 0
     feature._quickOverlay.skipped = 0
     if plannedMoves <= 0 then
-        -- Empty plan == no business work == no mutex.  Installing the empty queue
-        -- table here (the old behaviour) locked 取/放/direct-move/category-batch for
-        -- the rest of the session while the click reported success.
+        -- 空计划没有业务工作，禁止安装空队列或持有互斥锁，否则整会话取/放、直接移动、分类批处理被锁且点击误报成功。
         feature._quickQueue, feature._quickIndex, feature._quickPending = nil, nil, nil
         feature._quickSourceCounts, feature._quickBagId = nil, nil
         feature._quickDirection, feature._quickLastStepAt = nil, nil
@@ -1282,10 +1197,7 @@ local function BeginBagQuick(feature, direction)
             local afterIdentity = StableItemIdentity(info)
             local moved = type(info) ~= "table" or next(info) == nil or afterIdentity ~= pending.identity
             if moved ~= true then
-                -- Ambiguous same-slot/same-item state occurs when RU compacts a
-                -- later identical stack into the just-vacated slot. Count only
-                -- in this ambiguous branch and stop as soon as the old count is
-                -- reached in the no-progress case.
+                -- RU可能把后续相同堆叠压入刚空出的槽，导致同槽/同物品歧义；仅此分支计数，无进展时达到旧数量即停止。
                 local liveCount, countErr = BagMoveRuntime.CountLiveMatches(
                     pending.source, pending.identity, nil, pending.bagId, pending.beforeCount)
                 feature._quickPerformance.verificationScans = feature._quickPerformance.verificationScans + 1
@@ -1340,8 +1252,7 @@ local function BeginBagQuick(feature, direction)
             local group = type(feature._quickQueue) == "table" and feature._quickQueue[pending.queueIndex] or nil
             if type(group) == "table" then
                 group.remaining = math.max(0, (tonumber(group.remaining) or 1) - 1)
-                -- After compaction the same physical locator is the best next
-                -- hint; if it no longer matches FindLiveRow wraps safely.
+                -- 压缩后同一物理定位是下次最佳提示；不再匹配时 FindLiveRow 安全环查。
                 group.slotHint = pending.slot
                 if group.remaining <= 0 then feature._quickIndex = pending.queueIndex end
             else
@@ -1391,10 +1302,7 @@ local function BeginBagQuick(feature, direction)
                 BagMoveRuntime.SkipQuickIdentity(feature, entry, "该类物品当前无法放入目标容器，已跳过并继续后续物品")
                 return
             end
-            -- Uncertain dispatch failure (pcall/capability error text): the
-            -- post-write verification of every later step re-reads live state,
-            -- so skipping THIS identity is safe. Stopping the whole queue made
-            -- one bad call end the entire run.
+            -- pcall/能力错误导致派发失败不确定时可跳过此身份；后续步骤写后验证均重读实时状态，不能让一次坏调用终止全队列。
             BagMoveRuntime.SkipQuickIdentity(feature, entry, "移动调用异常，已跳过该类物品并继续：" .. tostring(actionErr or "unknown"))
             return
         end
@@ -1415,25 +1323,17 @@ local function BeginBagQuick(feature, direction)
 end
 
 local function RefreshBagQuickOverlay(feature)
-    -- The 100 ms window observer doubles as the quick-run watchdog: no new Tick
-    -- and no new scheduler task, and an orphaned mutex can never outlive its
-    -- task (see BagMoveRuntime.ReclaimStaleBagQuickRun).
+    -- 100ms窗口观察器兼任快捷运行看门狗，禁止新增 Tick/Scheduler 任务；孤立互斥锁不能超出任务生命周期，见 BagMoveRuntime.ReclaimStaleBagQuickRun。
     BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
     local bag, bagAnchor=ReadBagWindowContext()
     -- 仅保存当代 Native 锚点引用，不进入 Projection/Store/诊断序列化。
     feature._quickBagAnchor=bagAnchor
     local bank=ReadStorageWindowContext("bank")
     local coffer=ReadStorageWindowContext("coffer")
-    -- Surface visibility is presentation evidence only. Native move Authority
-    -- continues to use `visible` via CurrentStorageContext/RequireStorageWindow.
+    -- Surface可见仅为表现证据；Native移动仍通过 CurrentStorageContext/RequireStorageWindow 的 visible 校验权威。
     local storage=type(bank)=="table" and bank.status=="ready" and bank.surfaceVisible==true and bank
         or type(coffer)=="table" and coffer.status=="ready" and coffer.surfaceVisible==true and coffer or nil
-    -- Storage windows open together with the physical bag, but RU does not
-    -- guarantee that UIC_BAG itself flips to visible: it may remain a hidden
-    -- proxy while GetContentMainScriptPosVis still exposes the real bag rect.
-    -- For Presentation only, a live storage surface + a validated bag rectangle
-    -- is therefore sufficient to place the harmless 取/放 bar. Native move
-    -- Authority remains CurrentStorageContext() + bounded physical reads.
+    -- 仓库与物理背包同时打开，UIC_BAG可仍为隐藏代理，但GetContentMainScriptPosVis提供真实矩形；仅Presentation可凭实时仓库表现和已核实背包矩形放置取/放条。Native动作仍由CurrentStorageContext与有界物理读取校验。
     local bagMainScriptAnchor=type(bag)=="table" and tostring(bag.source or ""):sub(1,11)=="main-script"
     local bagAnchorReady=bagMainScriptAnchor==true and bag.status=="ready"
         and tonumber(bag.x)~=nil and tonumber(bag.y)~=nil
@@ -1487,11 +1387,7 @@ local function RefreshBagQuickOverlay(feature)
         or old.bankStatus~=nextState.bankStatus or old.bankVisible~=nextState.bankVisible or old.bankSurfaceVisible~=nextState.bankSurfaceVisible or old.bankVisibilityConflict~=nextState.bankVisibilityConflict or old.bankSource~=nextState.bankSource or old.bankSurfaceSource~=nextState.bankSurfaceSource or old.bankReason~=nextState.bankReason
         or old.cofferStatus~=nextState.cofferStatus or old.cofferVisible~=nextState.cofferVisible or old.cofferSurfaceVisible~=nextState.cofferSurfaceVisible or old.cofferVisibilityConflict~=nextState.cofferVisibilityConflict or old.cofferSource~=nextState.cofferSource or old.cofferSurfaceSource~=nextState.cofferSurfaceSource or old.cofferReason~=nextState.cofferReason
     feature._quickOverlay=nextState
-    -- While the native storage surface is visible, emit a low-rate heartbeat
-    -- even when geometry is unchanged. Presentation creation is a different
-    -- failure domain from native-window observation; if the first WINDOW build
-    -- is transiently rejected, the next 100 ms observation must get a chance to
-    -- retry instead of waiting for the user to close/reopen the warehouse.
+    -- Native仓库表现可见时，即使几何不变也发低频心跳。Presentation创建与Native窗口观察可独立失败；首次 WINDOW临时拒绝后，下个100ms观察应能重试，不能要求用户关仓库重开。
     if changed or visible==true then PublishBagOverlay(feature,changed and "bag_quick_window" or "bag_quick_visible_heartbeat") end
     return true
 end
@@ -1519,10 +1415,7 @@ local function StartBagQuick(feature, direction)
     end
     local ok, err = BeginBagQuick(feature, direction)
     if ok ~= true then
-        -- Same visibility contract as BatchMove: overlay/status text must show
-        -- why the quick action refused to start instead of failing silently.
-        -- `status` stays short enough for the floating bar; the full reason lives
-        -- in `error` for the page status line and diagnostics.
+        -- 与BatchMove相同，overlay/status必须显示拒绝原因，禁止静默失败；status适合浮条，完整原因放error供页面状态与诊断读取。
         feature._quickOverlay = type(feature._quickOverlay) == "table" and feature._quickOverlay or {}
         feature._quickOverlay.status = BagMoveRuntime.QuickStatusText(err)
         feature._quickOverlay.statusAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
@@ -1571,9 +1464,7 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
     if targetSnapshot.truncated == true or (tonumber(targetSnapshot.readErrors) or 0) > 0 then
         return false, "目标空槽语义不可完整验证，已安全停止"
     end
-    -- A full container can still accept items into existing partial stacks.
-    -- Capacity is therefore not a valid global preflight rejection. Each
-    -- identity is attempted independently and a rejected identity is skipped.
+    -- 满容器仍可接收到已有未满堆叠，容量不能作为全局预检拒绝；逐身份独立尝试，拒绝身份跳过。
 
     local bagSnapshot, bagErr = inventory:BuildSnapshot("bag", { maxSlots = BAG_SCAN_LIMIT })
     if type(bagSnapshot) ~= "table" then return false, bagErr or "背包快照读取失败" end
@@ -1769,9 +1660,7 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
     return true, plannedMoves
 end
 
--- `target == nil` means "use whatever storage window is actually open"; the page
--- entry point relies on that, while the explicit DepositCategoryBank/Coffer
--- commands stay for callers that really do know which one they mean.
+-- target==nil 表示使用实际打开的仓库，页面入口依赖此语义；显式 DepositCategoryBank/Coffer 留给确知目标的调用者。
 local function BatchMove(feature, target, category, requestedLimit)
     BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
     if BagQuickRunning(feature) then return false, "快捷取放正在运行，再点一次「取」或「放」可停止" end
@@ -1779,8 +1668,7 @@ local function BatchMove(feature, target, category, requestedLimit)
     if target == nil then
         local resolved, resolveErr = BagMoveRuntime.ResolveBatchTarget()
         if resolved == nil then
-            -- A refused batch must be visible in the status line, exactly like the
-            -- other preflight rejections (CURRENT_REBUILD_STATUS §9.3 lesson).
+            -- 批处理拒绝必须像其他预检拒绝一样显示在状态行。
             feature.State.batch = { status = "stopped", moved = 0, skipped = 0, queued = 0, error = resolveErr }
             if type(feature.Authority) == "table" and type(feature.Authority.Refresh) == "function" then
                 feature.Authority:Refresh("batch_target_unresolved")
@@ -1791,9 +1679,7 @@ local function BatchMove(feature, target, category, requestedLimit)
     end
     local ok, err = BeginBatchMove(feature, target, category, requestedLimit)
     if ok ~= true then
-        -- Preflight rejections must stay visible: without this record the page
-        -- status text kept showing the idle "等待操作" line, which read as a
-        -- dead button (CURRENT_REBUILD_STATUS §9.3 bag regression).
+        -- 预检拒绝必须记录为可见状态，不能继续显示等待操作让按钮看似失效。
         feature.State.batch = { status = "stopped", moved = 0, skipped = 0, queued = 0, error = err }
         if type(feature.Authority) == "table" and type(feature.Authority.Refresh) == "function" then
             feature.Authority:Refresh("batch_preflight_stop")
@@ -1802,29 +1688,29 @@ local function BatchMove(feature, target, category, requestedLimit)
     return ok, err
 end
 
--- 中文维护注释（2026-09-28，Phase 1 Batch A）：PersistStateMutation 的实现已移到
+-- PersistStateMutation 的实现已移到
 -- features/shared/rs_feature_slice_factory.lua，本文件用顶部别名调用，不再在此重复定义。
 
--- 中文维护注释（2026-09-28，Phase 1 Batch A）：白名单快照逻辑已由工厂提供，别名保持调用点不变。
+-- 白名单快照逻辑已由工厂提供，别名保持调用点不变。
 local PersistentState = FSF.PersistentState
 
--- 中文维护注释（2026-09-28，Phase 1 Batch A / FND-001）：Feature 装配骨架已由工厂拥有。
+-- Feature 装配骨架已由工厂拥有。
 -- 这里只保留别名，本文件剩余 Feature 的注册路径、Store/Authority/Demand 顺序逐字不变。
 local NewFeature = FSF.NewFeature
 
--- 中文维护注释（2026-09-28，Phase 1 Batch C）：combat_boss_alerts 已机械搬迁到 features/combat/boss_alerts/rs_boss_alerts_feature.lua；
+-- combat_boss_alerts 实现归属 features/combat/boss_alerts/rs_boss_alerts_feature.lua；
 -- toc.g 只登记一次，禁止在此重新注册（它的私有 helper 与 task 名都随文件搬走）。
 
--- 中文维护注释（2026-09-28，Phase 1 Batch C）：combat_target_monitor 已机械搬迁到 features/combat/target_monitor/rs_target_monitor_feature.lua；
+-- combat_target_monitor 实现归属 features/combat/target_monitor/rs_target_monitor_feature.lua；
 -- toc.g 只登记一次，禁止在此重新注册（它的私有 helper 与 task 名都随文件搬走）。
--- 中文维护注释（2026-09-28，Phase 1 Batch C）：combat_buff_cap 已机械搬迁到 features/combat/buff_cap/rs_buff_cap_feature.lua；
+-- combat_buff_cap 实现归属 features/combat/buff_cap/rs_buff_cap_feature.lua；
 -- toc.g 只登记一次，禁止在此重新注册（它的私有 helper 与 task 名都随文件搬走）。
--- 中文维护注释（2026-09-28，Phase 1 Batch D）：combat_team_tools 已机械搬迁到 features/combat/team_tools/rs_team_tools_feature.lua；
+-- combat_team_tools 实现归属 features/combat/team_tools/rs_team_tools_feature.lua；
 -- toc.g 只登记一次，禁止在此重新注册。
--- 中文维护注释（2026-09-28，Phase 1 Batch C）：combat_raid_recruitment 已机械搬迁到 features/combat/raid_recruitment/rs_raid_recruitment_feature.lua；
+-- combat_raid_recruitment 实现归属 features/combat/raid_recruitment/rs_raid_recruitment_feature.lua；
 -- toc.g 只登记一次，禁止在此重新注册（它的私有 helper 与 task 名都随文件搬走）。
 
--- 中文维护注释（2026-09-28，Phase 1 Batch D）：tools_craft 已机械搬迁到 features/tools/craft/rs_craft_feature.lua；
+-- tools_craft 实现归属 features/tools/craft/rs_craft_feature.lua；
 -- toc.g 只登记一次，禁止在此重新注册。
 
 local function EnsureBlacklist(feature)
@@ -1886,8 +1772,8 @@ local function RemoveBlacklistValue(feature, scopeValue, field, value, normalize
     end)
 end
 
--- compatibility contract: state = { blacklist = BlacklistDefault() }
--- compatibility contract: default = { blacklist = BlacklistDefault() }
+-- 兼容契约：state = { blacklist = BlacklistDefault() }。
+-- 兼容契约：default = { blacklist = BlacklistDefault() }。
 local BagTools = NewFeature("tools_bag", { apiDependencies = {
     "X2Bag:GetBagItemInfo", "X2Bag:Capacity",
     "X2Bag:MoveToEmptyBankSlot", "X2Bag:MoveToEmptyCofferSlot",
@@ -1899,10 +1785,7 @@ state = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "ba
 onEnable = function(feature) return StartBagQuickObserver(feature) end,
 onDisable = function(feature) StopBagBatch(feature, "stopped", "功能关闭，批量任务已释放"); return StopBagQuickAll(feature, "功能关闭，快捷取放已释放") end,
 projection = BatchProjection, read = function()
-    -- Demand/Refresh is the only entry point for this snapshot.  Reuse the
-    -- shared physical-bag Authority so the page and write workflows cannot
-    -- disagree on bagId.  InventorySnapshotV3 builds all row indexes in the
-    -- same bounded pass and never polls in the background.
+    -- Demand/Refresh是此快照唯一入口；共用物理背包权威，页面与写流程不能对bagId分歧。InventorySnapshotV3同一有界遍历建立所有行索引，禁止后台轮询。
     local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
     if type(inventory) ~= "table" or type(inventory.BuildSnapshot) ~= "function" then
         return {
@@ -1950,14 +1833,13 @@ end, commands = {
     SetBlacklistScope = SetBlacklistScope,
     AddBlacklistItem = function(feature, scope, value) return AddBlacklistValue(feature, scope, "itemType", value, NormalizeItemType, "bag_blacklist_item_add") end,
     RemoveBlacklistItem = function(feature, scope, value) return RemoveBlacklistValue(feature, scope, "itemType", value, NormalizeItemType, "bag_blacklist_item_remove") end,
-    -- Product-facing commands: a blacklist item applies to both storage kinds.
-    -- Name lookup is bounded and explicit; itemType remains the enforcement key.
+    -- 面向产品的命令中，一条黑名单适用于两种仓库；名称查询显式且有界，执行key始终为itemType。
     ResolveAndAddBlacklistItem = function(feature, query) return BagMoveRuntime.ResolveAndAddBlacklistItem(feature, query) end,
     AddGlobalBlacklistItem = function(feature, itemType, itemName) return BagMoveRuntime.AddGlobalBlacklistItem(feature, itemType, itemName) end,
     RemoveGlobalBlacklistItem = function(feature, itemType) return BagMoveRuntime.RemoveGlobalBlacklistItem(feature, itemType) end,
     AddBlacklistCategory = function(feature, scope, value) return AddBlacklistValue(feature, scope, "category", value, NormalizeCategory, "bag_blacklist_category_add") end,
     RemoveBlacklistCategory = function(feature, scope, value) return RemoveBlacklistValue(feature, scope, "category", value, NormalizeCategory, "bag_blacklist_category_remove") end,
-    -- The page entry point: target is the open storage window, not a user guess.
+    -- 页面入口target来自已打开仓库，禁止根据用户猜测决定。
     DepositCategoryCurrent = function(feature, category, limit) return BatchMove(feature, nil, category, limit) end,
     DepositCategoryBank = function(feature, category, limit) return BatchMove(feature, "bank", category, limit) end,
     DepositCategoryCoffer = function(feature, category, limit) return BatchMove(feature, "coffer", category, limit) end,
@@ -1987,17 +1869,13 @@ BagTools.BlacklistExplicitLookupContractVersion = 1
 BagTools.RUFourValueWindowVisibilityContractVersion = 2
 BagTools.NativeVisibilityShapeContractVersion = 1
 BagTools.SurfaceVisibilitySplitContractVersion = 1
--- A storage session can expose a real bag rectangle while UIC_BAG remains a
--- hidden proxy; Presentation may use that rectangle, while native move safety
--- is still proven by storage Authority + bounded physical reads.
+-- UIC_BAG可为隐藏代理，而仓库会话提供真实背包矩形；Presentation可用该矩形，Native移动安全仍由仓库权威与有界物理读取证明。
 BagTools.StorageSessionBagSurfaceContractVersion = 1
 BagTools.BagActionPhysicalReadAuthorityContractVersion = 1
 BagTools.VisiblePresenterRetryContractVersion = 1
 BagTools.DynamicSourceResolutionContractVersion = 3
 BagTools.QuickIdentityFallbackContractVersion = 1
--- Mutex v2: an empty plan never holds the mutex, and a queue that lost its
--- executor is reclaimed by the observer / next click instead of blocking the
--- whole Feature until reload.
+-- 空计划不持有互斥锁；失去执行器的队列由观察器/下次点击回收，不能阻塞整个Feature至重载。
 BagTools.BagTaskMutexContractVersion = 2
 BagTools.QuickRunSelfHealContractVersion = 1
 BagTools.QuickTwoButtonContractVersion = 1
@@ -2007,14 +1885,11 @@ function BagTools:GetQuickBagAnchor()
     if self.enabled == true and type(self._quickOverlay) == "table" and self._quickOverlay.visible == true then return self._quickBagAnchor end
     return nil
 end
--- Refusal text is split into a short overlay `status` plus a long diagnostic
--- `error`; a click is never a silent no-op.
+-- 拒绝原因拆为短overlay status与长诊断error；点击不能静默无操作。
 BagTools.QuickReasonVisibilityContractVersion = 1
--- Status writes carry their own timestamp so the bar can expire a message
--- instead of wearing it for the rest of the session.
+-- 状态写入自带时刻，浮条可让消息到期，不能整会话残留。
 BagTools.QuickStatusTimestampContractVersion = 1
--- Category batch targets the storage window that is actually open; the old
--- bank/coffer toggle is removed from the page (ambiguous: both cannot be open).
+-- 分类批处理目标为实际已开仓库；页面不提供bank/coffer猜测切换，两者不能同时打开。
 BagTools.BatchTargetAutoContractVersion = 1
 BagTools.InventorySnapshotContractVersion = 1
 BagTools.GroupedIntentQueueContractVersion = 1
@@ -2026,18 +1901,18 @@ if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.Regis
             quickActivePerformance = Copy(BagTools._quickPerformance) }
     end, 50, { detailOnly = true })
 end
--- 中文维护注释（2026-09-28，Phase 1 Batch D）：tools_auction 已机械搬迁到 features/tools/auction/rs_auction_feature.lua；
+-- tools_auction 实现归属 features/tools/auction/rs_auction_feature.lua；
 -- toc.g 只登记一次，禁止在此重新注册。
--- 中文维护注释（2026-09-28，Phase 1 Batch A）：tools_market_analysis 已机械搬迁到
+-- tools_market_analysis 实现归属
 -- features/tools/market_analysis/rs_market_analysis_feature.lua（与 tools_auction 共用上面的
 -- AuctionReadModel 读模型；Feature ID / Store ID / UpdateTopic / Commands / Projection 全部不变）。
 -- 这里不再注册它，禁止在此重新注册一遍。
--- 中文维护注释（2026-09-28，Phase 1 Batch D）：tools_auction 已机械搬迁到 features/tools/auction/rs_auction_feature.lua；
+-- tools_auction 实现归属 features/tools/auction/rs_auction_feature.lua；
 -- toc.g 只登记一次，禁止在此重新注册。
 
 ------------------------------------------------------------------------
--- Phase 1 Batch A（2026-09-28）：tools_social 已机械搬迁到
+-- tools_social 实现归属
 -- features/tools/social/rs_social_feature.lua（Feature ID / Store ID / UpdateTopic /
--- Demand owner / Commands / Projection shape / ApiDependencies 全部不变）。
+-- Demand所有者 / Commands / Projection结构 / ApiDependencies 全部不变）。
 -- 这里不再定义它的任何 helper 或实现，禁止在此重新注册一遍。
 ------------------------------------------------------------------------

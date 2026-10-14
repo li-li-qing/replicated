@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Curated quest groups shown by the dashboard
--- Activity quest IDs are audited against the current ArcheRage database.
--- One canonical ActivityQuestGroups table is shared by the Event HUD/detail
--- path and the Daily page whenever the same activity is exposed there.
+-- Replicated Suite · 任务分组数据
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 活动任务 ID 按当前 ArcheRage 数据库核验。同一活动在 Event HUD、详情和 Daily 页共用唯一 ActivityQuestGroups 表。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -15,31 +16,16 @@ if type(Q) ~= "table" or type(I) ~= "table" then
     return
 end
 
--- Activity task Authority ----------------------------------------------------
---
--- IMPORTANT:
---   * `objectives` are LOGICAL objectives, not every quest ever associated
---     with an event/category.
---   * Faction variants of the same objective stay inside one `quests` list,
---     therefore they never inflate x/y progress.
---   * Wrapper/prerequisite/side quests that belong to the same activity are stored
---     in `relatedObjectives`. They are always detail/reference rows and never enter
---     the activity x/y denominator.
---   * Personal progress selection is the default policy for every verified activity
---     with TWO OR MORE canonical `objectives`. All canonical objectives start selected;
---     the player may remove stages they do not intend to run, and only the remaining
---     selected objectives determine the displayed x/y. A group may explicitly set
---     `progressSelectionEnabled=false` if a future multi-objective activity must remain
---     atomic. One-objective and instance-raid groups keep a fixed denominator because
---     allowing the only objective to be removed would create a meaningless 0/0 state.
---   * If the latest database does not provide a verified mapping, EventData
---     must leave questKey unset instead of borrowing an unrelated task set.
+-- 活动任务权威：objectives 表示逻辑目标，不能纳入活动/分类关联过的所有任务。
+-- 同一目标的阵营变体放进同一个 quests 列表，不能增加 x/y。汇总、前置和支线任务放 relatedObjectives，仅供详情参考，不能进入活动分母。
+-- 已核实且含至少两个标准 objectives 的活动默认开启个人进度选择：初始全选，玩家可取消不参与阶段，x/y 仅由所选目标决定；未来必须保持整体性的多目标活动可显式设置 progressSelectionEnabled=false。
+-- 单目标和 instanceRaid 保持固定分母，避免取消唯一目标造成无意义的 0/0。最新数据库没有核实映射时，EventData 必须留空 questKey，不能借用无关任务组。
 local ActivityQuestGroups = {}
 
 local function Activity(key, title, objectives, options)
     options = type(options) == "table" and options or {}
     objectives = type(objectives) == "table" and objectives or {}
-    -- 中文维护注释（2026-09-22，activity-progress-selection-all-multistage）：
+    --
     -- `objectives` 已经由本文件的数据 Authority 区分为真正参与 x/y 的主任务，relatedObjectives
     -- 只作详情参考，因此“是否允许用户缩小个人分母”应由主任务数量决定，而不是在 Presentation
     -- 为每个活动硬编码。>=2 个已核验主任务默认开放选择；1 个主任务保持固定 1/1，避免用户
@@ -51,37 +37,24 @@ local function Activity(key, title, objectives, options)
     local group = {
         key = key,
         title = title,
-        -- `instanceRaid` groups are NOT quests: completion is the per-account
-        -- instance entry counter ("1/1") read from X2BattleField, not quest
-        -- state. QuestService skips them in the quest projection and publishes
-        -- their progress from the instance snapshot instead.
+        -- instanceRaid 组不是任务：完成事实来自 X2BattleField 账号进入次数（1/1），不是任务状态。QuestService 在任务投影中跳过它们，改从副本快照发布进度。
         kind = options.kind or "activity",
         objectives = objectives,
-        -- `relatedObjectives` are real quests tied to the activity but are detail/reference only.
-        -- They never participate in the personal x/y denominator; only canonical `objectives` may
-        -- be selected into that denominator when progressSelectionEnabled=true.
+        -- relatedObjectives 是真实关联任务，但仅供详情参考，不进入个人 x/y 分母；只有 progressSelectionEnabled=true 时选中的标准 objectives 可以进入分母。
         relatedObjectives = options.relatedObjectives or {},
-        -- Personal progress selection is an Activity preference, not Quest truth.
-        -- QuestProgressV3 only publishes detached per-objective facts; Activities
-        -- applies this curated multi-stage policy when projecting the player's x/y.
+        -- 个人进度选择属于 Activity 偏好，不能改变 Quest 事实。QuestProgressV3 只发布独立目标快照；Activities 投影玩家 x/y 时应用本表的多阶段策略。
         progressSelectionEnabled = progressSelectionEnabled == true,
-        -- Optional server-date window for seasonal/limited activities.  Quest
-        -- state remains the game API Authority; these fields only control when
-        -- the curated dashboard row is exposed to the player.
+        -- 季节/限时活动可配置服务器日期窗口。任务状态仍以游戏 API 为权威；这些字段只控制整理后的面板行何时展示。
         activeFrom = options.activeFrom,
         activeUntil = options.activeUntil,
-        -- Instance-raid definition (kind == "instanceRaid"): the localized
-        -- instance names used to discover the raid in the instance list and the
-        -- expected per-account entry limit.  See rs_quest_service.lua.
+        -- instanceRaid 定义包含用于副本列表发现的本地化名称，以及账号预计进入上限，详见 rs_quest_service.lua。
         instanceRaid = options.instanceRaid,
     }
     ActivityQuestGroups[key] = group
     return group
 end
 
--- Golden Plains: 9320 is the normal player's canonical daily. Hero missions
--- and the guild daily are related records only; they must never turn 1/1 into
--- a fake multi-stage progress counter.
+-- 黄金平原：9320 是普通玩家的标准日常。英雄任务和公会日常仅为关联记录，不能把 1/1 变成虚假的多阶段进度。
 Activity("halcy", O.halcy or "为了势力荣誉的战争", {
     { quests = Q.Activity.halcy.main },
 }, {
@@ -93,11 +66,7 @@ Activity("halcy", O.halcy or "为了势力荣誉的战争", {
     },
 })
 
--- Whalesong Siege: three canonical combat stages.  The four IDs in each row
--- are faction variants of the SAME stage.  The current database also exposes
--- the faction wrapper (8637..8640), Jakar boss Path-of-Glory variants
--- (8605..8608), and the current Whalesong guild daily (9000220). Record those
--- in details without inflating the 3-stage counter.
+-- 鲸歌港有三个标准战斗阶段；每行四个 ID 是同一阶段的阵营变体。阵营汇总任务 8637..8640、Jakar Path-of-Glory 8605..8608 与公会日常 9000220 仅展示在详情，不增加三阶段计数。
 Activity("whalesong", O.whalesong or "鲸鱼歌湾", {
     { quests = Q.Activity.whalesong.stage1 },
     { quests = Q.Activity.whalesong.stage2 },
@@ -110,12 +79,8 @@ Activity("whalesong", O.whalesong or "鲸鱼歌湾", {
     },
 })
 
--- Continental Crimson Rift (Cinderstone Moor / Ynystere).
--- Current ArcheRage progression: Rank 1-3 -> Hounds of Kyrios -> Shadow Demon
--- phase -> Shadow Fang. 10734 explicitly requires Shadow Fang, therefore it is
--- continental-only and must never be attached to Sungold/Auroria.
--- 9000448 is a database-side aggregate record with no normal Start/accept stage;
--- do not expose it as a player-facing "总任务". Anthalon is NOT part of this chain.
+-- 大陆红龙之渊（Cinderstone Moor/Ynystere）顺序为Rank1-3→Hounds of Kyrios→Shadow Demon→Shadow Fang。10734明确要求Shadow Fang，仅属大陆，禁止绑定Sungold/原大陆。
+-- 9000448是数据库汇总，无普通接取阶段，禁止显示玩家总任务；Anthalon不属于此链。
 Activity("crimson", O.crimson or "征兆之痕", {
     { quests = Q.Activity.crimson.stage1 },
     { quests = Q.Activity.crimson.stage2 },
@@ -124,7 +89,7 @@ Activity("crimson", O.crimson or "征兆之痕", {
     { role = "暗影恶魔阶段", keepsEventAlive = true, quests = Q.Activity.crimson.shadowDemon },
     { role = "Shadow Fang Boss", keepsEventAlive = true, quests = Q.Activity.crimson.shadowFang },
 }, {
-    -- 中文维护注释（2026-09-21，activity-progress-selection-1）：征兆六阶段是默认个人进度集合。
+    -- 征兆六阶段是默认个人进度集合。
     -- 新用户/未配置用户仍显示 0/6；只有用户在详情里主动取消某阶段后，Activities 才把剩余阶段
     -- 作为个人分母（例如只保留后三项 => 0/3）。关联任务始终只作参考，绝不进入该分母。
     progressSelectionEnabled = true,
@@ -135,14 +100,8 @@ Activity("crimson", O.crimson or "征兆之痕", {
     },
 })
 
--- Auroria / Sungold Fields Crimson Rift (煦日征兆).
--- It shares the early Rift stages, but after the Hounds the branch differs:
--- Anthalon is the Auroria-only gate; defeating him enables the Shadow Totem,
--- then the Shadow Demon phase can lead to Xarkath. 10734 is deliberately absent
--- here because that quest explicitly requires Shadow Fang (continental final boss).
--- The two Anthalon records below are optional player-facing quests from different
--- systems, so keep them as related tasks rather than pretending they are one
--- mandatory auto-acquired Rift objective.
+-- 原大陆/Sungold煦日征兆共享早期阶段，但Hounds后由Anthalon作为原大陆门槛；击败后启用Shadow Totem，Shadow Demon阶段再到Xarkath。
+-- 10734要求大陆终首领Shadow Fang，不能列入此组。下方两个Anthalon记录来自不同系统且为可选玩家任务，作关联任务，不能冒充必需自动接取目标。
 Activity("sungold_crimson", O.sungold_crimson or "煦日之野征兆", {
     { quests = Q.Activity.sungoldCrimson.stage1 },
     { quests = Q.Activity.sungoldCrimson.stage2 },
@@ -160,14 +119,8 @@ Activity("sungold_crimson", O.sungold_crimson or "煦日之野征兆", {
     },
 })
 
--- Grimghast Rift / 迷雾战争.
--- The bulletin-board material task is ONE random/mutually-exclusive prerequisite,
--- not five simultaneous objectives. Nuia can receive one of 5138/5139/5140/
--- 5150/5151 and Haranya one of 5152/5153/5154/5155/5156. Completing the one
--- that spawned for the character unlocks the faction version of Helping the War
--- Effort (5142/5157), which builds the trebuchet and then opens the combat quests.
--- Store all ten material IDs as variants of ONE logical objective so the details
--- never imply that the player must turn in all five materials on the same day.
+-- 迷雾战争材料板是一个随机互斥前置目标，不是同时五项：Nuia从5138/5139/5140/5150/5151中取一，Haranya从5152/5153/5154/5155/5156中取一。
+-- 完成角色实际获得任务后解锁阵营Helping the War Effort（5142/5157），建投石机再开启战斗任务；十材料ID必须存为一个逻辑目标的变体，禁止暗示同日交齐五种。
 Activity("ghost", O.ghost or "迷雾战争", {
     { quests = Q.Activity.ghost.stage1 },
     { quests = Q.Activity.ghost.stage2 },
@@ -182,10 +135,7 @@ Activity("ghost", O.ghost or "迷雾战争", {
     },
 })
 
--- Aegis Island / Defend the Seal: three logical stages with faction variants.
--- The faction wrapper (8641..8644), Final Sealbreaker Path-of-Glory variants
--- (8618..8621), and current Aegis guild daily (9000221) are genuine linked
--- tasks; keep them visible while preserving the canonical 3-stage denominator.
+-- 神盾岛 / Defend the Seal 有三个逻辑阶段，含阵营变体。汇总任务 8641..8644、Final Sealbreaker Path-of-Glory 8618..8621 与公会日常 9000221 是真实关联任务，应保持可见且不增加三阶段分母。
 Activity("aegis", O.aegis or "海之烛台", {
     { quests = Q.Activity.aegis.stage1 },
     { quests = Q.Activity.aegis.stage2 },
@@ -198,8 +148,7 @@ Activity("aegis", O.aegis or "海之烛台", {
     },
 })
 
--- Hiram T6 / Void Army Invasion. 11154 is the wrapper; the four children are
--- the actual logical objectives shown to the user.
+-- Hiram T6 / Void Army Invasion：11154 是汇总任务，四个子任务才是展示给玩家的实际逻辑目标。
 Activity("hiram_t6", O.hiram_t6 or "空虚军团入侵", {
     { quests = Q.Activity.hiramT6.stage1 },
     { quests = Q.Activity.hiramT6.stage2 },
@@ -211,10 +160,7 @@ Activity("hiram_t6", O.hiram_t6 or "空虚军团入侵", {
     },
 })
 
--- JMG / Path of Glory bosses: Meina, Glenn, Jola. 5972 is the original
--- three-trophy wrapper. The modern Relentless variants have their own three
--- Path-of-Glory dailies plus 9000467 The Prophecy II; keep every one visible
--- without changing the classic 3/3 denominator.
+-- JMG / Path of Glory 首领为 Meina、Glenn、Jola；5972 是原有三战利品汇总。现代 Relentless 变体各有 Path-of-Glory 日常及 9000467 The Prophecy II，全部可见但保持经典 3/3 分母。
 Activity("jmg", O.jmg or "JMG", {
     { quests = Q.Activity.jmg.boss1 },
     { quests = Q.Activity.jmg.boss2 },
@@ -233,10 +179,7 @@ Activity("lusca", O.lusca or "消灭阿肯怪物", {
     { quests = Q.Activity.lusca.main },
 })
 
--- Hasla Shadow Invasion (翡翠谷征兆). 8909 is the current Daily whose text
--- explicitly says it is completed during the Shadow Invasion in Hasla and
--- describes the three invasion waves. 9494 is the normal introduction/guide;
--- 5884 is Hanure's Path-of-Glory daily, useful as a trigger-related record only.
+-- 翡翠谷征兆/Hasla Shadow Invasion当前日常8909明确描述在Hasla入侵期间完成及三波入侵；9494为普通介绍引导，5884为Hanure Path-of-Glory日常，仅作触发关联记录。
 Activity("hasla_shadow", "翡翠谷征兆", {
     { quests = Q.Activity.haslaShadow.main },
 }, {
@@ -246,8 +189,7 @@ Activity("hasla_shadow", "翡翠谷征兆", {
     },
 })
 
--- Live-zone purification reward: one logical daily per zone, with faction
--- variants sharing the same denominator.
+-- 实时地区净化奖励：每个地区一个逻辑日常，各阵营变体共享分母。
 Activity("cinderstone_purify", "十字星平原债券奖励", {
     { quests = Q.Activity.cinderstonePurify.main },
 })
@@ -255,9 +197,7 @@ Activity("ynystere_purify", "伊尼斯泰尔债券奖励", {
     { quests = Q.Activity.ynysterePurify.main },
 })
 
--- Akasch Invasion meta task 9000449 requires exactly these four objectives.
--- The current category also contains additional independent/staged invasion
--- dailies. They are tracked as related tasks so the canonical 4/4 remains true.
+-- Akasch 入侵汇总任务 9000449 恰好要求这四个目标。当前分类中的其他独立/阶段日常作为关联任务追踪，保证标准 4/4 不失真。
 Activity("akasch_guard", "守山 / 守护伊弗尼尔山", {
     { quests = Q.Activity.akaschGuard.stage1 },
     { quests = Q.Activity.akaschGuard.stage2 },
@@ -281,9 +221,7 @@ Activity("akasch_guard", "守山 / 守护伊弗尼尔山", {
     },
 })
 
--- Guardian Scramble exposes one base activity daily. 11096/11116/11131 are
--- faction variants of that one objective. 11098 is a separate pirate side
--- quest, 11099 is the normal guide, and 11132/11133 are faction victory rewards.
+-- Guardian Scramble 只有一个基础活动日常，11096/11116/11131 是同一目标的阵营变体；11098 为独立海盗支线，11099 为普通引导，11132/11133 为阵营胜利奖励。
 Activity("guardian_scramble", "大草原守护者争夺战", {
     { title = "神兽争夺战日常任务", quests = Q.Activity.guardianScramble.main },
 }, {
@@ -301,14 +239,8 @@ Activity("dragon_power", "龙之力", {
     { quests = Q.Activity.dragonPower.main },
 })
 
--- Rookborne / Rum Runner Rapids festival (洛卡试练庆典).  The current
--- ArcheRage database marks the five objectives below as Festival dailies and
--- the modern event guide exposes exactly these as the core daily set.  6760
--- and 6785 remain valid Festival Daily records in the database but are not in
--- the modern five-daily guide, so keep them as related compatibility/extra
--- objectives instead of inflating the normal 5/5 denominator.  7803/7804 are
--- repeatable festival quests, not Daily quests, and therefore are related only.
--- The 2026 RU event announcement runs from Aug 19 through Sep 1 (inclusive).
+-- 洛卡试练庆典/Rookborne Rum Runner Rapids下方五目标经当前数据库与指南确认为核心节日日常。6760/6785仍是有效节日日常，但不在现代五日常指南，只作兼容/额外关联，不增加5/5分母。
+-- 7803/7804是可重复节庆任务非日常，仅关联展示；2026 RU公告开放2026-08-19至2026-09-01，含结束日。
 Activity("rookborne_festival", "洛卡试练庆典", {
     { title = "洛卡的试验庆典", quests = Q.Activity.rookborneFestival.trialFestival },
     { title = "洛卡的试炼：初学者挑战课程", quests = Q.Activity.rookborneFestival.beginner },
@@ -326,9 +258,7 @@ Activity("rookborne_festival", "洛卡试练庆典", {
     },
 })
 
--- Current world-boss/activity dailies. Compatibility IDs that represent the
--- same logical kill stay in one `quests` list. Normal introduction/follow-up
--- quests are related records only so they cannot falsely complete the boss row.
+-- 当前世界首领/活动日常：表示同一击杀目标的兼容 ID 必须留在同一个 quests 列表；普通介绍/后续任务只作关联记录，不能误完成首领行。
 Activity("black_dragon", "黑龙柯萨纳斯", {
     { quests = Q.Activity.blackDragon.main },
 }, {
@@ -353,57 +283,40 @@ Activity("garden_anthalon", "庭院安塔伦", {
     },
 })
 
--- Garden of the Gods / 精灵的委托 (10056): the quest internally accumulates score and Reward Level 1..12,
--- but the Activity completion contract is still one daily quest: unfinished = 0/1, ready/completed = 1/1.
--- 中文维护注释（2026-09-22，Garden score + binary completion Authority）：
--- 1) QuestProgressV3 仍独占 X2Quest 状态与 Journal Objective 读取；Activity 只消费 detached facts。
--- 2) kind=scoreQuest 只表示“详情内部是积分/奖励阶段型”，不改变 Activity 的完成度语义。活动列表必须统一显示 0/1 -> 1/1。
--- 3) 实时积分/奖励阶段只展示 RU 客户端原生 Journal 文本。当前没有稳定、已验证的结构化数值 API，
---    因此禁止从本地文案猜阈值或维护第二套积分表。未来若 Native 提供结构化分数，再在 QuestProgress Authority 扩展。
--- 4) 单任务积分活动不开放个人分母选择；否则取消唯一任务会制造无意义的 0/0。
+-- 精灵的委托10056内部累计积分和Reward Level1..12，但活动完成契约始终为一个日常：未完成0/1，可交付/已完成1/1。
+-- QuestProgressV3独占X2Quest状态与Journal Objective读取，Activity只消费独立事实。kind=scoreQuest仅描述详情积分/奖励阶段，不改活动完成语义。
+-- 实时积分/奖励只展示RU原生Journal文本；无稳定核实结构化数值API时，禁止猜阈值或建立第二积分表。未来结构化分数应在QuestProgress权威扩展。
+-- 单任务不开放个人分母选择，避免取消唯一目标产生0/0。
 Activity("garden_fairy", "精灵的委托", {
     { category = "积分任务", quests = Q.Activity.gardenFairyRequest },
 }, {
     kind = "scoreQuest",
     progressSelectionEnabled = false,
 })
--- 红龙巢穴 / Red Dragon's Keep: a TEAM RAID, not a quest.  The old mapping
--- (9215/7654/8958/47243) treated the activity as a kill quest, which is wrong:
--- on ArcheRage the raid is time-gated (Mon/Wed/Fri/Sun) and each account has
--- ONE entry per reset.  Completion is the instance entrance counter showing
--- "1/1" after the account entered.  QuestService discovers the instance by
--- matching the localized name in X2BattleField's instance list and reads
--- enterCount/maxEnterCount from GetDetailInstanceInfo.
+-- 红龙巢穴/Red Dragon's Keep是团队副本，禁止使用9215/7654/8958/47243旧击杀任务映射。开放周一/三/五/日，每账号每重置一次进入，进入后完成计数1/1。
+-- QuestService按X2BattleField列表本地化名发现副本，从GetDetailInstanceInfo读enterCount/maxEnterCount。
 Activity("red_dragon", "红龙巢穴", {}, {
     kind = "instanceRaid",
     instanceRaid = I.redDragon,
 })
 
--- 血之使者卡杜姆 / Kadum: the second team raid with the same one-entry-per-
--- account mechanic as 红龙巢穴.  ArcheRage's event guide lists Kadum on
--- Sun/Tue/Thu/Sat (红龙巢穴 on Sun/Mon/Wed/Fri); the RU time windows mirror the
--- red_dragon row.  Completion is the same "1/1" instance entry counter.
+-- 卡杜姆/Kadum与红龙巢穴共用账号每轮一次进入规则；指南为周日/二/四/六，红龙为周日/一/三/五，RU时间窗共用red_dragon。完成同样读取1/1副本进入计数。
 Activity("kadum", "血之使者卡杜姆", {}, {
     kind = "instanceRaid",
     instanceRaid = I.kadum,
 })
 
--- Abyssal Attack has two current daily activity objectives: the common
--- Stopping Doomsday task plus the faction variant of Becoming a Seaknight.
--- Old 6788/6790 introduction/summon quests are normal one-time quests.
+-- Abyssal Attack 当前有两个活动日常目标：公共 Stopping Doomsday 与阵营 Becoming a Seaknight。旧 6788/6790 介绍/召唤任务是普通一次性任务。
 Activity("abyssal", O.abyssal or "深渊之袭", {
     { quests = Q.Activity.abyssal.doomsday },
     { quests = Q.Activity.abyssal.seaknight },
 })
 
 S.Data.ActivityQuestGroups = ActivityQuestGroups
--- Compatibility name consumed by Quest/Event services.  It intentionally
--- points at the SAME table: Event progress and task detail cannot drift apart.
+-- Quest/Event 服务使用的兼容名称必须指向同一个表，保证活动进度与任务详情不分叉。
 S.Data.EventQuestProgress = ActivityQuestGroups
 
--- Dashboard task groups ------------------------------------------------------
--- Existing Daily presentation is preserved, but every activity row below is a
--- reference to the same canonical Activity table used by the Event HUD.
+-- 面板任务分组：保留现有 Daily 展示；下方每个活动行均引用 Event HUD 共用的标准 Activity 表。
 S.Data.QuestGroups = {
     daily = {
         { key = "guild", title = "公会任务", kind = "guildAchievement", quests = Q.Dashboard.Daily.guild },
@@ -416,25 +329,17 @@ S.Data.QuestGroups = {
         ActivityQuestGroups.ghost,
         ActivityQuestGroups.aegis,
         ActivityQuestGroups.hiram_t6,
-        -- Eastern Hiram daily set. On current ArcheRage, the two similarly
-        -- named kill quests are weekly tasks (10334/10335), not Daily rows.
-        -- Keep only the three actual Daily objectives here so the dashboard
-        -- denominator and task detail do not report a false 5-task daily set.
+        -- 东部 Hiram 当前两个同名击杀任务 10334/10335 是周常；这里只保留三个真实日常目标，避免面板分母与详情误报五任务日常组。
         { key = "east_hiram_daily", title = "东部悉拉玛山脉日常", objectives = {
             { quests = Q.Dashboard.Daily.eastHiram1 },
             { quests = Q.Dashboard.Daily.eastHiram2 },
             { quests = Q.Dashboard.Daily.eastHiram3 },
         } },
-        -- 10558 is already one of the four required objectives of 9000449
-        -- `akasch_guard`; exposing it again as a standalone Daily row caused
-        -- duplicate dashboard tracking. 10559 is a separate egg-breaking daily.
+        -- 10558 已属于 9000449 akasch_guard 的四个必需目标，不能再单独展示成 Daily 行造成重复追踪；10559 是独立击破蛋日常。
         { key = "akasch_transfer_phenomenon", title = "打碎蛇卵", quests = Q.Dashboard.Daily.akaschTransfer },
         ActivityQuestGroups.jmg,
         ActivityQuestGroups.lusca,
-        -- Garden daily set. Fairy Request is the compact canonical daily here.
-        -- Botanical Research has four separate territory versions (not proven
-        -- mutually exclusive), plus an explicit normal/pirate faction pair.
-        -- Keep them visible as related tasks without inventing a fake 7-stage row.
+        -- 神之庭院日常以 Fairy Request 作为紧凑标准目标。Botanical Research 有四个地区版本，尚未证实互斥，另有明确普通/海盗阵营对；全部仅作关联任务，不能编造七阶段行。
         { key = "garden_daily", title = "神之庭院日常", objectives = {
             { quests = Q.Dashboard.Daily.garden },
         }, relatedObjectives = {
@@ -453,15 +358,12 @@ S.Data.QuestGroups = {
     },
     weekly = {
         { key = "west_hiram", title = "西部悉拉玛山脉周常", objectives = { { quests = Q.Dashboard.Weekly.westHiram1 }, { quests = Q.Dashboard.Weekly.westHiram2 } } },
-        -- Current ArcheRage weekly kill quests for Eastern Hiram Mountains.
-        -- Do not mirror their legacy/same-name daily IDs into the Daily group.
+        -- 当前 ArcheRage 东部 Hiram Mountains 周常击杀任务；禁止把旧版/同名日常 ID 镜像进 Daily 组。
         { key = "east_hiram", title = "东部悉拉玛山脉周常", objectives = {
             { quests = Q.Dashboard.Weekly.eastHiram1 },
             { quests = Q.Dashboard.Weekly.eastHiram2 },
         } },
-        -- Keep the ordinary 2/2 compact progress stable. Other current Auroria
-        -- weeklies and pirate-faction variants remain visible as related tasks,
-        -- because they are not extra stages every character can complete.
+        -- 保持普通 2/2 紧凑进度；其他当前原大陆周常和海盗变体作为关联任务展示，它们不是每个角色都能完成的额外阶段。
         { key = "auroria_guard", title = "原大陆周常", objectives = {
             { quests = Q.Dashboard.Weekly.auroria1 },
             { quests = Q.Dashboard.Weekly.auroria2 },
@@ -476,17 +378,9 @@ S.Data.QuestGroups = {
     },
 }
 
--- Resident-specialty Daily tasks that require delivering a trade pack.
---
--- Each quest id may accept one of several regional specialties. Those entries
--- are ALTERNATIVES, not cumulative requirements: consumers must never sum the
--- material quantities across recipes as if the player had to craft every pack.
--- The Auction Favorites integration uses this table only while the matching
--- quest is actively IN_PROGRESS, then derives auctionable ingredients from the
--- canonical TradeMaterial recipe Authority.
---
--- 9000226 (the generic 20-pack Daily) is intentionally absent: it accepts any
--- valid Nuia/Haranya pack and therefore has no truthful pack choice to infer.
+-- 居民特产日常要求交付货包。同一任务 ID 可以接受多个地区特产，它们是可选替代项，禁止跨配方累加材料，假定玩家必须制作全部货包。
+-- Auction Favorites 仅在对应任务 IN_PROGRESS 时消费本表，从唯一 TradeMaterial 配方权威派生可拍卖材料。
+-- 通用 20 货包日常 9000226 接受任意有效 Nuia/Haranya 货包，没有可信的特定货包选择，因此不列入此表。
 S.Data.DailyTradePackQuestRecipes = {
     { questId = Q.Resident.packDelivery[8559], recipes = {
         "Tigerspine Fine Local Specialty",

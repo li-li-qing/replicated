@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Static Game Data V2
+-- Replicated Suite · 共享静态游戏定义
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Immutable-by-contract, indexed game-definition data for V3 and shared
--- Services. Runtime state (prices, ratios, inventory, quest progress, etc.)
--- must never be registered here.
+-- 面向共享 Service 的索引化游戏定义数据按契约不可变；价格、比价、背包和任务进度等运行时状态禁止注册在这里。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -136,10 +136,7 @@ function D:GetCatalog(name)
     return self.catalogs[Normalize(name)]
 end
 
--- Stable ASCII key for source names that may contain Chinese/Russian text.
--- We intentionally hash UTF-8 bytes instead of stripping non-ASCII characters;
--- this makes catalog identities deterministic across locales without putting
--- display text itself on hot lookup paths.
+-- 为可能含中俄文的来源名称生成稳定 ASCII key；对 UTF-8 字节哈希，不能删除非 ASCII 字符，保证跨语言目录身份确定，并避免把展示文本放入热查询路径。
 function D:StableTextKey(prefix, value)
     local text = tostring(value or "")
     local hash = 5381
@@ -195,9 +192,7 @@ function D:FindById(catalogName, id)
     return catalog and catalog.byId[tonumber(id)] or nil
 end
 
--- Ordered read-only enumeration for setup/ViewModel construction. Returned
--- records remain owned by StaticDataV2 and must never be mutated by callers.
--- Hot paths should keep using Get()/FindById() O(1) indexes.
+-- 有序只读枚举仅供初始化/ViewModel 构建；返回记录仍归 StaticDataV2，调用者禁止修改。热路径继续使用 Get()/FindById() O(1) 索引。
 function D:List(catalogName)
     local catalog = self:GetCatalog(catalogName)
     if catalog == nil then return {} end

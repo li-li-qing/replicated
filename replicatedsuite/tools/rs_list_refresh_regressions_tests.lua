@@ -1,5 +1,11 @@
--- 中文维护：真实 Healer Store + 页面 RefreshAdvanced + RSUI TableView；真实 Bonds 页面行激活。
+------------------------------------------------------------------------
+-- Replicated Suite · 列表刷新回归测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 真实 Healer Store + 页面 RefreshAdvanced + RSUI TableView；真实 Bonds 页面行激活。
 -- 治疗页只装配目标方法的局部编辑控件，跳过无关校准/运行时；Native 绘制、债券事实/详情边界由宿主提供。
+------------------------------------------------------------------------
 local Boot=dofile('tools/rs_gear_page_test_host.lua')
 local passed,failed=0,0
 local function T(name,fn)local ok,e=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS list-refresh '..name)else failed=failed+1;print('FAIL list-refresh '..name..': '..tostring(e))end end

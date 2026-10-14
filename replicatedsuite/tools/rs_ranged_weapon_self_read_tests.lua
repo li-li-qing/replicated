@@ -1,8 +1,11 @@
--- Development-only compatibility regression.
--- HUD/status reads and loadout-transaction reads intentionally have separate
--- selector contracts.  The .18.253 bug came from forcing one assumption onto
--- both domains.  Keep GetEquipped(false) for the HUD path; Gear transactions
--- use GetLoadoutEquipped(true), covered by the costume/title regressions.
+------------------------------------------------------------------------
+-- Replicated Suite · 远程武器自身读取测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 开发期兼容回归：HUD 状态读取和配装事务读取有独立选择器契约，不能强行共用同一假设。
+-- HUD 保持 GetEquipped(false)，Gear 事务使用 GetLoadoutEquipped(true)，后者由时装和称号回归覆盖。
+------------------------------------------------------------------------
 ReplicatedSuite = {
     BootError = nil,
     Services = {},

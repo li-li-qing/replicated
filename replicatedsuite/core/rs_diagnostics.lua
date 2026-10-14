@@ -1,9 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Privacy-filtered Structured Diagnostics Authority
+-- Replicated Suite · 结构化诊断与健康状态
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Diagnostics is infrastructure, not a business Domain.  It owns bounded
--- structured events, aggregation/rate limiting and health snapshots.  It must
--- never become an unbounded log sink or perform expensive work in hot loops.
+-- 隐私过滤的结构化诊断权威。Diagnostics 属于基础设施，拥有有界事件、聚合、限频及健康快照；不能成为无界日志
+-- 接收器，也不能在热循环做昂贵工作。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -73,7 +74,7 @@ end
 local function SanitizeContext(value)
     if type(value) ~= "table" then return nil end
     local out, count = {}, 0
-    -- 维护（module-controls-diag-2）：归属字段先于不确定的 pairs 顺序，防止第13字段丢失模块身份。
+    -- 归属字段先于不确定的 pairs 顺序，防止第13字段丢失模块身份。
     -- 这里只保留原有短上下文；长错误证据另走有界 primitive 白名单，禁止保存配置对象/Native 引用。
     for _, key in ipairs({ "moduleId", "featureId", "feature", "route", "store", "owner", "phase", "error", "reason" }) do
         if value[key] ~= nil then out[key] = SafePrimitive(value[key]); count = count + 1 end
@@ -117,9 +118,9 @@ local function TouchBoundedKey(container, order, key, limit)
     if oldest ~= nil then container[oldest] = nil end
 end
 
--- 维护（module-controls-diag-2）：日志短上下文曾在入库时截到180字节，诊断再分页也无法恢复根因。
--- 仅 warning/error 保存以下 primitive 证据，总计最多16 KiB、单字段8 KiB；超限保留头尾并明确标记。
--- 不递归配置/对象、不采集额外游戏数据、不上传。Diagnostics 仍是记录 Authority，Hub 仅投影。
+-- warning/error 需保留根因证据，不能先截短上下文再指望分页恢复。
+-- 仅保存下列基础值，总计最多 16KiB、单字段 8KiB；超限保留头尾并明确标记。
+-- 不递归配置/对象、不额外采集游戏数据、不上传；记录权威归 Diagnostics，Hub 仅投影。
 local FAULT_FIELDS = { "moduleId", "featureId", "feature", "route", "store", "owner", "phase", "method", "action",
     "error", "reason", "detail", "traceback", "stack", "path", "expected", "actual" }
 local function FaultEvidence(level, context)
@@ -173,7 +174,7 @@ function D:_Append(level, source, code, message, context, options)
         local suffix = entry.count > 1 and (" · 重复 " .. tostring(entry.count - 1) .. " 次") or ""
         S.RecordLog(level, source, "[" .. code .. "] " .. message .. suffix .. ContextText(context))
     end
-    -- 中文维护注释（2026-09-18，module-diagnostics-1）：全局 Diagnostics 仍是唯一错误 Authority；
+    -- （2026-09-18，module-diagnostics-1）全局 Diagnostics 仍是唯一错误 Authority；
     -- ModuleDiagnosticsHub 只接收已经完成隐私裁剪/限长后的 detached entry 做有界模块投影。
     -- 这里绝不因 Hub 缺失/异常改变原错误写入结果，避免“诊断系统故障反过来吞掉真实故障”。
     local moduleHub = S.ModuleDiagnosticsHub
@@ -183,13 +184,12 @@ function D:_Append(level, source, code, message, context, options)
     return entry
 end
 
--- New structured entry point.
+-- 结构化诊断入口。
 function D:Emit(level, source, code, message, context)
     return self:_Append(level, source, code, message, context)
 end
 
--- Backward-compatible entry used throughout the existing Suite. Optional code
--- and context allow callers to migrate incrementally without breaking old code.
+-- 既有 Suite 使用的兼容入口；可选 code/context 允许逐步迁移调用者而不破坏旧调用。
 function D:Record(level, source, message, code, context)
     return self:_Append(level, source, code or "LEGACY", message, context)
 end
@@ -204,14 +204,13 @@ function D:Error(source, code, message, context)
     return self:Emit("error", source, code, message, context)
 end
 
--- Repeated hot-loop problems are aggregated instead of writing hundreds of log
--- rows.  The next eligible emission reports how many repeats were suppressed.
+-- 热循环重复问题采用聚合，避免生成数百条日志；下一次满足发出条件时报告被抑制的重复次数。
 function D:RateLimited(level, source, code, intervalMs, message, context)
     level = NormalizeLevel(level)
     source = NormalizeSource(source)
     code = NormalizeCode(code)
     intervalMs = math.max(250, tonumber(intervalMs) or 5000)
-    -- 维护（module-controls-diag-2）：共享ui/runtime source下不同模块不能互相吞错。
+    -- 共享ui/runtime source下不同模块不能互相吞错。
     -- 仅取调用方显式归属字段，不在热路径做Registry遍历/模糊匹配；日志级别也独立限流。
     local scope = ""
     if type(context) == "table" then
@@ -264,8 +263,7 @@ function D:ErrorRateLimited(source, code, intervalMs, message, context)
     return self:RateLimited("error", source, code, intervalMs, message, context)
 end
 
--- Bounded counters are useful for events that are important statistically but
--- should not create log rows (UI writes, retry counts, validation misses, etc.).
+-- 有界计数用于统计上重要但不应生成日志的事件，如 UI 写入、重试次数和校验未命中。
 function D:Count(source, code, delta)
     source = NormalizeSource(source)
     code = NormalizeCode(code)
@@ -301,12 +299,9 @@ function D:GetCounters(limit)
     return rows
 end
 
--- User-copyable single-line diagnostics for the two P0 observability targets
--- (acceptance brief §19). Bounded, no per-frame chat output; both read only
--- Feature-owned runtime diagnostic tables.
--- 中文维护注释（.18.208 装分可观测性）：仅汇总 EquipmentDiagnostics 已缓存的最近
--- 事实，不重新调用 UnitGearScore。raw 文本被 Feature 限长到 48 字符；计数有界于数字字段，
--- 不保存目标对象。这样用户复制一次诊断即可区分 API error、不可检查单位与格式化返回。
+-- 两个 P0 可观测目标的可复制单行诊断（验收简报 §19），有界且不逐帧输出聊天；只读 Feature 自有运行诊断表。装
+-- 分诊断只汇总 EquipmentDiagnostics 缓存的近期事实，不重新调用 UnitGearScore；raw 由 Feature 限长 48 字符，
+-- 计数限定为数字字段，不保存目标对象，使一次复制能区分 API error、不可检查单位和格式化返回。
 function D.BuffGearLine(snap)
     local buff = snap.buffDisplay
     local dia = buff and buff.equipmentDiagnostics or nil
@@ -338,16 +333,12 @@ function D.BuffGearLine(snap)
         .. (dia.sampleItemKeys and (" · itemKeys=" .. tostring(dia.sampleItemKeys)) or "")
 end
 
--- 中文维护注释（状态显示 HUD 校准专项摘要，2026-09-11）：
--- 问题原因：状态显示的大修跨越 Shell、校准 Draft、Persistence、Marker Renderer，只有 BuffDisplay
--- Domain 健康信息不足以定位编辑器问题。Authority：这里只读取 BuffHudCalibrationV3:GetDiagnostics()
--- 的 detached 快照，不轮询 Native UI、不修改配置。数据流：校准显式事件记录 -> Snapshot -> 本行。
--- 兼容边界：校准模块未加载时返回明确文本；轨迹本身保持在 Presentation 的 12 条有界缓存中，
--- Diagnostics 只拼一行摘要，因此不会增加 50ms HUD 热路径 CPU/内存。后续若扩展字段，应优先追加
--- 聚合计数，禁止把整个 Draft/Store payload 塞进日志。.18.205 追加 panelDrag 和
--- screen/logical/stored Y 三段值；.18.206 追加 globalPreview/liveHudSuppressed，证明校准画面是否已
--- 隔离正式 Renderer。.18.207 追加 template 输出成功/失败/分行数，证明模板按钮是否真正把当前
--- Draft 发到聊天；字段仍只在显式用户动作或按需 Snapshot 时更新，不允许从 50ms Renderer 反向采样。
+-- 状态 HUD 校准跨 Shell、Draft、Persistence、Marker Renderer，因此只看 BuffDisplay Domain 健康不足以定位编
+-- 辑问题。这里只读取 BuffHudCalibrationV3:GetDiagnostics() 分离快照，不轮询 Native UI、不改配置。显式校准事
+-- 件 -> Snapshot -> 单行摘要；未加载时给明确文本。轨迹归 Presentation 的 12 项有界缓存，不增加 50ms HUD 热
+-- 路径成本。panelDrag 与 screen/logical/stored Y 说明拖动坐标；globalPreview/liveHudSuppressed 证明预览与正
+-- 式 Renderer 隔离；template 成败及分行数证明当前 Draft 是否发到聊天。字段只在显式动作或按需 Snapshot 更新
+-- ；扩展优先聚合计数，不能记录完整 Draft/Store 或从 50ms Renderer 反向采样。
 function D.BuffHudCalibrationLine(snap)
     local dia = snap.buffHudCalibration
     if type(dia) ~= "table" then return "HUD校准：诊断不可用（校准模块未加载）" end
@@ -374,7 +365,7 @@ function D.BuffHudCalibrationLine(snap)
         .. (dia.lastError and (" · err=" .. tostring(dia.lastError)) or "")
 end
 
--- 中文维护注释（正式 HUD Renderer 诊断）：BuffHeadMarkers 本来已有 GetDiagnostics，但过去只在
+-- BuffHeadMarkers 本来已有 GetDiagnostics，但过去只在
 -- 代码验收中存在，用户“输出诊断摘要”看不到。这里把运行/Consumer/锚点失败按 scope 显式输出；
 -- Authority 仍由 BuffHeadMarkers metrics 持有，Diagnostics 只读，不重新做投影或 Native 查询。
 function D.BuffHeadRendererLine(snap)
@@ -388,7 +379,7 @@ function D.BuffHeadRendererLine(snap)
     local source = type(dia.source) == "table" and dia.source or {}
     local anchor = type(dia.anchor) == "table" and dia.anchor or {}
     local projectError = type(dia.projectError) == "table" and dia.projectError or {}
-    -- 维护（pvp-hud-1）：只读有界计数，区分移动提交、内容重建、纹理拒写；不因打印报告重新采样。
+    -- 只读有界计数，区分移动提交、内容重建、纹理拒写；不因打印报告重新采样。
     local pvp = type(dia.pvp)=="table" and dia.pvp or {}
     return "HUD渲染：v" .. tostring(dia.version or 0)
         .. "/fontCv" .. tostring(dia.buffIconFontSizeContractVersion or 0)
@@ -409,14 +400,14 @@ function D.BuffHeadRendererLine(snap)
         .. (projectError.target and (" · tErr=" .. tostring(projectError.target)) or "")
 end
 
--- 中文维护注释（可复制专项报告 Authority）：这是状态显示 HUD 大修后的长期维护入口。报告只在
+-- 这是状态显示 HUD 大修后的长期维护入口。报告只在
 -- 用户点击诊断按钮时构建，包含校准状态、正式 Renderer、两套几何 Authority 摘要以及最近有界
 -- 校准事件；不输出追踪 ID、Buff 列表等大数据，也不触发采集。未来增加 HUD 子组件时优先在
 -- ProfileLine 追加必要几何字段，保持报告可复制且有界。
 function D:BuildBuffHudReport()
     local snap = self:Snapshot()
     local lines = { "【状态HUD诊断】", D.BuffHudCalibrationLine(snap), D.BuffHeadRendererLine(snap) }
-    -- 中文维护注释（HUD Store 边界诊断，2026-09-11）：HUD 大修后“界面不动”可能来自
+    -- （HUD Store 边界诊断，2026-09-11）HUD 大修后“界面不动”可能来自
     -- Calibration/Renderer，也可能在更早的 Persistence Fence 阶段就根本没有 Apply。专项报告
     -- 必须把 Store schema/load/fence/integrity/historical probe 一并带出，避免只看 Presentation
     -- 误判。这里纯读取 runtime telemetry，不触发 LoadStore、不 Hash、不写盘，也不进入 50ms 路径。
@@ -438,10 +429,8 @@ function D:BuildBuffHudReport()
     else
         lines[#lines + 1] = "HUD存档：Store不可用"
     end
-    -- 中文维护注释（Phase 3 Batch G，2026-09-29，core-feature-decoupling-1）：原先这里按 id 直接读
-    -- BuffDisplay 的实现表取 HUD 校准快照 —— CORE_FEATURE 债务。现在改为向「Feature 自己注册的投影
-    -- 取值表」要，Core 不再认识任何业务 Feature（注释里也不要写出带点号的“表名+字段”形式：
-    -- rs_architecture_audit 是行级正则且不跳过注释，说明文字会被重新计成 CORE_FEATURE 债务）。
+    -- HUD 校准快照通过 Feature 自行注册的投影 provider 读取，Core 不硬编码业务 ID 或访问实现表。注释也避免
+    -- 带点号的表名+字段，因为 rs_architecture_audit 行正则不跳过注释，会将说明重新计为 CORE_FEATURE 债务。
     local hud = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("buff_hud_calibration") or nil
     local function ProfileLine(label, profile)
         profile = type(profile) == "table" and profile or {}
@@ -483,7 +472,7 @@ function D:BuildBuffHudReport()
 end
 
 function D.UnitLineLine(snap)
-    -- 同上（Phase 3 Batch G）：改向 Feature 注册的投影取值表要，Core 不认识具体业务 Feature。
+    -- 通过 Feature 注册的投影 provider 读取，Core 不认识具体业务实现。
     local dia = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("unit_lines_diagnostics") or nil
     if dia == nil then return "UnitLines：诊断不可用（功能未加载）" end
     local projection = snap.screenProjection or {}
@@ -515,20 +504,9 @@ function D.BossLine(snap)
         .. (#sample > 0 and (" · seenCast=" .. table.concat(sample, " | ")) or "")
 end
 
-------------------------------------------------------------------------
--- Per-feature status rows (2026-09-06 diagnostics overhaul).
---
--- The old summary only carried aggregate health counters, so a broken
--- feature surfaced as "everything green but it does not work" with no way
--- to tell WHICH layer failed. Each row answers three questions in order:
---   verdict   -- is this feature working right now (not "enabled")
---   evidence  -- the live numbers that prove the verdict
---   guidance  -- the next concrete action for the user when it is broken
--- The same rows feed the diagnostics page AND BuildCopyText, so what the
--- user sees on the page is exactly what they copy to chat.
-------------------------------------------------------------------------
-
--- One feature row: { id, label, verdict="ok"|"degraded"|"down"|"off", text, hint }
+-- 逐功能状态行依次回答：verdict 是否当前正常工作（不等同于已启用），evidence 以实时数值证明判定，guidance
+-- 在故障时给出具体下一步。诊断页和 BuildCopyText 使用同一组行，页面所见与复制内容一致。行形状：{ id, label,
+-- verdict="ok"|"degraded"|"down"|"off", text, hint }。
 local function FeatureRow(id, label, verdict, text, hint)
     return { id = id, label = label, verdict = verdict, text = text, hint = hint }
 end
@@ -568,13 +546,13 @@ local function TaskEvidence(taskName)
     return text, err
 end
 
--- 中文维护注释：`.18.198` 诊断框架补强——数据驱动的「存档健康」行。
+-- `.18.198` 诊断框架补强——数据驱动的「存档健康」行。
 -- 此前每个 Feature 的状态行都是手写的，而存档层的写保护/完整性故障（如 DeathReview /
 -- Activities 的跨重载指纹误配）只有在该 Feature 自己手写过对应判断时才会出现在诊断里；
 -- 这次用户看到"死亡回顾打不开"却没有任何状态行解释原因，只能靠长摘要往返。
 -- 此函数直接遍历 Persistence 的 Store 行：凡写保护或连续保存失败的 Store 自动生成
 -- 一行（含恢复探针），**无需各 Feature 自行接入**，对未来新增 Store 自动生效。
-local STORE_OWNER_LABELS = { -- 中文维护注释：owner → 用户可读名；未登记的 owner 回落原文，不影响数据驱动。
+local STORE_OWNER_LABELS = { -- owner → 用户可读名；未登记的 owner 回落原文，不影响数据驱动。
     ["v3.death_review"] = "死亡回顾",
     ["v3.activities"] = "活动",
     ["v3.buff_display"] = "Buff 显示",
@@ -599,9 +577,11 @@ function D:BuildStoreHealthRows()
             local ownerLabel = STORE_OWNER_LABELS[row.owner] or tostring(row.owner or row.id or "未知存档")
             local reason = tostring(row.writeFenceReason or row.lastError or "save_failed"):gsub("[\r\n]+", " ")
             local probe = row.historicalRecoveryProbe ~= nil
-                and tostring(row.historicalRecoveryProbe):gsub("[\r\n]+", " ") or nil -- 中文维护注释：恢复探针由 Persistence 写入（见 rs_persistence.lua），字段名不可改动。
+                and tostring(row.historicalRecoveryProbe):gsub("[\r\n]+", " ") or nil -- 恢复探针由 Persistence 写入（见 rs_persistence.lua），字段名
+                                                                                      -- 不可改动。
             local recoveryTrace = row.integrityRecoveryTrace ~= nil
-                and tostring(row.integrityRecoveryTrace):gsub("[\r\n]+", " ") or nil -- 中文维护注释：.18.200 Core 状态机轨迹优先告诉维护者“哪个 gate/hook 被走到”，不包含业务 payload。
+                and tostring(row.integrityRecoveryTrace):gsub("[\r\n]+", " ") or nil -- .18.200 Core 状态机轨迹优先告诉维护者“哪个 gate/hook 被走到”
+                                                                                     -- ，不包含业务 payload。
             rows[#rows + 1] = FeatureRow(
                 "store:" .. tostring(row.id or "?"),
                 "存档·" .. ownerLabel,
@@ -610,7 +590,7 @@ function D:BuildStoreHealthRows()
                 recoveryTrace ~= nil and ("完整性轨迹: " .. recoveryTrace .. (probe ~= nil and ("；恢复探针: " .. probe) or "") .. " —— 不要清档，复制此行给维护者")
                     or (probe ~= nil and ("恢复探针: " .. probe .. " —— 不要清档，复制此行给维护者")
                         or "不要清档；复制此行给维护者"))
-            if #rows >= 6 then break end -- 中文维护注释：防损坏档刷屏；与摘要「存档故障」段的 3 条口径同源但更宽。
+            if #rows >= 6 then break end -- 防损坏档刷屏；与摘要「存档故障」段的 3 条口径同源但更宽。
         end
     end
     return rows
@@ -620,30 +600,25 @@ function D:BuildFeatureStatusRows()
     local rows = {}
     local features = S.Features or {}
 
-    -- Presenter handshake evidence shared by the unit_lines/range_assist rows
-    -- (v6 watchdog telemetry): without it a dead lease reported only "无消费
-    -- 者" with no way to tell a missed lifecycle event from a failed acquire.
+    -- unit_lines/range_assist 共用 Presenter 握手证据；失效租约须能区分生命周期事件漏发和 acquire 失败，不
+    -- 能只报告“无消费者”。
     local guides = S.UIV3 and S.UIV3.CombatVisualGuidesV3 or nil
     local lifecycleSeen = type(guides) == "table" and guides.lastLifecycle or nil
     local lifecycleText = lifecycleSeen ~= nil
         and ("已收:" .. tostring(lifecycleSeen.id) .. "/" .. tostring(lifecycleSeen.state))
         or "未收到"
 
-    -- 单位连线: verdict needs consumer>0 AND rows drawn recently.
+    -- 单位连线判定须同时具备 consumer>0 与近期实际绘制行。
     do
         local feature = features.combat_unit_lines
         local dia = feature and feature.Diagnostics or nil
         local projection = S.Services and S.Services.ScreenProjectionV3 and S.Services.ScreenProjectionV3.GetHealth and S.Services.ScreenProjectionV3:GetHealth() or {}
         local enabled = RuntimeEnabled("combat_unit_lines")
-        -- NOTE: `rows` here is the OUTPUT array declared above; the drawn-row
-        -- count is `drawn`. Do not shadow the output array with a local of the
-        -- same name (that bug crashed this very function on first use).
+        -- rows 是上方声明的输出数组，绘制行数是 drawn。不能用同名局部变量遮蔽输出数组，否则本函数会崩溃。
         local drawn = tonumber(dia and dia.drawnRows) or 0
         local lastFailure = dia and dia.lastFailureReason or nil
-        -- Presenter-side render evidence. drawnRows only proves the PROJECTION
-        -- produced rows; the .18.129d label-write failure kept this verdict
-        -- green while zero dots reached the screen. lastUnitSampling is
-        -- refreshed by every RenderUnit pass that ran with a held consumer.
+        -- Presenter 的渲染证据独立记录：drawnRows 只证明投影生成了行，不能证明点已到达屏幕。
+        -- lastUnitSampling 在每次持有消费者的 RenderUnit 执行时刷新，用于识别 label 写入失败。
         local sampling = type(guides) == "table" and type(guides.lastUnitSampling) == "table" and guides.lastUnitSampling or nil
         local visibleDots = tonumber(sampling and sampling.visibleDots) or 0
         local uniquePositions = tonumber(sampling and sampling.uniquePositions) or 0
@@ -666,7 +641,7 @@ function D:BuildFeatureStatusRows()
         elseif drawn > 0 and renderedZero and sampling.viewportKnown==true
             and (tonumber(sampling.outsideEdges) or 0)+(tonumber(sampling.shortEdges) or 0)==drawn
             and (dia==nil or dia.lastStatus~="partial") then
-            -- 维护：Service有端点但整段不与同源视口相交是离屏，不等同Native渲染故障。
+            -- Service有端点但整段不与同源视口相交是离屏，不等同Native渲染故障。
             -- 仅所有行有裁剪证据且无投影partial时归idle；真正API/anchor失败继续暴露。
             rows[#rows+1]=FeatureRow("unit_lines","单位连线","idle",
                 "工作中 · 当前连线均在视口外 · rows="..tostring(drawn).." · 屏内点=0",
@@ -688,7 +663,7 @@ function D:BuildFeatureStatusRows()
                 .. (reasonText ~= nil and (" · 原因:" .. reasonText) or ""),
                 "渲染层没有产出任何点；若行=?? 为坐标缺失，否则为宿主/坐标空间问题——复制此行给维护者")
         elseif drawn > 0 then
-            -- 维护：partial或点写入失败不能继续给绿色ok。是局部可视降级，不更改框架
+            -- partial或点写入失败不能继续给绿色ok。是局部可视降级，不更改框架
             -- 检查总数/全局READY，也不把共享投影服务的历史累计失败等同当前帧失败。
             local unitVerdict=(dia and dia.lastStatus=="partial") or (tonumber(sampling and sampling.placementFailures) or 0)>0
             rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", unitVerdict and "degraded" or "ok",
@@ -710,7 +685,7 @@ function D:BuildFeatureStatusRows()
                 lastFailure == "ALL_PAIRS_DISABLED" and "在连线设置里至少开启一种连线"
                     or "选中一个目标后刷新诊断；仍有此行请复制给维护者")
         end
-        -- 维护：空集/down分支尤其需要端点证据；不能只给有行的分支附带诊断。
+        -- 空集/down分支尤其需要端点证据；不能只给有行的分支附带诊断。
         -- 引用的是本次有界小表，打印时才序列化；正常刷新不构造长字符串。
         rows[#rows].endpoints=dia and dia.endpoints or nil
         rows[#rows].projectionPatch="unit-lines-raw-viewport-1"
@@ -829,11 +804,11 @@ function D:BuildFeatureStatusRows()
         end
     end
 
-    -- Boss alerts
+    -- 首领告警。
     do
         local feature = features.combat_boss_alerts
         local dia = feature and feature._bossDiag or nil
-        -- 中文维护（boss-hud-clock-1）：冻结需要实际时钟/任务/原生写入证据，不把观察 ticks 当倒计时正常。
+        -- 冻结需要实际时钟/任务/原生写入证据，不把观察 ticks 当倒计时正常。
         local alerts = S.Services and S.Services.Alerts
         local hudHealth = alerts and type(alerts.Describe) == "function" and alerts:Describe() or nil
         local enabled = RuntimeEnabled("combat_boss_alerts")
@@ -851,7 +826,7 @@ function D:BuildFeatureStatusRows()
                 .. " · 命中规则=" .. tostring(dia.matchedRule or "-"),
                 "测试应为6到1；开启未收录读条仅观察目标/关注目标，不预测CD")
         end
-        -- 中文维护：完整分页报告附带实际调度/Presenter 状态与最多八个读条名字；不启动新自检或读原生API。
+        -- 完整分页报告附带实际调度/Presenter 状态与最多八个读条名字；不启动新自检或读原生API。
         rows[#rows].hud = hudHealth
         rows[#rows].observedCastNames = dia and dia.castNames or nil
         if hudHealth and hudHealth.owner == "combat_boss_alerts" and hudHealth.task and not hudHealth.task.registered then
@@ -860,9 +835,8 @@ function D:BuildFeatureStatusRows()
         end
     end
 
-    -- Buff display
-    -- .18.208 这里附带最近装分 scope/value/rawType，但只消费 GetHealth snapshot；
-    -- 绝不因为生成“功能诊断”额外触发 equipment lane 或 Native API 读取。
+    -- Buff 显示诊断附最近装分 scope/value/rawType，只消费 GetHealth 快照，不能因生成诊断额外触发 equipment
+    -- 通道或 Native 读取。
     do
         local feature = features.BuffDisplay
         local health = feature and feature.GetHealth and feature:GetHealth() or {}
@@ -881,9 +855,9 @@ function D:BuildFeatureStatusRows()
                     and ("装分读取最近错误：" .. tostring(dia.gearScoreLastError or "unknown") .. " raw=" .. tostring(dia.gearScoreLastRaw or "nil"))
                     or ((tonumber(dia and dia.readErrors or 0)) > 0 and ("装备读取报错：" .. tostring(dia.lastError)) or nil))
         end
-        -- 维护（2026-09-12）：追踪导入/图标/留存的问题不能再只打印HUD lane数量。
+        -- （2026-09-12）追踪导入/图标/留存的问题不能再只打印HUD lane数量。
         -- 只复制Feature已有的小型健康快照，不读Native、不输出追踪ID全集或2048条历史。
-        -- 维护：完整分页错误报告也携带PVP路径证据，避免只有短摘要可见；不输出装备明细/追踪全集。
+        -- 完整分页错误报告也携带PVP路径证据，避免只有短摘要可见；不输出装备明细/追踪全集。
         rows[#rows].pvp = health.pvp
         local markers=S.UIV3 and S.UIV3.BuffHeadMarkersV3
         if markers and type(markers.GetDiagnostics)=="function" then
@@ -899,12 +873,12 @@ function D:BuildFeatureStatusRows()
                 player={buff=player.buff or 0,debuff=player.debuff or 0,auto=player.auto or 0},
                 target={buff=target.buff or 0,debuff=target.debuff or 0,auto=target.auto or 0},
                 lastImport=management.lastImport,
-                -- 维护：只复制六通道计数与已有留存/Metadata 摘要；不扫描 Native、不输出追踪 ID 全集。
+                -- 只复制六通道计数与已有留存/Metadata 摘要；不扫描 Native、不输出追踪 ID 全集。
                 capture=management.freeze,metadata=management.metadata,libraryPatch=management.libraryPatch}
         end
     end
 
-    -- 治疗辅助 (visual lifecycle is the gate-visible part)
+    -- 治疗辅助以视觉生命周期作为门禁可见证据。
     do
         local feature = features.Healer
         local health = feature and feature.GetHealth and feature:GetHealth() or {}
@@ -923,7 +897,7 @@ function D:BuildFeatureStatusRows()
         end
     end
 
-    -- 一键换装: bank health is the load-time evidence.
+    -- 一键换装以加载时 bank 健康状态为证据。
     do
         local feature = features.Gear
         local enabled = RuntimeEnabled("combat_gear")
@@ -940,7 +914,7 @@ function D:BuildFeatureStatusRows()
         end
     end
 
-    -- 跑商 (trade quote state machine)
+    -- 跑商报价状态机。
     do
         local feature = features.Trade
         local enabled = RuntimeEnabled("life_trade")
@@ -980,7 +954,8 @@ function D:BuildFeatureStatusRows()
     end
 
     -- 钓鱼：观察 Authority 与 Auto-R 事务/恢复状态必须同一行取证。
-    -- 中文维护：用户反馈“钓鱼没用”时，必须能区分目标 Buff 没读到、Consumer 未激活、战斗门、Native 写键失败和持久恢复 pending；诊断只读 projection，绝不触发改键。
+    -- 用户反馈“钓鱼没用”时，必须能区分目标 Buff 没读到、Consumer 未激活、战斗门、Native 写键失败和持久恢复
+    -- pending；诊断只读 projection，绝不触发改键。
     do
         local feature = features.Fishing
         local enabled = RuntimeEnabled("life_fishing")
@@ -1009,7 +984,7 @@ function D:BuildFeatureStatusRows()
                 .. " · 扫描=" .. tostring(projection.polls or 0) .. "/事件" .. tostring(projection.nativeEventRefreshes or 0)
                 .. " · writeFailures=" .. tostring(writeFailures)
                 .. " · Move=" .. tostring(hotkeyStats.moveAttempts or 0) .. "/" .. tostring(hotkeyStats.moveFailures or 0)
-                .. " · R复核=" .. tostring(hotkeyStats.sameSlotChecks or 0) .. "/漂移" .. tostring(hotkeyStats.bindingDrifts or 0) -- 中文维护（多鱼切换）：只展示服务计数，导出诊断不读取/修改原生键位。
+                .. " · R复核=" .. tostring(hotkeyStats.sameSlotChecks or 0) .. "/漂移" .. tostring(hotkeyStats.bindingDrifts or 0) -- 只展示服务计数，导出诊断不读取/修改原生键位。
                 .. " · Restore=" .. tostring(hotkeyStats.restoreAttempts or 0) .. "/" .. tostring(hotkeyStats.restoreFailures or 0)
                 .. " · Hotkey=" .. tostring(hotkey.currentSlot or "-") .. "/src" .. tostring(hotkey.sourceSlot or "-")
                 .. (projection.lastWriteError and (" · last=" .. tostring(projection.lastWriteError)) or ""),
@@ -1045,7 +1020,7 @@ function D:BuildFeatureStatusRows()
                 .. " · " .. lastText
                 .. (rawShape ~= nil and (" · 形态=" .. tostring(string.sub(tostring(rawShape), 1, 120))) or ""),
                 failed and "最近一次询价失败；打开跑商页「诊断」查看逐条原始返回，或点击材料询价重试" or nil)
-            -- 维护：只摘录共享队列预算和Trade批次，不在诊断里触发报价或探针。
+            -- 只摘录共享队列预算和Trade批次，不在诊断里触发报价或探针。
             rows[#rows].budget = { patch=health.patch, intervalMs=health.intervalMs, stats=health.stats,
                 batch=features.Trade and features.Trade.GetQuoteBatch and features.Trade:GetQuoteBatch() or nil }
         end
@@ -1065,7 +1040,7 @@ function D:BuildFeatureStatusRows()
         end
     end
 
-    -- 维护（overview-workbench-2）：任务详情Native返回形态进入现有分页报告，
+    -- 任务详情Native返回形态进入现有分页报告，
     -- 这里只读缓存计数，不能因诊断再读取目标或启动未启用的任务功能。
     do
         local service=S.Services and S.Services.QuestProgressV3
@@ -1099,13 +1074,13 @@ function D:BuildFeatureStatusRows()
                 .. " · 板读取=" .. tostring(cache.boardReads or 0)
                 .. " · 完成=" .. tostring(cache.completedCount or 0) .. probeText,
                 ok == false and "进入西/东/原大陆可读居民板区域后点刷新；18.302 会保留空读/板族识别/增量合并证据" or nil)
-            -- 中文维护注释（2026-09-24，债券可观测性）：诊断行附带 detached cache/probe 摘要，
+            -- （2026-09-24，债券可观测性）诊断行附带 detached cache/probe 摘要，
             -- 只在用户主动生成诊断时序列化，不触发 ResidentBoard Native 读取，也不复制原始居民板文本。
             rows[#rows].cache = cache
         end
     end
 
-    -- 中文维护注释：存档健康行（数据驱动）追加在所有手写功能行之后——任何 Store 的写保护/
+    -- 存档健康行（数据驱动）追加在所有手写功能行之后——任何 Store 的写保护/
     -- 完整性故障都会自动出现在「诊断与维护」列表与摘要里，不再依赖各 Feature 手写接入。
     do
         local storeRows = self:BuildStoreHealthRows()
@@ -1115,7 +1090,7 @@ function D:BuildFeatureStatusRows()
     return rows
 end
 
--- Render the rows as compact copy text (shared with BuildCopyText).
+-- 把状态行渲染为紧凑复制文本，与 BuildCopyText 共用。
 function D:FormatFeatureStatusRows(rows)
     rows = type(rows) == "table" and rows or self:BuildFeatureStatusRows()
     local marks = { ok = "✓", degraded = "△", down = "✗", off = "○" }
@@ -1126,7 +1101,7 @@ function D:FormatFeatureStatusRows(rows)
     return table.concat(parts, " ║ ")
 end
 
--- Repair guidance lines: for every non-ok row, one actionable hint.
+-- 每个非 ok 状态行给出一条可执行修复提示。
 function D:BuildRepairGuidance(rows)
     rows = type(rows) == "table" and rows or self:BuildFeatureStatusRows()
     local hints = {}
@@ -1159,7 +1134,7 @@ function D:Snapshot()
         refreshCoordinator = S.RefreshCoordinator and type(S.RefreshCoordinator.Describe)=="function" and S.RefreshCoordinator:Describe() or nil,
         auraObservation = S.Services and S.Services.AuraObservationV3 and type(S.Services.AuraObservationV3.GetHealth)=="function" and S.Services.AuraObservationV3:GetHealth() or nil,
         buffDisplay = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("buff_display_health") or nil,
-        -- 中文维护注释：HUD 校准属于 Presentation 诊断 Authority，不能塞进 BuffDisplay Store/Health；
+        -- HUD 校准属于 Presentation 诊断 Authority，不能塞进 BuffDisplay Store/Health；
         -- Snapshot 只在用户请求诊断时读取 detached 快照，避免 Domain 反向依赖 Presentation。
         buffHudCalibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 and type(S.UIV3.BuffHudCalibrationV3.GetDiagnostics)=="function" and S.UIV3.BuffHudCalibrationV3:GetDiagnostics() or nil,
         buffHeadMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 and type(S.UIV3.BuffHeadMarkersV3.GetDiagnostics)=="function" and S.UIV3.BuffHeadMarkersV3:GetDiagnostics() or nil,
@@ -1178,9 +1153,7 @@ function D:Snapshot()
             actions = S.ActionRunner and type(S.ActionRunner.GetSnapshot) == "function" and S.ActionRunner:GetSnapshot() or nil,
             binding = S.UI and S.UI.Binding and type(S.UI.Binding.GetSnapshot) == "function" and S.UI.Binding:GetSnapshot() or nil,
             floating = S.RSUI and S.RSUI.FloatingSurface and type(S.RSUI.FloatingSurface.GetSnapshot) == "function" and S.RSUI.FloatingSurface:GetSnapshot() or nil,
-            -- Detached-popup geometry evidence is intentionally sampled only by
-            -- explicit diagnostics.  The positioning Authority itself records a
-            -- bounded ring during Open/Layout events; Diagnostics never polls UI.
+            -- 独立弹窗几何证据只在显式诊断时采样；定位权威在 Open/Layout 事件中记录有界环，Diagnostics 不轮询 UI。
             popupPositioning = S.RSUI and S.RSUI.PopupPositioning and type(S.RSUI.PopupPositioning.GetSnapshot) == "function" and S.RSUI.PopupPositioning:GetSnapshot() or nil,
             screenSnap = S.Layout and type(S.Layout.GetScreenSnapSnapshot) == "function" and S.Layout:GetScreenSnapSnapshot() or nil,
         },
@@ -1311,7 +1284,7 @@ function D:BuildSummary()
             .. " · Aura " .. tostring(snap.buffDisplay and snap.buffDisplay.auraHeld == true and "held" or "idle")
             .. " · Task " .. tostring(snap.buffDisplay and snap.buffDisplay.taskActive == true and "active" or "idle")
             .. " · Revision " .. tostring(snap.buffDisplay and snap.buffDisplay.revision or 0),
-        -- 中文维护注释：只读取 Feature 的有界管理摘要，供部分覆盖/分类/冻结核验；不轮询 Native。
+        -- 只读取 Feature 的有界管理摘要，供部分覆盖/分类/冻结核验；不轮询 Native。
         "状态追踪：schema " .. tostring(snap.buffDisplay and snap.buffDisplay.schemaVersion or "-")
             .. " · Catalog " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.catalog and snap.buffDisplay.management.catalog.effectCount or 0)
             .. " · P(B/D/A) " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.tracked and snap.buffDisplay.management.tracked.player and snap.buffDisplay.management.tracked.player.buff or 0)
@@ -1339,36 +1312,53 @@ function D:BuildSummary()
     }, "\n")
 end
 
-function D:BuildPopupPositioningReport() -- 中文维护注释：提供诊断页“RSUI Popup定位”按钮的唯一文本 Authority，专门输出最近 Popup 的 Native 原始坐标与相对锚定事实，避免用户只能复制不含 Popup 细节的基础框架摘要。
-    local positioning = S.RSUI and S.RSUI.PopupPositioning or nil -- 中文维护注释：只读取 RSUI PopupPositioning 单一 Authority，不从页面/Feature 复制第二份状态。
-    if type(positioning) ~= "table" or type(positioning.GetSnapshot) ~= "function" then return "【RSUI Popup定位】不可用：PopupPositioning 尚未加载" end -- 中文维护注释：底层 Authority 缺失时返回可直接复制的明确文本，不抛异常也不猜默认坐标。
-    local snap = positioning:GetSnapshot() or {} -- 中文维护注释：快照是事件式有界 recent 事实，不触发 Native 扫描、Tick 或业务读取。
-    local metrics = type(snap.metrics) == "table" and snap.metrics or {} -- 中文维护注释：Metrics 缺失时使用空表，报告仍可输出契约版本和最近记录。
-    local sections = {} -- 中文维护注释：报告只在用户点击按钮时临时构建字符串数组，离开函数即可回收，不形成长期缓存。
-    sections[#sections + 1] = string.format("【RSUI Popup定位】v%s · Contract %s · space=%s · relative=%d · resolved=%d · screenFix=%d/%d · fallback=%d", tostring(snap.version or "?"), tostring(snap.contractVersion or "?"), tostring(snap.coordinateSpace or "?"), tonumber(metrics.nativeRelativeApplies) or 0, tonumber(metrics.viewportResolvedApplies) or 0, tonumber(metrics.nativeScreenCorrections) or 0, tonumber(metrics.nativeScreenCorrectionFailures) or 0, tonumber(metrics.anchorFallbacks) or 0) -- 中文维护注释：同时输出 Native-relative 与 ColorField V2 viewport-resolved 两条车道次数；用户可直接证明当前颜色弹层是否进入新路径。
-    local recent = type(snap.recent) == "table" and snap.recent or {} -- 中文维护注释：recent 由 PopupPositioning 限制最多 12 条，这里进一步只输出最后 6 条避免聊天文本失控。
-    if #recent == 0 then sections[#sections + 1] = "暂无 Popup 记录：请先打开一次出问题的下拉框或颜色选择器，再点击本按钮。" end -- 中文维护注释：没有记录时给用户可执行指引，避免返回空白报告。
-    local function NativeText(label, row) -- 中文维护注释：把 RU 原始 GetOffset/GetEffectiveOffset/GetExtent/GetEffectiveExtent 格式化为同一可复制结构，不对数值做任何坐标变换。
-        row = type(row) == "table" and row or {} -- 中文维护注释：缺失采样统一按空表处理，报告不会因为某个 Widget 不提供 getter 而中断。
-        return string.format("%s[%s] Off=%s,%s Ext=%s,%s Eff=%s,%s EffExt=%s,%s", tostring(label or "Native"), tostring(row.logicalId or "?"), tostring(row.offsetX or "?"), tostring(row.offsetY or "?"), tostring(row.extentW or "?"), tostring(row.extentH or "?"), tostring(row.effectiveX or "?"), tostring(row.effectiveY or "?"), tostring(row.effectiveW or "?"), tostring(row.effectiveH or "?")) -- 中文维护注释：保留所有原始值原样输出，维护者可直接判断 RU 不同 Widget 类型的坐标单位/父级语义差异。
-    end -- 中文维护注释：结束 Native 原始几何格式化 helper。
-    for index = math.max(1, #recent - 5), #recent do -- 中文维护注释：只输出最后 6 个 Popup ID 的最新事实，覆盖当前操作又保持报告有界。
-        local row = recent[index] -- 中文维护注释：读取当前有界记录，不修改 PopupPositioning 内部状态。
-        if type(row) == "table" then -- 中文维护注释：异常/空记录直接跳过，避免诊断本身成为运行时故障源。
-            local relative = type(row.relative) == "table" and row.relative or nil -- 中文维护注释：.18.191 Native-relative 记录包含 Trigger-local 偏移；旧绝对记录则保持 nil。
-            if relative ~= nil then sections[#sections + 1] = string.format("Popup %s · mode=%s · placement=%s · rel=%s,%s · popup=%sx%s · trigger=%sx%s · source=%s · correction=%s/%s", tostring(row.id or "?"), tostring(row.mode or "?"), tostring(row.placement or "?"), tostring(relative.x or "?"), tostring(relative.y or "?"), tostring(relative.width or "?"), tostring(relative.height or "?"), tostring(relative.triggerWidth or "?"), tostring(relative.triggerHeight or "?"), tostring(row.anchorSource or "?"), tostring(row.nativeCorrectionAvailable), tostring(row.nativeCorrectionOk)) end -- 中文维护注释：相对记录首先输出“我们要求 Native 做什么”，与后面的“Native 实际返回什么”形成 A/B 证据。
-            if relative ~= nil then sections[#sections + 1] = NativeText("Trigger", row.targetNative) .. " · " .. NativeText("PopupBefore", row.popupNativeBeforeCorrection) .. " · " .. NativeText("PopupAfter", row.popupNativeAfterCorrection) end -- 中文维护注释：Native-relative lane 输出 Trigger、修正前 Popup、修正后 Popup 三组原始事实，下一轮无需截图猜坐标。
-            local anchor, result = type(row.anchor) == "table" and row.anchor or nil, type(row.result) == "table" and row.result or nil -- 中文维护注释：保留绝对 solver 记录；ColorField V2 的 viewport-resolved lane 也复用同一 Anchor/Result 事实。
+function D:BuildPopupPositioningReport() -- 提供诊断页“RSUI Popup定位”按钮的唯一文本 Authority，专门输出最近
+                                         -- Popup 的 Native 原始坐标与相对锚定事实，避免用户只能复制不含
+                                         -- Popup 细节的基础框架摘要。
+    local positioning = S.RSUI and S.RSUI.PopupPositioning or nil -- 只读取 RSUI PopupPositioning 单一 Authority，不从页面
+                                                                  -- /Feature 复制第二份状态。
+    if type(positioning) ~= "table" or type(positioning.GetSnapshot) ~= "function" then return "【RSUI Popup定位】不可用：PopupPositioning 尚未加载" end -- 底层 Authority 缺失时返回可直接复制的明确文本，不抛异常也不
+                                                                                                                                             -- 猜默认坐标。
+    local snap = positioning:GetSnapshot() or {} -- 快照是事件式有界 recent 事实，不触发 Native 扫描、Tick 或业
+                                                 -- 务读取。
+    local metrics = type(snap.metrics) == "table" and snap.metrics or {} -- Metrics 缺失时使用空表，报告仍可输出契约版本和最近记录。
+    local sections = {} -- 报告只在用户点击按钮时临时构建字符串数组，离开函数即可回收，不形成长期缓存。
+    sections[#sections + 1] = string.format("【RSUI Popup定位】v%s · Contract %s · space=%s · relative=%d · resolved=%d · screenFix=%d/%d · fallback=%d", tostring(snap.version or "?"), tostring(snap.contractVersion or "?"), tostring(snap.coordinateSpace or "?"), tonumber(metrics.nativeRelativeApplies) or 0, tonumber(metrics.viewportResolvedApplies) or 0, tonumber(metrics.nativeScreenCorrections) or 0, tonumber(metrics.nativeScreenCorrectionFailures) or 0, tonumber(metrics.anchorFallbacks) or 0) -- 同时输出 Native-relative 与 ColorField V2 viewport-resolved
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                -- 两条车道次数；用户可直接证明当前颜色弹层是否进入新路径。
+    local recent = type(snap.recent) == "table" and snap.recent or {} -- recent 由 PopupPositioning 限制最多 12 条，这里进一步只输出
+                                                                      -- 最后 6 条避免聊天文本失控。
+    if #recent == 0 then sections[#sections + 1] = "暂无 Popup 记录：请先打开一次出问题的下拉框或颜色选择器，再点击本按钮。" end -- 没有记录时给用户可执行指引，避免返回空白报告。
+    local function NativeText(label, row) -- 把 RU 原始
+                                          -- GetOffset/GetEffectiveOffset/GetExtent/GetEffectiveExtent 格式
+                                          -- 化为同一可复制结构，不对数值做任何坐标变换。
+        row = type(row) == "table" and row or {} -- 缺失采样统一按空表处理，报告不会因为某个 Widget 不提供
+                                                 -- getter 而中断。
+        return string.format("%s[%s] Off=%s,%s Ext=%s,%s Eff=%s,%s EffExt=%s,%s", tostring(label or "Native"), tostring(row.logicalId or "?"), tostring(row.offsetX or "?"), tostring(row.offsetY or "?"), tostring(row.extentW or "?"), tostring(row.extentH or "?"), tostring(row.effectiveX or "?"), tostring(row.effectiveY or "?"), tostring(row.effectiveW or "?"), tostring(row.effectiveH or "?")) -- 保留所有原始值原样输出，维护者可直接判断 RU 不同 Widget 类型
+                                                                                                                                                                                                                                                                                                                                                                                                           -- 的坐标单位/父级语义差异。
+    end -- 结束 Native 原始几何格式化 helper。
+    for index = math.max(1, #recent - 5), #recent do -- 只输出最后 6 个 Popup ID 的最新事实，覆盖当前操作又保持报告
+                                                     -- 有界。
+        local row = recent[index] -- 读取当前有界记录，不修改 PopupPositioning 内部状态。
+        if type(row) == "table" then -- 异常/空记录直接跳过，避免诊断本身成为运行时故障源。
+            local relative = type(row.relative) == "table" and row.relative or nil -- .18.191 Native-relative 记录包含 Trigger-local 偏移；旧绝对
+                                                                                   -- 记录则保持 nil。
+            if relative ~= nil then sections[#sections + 1] = string.format("Popup %s · mode=%s · placement=%s · rel=%s,%s · popup=%sx%s · trigger=%sx%s · source=%s · correction=%s/%s", tostring(row.id or "?"), tostring(row.mode or "?"), tostring(row.placement or "?"), tostring(relative.x or "?"), tostring(relative.y or "?"), tostring(relative.width or "?"), tostring(relative.height or "?"), tostring(relative.triggerWidth or "?"), tostring(relative.triggerHeight or "?"), tostring(row.anchorSource or "?"), tostring(row.nativeCorrectionAvailable), tostring(row.nativeCorrectionOk)) end -- 相对记录首先输出“我们要求 Native 做什么”，与后面的“Native 实
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              -- 际返回什么”形成 A/B 证据。
+            if relative ~= nil then sections[#sections + 1] = NativeText("Trigger", row.targetNative) .. " · " .. NativeText("PopupBefore", row.popupNativeBeforeCorrection) .. " · " .. NativeText("PopupAfter", row.popupNativeAfterCorrection) end -- Native-relative lane 输出 Trigger、修正前 Popup、修正后
+                                                                                                                                                                                                                                                      -- Popup 三组原始事实，下一轮无需截图猜坐标。
+            local anchor, result = type(row.anchor) == "table" and row.anchor or nil, type(row.result) == "table" and row.result or nil -- 保留绝对 solver 记录；ColorField V2 的 viewport-resolved
+                                                                                                                                        -- lane 也复用同一 Anchor/Result 事实。
             if tostring(row.mode or "") == "viewport_resolved" and anchor ~= nil and result ~= nil then
                 sections[#sections + 1] = string.format("Popup %s · mode=viewport_resolved · Anchor=%s,%s %sx%s → Result=%s,%s %sx%s · placement=%s · source=%s", tostring(row.id or "?"), tostring(anchor.x or "?"), tostring(anchor.y or "?"), tostring(anchor.width or "?"), tostring(anchor.height or "?"), tostring(result.x or "?"), tostring(result.y or "?"), tostring(result.width or "?"), tostring(result.height or "?"), tostring(row.placement or "?"), tostring(row.anchorSource or "?"))
                 sections[#sections + 1] = NativeText("PopupBefore", row.popupNativeBeforeCorrection) .. " · " .. NativeText("PopupAfter", row.popupNativeAfterCorrection)
             elseif relative == nil and anchor ~= nil and result ~= nil then
                 sections[#sections + 1] = string.format("Popup %s · mode=absolute · Anchor=%s,%s %sx%s → Result=%s,%s %sx%s · placement=%s · source=%s", tostring(row.id or "?"), tostring(anchor.x or "?"), tostring(anchor.y or "?"), tostring(anchor.width or "?"), tostring(anchor.height or "?"), tostring(result.x or "?"), tostring(result.y or "?"), tostring(result.width or "?"), tostring(result.height or "?"), tostring(row.placement or "?"), tostring(row.anchorSource or "?"))
-            end -- 中文维护注释：ColorField V2 额外输出修正前/后 Native 几何；point/legacy absolute lane 仍保持兼容。
-        end -- 中文维护注释：结束单条 Popup 记录有效性分支。
-    end -- 中文维护注释：结束最近 Popup 诊断循环。
-    return table.concat(sections, "\n") -- 中文维护注释：返回可直接交给 SafeChat/用户复制的完整文本；函数本身不负责发送，保持 Diagnostics 与 Presentation 分层。
-end -- 中文维护注释：结束 RSUI Popup 专项诊断报告 Authority。
+            end -- ColorField V2 额外输出修正前/后 Native 几何；point/legacy absolute lane 仍保持兼容。
+        end -- 结束单条 Popup 记录有效性分支。
+    end -- 结束最近 Popup 诊断循环。
+    return table.concat(sections, "\n") -- 返回可直接交给 SafeChat/用户复制的完整文本；函数本身不负责发送，
+                                        -- 保持 Diagnostics 与 Presentation 分层。
+end -- 结束 RSUI Popup 专项诊断报告 Authority。
 
 function D:BuildAllLogs()
     local snap = self:Snapshot()
@@ -1616,12 +1606,12 @@ function D:BuildAllLogs()
     return table.concat(sections, "  ║  ")
 end
 
--- 中文维护注释：保留逐 Store 详细构建接口供维护工具使用；RS-DIAG-3 默认聊天不再调用它。
+-- 保留逐 Store 详细构建接口供维护工具使用；RS-DIAG-3 默认聊天不再调用它。
 -- 长摘要截断后无法辨认第三个故障；此详细报告只读 Core 缓存，
 -- 不读磁盘、不迁移、不快照 Domain，不打印玩家追踪/死亡记录。最多 32 个 Store，超出显式提示。
 -- Authority：Diagnostics 只格式化证据，恢复/写保护仍归 Persistence；每行 <=320 字节，给聊天前缀留余量。
 -- 标识只用于验证热补丁载入，不改全局 buildTag 或伪造自检通过。
--- 维护（failed-save-evidence-1）：只有 Core 能判定未提交写入是否仍失败；诊断只格式化。
+-- 只有 Core 能判定未提交写入是否仍失败；诊断只格式化。
 -- 兼容旧 Core 的降级仅保留其原 writeFenced 能力，不凭 lastError 猜恢复权限或读健康档。
 local function PersistenceFailureKind(store)
     local persistence = S.Persistence
@@ -1643,7 +1633,7 @@ function D:BuildPersistenceFailureReport()
     local function Safe(value, limit)
         local text = tostring(value or "-"):gsub("[%c]", " ")
         if #text > limit then
-            -- 中文维护注释：Lua 5.1 按字节截断会切开中文错误文本，造成报告尾部乱码。
+            -- Lua 5.1 按字节截断会切开中文错误文本，造成报告尾部乱码。
             -- 只在诊断长度上限处回退 UTF-8 延续字节，不触碰 Store 值或依赖新 Lua utf8 库。
             local cut, boundary = limit - 3, limit - 2
             local byte = text:byte(boundary)
@@ -1659,7 +1649,7 @@ function D:BuildPersistenceFailureReport()
         local store = failures[index]
         local evidence = type(store.lastIntegrityMismatchEvidence) == "table" and store.lastIntegrityMismatchEvidence or {}
         local id = Safe(store.id,64)
-        -- 维护：fence=0 的回读失败也必须呈现，不能把“加载正常”冒充“保存成功”。
+        -- fence=0 的回读失败也必须呈现，不能把“加载正常”冒充“保存成功”。
         lines[#lines+1] = id .. " kind=" .. Safe(PersistenceFailureKind(store),24)
             .. " verify=" .. tostring(store.lastVerifyOk) .. " barrierPending=" .. tostring(store.needsBarrierVerify == true)
         if store.lastVerifyError ~= nil then lines[#lines+1] = id .. " verifyError=" .. Safe(store.lastVerifyError,240) end
@@ -1669,11 +1659,11 @@ function D:BuildPersistenceFailureReport()
         lines[#lines+1] = id .. " fw=" .. Safe(evidence.framework,12) .. " tv=" .. Safe(evidence.transportVersion,12)
             .. " codec=" .. Safe(evidence.codec,12) .. " rawfp=" .. Safe(evidence.rawFingerprint,16)
             .. " hook=" .. Safe(store.lastHistoricalRecoveryHookState,24)
-        -- 维护：展示当前实际 SaveKey，避免把源码 ZIP 或猜测的 .udf 文件误当成存档。
+        -- 展示当前实际 SaveKey，避免把源码 ZIP 或猜测的 .udf 文件误当成存档。
         lines[#lines+1] = id .. " key=" .. Safe(store.resolvedKey,240)
         lines[#lines+1] = id .. " trace=" .. Safe(store.lastIntegrityRecoveryTrace,240)
         lines[#lines+1] = id .. " probe=" .. Safe(store.lastHistoricalRecoveryProbe,240)
-        -- 中文维护注释（2026-09-18，.18.239 回读恢复取证）：Load 侧 historical probe 与
+        -- （2026-09-18，.18.239 回读恢复取证）Load 侧 historical probe 与
         -- SaveData 立即回读的 representation probe 是两条不同数据流；`.238` 的报告只打印前者，
         -- 导致 readback_fingerprint_mismatch 时无法判断 exact-twin 候选是“未进入/不匹配/已命中”。
         -- 这里只在当前失败 Store 的显式诊断报告增加 bounded 文本，不读取 Native、不改变 Store、
@@ -1689,7 +1679,7 @@ function D:BuildPersistenceFailureReport()
     return lines
 end
 
--- 中文维护注释：用户持续点击普通摘要，而单条超长 Native 聊天会截掉真实故障。
+-- 用户持续点击普通摘要，而单条超长 Native 聊天会截掉真实故障。
 -- 此函数仅保留为开发期显式分段工具，默认两个诊断按钮禁止调用；UTF-8 边界保留。
 -- Authority：Diagnostics 负责展示，不修改 Persistence 状态。单条正文 <=320 字节，失败即返回。
 function D:PrintBoundedText(text, label)
@@ -1720,7 +1710,7 @@ function D:PrintBoundedText(text, label)
     return true
 end
 
--- 中文维护注释（RS-DIAG-3）：RU 聊天只能逐条复制；EVIDENCE-2 把一次动作拆成
+-- RU 聊天只能逐条复制；EVIDENCE-2 把一次动作拆成
 -- 多条故障行再接 30 条总览，使用户无法一次提交。不能简单 concat 回超长消息，否则又会
 -- 丢尾。Diagnostics 仅从 Gate.last / Persistence.stores 选择元数据，生成有界单条；
 -- 不调用 BuildCopyText/Run/Describe/LoadData，不触发恢复、采集或写入，不复制业务 payload。
@@ -1745,7 +1735,7 @@ local function CompactDiagnosticNumber(value, missing)
 end
 local function CompactDiagnosticFingerprint(value)
     if value == nil then return "-" end
-    -- 维护：只能展示完整缓存 Hash；格式未知用 ? 明示，禁止截前八位或现场重算冒充旧证据。
+    -- 只能展示完整缓存 Hash；格式未知用 ? 明示，禁止截前八位或现场重算冒充旧证据。
     if type(value) ~= "string" or #value ~= 8 or value:find("[^0-9A-Fa-f]") then return "?" end
     return value:upper()
 end
@@ -1817,7 +1807,7 @@ local function PrintSingleDiagnostic(text)
     if type(text) ~= "string" or #text > SINGLE_DIAGNOSTIC_BYTES or text:find("[%c]") then
         return false, "单条诊断格式或长度异常"
     end
-    -- 维护：只选择一个现有输出入口；入口执行后失败/抛错也不能再重发，避免已投递消息重复。
+    -- 只选择一个现有输出入口；入口执行后失败/抛错也不能再重发，避免已投递消息重复。
     -- pcall 只隔离 UI 动作，返回 false 仍如实传播；不更改全局 SafeChat/其它模块的日志策略。
     local send = type(S.SafeChat) == "function" and S.SafeChat or S.DispatchSystemChat
     if type(send) ~= "function" then return false, "聊天输出不可用" end
@@ -1830,11 +1820,11 @@ function D:PrintFoundationSummary()
     return PrintSingleDiagnostic(self:BuildCompactDiagnosticSummary())
 end
 
--- 维护：选项只读已注册故障 Store，不创建/加载其它模块，也不导出健康角色数据。
+-- 选项只读已注册故障 Store，不创建/加载其它模块，也不导出健康角色数据。
 function D:GetPersistenceFailureChoices()
     local out = {}
     for _, store in pairs(S.Persistence and S.Persistence.stores or {}) do
-        -- 维护：与摘要、Core取证入口使用同一失败集合，避免 durableFail>0 但原档0份。
+        -- 与摘要、Core取证入口使用同一失败集合，避免 durableFail>0 但原档0份。
         if PersistenceFailureKind(store) ~= nil then out[#out+1] = {value=store.id,text=store.id} end
     end
     table.sort(out,function(a,b) return a.value < b.value end)
@@ -1842,15 +1832,15 @@ function D:GetPersistenceFailureChoices()
 end
 
 function D:BuildPersistenceEvidenceText(id, options)
-    -- 维护：Core 校验 SaveKey/scope/预算；此转发不调用任何 Feature 默认值或恢复函数。
+    -- Core 校验 SaveKey/scope/预算；此转发不调用任何 Feature 默认值或恢复函数。
     if type(S.Persistence) ~= "table" or type(S.Persistence.BuildFailedStoreEvidenceText) ~= "function" then
         return nil,"只读存档取证不可用"
     end
-    -- 维护：只转发显式外壳精简选项，保留Core的scope/预算/只读所有权；默认完整外壳兼容。
+    -- 只转发显式外壳精简选项，保留Core的scope/预算/只读所有权；默认完整外壳兼容。
     return S.Persistence:BuildFailedStoreEvidenceText(id, {compact=type(options)=="table" and options.compact==true})
 end
 
--- 维护：诊断页与故障页的旧按钮/公共函数名保持兼容，统一一次输出；
+-- 诊断页与故障页的旧按钮/公共函数名保持兼容，统一一次输出；
 -- 详细 BuildPersistenceFailureReport 仍可供维护工具读取，但不再自动逐行发送。
 function D:PrintPersistenceFailureReport()
     return self:PrintFoundationSummary()

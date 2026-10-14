@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Housing Acceptance
+-- Replicated Suite · 住宅信息契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 住宅契约验收。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

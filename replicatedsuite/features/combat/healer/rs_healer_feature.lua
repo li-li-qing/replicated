@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Healer Feature Lifecycle
+-- Replicated Suite · 治疗助手功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Feature Enabled owns one independent Healer runtime lease. Resource order:
---   TeamRosterV3 -> HealerAuraBridge -> internal events -> HealthRuntime.
--- Shutdown is the exact reverse so no observer can outlive the feature.
--- Presentation consumes only public projection/commands and never owns these facts.
+-- Feature Enabled 持有一个独立 Healer 运行租约，资源依次为 TeamRosterV3→HealerAuraBridge→内部事件→HealthRuntime；关闭严格逆序，观察者不能超出功能生命周期。Presentation 只消费公共投影/命令。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -175,11 +174,7 @@ function F:AcquireConsumer(token)
     return self.Demand:Acquire(token, {}, "healer_consumer")
 end
 
--- Calibration is an explicit Presentation preview.  It is allowed to acquire
--- the same read-only Healer facts without changing the user's persistent
--- Feature enabled preference.  This keeps the calibration grid useful (real
--- roster colors) while still releasing all Team/Aura/Health resources when the
--- calibration panel closes.
+-- 校准是显式 Presentation 预览，可获取相同只读 Healer 事实且不改用户持久启用偏好；显示真实名单颜色，关闭校准面板时释放全部 Team/Aura/Health 资源。
 function F:AcquirePreviewConsumer(token)
     return self.Demand:Acquire(token, { preview = true }, "healer_calibration_preview")
 end
@@ -219,7 +214,7 @@ function F:GetSettingsProjection()
 end
 
 function F:GetPresentationProjection(scope)
-    -- 中文维护（performance-cache-1）：Store 查询已返回 detached 深拷贝；保留唯一隔离边界，
+    -- Store 查询已返回 detached 深拷贝；保留唯一隔离边界，
     -- 避免外层再次递归复制 panels/geometry。UI 仍不能持有或修改 Store 原表。
     return self:GetPresentationSettings(scope) or {}
 end
@@ -246,10 +241,7 @@ function F:GetRaidOverlayProjection()
     })
 end
 
--- Resolve which team identity each visible overlay panel currently displays.
--- RaidTeam (TeamRosterV3 identity) is decoupled from RaidPanel (screen container):
--- the binding can change (native team switch, manual override) without touching any
--- geometry. Returns an ordered list of { id="A"|"B", team=1|2, geometry, isOnly }.
+-- 解析可见覆盖面板的团队身份；RaidTeam 与屏幕容器 RaidPanel 解耦，Native 团队切换/手动覆盖可改变绑定而不改几何。返回有序 {id=A或B,team=1或2,geometry,isOnly} 列表。
 function F:GetEffectivePanelBindings()
     local raid = type(self.GetPresentationSettings) == "function" and self:GetPresentationSettings("raid") or nil
     if type(raid) ~= "table" then return {} end
@@ -273,11 +265,7 @@ function F:GetEffectivePanelBindings()
         local team = tonumber(raid.singleTeamId) or 0
         if team < 1 then team = next(presentTeams) or 1 end
         out[1] = { id = "A", team = team, geometry = (panels.A or {}).geometry, isOnly = true }
-    else -- auto: follow the ONE native raid list's currently visible 1/2 tab.
-        -- TeamRoster can discover both 50-player teams even when the client only
-        -- renders one native roster window.  Therefore “two teams exist” must
-        -- never imply “two native panels are visible”.  Dual overlay is explicit
-        -- and corresponds to the optional extra friendly-roster UI.
+    else -- auto 跟随唯一 Native 团队名单当前 1/2 页签。TeamRoster 可以发现两支 50 人团队，但不能由两队存在推断两个 Native 面板可见；双覆盖必须显式开启，对应可选额外友方名单 UI。
         local detected = tonumber(roster and roster.visibleTeamIndex)
         local team = (detected == 1 or detected == 2) and detected or tonumber(raid.singleTeamId) or 0
         if team < 1 then
@@ -288,16 +276,14 @@ function F:GetEffectivePanelBindings()
     return out
 end
 
--- Diagnostic: briefly flash the player's own slot in every active overlay panel.
--- Presentation owns the transient highlight; this only publishes an internal signal.
+-- 诊断短暂闪亮所有活动覆盖面板的自身槽位；Presentation 拥有临时高亮，这里仅发布内部信号。
 function F:LocateSelf()
     if S.Events == nil or type(S.Events.Publish) ~= "function" then return false, "internal event bus unavailable" end
     S.Events:Publish("v3.healer.locate_self")
     return true
 end
 
--- Narrow Presentation command. World->screen is a Native observation and must
--- remain behind Feature/Domain ownership; Head Marker never touches X2Unit.
+-- 窄 Presentation 命令：world→screen 属 Native 观察，必须由 Feature/Domain 拥有；Head Marker 禁止接触 X2Unit。
 function F:ProjectUnitToScreen(unitToken)
     local bridge = ScreenProjection()
     if type(bridge) ~= "table" or type(bridge.ProjectUnit) ~= "function" then return nil, "screen projection bridge unavailable" end
@@ -312,9 +298,7 @@ function F:RequestRosterRefresh(reason)
     return true, err
 end
 
--- Presentation writes enter through one Feature command surface. The Store
--- remains responsible for normalization and dirty rollback; Presentation does
--- not reach the mutation Authority directly.
+-- Presentation 写入只走统一 Feature 命令入口；Store 负责归一化和 dirty 回滚，Presentation 禁止直接访问修改权威。
 F.Commands = F.Commands or {}
 function F.Commands:ApplySettingFromBinding(key, value) return F:ApplySettingFromBinding(key, value) end
 function F.Commands:ApplyPresentationSettingFromBinding(scope, key, value)
@@ -364,7 +348,7 @@ end
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
 
--- 中文维护注释（Phase 3 Batch O，2026-09-29，core-feature-decoupling-1）：把本 Feature 的健康投影
+-- 把本 Feature 的健康投影
 -- 注册到 Core 的取值表。原先 core/rs_foundation_gate.lua 的诊断 detail 直接按 id 读取实现表取 health；
 -- 搬到这里之后 Core 不再认识这个业务 Feature，而**诊断可观察性不降级**。provider 每次实时调用、不缓存。
 local providers = S.FeatureHealthProviders

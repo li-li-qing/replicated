@@ -1,4 +1,10 @@
--- Compact tracking grid: real Store/Feature/Projection, RAM Native disk; not RU live acceptance.
+------------------------------------------------------------------------
+-- Replicated Suite · 状态追踪列表测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 紧凑追踪列表使用真实 Store、Feature 和投影，原生磁盘为内存替身，不能作为 RU 实机验收。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function T(name,fn)local ok,e=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS tracking-grid '..name)else failed=failed+1;print('FAIL tracking-grid '..name..': '..tostring(e))end end
 local Boot=dofile('tools/rs_pvp_hud_test_host.lua')

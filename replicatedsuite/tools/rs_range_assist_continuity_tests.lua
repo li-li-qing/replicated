@@ -1,6 +1,12 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 距离辅助连续性测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 维护（2026-09-30）：范围辅助断续刷新回归。真实 Scheduler/FrameBudget/Events/Demand/
 -- Feature/Projection/Presenter/ModuleDiagnostics；仅替换 Native 坐标/UI/存储与注册宿主。
 -- 反例不声称复现了用户客户端的全部根因；不访问玩家 UDF，不进入 toc.g。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -379,7 +385,7 @@ Test('fully offscreen circle clears old pool and never clamps dots to edges',fun
     local S,R,G,c=Boot({24});local projection=R:GetProjection()
     projection.rows[1].points={{x=7425,y=2209},{x=8000,y=2209},{x=9000,y=2209}}
     projection.viewportWidth=c.width;projection.viewportHeight=c.height
-    -- 中文维护：屏外注入走Presenter现用的独立绘制快照；断言与输入坐标保持不变。
+    -- 屏外注入走Presenter现用的独立绘制快照；断言与输入坐标保持不变。
     R.GetRenderProjection=function()return projection end
     local placements=c.placements;assert(G:RenderRange())
     assert(G.lastRangeSampling.points==0 and G.lastRangeSampling.offscreenPoints==3)

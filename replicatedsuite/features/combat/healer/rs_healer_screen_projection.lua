@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Healer Screen Projection Bridge (M1.16.0.18)
+-- Replicated Suite · 治疗助手屏幕投影
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Narrow Feature-side Native observation used by Head Marker Presentation.
--- Presentation is not allowed to call X2Unit directly. This bridge performs
--- one side-effect-free world->screen query for an already-committed candidate
--- and owns no loop, cache, roster, health or Aura state.
+-- Head Marker 使用的窄 Feature Native 观察桥。Presentation 禁止直接调用 X2Unit；对已提交候选只做一次无副作用 world→screen 查询，不拥有循环、缓存、名单、健康或 Aura 状态。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -39,7 +38,7 @@ function B:GetHealth()
     }
 end
 
--- 中文维护注释（Phase 3 Batch O，2026-09-29，core-feature-decoupling-1）：把“屏幕投影能力是否就绪”
+-- 把“屏幕投影能力是否就绪”
 -- 注册到 Core 的取值表。原先 core/rs_foundation_gate.lua 直接按 id 读取本 Feature 的实现表验证
 -- ProjectUnit 这个契约函数；契约检查本身已归位到
 -- features/combat/healer/rs_healer_aura_acceptance.lua（visual_consumer_contract），

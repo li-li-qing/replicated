@@ -1,5 +1,10 @@
--- System diagnostics remains a Foundation maintenance surface. Business failures
--- should be directed to the per-module diagnostics entry to avoid giant reports.
+------------------------------------------------------------------------
+-- Replicated Suite · 模块诊断系统范围测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 系统诊断属于基础维护界面；业务错误应指向各模块诊断入口，避免生成巨大报告。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS module-diag-system-scope '..name)else failed=failed+1;print('FAIL module-diag-system-scope '..name..': '..tostring(err))end end
 local f=assert(io.open('presentation/v3/pages/rs_v3_foundation_pages.lua','rb'));local s=f:read('*a');f:close()
@@ -7,7 +12,7 @@ Test('system page explicitly identifies foundation scope',function()
   assert(s:find('系统诊断与维护',1,true),'system diagnostics title did not move to foundation scope')
 end)
 Test('system page directs business module faults to module diagnostic button',function()
-  -- 中文维护：当前入口归 PageHost 左上角控制条；旧右上角提示已不符合实际布局。
+  -- 当前入口归 PageHost 左上角控制条；旧右上角提示已不符合实际布局。
   assert(s:find('业务模块',1,true) and s:find('左上角',1,true) and s:find('诊断',1,true),'module diagnostics guidance missing')
 end)
 Test('full maintenance report remains available',function()

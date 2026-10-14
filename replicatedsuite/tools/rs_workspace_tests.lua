@@ -1,4 +1,10 @@
--- Real Persistence; controlled Native host. Never loaded by toc.g.
+------------------------------------------------------------------------
+-- Replicated Suite · 工作区测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用真实 Persistence 和受控原生宿主，不进入 toc.g。
+------------------------------------------------------------------------
 local pass,fail=0,0
 local function Test(n,fn)local ok,e=xpcall(fn,debug.traceback);if ok then pass=pass+1;print('PASS workspace '..n)else fail=fail+1;print('FAIL workspace '..n..': '..tostring(e))end end
 local function Boot(disk)

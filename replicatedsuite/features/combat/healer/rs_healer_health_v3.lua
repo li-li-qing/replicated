@@ -1,16 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Healer Health / Recommendation Runtime Domain
+-- Replicated Suite · 治疗助手健康观察
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Accuracy-first sliced observation loop. Team membership is projected only
--- from TeamRosterV3; healing policy remains Recommendation Authority. Health
--- and distance Native reads are bounded to 20 members per scheduler slice,
--- while periodic/targeted Aura reads are bounded to 8 members per slice.
---
--- Important serialization/lifecycle note:
---   * this file owns NO persistence and NO OnUpdate handler;
---   * only the Suite Scheduler drives it while combat_healer is enabled;
---   * generations are staged completely and published atomically;
---   * an unreadable Aura row is "unknown", never interpreted as "no Buff".
+-- 准确性优先的切片观察：成员仅来自 TeamRosterV3，治疗策略归 Recommendation；每 Scheduler 切片最多读取20人健康/距离，周期/定向 Aura 每片最多8人。
+-- 本文件不持久化、不拥有 OnUpdate，仅在 combat_healer 启用时由共享 Scheduler 驱动；Generation 完整暂存后原子发布；不可读 Aura 为 unknown，禁止解释为无 Buff。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -166,23 +160,12 @@ function H:OnRosterUpdated(reason)
     if type(roster) ~= "table" or type(roster.SyncFromShared) ~= "function" then return false, "healer roster domain unavailable" end
     local ok, err, changed = roster:SyncFromShared(reason or "team_roster_updated", true)
     if ok ~= true then return false, err end
-    -- TeamRosterV3 no longer publishes no-op refreshes, but keep a defensive
-    -- identity gate here too: an unchanged roster must not wipe every team
-    -- recommendation/health color (the "all colors disappear" symptom).
+    -- 即使 TeamRosterV3 已不发布无变化刷新，这里仍校验成员身份；不变名单不能清空全部推荐/健康颜色。
     if changed == false then return true end
     self.metrics.rosterChanges = (tonumber(self.metrics.rosterChanges) or 0) + 1
-    -- A real join/leave must NOT wipe the committed generation either. A full
-    -- Reset(clearDomain=true) publishes an empty generation immediately, so the
-    -- raid overlay/head markers blank for the ~300-600ms it then takes to
-    -- re-scan statuses + health from scratch — the visible "color flash" on
-    -- every team join/leave. Instead keep the committed healthSnapshot/
-    -- statusCache/recommendations alive as the previous generation: consumers
-    -- keep painting the last good colors until the next health cycle publishes
-    -- an atomic replacement. In-flight cycles are aborted because they still
-    -- iterate the stale roster snapshot, and lastHealthStartedAt is primed so
-    -- Step starts a fresh health cycle immediately instead of waiting out
-    -- healthScanMs. statusGeneration stays untouched: the status-only gate in
-    -- Step only exists to protect the *first* generation after start.
+    -- 真实加入/退出也不能清除已提交 Generation。Reset(clearDomain=true) 会先发布空数据，随后重采需约300-600ms，导致团队覆盖/头标闪空。
+    -- 保持已提交 healthSnapshot/statusCache/recommendations 作为上一代，直至下一健康周期原子替换；中止正在迭代旧名单的周期，并预置 lastHealthStartedAt，让 Step 立即重开健康周期而非等待 healthScanMs。
+    -- statusGeneration 保持不变，Step 中状态门槛只保护启动后第一代。
     self:AbortCycles()
     self.lastHealthStartedAt = -100000
     DiagnosticsCount("ROSTER_GENERATION_CHANGED", 1)
@@ -238,8 +221,7 @@ function H:RunStatusSlice()
                     scannedAt = type(coverage) == "table" and tonumber(coverage.scannedAt) or NowMs(),
                 }
             else
-                -- Retain the last known accurate row when the current read is
-                -- unknown. Absence and unreadable state are not equivalent.
+                -- 当前读取 unknown 时保留最后准确行；缺失与不可读不是同一事实。
                 local rec = Recommendation()
                 local previous = type(rec) == "table" and rec:GetStatusRow(member.key) or nil
                 if type(previous) == "table" then cycle.cache[member.key] = previous end
@@ -348,9 +330,7 @@ function H:RunHealthSlice()
                     reason = tostring(healthErr or "生命/距离读取不可用"),
                 }
             elseif statusReadFailed == true then
-                -- Do not score an unknown status set as "unprotected". That
-                -- would artificially boost a candidate and is worse than one
-                -- temporarily unavailable row.
+                -- 未知状态集合不能按无保护评分，否则虚增候选分数，比暂时不可用的一行更糟。
                 cycle.candidateMemory[member.key] = nil
                 cycle.unavailable[#cycle.unavailable + 1] = {
                     key = member.key, name = member.name, raidIndex = member.raidIndex,
@@ -416,8 +396,7 @@ function H:Step()
         self:StartStatusCycle(now)
     end
 
-    -- First publication for every roster generation must see a complete status
-    -- generation, matching the proven legacy ordering.
+    -- 每代名单首次发布必须等待完整状态 Generation，保持已证明的原有顺序。
     if self.statusGeneration <= 0 then
         if self.status.active == true then self:RunStatusSlice() end
         return true

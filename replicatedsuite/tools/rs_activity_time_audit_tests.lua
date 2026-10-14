@@ -1,5 +1,11 @@
--- Offline only; exercise real Activity Authority and curated data, not a copied timer.
--- No native mutation or persistence. The sampled server clock/map are controllable boundaries.
+------------------------------------------------------------------------
+-- Replicated Suite · 活动时间审查测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 仅用于离线验证，运行真实活动数据层和已核实数据，不复制计时器实现。
+-- 不修改原生状态或存档；服务器时间和地图采样为可控测试边界。
+------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, why = xpcall(fn, debug.traceback)

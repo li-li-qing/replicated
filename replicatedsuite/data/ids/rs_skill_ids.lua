@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Skill ID Registry Adapter
+-- Replicated Suite · 技能身份注册
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- rs_skill_effects.lua remains the relationship/source-data file. This adapter
--- imports its skill identities into the shared registry once, at addon load.
+-- rs_skill_effects.lua 保留关系与来源数据；本适配层在插件加载时一次性将技能身份导入共享注册表。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

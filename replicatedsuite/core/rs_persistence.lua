@@ -1,15 +1,12 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 5 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite - Persistence Framework
+-- Replicated Suite · 共享持久化框架
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared persistence mechanism for V3-owned stores. Business Domains keep
--- ownership of their data and reset semantics; this layer owns SaveData keys,
--- lifetime metadata, schema fences, dirty/debounce, period calculation and
--- structured diagnostics. Legacy Suite payloads are migration sources only and
--- are not an active persistence dependency of the V3 runtime.
+-- V3 Store 共享持久化机制。业务 Domain 保有数据与重置语义；本层拥有 SaveData 键、生命周期元数据、schema 隔
+-- 离、dirty/debounce、周期计算及结构化诊断。旧 Suite payload 仅为迁移来源，不是活动 V3 持久化依赖。合并须先
+-- 检查冲突标记、完整 toc.g 与 Lua 语法，再运行验收；不得清配置、跳过加载或恢复 Legacy 绕过错误，权威、数据
+-- 流和存档协议各归原实现。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -18,8 +15,7 @@ local DeepCopy
 if S.Reuse and S.Reuse.Table and type(S.Reuse.Table.DeepCopy) == "function" then
     DeepCopy = S.Reuse.Table.DeepCopy
 else
-    -- Keep the fallback recursively self-contained. A local declared inside its
-    -- own initializer would resolve DeepCopy as a global under Lua 5.1 rules.
+    -- 递归兜底须自包含；Lua 5.1 中在局部变量自身初始化表达式内引用 DeepCopy 会解析为全局。
     DeepCopy = function(value, seen)
         if type(value) ~= "table" then return value end
         seen = seen or {}
@@ -45,28 +41,29 @@ local SCOPE = {
 
 S.Persistence = {
     FrameworkVersion = 3,
-    -- 中文维护注释：Framework3 物理传输编码由 Persistence 单一 Authority 管理。Transport v1 已实证保护 false/空表；2026-09-10 RU 又出现 schema8 活动设置 SaveData=true 但同 generation 回读 Hash 6963CEA5→109696BD，说明 Native serializer 仍可能省略“合法但假值化”的标量。Transport v2 在不改变业务 Domain/canonical/schema 的前提下继续保护数值 0 与空字符串；该轮旧 v1/v2 都可读；本次在下方以 v3 继续保护数值精度。编码只发生 SaveData/LoadData 边界，不进入 Tick/Slider 热路径。
-    -- 维护：v3 只升级物理表示；业务 schema 与既有六位有效数字指纹算法不变。
+    -- Framework3 物理传输编码由 Persistence 单一 Authority 管理。Transport v1 已实证保护 false/空表；
+    -- 2026-09-10 RU 又出现 schema8 活动设置 SaveData=true 但同 generation 回读 Hash 6963CEA5→109696BD，说明
+    -- Native serializer 仍可能省略“合法但假值化”的标量。Transport v2 在不改变业务 Domain/canonical/schema
+    -- 的前提下继续保护数值 0 与空字符串；该轮旧 v1/v2 都可读；本次在下方以 v3 继续保护数值精度。编码只发生
+    -- SaveData/LoadData 边界，不进入 Tick/Slider 热路径。
+    -- v3 只升级物理表示；业务 schema 与既有六位有效数字指纹算法不变。
     TransportContractVersion = 3,
     TransportNumericPrecisionProtectionContractVersion = 1,
-    -- 维护（signed-readback-1）：负整数也走既有 n-token；仅标识本次物理保护，不改变 Schema/章算法。
+    -- 负整数也走既有 n-token；仅标识本次物理保护，不改变 Schema/章算法。
     TransportSignedIntegerProtectionContractVersion = 1,
     FailedSaveEvidenceContractVersion = 1,
-    ReadbackDivergenceDiagnosticsContractVersion = 1, -- 中文维护注释：.18.197 将 SaveData→LoadData 指纹不一致的首个 canonical 差异路径纳入正式诊断契约；只在完整性/readback 已失败的冷路径运行 bounded diff，不读取 Native 游戏状态、不改变 Store Authority，也禁止未来为了减少日志而静默移除此证据。
+    ReadbackDivergenceDiagnosticsContractVersion = 1, -- .18.197 将 SaveData→LoadData 指纹不一致的首个 canonical 差异
+                                                      -- 路径纳入正式诊断契约；只在完整性/readback 已失败的冷路径运行
+                                                      -- bounded diff，不读取 Native 游戏状态、不改变 Store Authority
+                                                      -- ，也禁止未来为了减少日志而静默移除此证据。
     TransportScalarOmissionProtectionContractVersion = 1,
     ReliabilityContractVersion = 8,
     MinIntegrityReliabilityContractVersion = 4,
-    -- Integrity v3 verifies the CANONICAL store value (decode -> store
-    -- normalize/encode) instead of the raw encoded envelope, so a logical-
-    -- preserving RU SaveData/LoadData representation change (map<->sequence,
-    -- dropped empty tables, float renormalization) can no longer create a
-    -- false corruption fence. v2 raw-envelope verification is retained as a
-    -- recognized legacy generation and upgraded to v3 at the next save.
-    -- v4: the per-store canonical functions are real normalizers. v3 stamps
-    -- were produced while four life-bundle stores had a CONTENT-BLIND migrate
-    -- (`migrate = default` hashed the default table shape, not the content) --
-    -- those stamps are meaningless as integrity evidence and are recovered
-    -- through the gated one-generation upgrade below.
+    -- Integrity v3 校验解码后经 Store 归一化/编码得到的 canonical 值，不校验原始编码 envelope，使 RU
+    -- SaveData/LoadData 保持逻辑的 map/sequence 转换、空表丢失或浮点归一化不造成假损坏隔离。v2 原始
+    -- envelope 作为已知旧代保留，下次保存升级 v3。v4 各 Store canonical 函数是真正归一化器；四个生活包
+    -- Store 在 v3 期间使用 migrate=default，只哈希默认表形状而忽略内容，因此这些 stamp 不具完整性证据效力，
+    -- 须走下方带门禁的单代升级。
     IntegrityContractVersion = 4,
     ContentBlindCanonicalContractVersion = 3,
     PreCanonicalIntegrityContractVersion = 2,
@@ -80,15 +77,19 @@ S.Persistence = {
     TerminalLoadMemoizationContractVersion = 1,
     HistoricalCanonicalRecoveryContractVersion = 3,
     KnownLegacyCanonicalRecoveryContractVersion = 1,
-    IntegrityRecoveryTraceContractVersion = 1, -- 中文维护注释：.18.200 新增只读恢复状态机轨迹；仅记录版本/世代/分支/候选结果等非业务元数据，用于定位 fingerprint mismatch 到底在哪一层被拒绝，不参与 SaveData、Hash、Apply 或任何 Feature Authority。
-    CurrentFailureSummaryContractVersion = 1, -- 中文维护注释（.18.225）：Describe 区分“当前失败 Store”与历史 incident 累计。只读遍历 GetStoreFailureKind，不重试、不读盘、不清统计；Foundation 用它决定当前发布阻断，历史 durable/readback 仍保留为 warning 证据。
+    IntegrityRecoveryTraceContractVersion = 1, -- .18.200 新增只读恢复状态机轨迹；仅记录版本/世代/分支/候选结
+                                               -- 果等非业务元数据，用于定位 fingerprint mismatch 到底在哪一层
+                                               -- 被拒绝，不参与 SaveData、Hash、Apply 或任何 Feature
+                                               -- 权威状态。
+    CurrentFailureSummaryContractVersion = 1, -- Describe 区分“当前失败 Store”与历史 incident 累计。只读遍历
+                                              -- GetStoreFailureKind，不重试、不读盘、不清统计；Foundation 用
+                                              -- 它决定当前发布阻断，历史 durable/readback 仍保留为 warning
+                                              -- 证据。
     Lifetime = LIFETIME,
     Scope = SCOPE,
     DefaultBudget = { maxDepth = 12, maxNodes = 4096, maxStringBytes = 65536, maxEntriesPerTable = 1024 },
-    -- Domain payload and framework envelope are deliberately budgeted
-    -- separately. The old code validated {payload,__rsmeta} against the exact
-    -- business budget, so a payload at its legal maxDepth could be rejected
-    -- only because Persistence added one wrapper table of its own.
+    -- Domain payload 与框架 envelope 分别预算，不能把 {payload,__rsmeta} 用业务预算整体校验，否则框架新增的
+    -- 一层包装会使处于合法 maxDepth 的 payload 被拒绝。
     DefaultEnvelopeOverhead = { maxDepth = 2, maxNodes = 64, maxStringBytes = 4096, maxEntriesPerTable = 16 },
     stores = {},
     order = {},
@@ -97,10 +98,8 @@ S.Persistence = {
     maxDebounceMs = 5000,
     periodCheckMs = 15000,
     nextPeriodCheckAt = 0,
-    -- Runtime-only acceptance evidence. Never persisted and never used as a
-    -- write-policy Authority. It exists solely so a failed reload/Flush can be
-    -- copied after the fact with the exact store id + reason required by the
-    -- RU Fresh Reload acceptance matrix.
+    -- 验收证据仅在运行时保存，不持久化也不决定写策略；用于在 reload/Flush 失败后复制准确 Store ID 和原因，
+    -- 满足 RU Fresh Reload 验收矩阵。
     lastFlush = { at = 0, ok = nil, saved = 0, verified = 0, failures = {} },
     stats = {
         registered = 0,
@@ -182,25 +181,28 @@ local function NonEmptyText(value)
     return text ~= "" and text or nil
 end
 
--- 中文维护注释（.18.200 完整性取证）：历史故障连续多轮只暴露 old>new Hash，无法判断
--- 是 envelope gate、Integrity 世代、Store historical hook、known-stamp shape 还是候选 Hash 拒绝。
--- 该 trace 是 runtime-only、bounded、只含契约元数据与分支结果，不记录玩家名/伤害/设置值；
--- Persistence 仍是唯一 Load/Save Authority，trace 不进入 canonical/envelope，也不会改变 fail-closed 决策。
+-- 恢复 trace 逐项记录 envelope gate、Integrity 代际、Store historical hook、known-stamp shape 和候选 Hash
+-- 分支，使拒绝原因可判断。仅有界运行元数据和结果，不记录玩家名、伤害或设置值；Persistence 是唯一 Load/Save
+-- 权威，trace 不进入 canonical/envelope，也不改变失败封闭决策。
 local function AppendIntegrityRecoveryTrace(store, token)
     if type(store) ~= "table" then return end
     token = NonEmptyText(token)
     if token == nil then return end
     local current = NonEmptyText(store.lastIntegrityRecoveryTrace)
     local nextValue = current ~= nil and (current .. ";" .. token) or token
-    if #nextValue > 240 then nextValue = nextValue:sub(1, 237) .. "..." end -- 中文维护注释：限制诊断长度，避免聊天摘要被取证信息反向淹没。
+    if #nextValue > 240 then nextValue = nextValue:sub(1, 237) .. "..." end -- 限制诊断长度，避免聊天摘要被取证信息反向淹没。
     store.lastIntegrityRecoveryTrace = nextValue
 end
 
--- 中文维护注释：RU 物理 SaveData 传输层由 Persistence 统一拥有；Feature Store 只能声明业务 schema，禁止各模块自己发明 Native serializer 补丁。
--- Transport v1（历史可读）保护 boolean false、空 table 与 v1 保留前缀字符串；Transport v2（历史可读）继续保护数值 0 与空字符串，针对 2026-09-10
--- `v3.activities 6963CEA5→109696BD` 暴露的“SaveData 成功但合法假值化标量可能消失”风险。所有哨兵只存在物理 envelope，LoadData 后在 metadata/schema/Apply 前还原，
--- 因而 Domain Authority、canonical hash 与用户配置语义完全不变。循环/未知 token 继续 fail-closed；该递归只运行在 bounded Save/Load 边界，不进入 Tick/事件热路径。
-    -- 中文维护注释（2026-09-30，giant-file-1）：Transport v1-v5 的编解码函数已原样迁出到
+-- RU 物理 SaveData 传输层由 Persistence 统一拥有；Feature Store 只能声明业务 schema，禁止各模块自己发明
+-- Native serializer 补丁。
+-- Transport v1（历史可读）保护 boolean false、空 table 与 v1 保留前缀字符串；Transport v2（历史可读）继续保
+-- 护数值 0 与空字符串，针对 2026-09-10
+-- `v3.activities 6963CEA5→109696BD` 暴露的“SaveData 成功但合法假值化标量可能消失”风险。所有哨兵只存在物理
+-- envelope，LoadData 后在 metadata/schema/Apply 前还原，
+-- 因而 Domain Authority、canonical hash 与用户配置语义完全不变。循环/未知 token 继续 fail-closed；该递归只
+-- 运行在 bounded Save/Load 边界，不进入 Tick/事件热路径。
+    -- （2026-09-30，giant-file-1）Transport v1-v5 的编解码函数已原样迁出到
     -- core/rs_persistence_transport.lua（纯移动、不改语义）。这里只留一个带校验的引用，
     -- 调用点统一走 T.<名>。注意：注释里不要写出带点号的“表名+字段”形式，
     -- rs_architecture_audit 是行级正则且不跳过注释。
@@ -212,7 +214,7 @@ P.SupportedTransportContractVersion=6 -- 默认新写仍为3；v6 仅由死亡�
 
 function P:EncodePhysicalEnvelope(raw)
     if type(raw) ~= "table" then return nil, "transport_raw_type:" .. tostring(type(raw)) end
-    -- 维护：生产 EncodeValue 按Store注册选择默认3或显式4/5；旧格式仍原样支持，禁止内容与版本标签不一致。
+    -- 生产 EncodeValue 按Store注册选择默认3或显式4/5；旧格式仍原样支持，禁止内容与版本标签不一致。
     local version = type(raw.__rsmeta) == "table" and tonumber(raw.__rsmeta.transportVersion) or self.TransportContractVersion
     local encoded, err
     if version == 1 then encoded, err = T.EncodeV1(raw)
@@ -223,7 +225,8 @@ function P:EncodePhysicalEnvelope(raw)
     elseif version == 6 then encoded, err = T.EncodeV6(raw)
     else return nil, "transport_contract:" .. tostring(version) .. ">" .. tostring(self.SupportedTransportContractVersion) end
     if encoded == nil then return nil, err end
-    -- 中文维护注释：DecodePhysicalEnvelope 必须在完整解码前读取这两个路由字段；它们均为非零整数，不属于已知 serializer omission 类型。
+    -- DecodePhysicalEnvelope 必须在完整解码前读取这两个路由字段；它们均为非零整数，不属于已知 serializer
+    -- omission 类型。
     -- 覆盖回原生数字也避免 v3 标量编码规则扩展后出现“为了知道 codec 版本必须先知道 codec 版本”的自举死循环。
     if type(encoded.__rsmeta) == "table" and type(raw.__rsmeta) == "table" then
         encoded.__rsmeta.framework = raw.__rsmeta.framework
@@ -238,22 +241,23 @@ function P:DecodePhysicalEnvelope(raw)
     local framework = meta and tonumber(meta.framework) or nil
     local transport = meta and tonumber(meta.transportVersion) or nil
     if framework ~= nil and framework >= 3 then
-        if transport == 1 then return T.DecodeV1(raw) end -- 中文维护注释：历史 v1 永久可读；成功业务写入后自然变成当前传输版本，不做启动期批量迁移。
-        if transport == 2 then return T.DecodeV2(raw) end -- 中文维护注释：历史 v2 解码仍在 Envelope Seal/Store schema/Apply 之前完成。
-        -- 维护：先还原精确 number，再进入原 Envelope/Store 校验；未知代际仍 fail-closed。
+        if transport == 1 then return T.DecodeV1(raw) end -- 历史 v1 永久可读；成功业务写入后自然变成当前传输版本，不做启
+                                                          -- 动期批量迁移。
+        if transport == 2 then return T.DecodeV2(raw) end -- 历史 v2 解码仍在 Envelope Seal/Store schema/Apply 之前完成。
+        -- 先还原精确 number，再进入原 Envelope/Store 校验；未知代际仍 fail-closed。
         if transport == 3 then return T.DecodeV3(raw) end
         if transport == 4 then return T.DecodeV4(raw) end
         if transport == 5 then return T.DecodeV5(raw) end
         if transport == 6 then return T.DecodeV6(raw) end
-        return nil, "transport_contract:" .. tostring(transport) .. ">" .. tostring(self.SupportedTransportContractVersion) -- 中文维护注释：未知/future transport 不猜测，防止旧客户端覆盖新格式。
+        return nil, "transport_contract:" .. tostring(transport) .. ">" .. tostring(self.SupportedTransportContractVersion) -- 未知/future transport 不猜测，防止旧客户端覆盖新格式。
     end
-    -- 中文维护注释：Framework2/无 metadata 的历史存档没有物理哨兵，保持原样进入既有 legacy/schema 迁移。
+    -- Framework2/无 metadata 的历史存档没有物理哨兵，保持原样进入既有 legacy/schema 迁移。
     -- transportVersion 单独出现而 framework 缺失属于损坏 envelope，不猜测恢复。
     if transport ~= nil then return nil, "transport_without_framework" end
     return raw, nil
 end
 
--- 中文维护注释（序列表示恢复）：离线 Native 边界回归中 { ["1"]=row } 被 ipairs 当成空列表；
+-- 离线 Native 边界回归中 { ["1"]=row } 被 ipairs 当成空列表；
 -- Transport v2 保护标量，却不固定数字键的物理类型。这里只提供有界、无丢弃的形状候选；
 -- 哪些字段是序列由 Store 声明，验真仍归 Persistence，必须命中原 stamped fingerprint。
 -- 兼容/风险：只接受完整 1..N，拒绝稀疏、0 起点、重复数字/字符串索引及非规范键，不猜顺序。
@@ -317,9 +321,8 @@ local function NormalizeEnvelopeBudget(domainBudget, explicitBudget)
     domainBudget = NormalizeBudget(domainBudget)
     if type(explicitBudget) == "table" then
         local explicit = NormalizeBudget(explicitBudget)
-        -- An encoded envelope can never be allowed to be smaller than the
-        -- already-approved Domain payload. This keeps custom encoders bounded
-        -- while ensuring framework metadata cannot make a legal payload illegal.
+        -- 编码 envelope 预算不得小于已批准 Domain payload；既限制自定义编码器，又避免框架元数据把合法业务数
+        -- 据变为非法。
         return {
             maxDepth = math.max(domainBudget.maxDepth, explicit.maxDepth),
             maxNodes = math.max(domainBudget.maxNodes, explicit.maxNodes),
@@ -336,9 +339,8 @@ local function NormalizeEnvelopeBudget(domainBudget, explicitBudget)
     }
 end
 
--- SaveData preflight. The RU serializer has proven truncation behavior on large
--- nested payloads, so every shared V2 store is structurally bounded BEFORE a
--- write. This is intentionally O(n) only on save/load boundaries, never Tick-hot.
+-- SaveData 写前检查：RU 序列化器的大型嵌套 payload 存在已证实截断行为，所有共享 V2 Store 写前必须结构有界。
+-- 仅在保存/加载边界进行 O(n) 检查，不进入 Tick 热路径。
 function P:InspectPayload(value, budget)
     budget = NormalizeBudget(budget)
     local seen = {}
@@ -400,8 +402,7 @@ local function ValidDate(year, month, day)
     return day <= maxDay
 end
 
--- Small bounded calendar helpers.  They run only during period checks (default
--- every 15 seconds), never in combat/event hot loops.
+-- 小型有界日历辅助函数只在周期检查中运行（默认每 15 秒），不进入战斗或事件热循环。
 local function DateOrdinal(year, month, day)
     if not ValidDate(year, month, day) then return nil end
     local value = 0
@@ -505,9 +506,7 @@ local SCOPE_HASH_MOD = 2147483647
 local function ScopeIdentityFingerprint(value)
     value = NonEmptyText(value)
     if value == nil then return nil end
-    -- Two independent bounded byte hashes keep the persisted identity marker
-    -- ASCII-only without changing the historical physical SaveData key format.
-    -- This is collision detection, not a cryptographic identity primitive.
+    -- 两个独立有界字节哈希使身份标记仅含 ASCII，不改变历史物理 SaveData 键格式；这是碰撞检测，不是密码学身份原语。
     local h1, h2 = 104729, 130363
     for i = 1, #value do
         local byte = string.byte(value, i)
@@ -518,9 +517,7 @@ local function ScopeIdentityFingerprint(value)
 end
 
 local function CharacterScopeIdentity()
-    -- V3 Character stores resolve identity directly from the authoritative
-    -- world-qualified unit getter. They do not depend on the legacy monolithic
-    -- Storage object or its deferred Character Override machinery.
+    -- V3 Character Store 直接从权威带世界名单元 getter 解析身份，不依赖旧单体 Storage 或延迟 Character Override。
     local identity = nil
     if X2Unit ~= nil and S.Api ~= nil and type(S.Api.CallCapability) == "function" then
         local ok, value = S.Api:CallCapability("X2Unit:UnitNameWithWorld", X2Unit, "UnitNameWithWorld", "player")
@@ -532,10 +529,8 @@ end
 local function CharacterScopeToken(identity)
     identity = NonEmptyText(identity)
     if identity == nil then return nil end
-    -- Keep the physical key algorithm unchanged for upgrade compatibility. The
-    -- exact world-qualified identity is additionally stamped as a fingerprint in
-    -- v6 metadata so lossy/non-ASCII normalization cannot silently cross-load a
-    -- different character that happens to collapse to the same token.
+    -- 物理键算法保持不变以兼容升级；v6 元数据另盖精确带世界名身份指纹，避免非 ASCII 或有损归一化后两个角色
+    -- 折成相同 token 而静默互载。
     local token = NormalizeId("world:" .. identity)
     if token == "" then return nil end
     if #token > 80 then token = token:sub(1, 80) end
@@ -563,9 +558,8 @@ local function CurrentScopeBinding(store)
         return true, nil, store and store.resolvedKey or nil, store and store.resolvedScopeFingerprint or nil
     end
 
-    -- Character identity is resolved only at explicit persistence readiness /
-    -- write boundaries. No Tick path performs this lookup. Correctness wins over
-    -- caching here because a stale identity can redirect an otherwise valid save.
+    -- 角色身份只在显式持久化就绪或写边界解析，没有 Tick 查询。陈旧身份会把合法保存导向错误角色，因此这里优
+    -- 先正确性而非缓存。
     local currentKey, scopeErr, currentFingerprint = P:ResolveStoreKey(store)
     if currentKey == nil then return false, scopeErr or "character scope unavailable", nil, nil end
     if store.resolvedKey ~= nil and tostring(store.resolvedKey) ~= tostring(currentKey) then
@@ -588,7 +582,7 @@ local function ValidateDefinition(def)
     if LIFETIME[lifetime] == nil then return nil, "invalid lifetime: " .. lifetime end
     local scope = tostring(def.scope or SCOPE.Account)
     if SCOPE[scope] == nil then return nil, "invalid scope: " .. scope end
-    -- 维护：只允许注册时明确选择已实现的物理格式；未知版本禁止写入。
+    -- 只允许注册时明确选择已实现的物理格式；未知版本禁止写入。
     local tv=def.transportVersion
     if def.nativeByteBudget~=nil and (type(def.nativeByteBudget)~='number' or def.nativeByteBudget~=def.nativeByteBudget
         or def.nativeByteBudget<1024 or def.nativeByteBudget>65536 or def.nativeByteBudget~=math.floor(def.nativeByteBudget)) then return nil,'invalid native byte budget' end
@@ -645,7 +639,7 @@ function P:RegisterStore(def)
         scope = tostring(def.scope or SCOPE.Account),
         contractVersion = math.max(1, math.floor(tonumber(def.contractVersion) or 1)),
         schemaVersion = math.max(1, math.floor(tonumber(def.schemaVersion) or 1)),
-        -- 维护：仅批量ID Store选择v4；其他Store继续原有v3，schema和canonical不变。
+        -- 仅批量ID Store选择v4；其他Store继续原有v3，schema和canonical不变。
         transportVersion = def.transportVersion or P.TransportContractVersion,
         nativeByteBudget = def.nativeByteBudget,
         legacySchemaVersion = math.max(0, math.floor(tonumber(def.legacySchemaVersion) or 0)),
@@ -658,55 +652,32 @@ function P:RegisterStore(def)
         default = type(def.default) == "function" and def.default or function() return {} end,
         encode = def.encode,
         decode = def.decode,
-        -- Optional, opt-in recovery hook for a very narrow class of RU
-        -- serializer representation changes. It may reconstruct the exact
-        -- pre-serializer encoded BUSINESS shape, but Persistence will accept
-        -- it only when that candidate reproduces the already-stamped integrity
-        -- fingerprint while the independent metadata envelope seal is valid.
-        -- This is not a corruption bypass and is never enabled implicitly.
+        -- 可选且须主动启用的恢复钩子只处理极窄 RU 序列化表示变化，可重建序列化前精确编码业务形状。独立元数
+        -- 据 envelope seal 有效且候选复现已有完整性指纹时才接受；这不是损坏绕过，绝不隐式开启。
         rebuildEncodedForIntegrity = def.rebuildEncodedForIntegrity,
-        -- 维护（transport物理修复）：仅在 Framework3 transport 解码失败后允许 Store 提供
+        -- 仅在 Framework3 transport 解码失败后允许 Store 提供
         -- 一个“物理表候选”。Core 会重新做预算、transport decode、Envelope/业务指纹全套验真；
         -- hook 不能 Apply/Save/Clear，也不能绕过任何完整性门。用于有冗余可证明信息的窄恢复。
         repairPhysicalTransport = def.repairPhysicalTransport,
-        -- Optional exact historical-canonical recovery for a current-integrity
-        -- stamp produced by an older Store normalizer / a serializer omission
-        -- whose lost logical value can be reconstructed from the existing stamp.
-        -- This hook is considered ONLY after the independent envelope seal,
-        -- decode and current canonical construction succeed. Its candidate is
-        -- accepted only when it exactly reproduces the already-stamped fingerprint.
-        -- For plain Stores, Persistence then re-runs the CURRENT canonicalizer on
-        -- that exact historical logical candidate before Apply, so a recovered
-        -- default-sensitive value (for example false vs omitted) is not silently
-        -- replaced by the current default. Typed-codec Stores retain decode-owned
-        -- Domain application. Successful recovery queues an immediate restamp.
+        -- 可选精确历史 canonical 恢复用于旧 Store 归一化器或可从已有 stamp 重建逻辑值的表示字段丢失。只在独
+        -- 立 envelope seal、decode 和当前 canonical 构造成功后考虑，候选须精确复现既有指纹。普通 Store 在
+        -- Apply 前再对历史逻辑候选运行当前 canonicalizer，避免 false/省略等对默认敏感值被当前默认静默替换；
+        -- typed-codec Store 保留 decode 所有的领域应用。成功恢复立即排队重新盖章。
         rebuildCanonicalForIntegrity = def.rebuildCanonicalForIntegrity,
-        -- 中文维护注释：只有已测试的 Store 才允许本次保存回读复用精确表示恢复。默认关闭，
+        -- 只有已测试的 Store 才允许本次保存回读复用精确表示恢复。默认关闭，
         -- 不是历史迁移/known-pair 通行证；回读必须同时命中磁盘章与本次期望值并通过当前
         -- canonical + Domain budget，不 Apply、不补写、不改变当前工作副本。
         recoverReadbackRepresentation = def.recoverReadbackRepresentation == true,
-        -- Optional STORE-OWNED one-time migration bridge for a known historical
-        -- canonical stamp that is no longer invertible after a native serializer
-        -- representation loss. This is intentionally stronger-gated than the
-        -- exact reconstruction hook above: it is called only after current-v4
-        -- verification and exact historical reconstruction both fail, while the
-        -- independent envelope seal + metadata/schema + decoded budget already
-        -- passed. The hook itself MUST whitelist exact historical fingerprints
-        -- and validate the legacy Domain shape before returning a recovered
-        -- current Domain. Unknown fingerprints continue fail-closed.
+        -- Store 自有的一次迁移桥用于原生序列化表示丢失后无法逆转的已知历史 canonical stamp。门禁比精确重建
+        -- 更强：当前 v4 校验和历史精确重建均失败，且独立 envelope seal、metadata/schema、解码预算已通过才调
+        -- 用。钩子必须白名单精确历史指纹，并验证旧 Domain 形状后返回恢复后的当前 Domain；未知指纹继续失败封
+        -- 闭。
         recoverKnownLegacyCanonical = def.recoverKnownLegacyCanonical,
-        -- One-generation recovery for legacy (v2 raw-envelope) stamped Stores
-        -- whose fingerprint no longer verifies because the RU serializer changed
-        -- the on-disk representation. Default ON: the .18.125 real-machine run
-        -- proved the drift is a serializer-general behavior (v3.life.bonds,
-        -- v3.gear.payload shards, v3.death_review.record shards all mismatched
-        -- on their first cross-reload), so a per-store opt-in whitelist only
-        -- defers each user's fenced data to a future build. The gate itself is
-        -- unchanged: valid metadata envelope seal, reliability>=6, non-
-        -- verifyAfterSave/non-recoverableReplacement at the flag level below,
-        -- full decode + budget + schema pass, immediate canonical v3 restamp.
-        -- Domains that genuinely need absolute fail-closed legacy handling may
-        -- explicitly opt OUT with allowIntegrityUpgrade = false.
+        -- 旧 v2 原始 envelope stamp 因 RU 序列化器改变磁盘表示而失配时允许单代恢复，默认开启；实机 .18.125
+        -- 在 v3.life.bonds、v3.gear.payload 分片及 v3.death_review.record 分片首次跨重载均证实该普遍漂移。
+        -- 门禁仍要求有效 metadata envelope seal、reliability>=6、下方标志排除
+        -- verifyAfterSave/recoverableReplacement、完整 decode/预算/schema 通过，并立即盖 canonical v3 stamp
+        -- 。确需绝对失败封闭的 Domain 可显式设置 allowIntegrityUpgrade=false。
         allowIntegrityUpgrade = def.allowIntegrityUpgrade ~= false,
         save = def.save,
         migrate = def.migrate,
@@ -754,11 +725,8 @@ function P:RegisterStore(def)
     table.sort(self.order)
     self.stats.registered = (tonumber(self.stats.registered) or 0) + 1
     Count("STORE_REGISTERED", 1)
-    -- Boot-time budget self-check: validate the store's DEFAULT payload against
-    -- its own budget at registration. A budget too small for the store's real
-    -- data used to surface only as a first-save rejection + session write fence
-    -- (2026-09-01: buff display's 192-entry budget starved a 713-id payload);
-    -- catching it here turns that into a visible boot diagnostic instead.
+    -- 注册时用 Store 自身预算校验默认 payload；预算不足须形成启动诊断，不能直到首次保存才拒绝并隔离会话写入
+    -- 。证据：2026-09-01 Buff 显示的 192 项预算无法容纳 713-ID payload。
     if state.lifetime ~= LIFETIME.Session then
         local okDefault, defaultPayload = pcall(state.default)
         if okDefault then
@@ -820,7 +788,7 @@ local function DecodeValue(store, raw)
         return value, nil
     end
     if type(raw) == "table" and raw.payload ~= nil then return raw.payload, nil end
-    -- 中文维护注释（Framework2 RU 兼容）：普通 Store 只要带 __rsmeta，就一定是
+    -- 普通 Store 只要带 __rsmeta，就一定是
     -- Persistence 自己写出的 `{ payload = Domain, __rsmeta = ... }` envelope。RU 会把
     -- `payload={ onlyFalse=false }` 先删掉 false，再把空 payload 表也删掉；此时不能把
     -- `__rsmeta` 整个误当成 Domain。把它还原成空 Domain 只恢复“外壳语义”，真正丢失
@@ -851,7 +819,8 @@ EncodeValue = function(store, value, periodId, scopeFingerprint)
         periodId = periodId,
         scopeBindingContract = store.scope == SCOPE.Character and P.ScopeBindingContractVersion or nil,
         scopeIdentityFingerprint = store.scope == SCOPE.Character and NonEmptyText(scopeFingerprint) or nil,
-        transportVersion = store.transportVersion or P.TransportContractVersion, -- 维护：Store显式物理策略；数值字段不会被 RU false/空表省略，用于 LoadData 边界决定是否还原物理哨兵；旧 Framework2 无此字段。
+        transportVersion = store.transportVersion or P.TransportContractVersion, -- Store显式物理策略；数值字段不会被 RU false/空表省略，用于
+                                                                                 -- LoadData 边界决定是否还原物理哨兵；旧 Framework2 无此字段。
     }
     return raw, nil
 end
@@ -868,18 +837,12 @@ local function DefaultValue(store)
     return DeepCopy(value), nil
 end
 
--- Framework2 historical bridge for the exact RU serializer behavior that
--- motivated Transport v1. SaveData can remove a `false` field / empty table and
--- then remove its now-empty parent table. For a plain Store we rebuild only
--- serializer-removable values already declared by the Store default: missing
--- default=false stays false, missing default={} stays empty, while a missing
--- default=true is tried as false because persisted true would survive RU.
---
--- 中文维护边界：这里只处理无自定义 encode/decode 的普通 Store，而且只读取 Store
--- 自己声明的 default=true 叶子；不扫描 Feature/业务注册表，不枚举未知字段。候选会先
--- 重新经过当前 Store canonicalizer，再与磁盘中已经盖章的旧 fingerprint **完全匹配**。
--- 任一条件不成立都返回 nil，让原来的完整性 fence 继续 fail-closed。该逻辑只在旧
--- Framework<=2 的“当前 Integrity v4 指纹不匹配”冷路径运行，不进入 Tick/事件热路径。
+-- Framework2 历史桥处理促成 Transport v1 的 RU 行为：SaveData 可删除 false 字段、空表及随后为空的父表。普通
+-- Store 只重建自身默认声明的可删除值：缺失 default=false 保持 false，缺失 default={} 保持空，缺失
+-- default=true 尝试 false，因为持久化 true 会被 RU 保留。仅处理没有自定义 encode/decode 的普通 Store，只读
+-- 取其声明的 default=true 叶子，不扫描 Feature/业务表或枚举未知字段。候选经当前 canonicalizer 后必须与磁盘
+-- 旧 fingerprint 完全匹配，否则返回 nil 继续完整性隔离。仅在 Framework<=2 当前 Integrity v4 指纹失配冷路径
+-- 执行，不进入 Tick/事件热路径。
 function P:RebuildFramework2SerializerOmissions(store, decoded, stampedFingerprint, raw)
     if type(store) ~= "table" or type(raw) ~= "table" or type(raw.__rsmeta) ~= "table" then return nil, nil end
     if type(store.encode) == "function" or type(store.decode) == "function" then return nil, nil end
@@ -891,7 +854,7 @@ function P:RebuildFramework2SerializerOmissions(store, decoded, stampedFingerpri
     local source = type(raw.payload) == "table" and raw.payload or (type(decoded) == "table" and decoded or {})
     local recovered = DeepCopy(source)
     local restored = 0
-    local limit = 64 -- 中文维护注释：仅为防御未来异常超大 schema；超过上限立即放弃恢复而不是扩大冷启动 CPU。
+    local limit = 64 -- 仅为防御未来异常超大 schema；超过上限立即放弃恢复而不是扩大冷启动 CPU。
 
     local function Restore(defaultNode, sourceNode, outputNode)
         if restored > limit or type(defaultNode) ~= "table" or type(outputNode) ~= "table" then return end
@@ -900,12 +863,12 @@ function P:RebuildFramework2SerializerOmissions(store, decoded, stampedFingerpri
             if restored > limit then return end
             local sourceValue = sourceTable ~= nil and sourceTable[key] or nil
             if sourceValue == nil and type(defaultValue) == "boolean" then
-                -- 中文维护注释：RU 只会吞 false，不会吞 true。default=false 缺失直接复原 false；
+                -- RU 只会吞 false，不会吞 true。default=false 缺失直接复原 false；
                 -- default=true 缺失只“尝试”为 false，最终仍由旧 fingerprint 决定是否真实成立。
                 outputNode[key] = false
                 restored = restored + 1
             elseif sourceValue == nil and type(defaultValue) == "table" and next(defaultValue) == nil then
-                -- 中文维护注释：空表是 RU 第二个已实证丢失形态。这里只恢复 Store default 明确声明的空表；
+                -- 空表是 RU 第二个已实证丢失形态。这里只恢复 Store default 明确声明的空表；
                 -- 动态未知表不在 Core 猜测，避免把业务 nil 强制变成 `{}`。
                 outputNode[key] = {}
                 restored = restored + 1
@@ -931,10 +894,8 @@ function P:RebuildFramework2SerializerOmissions(store, decoded, stampedFingerpri
     return historicalCanonical, recovered
 end
 
--- Only full-replacement journal shards may repair a fence created while
--- READING a corrupt inactive copy. Future-schema and transient LoadData errors
--- are deliberately excluded: overwriting those could destroy data the current
--- build simply does not understand or could not read temporarily.
+-- 仅完整替换 journal 分片可修复读取损坏非活动副本造成的隔离；未来 schema 和暂时 LoadData 错误不在此列，覆盖
+-- 会破坏当前构建无法理解或暂不可读的数据。
 local function IsRecoverableReplacementFence(reason)
     reason = tostring(reason or "")
     return reason == "decode_failed"
@@ -946,11 +907,10 @@ local function IsRecoverableReplacementFence(reason)
         or reason:match("^transport_decode_failed:") ~= nil
 end
 
--- 中文维护注释（加载/保存闭环）：仅修 Load 会使字符串序号样本“可加载但保存回读失败”。
--- 当前世代/current schema mismatch 冷路径才尝试一次；外层已验证身份、Envelope Seal 和预算。
--- 本次期望 Hash、磁盘既有 Hash、候选 Hash、当前 Domain canonical Hash 必须全部一致。
--- Authority 仍是 Persistence，Store 只重建声明的序列表示；不走 known-pair、不 Apply/Save，
--- 不放宽 schema，失败继续原拒绝。保存探针与 Load 分离，无帧循环或后台重试。
+-- 字符串序号恢复同时需要加载与保存读回语义一致。只在当前代际/current schema mismatch 冷路径尝试一次，外层先
+-- 验证身份、Envelope Seal 和预算。本次 expected、磁盘 stamped、candidate、当前 Domain canonical Hash 必须全
+-- 部一致。Store 只重建已声明序列表示，Persistence 仍是权威；不走 known-pair、不 Apply/Save、不放宽 schema，
+-- 失败继续原拒绝。保存 probe 独立于 Load，无帧循环或后台重试。
 local function VerifyReadbackRepresentation(store, raw, actual, canonical, expectedFingerprint)
     local meta = type(raw) == "table" and raw.__rsmeta or nil
     if store.recoverReadbackRepresentation ~= true or type(store.rebuildCanonicalForIntegrity) ~= "function"
@@ -979,12 +939,9 @@ local function VerifyReadbackRepresentation(store, raw, actual, canonical, expec
     return true
 end
 
--- Reliability v3: optional post-write readback verification for critical
--- stores. SaveData returning true is not treated as durable proof on RU because
--- oversized/nested payloads have historically been observed to truncate
--- silently. Verification is explicit/opt-in so ordinary debounced settings do
--- not double their storage traffic. The readback is decode-only: it never calls
--- store.apply() and therefore cannot become a second Domain Authority.
+-- Reliability v3 为关键 Store 提供可选写后读回验证。RU SaveData 返回 true 不等于耐久证明，大型嵌套 payload
+-- 曾静默截断。显式选择验证避免普通 debounce 设置加倍存储流量；读回只 decode，不调用 store.apply()，不能形成
+-- 第二套 Domain 权威。
 function P:TryRepairPhysicalTransport(store, raw, transportErr)
     if type(store) ~= "table" or type(raw) ~= "table" or type(store.repairPhysicalTransport) ~= "function" then
         return nil, transportErr or "transport_decode_failed", nil
@@ -1030,7 +987,7 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
 
     self.stats.readbackVerifyAttempts = (tonumber(self.stats.readbackVerifyAttempts) or 0) + 1
     store.lastVerifyAt = NowMs()
-    -- 中文维护注释：每次真正回读独立留证，不复用上次成功结果，也不清 Load 探针。
+    -- 每次真正回读独立留证，不复用上次成功结果，也不清 Load 探针。
     store.lastReadbackRecoveryProbe = nil
     store.lastReadbackRepresentationRecovered = false
     store.lastPhysicalTransportRepairOk = false
@@ -1053,8 +1010,9 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     if raw == nil then return Fail("readback_missing") end
     if type(raw) ~= "table" then return Fail("readback_raw_type:" .. tostring(type(raw))) end
 
-    -- 中文维护注释：立即回读必须先验证“物理 envelope”预算，再按 Framework3 transport 还原。
-    -- 完整性/Store decode 永远只看逻辑 raw，防止物理哨兵泄漏进业务层或把 RU 的 false/空表省略误判为用户恢复默认值。
+    -- 立即回读必须先验证“物理 envelope”预算，再按 Framework3 transport 还原。
+    -- 完整性/Store decode 永远只看逻辑 raw，防止物理哨兵泄漏进业务层或把 RU 的 false/空表省略误判为用户恢复
+    -- 默认值。
     local physicalInspection = self:InspectPayload(raw, store.encodedBudget)
     store.lastPhysicalInspection = physicalInspection
     if type(physicalInspection) ~= "table" or physicalInspection.ok ~= true then
@@ -1095,10 +1053,8 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
         return Fail("readback_metadata_reliability_contract")
     end
     if canonicalReadback ~= true then
-        -- Legacy v2 raw-envelope comparison. Only reached by stores still
-        -- stamped by the pre-canonical contract; v3 stamps verify the
-        -- canonical value after decode below, because a raw comparison would
-        -- false-fail exactly on the RU representation changes v3 exists for.
+        -- 旧 v2 原始 envelope 比较只用于仍采用 canonical 前 stamp 的 Store；v3 在下方 decode 后校验
+        -- canonical 值，避免 RU 表示变化造成预期外假失败。
         local actualEncodedFingerprint, encodedFingerprintErr = self:FingerprintEncodedPayload(raw, store.encodedBudget)
         if actualEncodedFingerprint == nil then
             return Fail("readback_encoded_fingerprint_failed:" .. tostring(encodedFingerprintErr or "unknown"))
@@ -1108,9 +1064,8 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
         end
     end
 
-    -- Reliability v6 seals the metadata envelope as well as the encoded
-    -- business payload. This catches schema/owner/scope metadata truncation
-    -- that the v4/v5 business-only fingerprint intentionally excluded.
+    -- Reliability v6 同时封闭元数据 envelope 和编码业务 payload，检测 v4/v5 纯业务指纹未覆盖的
+    -- schema/owner/scope 元数据截断。
     if tonumber(meta.envelopeIntegrityVersion) ~= tonumber(self.EnvelopeIntegrityContractVersion) then
         return Fail("readback_metadata_envelope_integrity_version")
     end
@@ -1142,11 +1097,11 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     if type(self.FingerprintPayload) ~= "function" then return Fail("fingerprint_unavailable") end
     local expectedFingerprint, expectedErr
     local actualFingerprint, actualErr
-    local canonicalExpectedForDiagnostics, canonicalActualForDiagnostics -- 中文维护注释：仅在 canonical readback mismatch 冷路径保留两个 bounded detached 表引用，用于生成首个字段差异；不写回 Domain，也不延长到函数之外。
+    local canonicalExpectedForDiagnostics, canonicalActualForDiagnostics -- 仅在 canonical readback mismatch 冷路径保留两个 bounded
+                                                                         -- detached 表引用，用于生成首个字段差异；不写回 Domain，也不延
+                                                                         -- 长到函数之外。
     if canonicalReadback == true then
-        -- v3: compare canonical store values on both sides so the readback
-        -- proof survives the same representation changes the load-side
-        -- verification absorbs.
+        -- v3 在两侧比较 Store canonical 值，使读回证据能容忍加载侧同样吸收的表示变化。
         local canonicalExpected, canonicalExpectedErr = self:CanonicalIntegrityValue(store, expectedValue)
         if canonicalExpected == nil then
             return Fail(tostring(canonicalExpectedErr or "canonical_value_missing"))
@@ -1155,7 +1110,8 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
         if canonicalActual == nil then
             return Fail("readback_canonical_failed:" .. tostring(canonicalActualErr or "unknown"))
         end
-        canonicalExpectedForDiagnostics, canonicalActualForDiagnostics = canonicalExpected, canonicalActual -- 中文维护注释：Authority 仍是 Store.get/SaveData；这里仅保存本次 Verify 的只读快照引用，不 Apply、不修值。
+        canonicalExpectedForDiagnostics, canonicalActualForDiagnostics = canonicalExpected, canonicalActual -- Authority 仍是 Store.get/SaveData；这里仅保存本次 Verify 的
+                                                                                                            -- 只读快照引用，不 Apply、不修值。
         expectedFingerprint, expectedErr = self:FingerprintCanonicalValue(store, canonicalExpected)
         actualFingerprint, actualErr = self:FingerprintCanonicalValue(store, canonicalActual)
     else
@@ -1164,7 +1120,7 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     end
     if expectedFingerprint == nil then return Fail("expected_fingerprint_failed:" .. tostring(expectedErr)) end
     if actualFingerprint == nil then return Fail("readback_fingerprint_failed:" .. tostring(actualErr)) end
-    -- 中文维护注释（2026-09-12，回读业务章绑定）：旧 v4 回读只验证 expected==actual，
+    -- （2026-09-12，回读业务章绑定）旧 v4 回读只验证 expected==actual，
     -- 没把 metadata.encodedFingerprint 绑定到本次期望值。合成的旧章/有效 envelope 可因此
     -- 被 Verify/SaveStore/Flush 判为成功，但下一代 LoadStore 必然按同一旧章拒绝，形成假耐久。
     -- Authority：Store 拥有 canonical，Persistence 拥有证明；envelope seal 仅证明 metadata
@@ -1172,7 +1128,7 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     -- 及原有精确表示恢复；三者一致才算成功。禁止在此重盖章、Apply、写盘或解除写保护。
     -- 兼容：不改 Hash/schema/transport；旧 integrity-v2 已在上方校验 encoded payload，
     -- 不能把其 raw-envelope 章误比成 Domain 章。健康 v4 和已验证的序列表形恢复保持不变。
-    -- 性能/维护：复用已有短 Hash，仅一次字符串比较；失败沿用 Fail/耐久屏障，不新增轮询。
+    -- 性能/复用已有短 Hash，仅一次字符串比较；失败沿用 Fail/耐久屏障，不新增轮询。
     -- 证据边界：该漏洞已离线复现，尚未证明是用户三个现存故障存档的生成原因。
     if canonicalReadback == true and tostring(stampedEncodedFingerprint) ~= tostring(expectedFingerprint) then
         return Fail("readback_stamped_fingerprint_mismatch:" .. tostring(stampedEncodedFingerprint)
@@ -1183,12 +1139,14 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
         actualFingerprint = expectedFingerprint -- 上述四重等值证明成立，不把候选写回业务 Domain。
     end
     if tostring(actualFingerprint) ~= tostring(expectedFingerprint) then
-        local divergence = nil -- 中文维护注释：Hash A>B 不能告诉维护者哪一字段被 RU serializer 改写；只在已经失败时做最多 512 节点的 deterministic diff，不增加正常保存/输入热路径成本。
+        local divergence = nil -- Hash A>B 不能告诉维护者哪一字段被 RU serializer 改写；只在已经失败时做最多
+                               -- 512 节点的 deterministic diff，不增加正常保存/输入热路径成本。
         if canonicalExpectedForDiagnostics ~= nil and canonicalActualForDiagnostics ~= nil
             and type(self.DescribeCanonicalDivergence) == "function" then
             divergence = self:DescribeCanonicalDivergence(canonicalExpectedForDiagnostics, canonicalActualForDiagnostics)
         end
-        local detail = divergence ~= nil and ("|divergence=" .. tostring(divergence):gsub("[\r\n]+", " ")) or "" -- 中文维护注释：诊断保持单行可复制；不序列化整份用户配置，避免日志泄露/爆量。
+        local detail = divergence ~= nil and ("|divergence=" .. tostring(divergence):gsub("[\r\n]+", " ")) or "" -- 诊断保持单行可复制；不序列化整份用户配置，避免日志泄露/爆量
+                                                                                                                 -- 。
         return Fail("readback_fingerprint_mismatch:" .. tostring(expectedFingerprint) .. ">" .. tostring(actualFingerprint) .. detail)
     end
 
@@ -1203,10 +1161,8 @@ function P:LoadStore(id, options)
     options = type(options) == "table" and options or {}
     local store = self:GetStore(id)
     if store == nil then return false, nil, "unknown store" end
-    -- Never re-apply disk state over unsaved in-memory mutations. A caller that
-    -- truly wants to discard dirty working data must say so explicitly. This is
-    -- the persistence-side reload fence; Feature/page code must not be trusted
-    -- to remember it independently.
+    -- 不能用磁盘状态覆盖未保存的内存修改；调用者确实要丢弃 dirty 工作数据时须显式说明。此重载隔离归持久化层
+    -- ，不能依赖 Feature/页面各自记住。
     if store.lifetime ~= LIFETIME.Session and store.dirty == true and options.discardDirty ~= true then
         self.stats.dirtyReloadRejects = (tonumber(self.stats.dirtyReloadRejects) or 0) + 1
         Count("STORE_DIRTY_RELOAD_REJECTED", 1)
@@ -1215,11 +1171,8 @@ function P:LoadStore(id, options)
         })
         return false, nil, "dirty store reload rejected"
     end
-    -- Reliability v7 treats a successful-but-not-yet-readback-verified write
-    -- as an in-memory durability obligation. Re-loading the same Store here could
-    -- apply an older physical value over the newer healthy Domain if RU SaveData
-    -- reported success before the write became durably visible. Only an explicit
-    -- destructive recovery path may discard this obligation.
+    -- Reliability v7 将成功但未完成读回验证的写入视作内存耐久义务。RU SaveData 若在数据持久可见前报告成功，
+    -- 此处重载可能把旧物理值覆盖较新健康 Domain；仅显式破坏性恢复可丢弃该义务。
     if store.lifetime ~= LIFETIME.Session and store.needsBarrierVerify == true and options.discardUnverified ~= true then
         self.stats.unverifiedReloadRejects = (tonumber(self.stats.unverifiedReloadRejects) or 0) + 1
         Count("STORE_UNVERIFIED_RELOAD_REJECTED", 1)
@@ -1229,13 +1182,9 @@ function P:LoadStore(id, options)
         })
         return false, nil, "unverified store reload rejected"
     end
-    -- Terminal structural failures are immutable inside one Lua generation.
-    -- Re-reading the same fenced key cannot repair an integrity/metadata/schema
-    -- failure, but Feature defaults may call EnsureStoreLoaded repeatedly during
-    -- startup. Memoize that terminal result so one physical failure produces one
-    -- incident instead of N LoadData calls / duplicate diagnostics. A new addon
-    -- generation naturally rebuilds the Store object; explicit recovery paths
-    -- (ClearStore / verified replacement) reset the state themselves.
+    -- 终态结构故障在同一 Lua 代际内不可变；重复读取隔离键不能修复 integrity/metadata/schema 问题。启动
+    -- Feature 默认值可能反复 EnsureStoreLoaded，须记忆终态，使一次物理故障只形成一次事件，而非重复
+    -- LoadData/诊断。新插件代际自然重建 Store；ClearStore 或已验证替换显式恢复会自行重置。
     if store.lifetime ~= LIFETIME.Session and store.loaded == true and store.writeFenced == true
         and options.revalidateTerminal ~= true then
         self.stats.terminalLoadShortCircuits = (tonumber(self.stats.terminalLoadShortCircuits) or 0) + 1
@@ -1265,9 +1214,7 @@ function P:LoadStore(id, options)
             return false, nil, reason
         end
         if identityChanged and keyChanged ~= true then
-            -- The historical key normalizer is intentionally unchanged for
-            -- upgrade compatibility. If two exact world-qualified identities
-            -- collapse to the same physical token, never guess ownership.
+            -- 历史键归一化保持不变以兼容升级；精确带世界名身份折为同一物理 token 时绝不猜所有权。
             local reason = "scope_binding_identity_collision"
             store.loaded = true
             store.loadStatus = "scope_binding_failed"
@@ -1287,10 +1234,10 @@ function P:LoadStore(id, options)
     store.resolvedScopeFingerprint = scopeFingerprint
     store.lastScopeBindingError = nil
 
-    -- 中文维护注释：仅在真正重读前清空上一轮证据，terminal memo 返回则保留故障。
+    -- 仅在真正重读前清空上一轮证据，terminal memo 返回则保留故障。
     -- 原实现只重置 trace，回归中会夹带旧 schema 的 probe；诊断不是恢复 Authority。
     store.lastHistoricalRecoveryProbe = nil
-    -- 维护（F2窗口精度）：新物理读取清除上一轮数值证据，防止终端失败缓存重验后误用旧样本。
+    -- 新物理读取清除上一轮数值证据，防止终端失败缓存重验后误用旧样本。
     -- 只存两轴标量/次数，不持有整份raw；普通终端缓存命中不会到达此处。
     store.lastWindowNumericEvidence = nil
     store.lastHistoricalRecoveryHookState = "not_called"
@@ -1357,7 +1304,7 @@ function P:LoadStore(id, options)
         return false, nil, store.lastError
     end
 
-    -- 中文维护注释：Framework3 的第一条读取边界必须是物理预算 + transport decode。
+    -- Framework3 的第一条读取边界必须是物理预算 + transport decode。
     -- 这一步位于 metadata/canonical/decode/apply 之前；因此所有 Feature 仍只接触原始 Lua boolean/table，
     -- 并且未来版本/损坏 transport 会 fail-closed，不会被当成“空存档”后用默认值覆盖。
     local physicalTransportRepairNeeded = false
@@ -1395,10 +1342,8 @@ function P:LoadStore(id, options)
     end
     raw = transportRaw
 
-    -- Reliability v4 validates the encoded envelope on READ as well as WRITE.
-    -- A serializer-truncated or otherwise malformed table must never reach a
-    -- business decoder/apply path merely because it is still technically a Lua
-    -- table. This remains a cold persistence-boundary walk, not a feature Tick.
+    -- Reliability v4 在读和写两侧验证编码 envelope；不能因截断或畸形值技术上仍是 Lua 表，就允许进入业务
+    -- decoder/apply。遍历仅发生在持久化冷边界，不进入 Feature Tick。
     local encodedLoadInspection = self:InspectPayload(raw, store.encodedBudget)
     store.lastEncodedInspection = encodedLoadInspection
     if type(encodedLoadInspection) ~= "table" or encodedLoadInspection.ok ~= true then
@@ -1442,10 +1387,8 @@ function P:LoadStore(id, options)
         end
     end
 
-    -- Reliability v6 adds an independent envelope seal over critical metadata
-    -- plus the v4/v5 encoded-business fingerprint. The business fingerprint
-    -- stays decoder/schema agnostic; the envelope seal detects metadata-only
-    -- truncation or cross-scope substitution before any business decoder runs.
+    -- Reliability v6 为关键元数据添加独立 envelope seal，并保留 v4/v5 编码业务指纹。业务指纹仍不依赖
+    -- decoder/schema；seal 在运行 decoder 前发现仅元数据截断或跨 scope 替换。
     local metaReliabilityContract = meta and tonumber(meta.reliabilityContract) or nil
     local stampedEnvelopeVersion = meta and tonumber(meta.envelopeIntegrityVersion) or nil
     local stampedEnvelopeFingerprint = meta and NonEmptyText(meta.envelopeFingerprint) or nil
@@ -1509,14 +1452,9 @@ function P:LoadStore(id, options)
         return false, nil, store.writeFenceReason
     end
 
-    -- Cross-reload business integrity check. Integrity v2 canonicalizes only
-    -- non-integral numeric representation so RU SaveData float normalization
-    -- cannot create false corruption fences. Integrity v1 remains readable. If
-    -- a v1 non-critical settings Store has a business hash mismatch while its
-    -- v6+ metadata envelope seal is intact, treat it as a one-generation
-    -- compatibility load and immediately queue a v2 restamp after decode,
-    -- budget, migration and apply all succeed. Critical/journal Stores remain
-    -- fail-closed and never use this compatibility escape hatch.
+    -- 跨重载业务完整性：Integrity v2 只归一化非整数表示，避免 RU SaveData 浮点变化造成假损坏隔离；v1 仍可读
+    -- 取。v1 非关键设置 Store 业务哈希不匹配但 v6+ 元数据 seal 有效时，允许单代兼容加载；decode、预算、迁移
+    -- 、apply 全成功后立即排队盖 v2 stamp。关键/journal Store 继续失败封闭，不使用该兼容出口。
     local stampedFingerprint = meta and NonEmptyText(meta.encodedFingerprint or meta.payloadFingerprint) or nil
     local stampedIntegrityVersion = meta and tonumber(meta.integrityVersion) or nil
     local stampedReliabilityContract = meta and tonumber(meta.reliabilityContract) or nil
@@ -1533,11 +1471,11 @@ function P:LoadStore(id, options)
     local preDecodedValue = nil
     local serializerRepairNeeded = false
     local serializerRepairedRaw = nil
-    -- 中文维护注释：`.18.198` 记录进入本次 Load 前的 Integrity 恢复计数。历史 4 条恢复分支写在深层
+    -- `.18.198` 记录进入本次 Load 前的 Integrity 恢复计数。历史 4 条恢复分支写在深层
     -- if/elseif 内，其局部变量（如 recoveredHistoricalCanonical）在函数末尾的升级排队处不可见；
     -- 用 stats 增量判断「本次加载是否真的执行过恢复」既可跨作用域，又不需要每个 Store 额外声明标记。
     local recoveriesAtEntry = tonumber(self.stats.integrityUpgradeRecoveries) or 0
-    -- 中文维护注释：真实读取前已统一清理证据；此处只追加本次契约世代，不复用旧探针。
+    -- 真实读取前已统一清理证据；此处只追加本次契约世代，不复用旧探针。
     AppendIntegrityRecoveryTrace(store, "iv=" .. tostring(stampedIntegrityVersion)
         .. ",rel=" .. tostring(stampedReliabilityContract)
         .. ",fw=" .. tostring(meta and meta.framework or nil)
@@ -1552,13 +1490,9 @@ function P:LoadStore(id, options)
             or stampedReliabilityContract > currentReliability then
             integrityErr = "reliability_contract:" .. tostring(stampedReliabilityContract)
         elseif stampedIntegrityVersion == contentBlindIntegrity then
-            -- Integrity v3 stamps came from the content-blind canonical era
-            -- (see ContentBlindCanonicalContractVersion): the stamped hash was
-            -- derived from the store's DEFAULT table shape, not its content,
-            -- so there is no meaningful fingerprint to re-verify here. Treat
-            -- the stamp as absent and recover through the same gated
-            -- one-generation path as v2 (seal + decode + budget + apply must
-            -- all pass), then re-stamp with the repaired v4 canonical.
+            -- Integrity v3 stamp 来自忽略内容的 canonical 时期（见 ContentBlindCanonicalContractVersion），
+            -- 哈希只描述 Store 默认表形状，不能重新验证真实内容。视为缺少 stamp，走与 v2 相同的单代门禁恢复
+            -- ，seal/decode/预算/apply 全通过后盖已修复 v4 canonical stamp。
             local decoded, decodeErr = DecodeValue(store, raw)
             local upgradedInspection = nil
             if decoded ~= nil then upgradedInspection = self:InspectPayload(decoded, store.budget) end
@@ -1590,13 +1524,9 @@ function P:LoadStore(id, options)
                     .. "/budget:" .. tostring(type(upgradedInspection) == "table" and upgradedInspection.ok == true)
             end
         elseif stampedIntegrityVersion == currentIntegrity then
-            -- Integrity v4: verify the CANONICAL value instead of the raw
-            -- encoded envelope. The metadata envelope seal and the raw budget
-            -- inspection have already passed, so decoding here exposes the
-            -- decoder to exactly the input it would have received after a
-            -- successful legacy check; decode hooks in this codebase are pure
-            -- normalizers. A logical-preserving RU representation change is
-            -- absorbed by re-canonicalization; content corruption is not.
+            -- Integrity v4 校验 canonical 值而非原始编码 envelope。此前元数据 seal 和原始预算已通过，decode
+            -- 得到与成功旧检查相同的输入；本仓 decoder 是纯归一化器。保持逻辑的 RU 表示变化由重新 canonical
+            -- 化吸收，内容损坏不能被吸收。
             local decoded, decodeErr = DecodeValue(store, raw)
             if decoded == nil then
                 integrityErr = "decode_failed:" .. tostring(decodeErr or "decoded payload missing")
@@ -1609,16 +1539,13 @@ function P:LoadStore(id, options)
                     if actualFingerprint == nil then
                         integrityErr = "fingerprint_failed:" .. tostring(actualErr or "unknown")
                     elseif tostring(actualFingerprint) ~= tostring(stampedFingerprint) then
-                        AppendIntegrityRecoveryTrace(store, "v4=mis,new=" .. tostring(actualFingerprint)) -- 中文维护注释：只记录 32-bit canonical Hash，帮助确认是否真正进入当前 v4 canonical 分支。
-                        -- A current-v4 mismatch normally remains fail-closed. One
-                        -- narrow exception exists for Stores that can deterministically
-                        -- rebuild the exact historical logical candidate after their
-                        -- own canonicalizer changed or RU omitted a representational
-                        -- field. We accept it only when that candidate reproduces the
-                        -- stamped fingerprint byte-for-byte and the independent v6+
-                        -- envelope seal already verified above.
-                        -- 中文维护注释：只缓存版本/Hash，不保留磁盘 payload；短报告能逐一说明
-                        -- 全部故障 Store，避免长摘要截掉第三项。仅 mismatch 冷路径计算一次。
+                        AppendIntegrityRecoveryTrace(store, "v4=mis,new=" .. tostring(actualFingerprint)) -- 只记录 32-bit canonical Hash，确认进入当前 v4 分支。
+                        -- 当前 v4 失配通常继续失败封闭；唯一窄例外是 Store 在 canonicalizer 改变或 RU 省略
+                        -- 表示字段后，
+                        -- 可确定性重建精确历史逻辑候选。候选必须逐字节复现已有指纹，上方独立 v6+ envelope
+                        -- seal 已通过。
+                        -- 只缓存版本/Hash，不保留磁盘 payload；短报告逐一说明全部故障 Store，仅 mismatch 冷
+                        -- 路径计算一次。
                         local rawProof = type(store.encode) == "function" and type(store.decode) == "function"
                             and self:FingerprintEncodedPayload(raw, store.encodedBudget)
                             or self:FingerprintCanonicalValue(store, decoded)
@@ -1631,24 +1558,27 @@ function P:LoadStore(id, options)
                         local recoveredHistoricalCanonical = false
                         if envelopeAdvertised == true and store.allowIntegrityUpgrade == true then
                             local decodedInspection = self:InspectPayload(decoded, store.budget)
-                            AppendIntegrityRecoveryTrace(store, "db=" .. tostring(type(decodedInspection) == "table" and decodedInspection.ok == true and 1 or 0)) -- 中文维护注释：Domain budget gate 结果；失败时 historical/known hook 均不会获得执行权。
+                            AppendIntegrityRecoveryTrace(store, "db=" .. tostring(type(decodedInspection) == "table" and decodedInspection.ok == true and 1 or 0)) -- Domain budget gate 结果；失败时 historical/known hook 均不会
+                                                                                                                                                                   -- 获得执行权。
                             if type(decodedInspection) == "table" and decodedInspection.ok == true then
-                                -- 中文维护注释（恢复顺序）：先尝试 Core 能严格证明的 Framework2
-                                -- `false/空表` 省略（含 default=true 被用户关成 false）；匹配不上才交给 Store 自己的 typed/custom
+                                -- 先尝试 Core 能严格证明的 Framework2
+                                -- `false/空表` 省略（含 default=true 被用户关成 false）；匹配不上才交给
+                                -- Store 自己的 typed/custom
                                 -- recovery hook。两条路径最终都必须重算并命中同一个旧 fingerprint，Core
                                 -- 不会因为“看起来像 RU 省略”就绕过完整性门。
                                 local rebuiltOk, historicalCanonical, recoveredDomain = pcall(
                                     self.RebuildFramework2SerializerOmissions, self, store, DeepCopy(decoded),
                                     stampedFingerprint, DeepCopy(raw))
-                                AppendIntegrityRecoveryTrace(store, "coreF2=" .. tostring(rebuiltOk == true and type(historicalCanonical) == "table" and "cand" or (rebuiltOk == true and "skip" or "err"))) -- 中文维护注释：typed Store 正常应为 skip；若 future 改动意外让 Core 抢先产候选，可从首行直接看出。
+                                AppendIntegrityRecoveryTrace(store, "coreF2=" .. tostring(rebuiltOk == true and type(historicalCanonical) == "table" and "cand" or (rebuiltOk == true and "skip" or "err"))) -- typed Store 正常应为 skip；若 future 改动意外让 Core 抢先产
+                                                                                                                                                                                                             -- 候选，可从首行直接看出。
                                 if rebuiltOk ~= true or type(historicalCanonical) ~= "table" then
                                     if type(store.rebuildCanonicalForIntegrity) == "function" then
-                                        -- Contract v2 passes the original raw envelope as a fourth argument. Existing
-                                        -- hooks remain source-compatible (Lua ignores extra args). A hook may optionally
-                                        -- return a second table: the recovered CURRENT Domain value. This is necessary when
-                                        -- decode() cannot distinguish an RU-omitted false from a missing default-true field.
-                                        -- 中文维护注释：调用状态独立于 Store 是否写 probe；返回候选却没
-                                        -- probe 不等于没调用。Core 记录真实结果，不影响恢复/写保护决策。
+                                        -- Contract v2 将原始 raw envelope 作为第四参传入，Lua 忽略额外参数
+                                        -- ，因此旧钩子源码兼容。钩子可额外返回第二张表作为恢复后的当前
+                                        -- Domain，以处理 decode() 无法区分 RU 省略 false 与缺失
+                                        -- default=true 字段的情况。调用状态独立于 Store 是否写 probe；返回
+                                        -- 候选但未写 probe 也算已调用。Core 记录真实结果，不改变恢复或写保
+                                        -- 护决策。
                                         store.lastHistoricalRecoveryHookState = "called"
                                         rebuiltOk, historicalCanonical, recoveredDomain = pcall(
                                             store.rebuildCanonicalForIntegrity, DeepCopy(decoded), stampedFingerprint,
@@ -1658,20 +1588,21 @@ function P:LoadStore(id, options)
                                         if NonEmptyText(store.lastHistoricalRecoveryProbe) == nil then
                                             store.lastHistoricalRecoveryProbe = "hook_" .. store.lastHistoricalRecoveryHookState
                                         end
-                                        AppendIntegrityRecoveryTrace(store, "hist=" .. tostring(rebuiltOk == true and type(historicalCanonical) == "table" and "cand" or (rebuiltOk == true and "nil" or "err"))) -- 中文维护注释：明确 Store historical hook 是否执行/抛错/无候选，结束“只看 Hash 猜分支”的盲区。
+                                        AppendIntegrityRecoveryTrace(store, "hist=" .. tostring(rebuiltOk == true and type(historicalCanonical) == "table" and "cand" or (rebuiltOk == true and "nil" or "err"))) -- 明确报告 Store 历史恢复 hook 是否执行、抛错或无候选，不能只
+                                                                                                                                                                                                                  -- 凭 Hash 猜分支。
                                     else
-                                        store.lastHistoricalRecoveryHookState = "not_registered" -- 中文维护注释：与前置 gate 跳过明确区分。
-                                        AppendIntegrityRecoveryTrace(store, "hist=nohook") -- 中文维护注释：Store 未注册 historical hook 也必须显式可见。
+                                        store.lastHistoricalRecoveryHookState = "not_registered" -- 与前置 gate 跳过明确区分。
+                                        AppendIntegrityRecoveryTrace(store, "hist=nohook") -- Store 未注册 historical hook 也必须显式可见。
                                         rebuiltOk, historicalCanonical, recoveredDomain = false, nil, nil
                                     end
                                 end
                                 if rebuiltOk == true and type(historicalCanonical) == "table" then
                                     local historicalFingerprint = self:FingerprintCanonicalValue(store, historicalCanonical)
-                                    AppendIntegrityRecoveryTrace(store, "hfp=" .. tostring(historicalFingerprint or "nil")) -- 中文维护注释：候选只输出 32-bit Hash，不输出 canonical 内容；可直接判断是 hook 未命中还是候选本身与旧盖章不一致。
+                                    AppendIntegrityRecoveryTrace(store, "hfp=" .. tostring(historicalFingerprint or "nil")) -- 候选只输出 32-bit Hash，不输出 canonical 内容；可直接判断是
+                                                                                                                            -- hook 未命中还是候选本身与旧盖章不一致。
                                     if historicalFingerprint ~= nil and tostring(historicalFingerprint) == tostring(stampedFingerprint) then
-                                        -- The historical candidate is now integrity-authenticated by the OLD stamp.
-                                        -- Apply must be derived from that recovered logical value, not blindly from
-                                        -- canonical(decoded), or default-sensitive data could be silently changed.
+                                        -- 历史候选已通过旧 stamp 完整性认证；Apply 必须由恢复的逻辑值推导，
+                                        -- 不能盲用 canonical(decoded)，避免默认敏感数据静默变化。
                                         local recoveredApplyValue = decoded
                                         local recoveredApplyOk = true
                                         if type(recoveredDomain) == "table" then
@@ -1729,21 +1660,18 @@ function P:LoadStore(id, options)
                                 end
                             end
                         end
-                        -- Contract v3: after exact historical reconstruction has
-                        -- exhausted all deterministic candidates, a Store may opt
-                        -- into a ONE-TIME known-stamp migration. This is not a
-                        -- generic mismatch bypass. The hook receives the exact old
-                        -- stamp and raw envelope, and is responsible for whitelisting
-                        -- that stamp + validating its own legacy payload shape. Core
-                        -- still enforces envelope integrity (already passed above),
-                        -- decoded/current-domain budgets, current canonicalization and
-                        -- immediate restamp before the Store can return to normal use.
+                        -- Contract v3 仅在精确历史重建耗尽全部确定性候选后，允许 Store 主动采用一次已知
+                        -- stamp 迁移。不是通用失配绕过；钩子收到精确旧 stamp/raw envelope，负责白名单该
+                        -- stamp 并验证自身旧 payload 形状。Core 仍强制 envelope 完整性、
+                        -- decoded/current-domain 预算、当前 canonical 化及立即重新盖章，之后才可恢复正常使
+                        -- 用。
                         if recoveredHistoricalCanonical ~= true and envelopeAdvertised == true
                             and store.allowIntegrityUpgrade == true
                             and type(store.recoverKnownLegacyCanonical) == "function" then
                             local knownOk, knownDomain, knownReason = pcall(
                                 store.recoverKnownLegacyCanonical, DeepCopy(decoded), stampedFingerprint, canonical, DeepCopy(raw))
-                            AppendIntegrityRecoveryTrace(store, "known=" .. tostring(knownOk == true and type(knownDomain) == "table" and "cand" or (knownOk == true and "nil" or "err"))) -- 中文维护注释：known-stamp 是最后恢复桥；只记录执行结果，具体拒绝原因由 Store probe 提供。
+                            AppendIntegrityRecoveryTrace(store, "known=" .. tostring(knownOk == true and type(knownDomain) == "table" and "cand" or (knownOk == true and "nil" or "err"))) -- known-stamp 是最后恢复桥；只记录执行结果，具体拒绝原因由
+                                                                                                                                                                                           -- Store probe 提供。
                             if knownOk == true and type(knownDomain) == "table" then
                                 local knownInspection = self:InspectPayload(knownDomain, store.budget)
                                 local knownCanonical = nil
@@ -1779,32 +1707,32 @@ function P:LoadStore(id, options)
                         end
                         if recoveredHistoricalCanonical ~= true then
                             integrityErr = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
-                            -- 中文维护注释：保底诊断使用实际调用状态，不能由 probe 缺失推断未调用；
+                            -- 保底诊断使用实际调用状态，不能由 probe 缺失推断未调用；
                             -- 前置 gate 跳过、未注册、无候选、异常必须有不同证据，不能绕过失败。
                             if NonEmptyText(store.lastHistoricalRecoveryProbe) == nil then
                                 store.lastHistoricalRecoveryProbe = "hook_" .. tostring(store.lastHistoricalRecoveryHookState or "not_called") .. "/envelopeAdvertised="
                                     .. tostring(envelopeAdvertised) .. "/allowUpgrade=" .. tostring(store.allowIntegrityUpgrade)
                                     .. "/integrityVersion=" .. tostring(stampedIntegrityVersion)
-                                    .. "/reliability=" .. tostring(stampedReliabilityContract) -- 中文维护注释：仅元数据与布尔，无业务内容。
+                                    .. "/reliability=" .. tostring(stampedReliabilityContract) -- 仅元数据与布尔，无业务内容。
                             end
                             local recoveryTrace = NonEmptyText(store.lastIntegrityRecoveryTrace)
                             if recoveryTrace ~= nil then
-                                integrityErr = integrityErr .. "|trace=" .. recoveryTrace -- 中文维护注释：.18.200 把短状态机轨迹放在长 probe 前面；startup warning 有长度上限，顺序反过来会再次把关键分支证据截掉。
+                                integrityErr = integrityErr .. "|trace=" .. recoveryTrace -- .18.200 把短状态机轨迹放在长 probe 前面；startup warning 有
+                                                                                          -- 长度上限，顺序反过来会再次把关键分支证据截掉。
                             end
                             local historicalProbe = NonEmptyText(store.lastHistoricalRecoveryProbe)
                             if historicalProbe ~= nil then
-                                integrityErr = integrityErr .. "|historical_probe=" .. historicalProbe -- 中文维护注释：Store 专属细节保留在 trace 后作为第二层证据；不改变任何恢复/写保护决策。
+                                integrityErr = integrityErr .. "|historical_probe=" .. historicalProbe -- Store 专属细节保留在 trace 后作为第二层证据；不改变任何恢复/
+                                                                                                       -- 写保护决策。
                             end
                         end
                     else
                         store.lastIntegrityStatus = "verified_canonical"
                         store.lastIntegrityFingerprint = actualFingerprint
                         store.lastIntegrityError = nil
-                        -- v4 pipeline: Decode -> Normalize -> Verify -> Apply.
-                        -- Plain stores apply the canonical (normalized) value so
-                        -- the Domain receives the fixed shape even without a
-                        -- schema migration; typed-codec stores apply the decoded
-                        -- Domain, whose normalize is performed by decode().
+                        -- v4 流水线：Decode -> Normalize -> Verify -> Apply。普通 Store 应用 canonical 归一
+                        -- 化值，即使没有 schema 迁移也让 Domain 收到固定形状；typed-codec Store 应用由
+                        -- decode() 完成归一化的 Domain。
                         if type(store.encode) == "function" and type(store.decode) == "function" then
                             preDecodedValue = decoded
                         else
@@ -1843,13 +1771,9 @@ function P:LoadStore(id, options)
                             store = store.id, oldFingerprint = stampedFingerprint, loadedFingerprint = actualFingerprint,
                         })
                 else
-                    -- Integrity v2 remains fail-closed by default. A Store may
-                    -- opt in to one narrowly-proven serializer-shape repair: the
-                    -- metadata envelope must already have verified, the Store
-                    -- must be non-critical/non-journal, and its hook must rebuild
-                    -- a candidate whose CURRENT integrity hash is EXACTLY the
-                    -- previously stamped hash. Any lost/changed business value
-                    -- therefore still fails and keeps the Store fenced.
+                    -- Integrity v2 默认继续失败封闭。Store 可主动启用一种有严格证据的序列化形状修复：
+                    -- metadata envelope 已通过，Store 非关键且非 journal，钩子重建候选的当前完整性哈希精确
+                    -- 等于旧 stamp。丢失或改变的业务值仍失败并保持隔离。
                     local repairAllowed = stampedIntegrityVersion == preCanonicalIntegrity
                         and (tonumber(stampedReliabilityContract) or 0) >= 6
                         and envelopeAdvertised == true
@@ -1861,11 +1785,9 @@ function P:LoadStore(id, options)
                         local okRepair, candidate, repairReason = pcall(store.rebuildEncodedForIntegrity, DeepCopy(raw), {
                             store = store.id, stampedFingerprint = stampedFingerprint, loadedFingerprint = actualFingerprint,
                         })
-                        -- A hook may return one candidate table or { candidates =
-                        -- { ... } } when several historical encoded shapes existed
-                        -- (e.g. a pre-codec Domain form and an intermediate wrapped
-                        -- form). Persistence hashes each candidate and accepts only
-                        -- an exact stamp reproduction.
+                        -- 钩子可返回单个候选表，或在多个历史编码形状（如 codec 前 Domain 与中间包装形状）存
+                        -- 在时返回 { candidates = { ... } }。Persistence 分别哈希，仅接受精确复现 stamp 的
+                        -- 候选。
                         local candidateList = nil
                         if okRepair == true and type(candidate) == "table" and type(candidate.candidates) == "table" then
                             candidateList = candidate.candidates
@@ -1915,28 +1837,14 @@ function P:LoadStore(id, options)
                         end
                     end
                     if repaired ~= true then
-                        -- One-generation upgrade escape for legacy v2 raw-envelope
-                        -- stamps: the RU serializer changed the on-disk business
-                        -- representation of the pre-canonical era. Real-machine
-                        -- evidence 2026-09-05 shows this drift is serializer-
-                        -- GENERAL (life.bonds / gear payload journal shards /
-                        -- death_review record shards), so recovery is the default
-                        -- for every v2 stamp unless the domain explicitly opts
-                        -- out. Accept ONLY when the independent metadata envelope
-                        -- seal is valid AND the full business path (decode +
-                        -- budget) still passes; the store is then re-stamped with
-                        -- the canonical v3 contract at the deferred upgrade save,
-                        -- which re-arms strict fail-closed verification. For
-                        -- verifyAfterSave/recoverableReplacement journal shards
-                        -- this is strictly LESS destructive than the alternative
-                        -- replaceCorrupt recovery, which overwrites the shard.
-                        -- Real-machine 2026-09-06: a v2-stamped store whose
-                        -- envelope predates reliability v6 stayed fenced with
-                        -- v3Upgrade=0/0 because BOTH the v1-compat path and this
-                        -- gate demanded reliability>=6. The seal + full business
-                        -- validation is the actual evidence; the floor only has
-                        -- to prove the envelope IS integrity-era. One unified
-                        -- gated recovery now covers v1 AND v2 stamps.
+                        -- 旧 v2 原始 envelope stamp 的单代升级用于 canonical 前时期 RU 磁盘业务表示变化。
+                        -- 2026-09-05 实机 life.bonds、gear payload journal 分片、death_review record 分片证
+                        -- 实普遍漂移，故默认恢复，Domain 可显式退出。仅当独立 metadata envelope seal 与完整
+                        -- decode/预算业务链通过时接受；延迟升级保存盖 canonical v3 stamp，重新启用严格失败
+                        -- 封闭。对 verifyAfterSave/recoverableReplacement journal 分片，这比覆盖分片的
+                        -- replaceCorrupt 更少破坏。2026-09-06 实机表明早于 reliability v6 的 v2 envelope 因
+                        -- 两个门禁均要求 >=6 而被隔离；真实证据是 seal 加完整业务校验，下限只须证明
+                        -- envelope 属于完整性时期。统一门禁恢复覆盖 v1/v2 stamp。
                         local upgradeAllowed = store.allowIntegrityUpgrade == true
                             and stampedIntegrityVersion == preCanonicalIntegrity
                             and (tonumber(stampedReliabilityContract) or 0) >= minIntegrityReliability
@@ -1950,8 +1858,7 @@ function P:LoadStore(id, options)
                             end
                             if okDecode ~= true or upgradedValue == nil
                                 or type(upgradedInspection) ~= "table" or upgradedInspection.ok ~= true then
-                                -- Silent rejection here made the real machine
-                                -- unfalsifiable (v3Upgrade=0/0 with no clue why).
+                                -- 拒绝原因必须可见，避免实机只见 v3Upgrade=0/0 而无法验证原因。
                                 self.stats.integrityUpgradeValidationFailures = (tonumber(self.stats.integrityUpgradeValidationFailures) or 0) + 1
                                 Emit("warning", "STORE_INTEGRITY_UPGRADE_VALIDATION_FAILED",
                                     "受控升级的解码/预算校验未通过，继续按真实损坏 Fail Closed", {
@@ -1970,8 +1877,8 @@ function P:LoadStore(id, options)
                                     local applyValue = upgradedValue
                                     if type(canonicalValue) == "table"
                                         and not (type(store.encode) == "function" and type(store.decode) == "function") then
-                                        -- Plain stores: apply the normalized canonical form and
-                                        -- name the exact field the serializer/normalize gap changed.
+                                        -- 普通 Store 应用已归一化 canonical 形状，并报告序列化或 normalize
+                                        -- 差异改变的精确字段。
                                         applyValue = canonicalValue
                                         divergence = self:DescribeCanonicalDivergence(upgradedValue, canonicalValue)
                                     end
@@ -1990,9 +1897,8 @@ function P:LoadStore(id, options)
                             end
                         end
                         if upgraded ~= true then
-                            -- Make the fence DECISIVE on the real machine: the
-                            -- 2026-09-06 banner showed v3Upgrade=0/0 with no way
-                            -- to tell WHICH gate condition refused the recovery.
+                            -- 隔离报告须指出拒绝恢复的具体门禁条件；2026-09-06 实机仅见 v3Upgrade=0/0 的证
+                            -- 据不足以判断。
                             integrityErr = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
                                 .. "|upgrade_gate=reliability:" .. tostring(stampedReliabilityContract)
                                 .. "/version:" .. tostring(stampedIntegrityVersion)
@@ -2006,19 +1912,13 @@ function P:LoadStore(id, options)
                 store.lastIntegrityError = nil
                 if stampedIntegrityVersion == legacyIntegrity and (tonumber(stampedReliabilityContract) or 0) >= 6
                     and store.verifyAfterSave ~= true and store.recoverableReplacement ~= true then
-                    -- Exact v1 loads are healthy, but restamping them with v2
-                    -- prevents the next native round-trip from re-entering the
-                    -- representation-sensitive legacy contract.
+                    -- 精确 v1 加载本身健康，重新盖 v2 stamp 可避免下次原生往返再次进入表示敏感的旧契约。
                     legacyIntegrityUpgradeNeeded = true
                 elseif stampedIntegrityVersion == preCanonicalIntegrity
                     and (tonumber(stampedReliabilityContract) or 0) >= 6
                     and store.allowIntegrityUpgrade == true then
-                    -- Exact v2 loads are healthy today, but the raw-envelope
-                    -- contract is representation-fragile (serializer-general
-                    -- drift, 2026-09-05 real-machine evidence). Restamping with
-                    -- the canonical v3 contract at the deferred save removes the
-                    -- false-fence class entirely for this Store, including
-                    -- journal shards whose next drift would otherwise fence.
+                    -- 精确 v2 加载虽当前健康，原始 envelope 对序列化表示漂移脆弱（2026-09-05 实机证据）。延
+                    -- 迟保存盖 canonical v3 stamp，使本 Store 及 journal 分片不再因下次表示漂移产生假隔离。
                     integrityUpgradeNeeded = true
                 end
             end
@@ -2070,9 +1970,7 @@ function P:LoadStore(id, options)
     local decodeRaw = serializerRepairedRaw or raw
     local value, decodeErr
     if preDecodedValue ~= nil then
-        -- v3 canonical verification and the gated upgrade recovery already
-        -- decoded this payload successfully; reuse that exact value so the
-        -- business path sees the same object that was verified.
+        -- v3 canonical 校验与门禁升级已成功 decode 此 payload；复用同一值，保证业务路径收到的对象就是已验证对象。
         value = preDecodedValue
     else
         value, decodeErr = DecodeValue(store, decodeRaw)
@@ -2089,19 +1987,16 @@ function P:LoadStore(id, options)
         return false, nil, decodeErr
     end
 
-    -- Custom decoders can expand a compact encoded table dramatically. Budget
-    -- the Domain result before migration/apply so a small disk envelope cannot
-    -- bypass the business Store's bounded-memory contract.
+    -- 自定义 decoder 可将紧凑编码表大幅扩张；在 migration/apply 前校验 Domain 结果预算，避免小磁盘 envelope
+    -- 绕过业务 Store 的有界内存契约。
     local decodedInspection = self:InspectPayload(value, store.budget)
     store.lastDecodedInspection = decodedInspection
     if type(decodedInspection) ~= "table" or decodedInspection.ok ~= true then
         return RejectDecodedLoad("decode", decodedInspection)
     end
 
-    -- Reliability v7 defers migration/period-reset dirty metadata until the
-    -- transformed Domain has passed its final budget and apply() has succeeded.
-    -- Otherwise a failed apply could leave a terminal, write-fenced Store marked
-    -- dirty and make the debounce loop repeatedly attempt an unsafe save.
+    -- Reliability v7 等变换后的 Domain 通过最终预算且 apply() 成功后，才标 migration/周期重置的 dirty 元数
+    -- 据。否则失败 apply 会让终态写隔离 Store 仍为 dirty，导致 debounce 反复尝试不安全保存。
     local deferredSaveReason = nil
     local deferredSaveDelayMs = nil
     if legacyIntegrityUpgradeNeeded == true then
@@ -2138,12 +2033,18 @@ function P:LoadStore(id, options)
                 })
                 return false, nil, message
             end
-            value = migrated -- 中文维护注释：只在 migration 成功且返回非 nil Domain 后替换待 Apply 值；Integrity recovery 已证明的当前 Domain 仍必须经过同一迁移边界。
-            self.stats.migrations = (tonumber(self.stats.migrations) or 0) + 1 -- 中文维护注释：schema 迁移统计照常增加，用于区分历史档升级与普通 current-schema Load。
-            if deferredSaveReason == nil then -- 中文维护注释：若前面已经发生 integrity/historical/known-stamp recovery，就保留其更强的“立即重盖”语义，禁止普通 schema migration 把 0ms durability 修复降成 debounce 保存。
-                deferredSaveReason = "migration" -- 中文维护注释：只有纯 schema 升级、没有更高优先级完整性恢复时，才使用普通 migration 脏标记原因。
-                deferredSaveDelayMs = self.defaultDelayMs -- 中文维护注释：纯迁移可按既有 debounce 保存；完整性恢复路径已在前面设置 0ms，不在此覆盖。
-            end -- 中文维护注释：结束 deferred save 优先级保护；period reset 后续仍可按其更高业务语义显式覆盖。
+            value = migrated -- 只在 migration 成功且返回非 nil Domain 后替换待 Apply 值；Integrity recovery
+                             -- 已证明的当前 Domain 仍必须经过同一迁移边界。
+            self.stats.migrations = (tonumber(self.stats.migrations) or 0) + 1 -- schema 迁移统计照常增加，用于区分历史档升级与普通
+                                                                               -- 按当前结构版本加载。
+            if deferredSaveReason == nil then -- 若前面已经发生 integrity/historical/known-stamp recovery，就
+                                              -- 保留其更强的“立即重盖”语义，禁止普通 schema migration 把 0ms
+                                              -- durability 修复降成 debounce 保存。
+                deferredSaveReason = "migration" -- 只有纯 schema 升级、没有更高优先级完整性恢复时，才使用普通
+                                                 -- migration 脏标记原因。
+                deferredSaveDelayMs = self.defaultDelayMs -- 纯迁移可按既有 debounce 保存；完整性恢复路径已在前面设置 0ms
+                                                          -- ，不在此覆盖。
+            end -- 结束 deferred save 优先级保护；period reset 后续仍可按其更高业务语义显式覆盖。
         end
     end
 
@@ -2174,7 +2075,7 @@ function P:LoadStore(id, options)
     end
 
     if deferredSaveReason == nil and physicalTransportRepairNeeded == true then
-        -- 维护：只有 transport 候选随后通过现有 Envelope/业务指纹、decode/migrate/budget/apply
+        -- 只有 transport 候选随后通过现有 Envelope/业务指纹、decode/migrate/budget/apply
         -- 全链路后才来到这里；立即重写为 Store 当前 transport，避免下次重载再次依赖修复。
         deferredSaveReason = "physical_transport_repair"
         deferredSaveDelayMs = 0
@@ -2182,31 +2083,32 @@ function P:LoadStore(id, options)
 
     if deferredSaveReason == nil and meta ~= nil
         and (tonumber(meta.framework) or 0) < (tonumber(self.FrameworkVersion) or 3) then
-        -- 中文维护注释：旧 Framework2 只有在完整性、schema migration、周期 reset 全部
+        -- 旧 Framework2 只有在完整性、schema migration、周期 reset 全部
         -- 成功后才排队升级物理 transport；若前面已有更强的 resave 原因则不覆盖，因为
         -- 任一当前 SaveValue 都会自动写 Framework3。这样不会改变历史迁移的事务优先级。
         deferredSaveReason = "framework_transport_upgrade"
         deferredSaveDelayMs = 0
     end
 
-    -- 中文维护注释：`.18.198` 补齐 `.18.197` 遗漏的一环。Transport v1 的物理表示已被实机证实有损
+    -- `.18.198` 补齐 `.18.197` 遗漏的一环。Transport v1 的物理表示已被实机证实有损
     -- （只保护 boolean false 与空表，不保护数值 0 与空字符串），因此**本次加载确实因该表示丢失去做过
     -- Integrity 恢复**的 Store 不能继续停留在 v1：否则每次启动都要重跑恢复路径，且用户不触发任何保存
     -- 就退出时磁盘一直保持有损表示。
     -- 但健康 v1 Store 继续保持 `.18.197` 的惰性升级策略（首次正常保存时自然写 v2），避免一次版本更新
     -- 触发全部 39 个 Store 的 SaveData fan-out；因此这里用 stats 恢复计数增量严格限定为「本次真的恢复过」，
     -- 而不是「所有 transport 落后的 Store」。
-    -- 维护：精确恢复成功才排队升级到Store声明的物理版本（默认3/显式4），避免再写有损表示；
+    -- 精确恢复成功才排队升级到Store声明的物理版本（默认3/显式4），避免再写有损表示；
     -- 只是标 dirty，不在验证/Apply 完成前写盘。健康 v2 不走该分支，不触发全 Store 批量保存。
     if deferredSaveReason == nil and meta ~= nil
         and (tonumber(meta.transportVersion) or 0) < (tonumber(store.transportVersion or self.TransportContractVersion) or 0)
         and (tonumber(self.stats.integrityUpgradeRecoveries) or 0) > recoveriesAtEntry then
-        deferredSaveReason = "transport_representation_upgrade" -- 中文维护注释：独立原因名，便于诊断区分「物理传输表示升级」与「Framework 升级」。
-        deferredSaveDelayMs = 0 -- 中文维护注释：立即排队，与 Integrity/known-pair 恢复保持同一事务优先级，不允许被普通 debounce 降级。
+        deferredSaveReason = "transport_representation_upgrade" -- 独立原因名，便于诊断区分「物理传输表示升级」与「Framework 升
+                                                                -- 级」。
+        deferredSaveDelayMs = 0 -- 立即排队，与 Integrity/known-pair 恢复保持同一事务优先级，不允许被普通
+                                -- debounce 降级。
     end
 
-    -- Migration and period-reset transforms are also business code and may grow
-    -- the payload. Re-check the final value immediately before Domain apply.
+    -- 迁移与周期重置也是可扩张 payload 的业务代码；Domain apply 前立即复查最终值。
     local finalDecodedInspection = self:InspectPayload(value, store.budget)
     store.lastDecodedInspection = finalDecodedInspection
     if type(finalDecodedInspection) ~= "table" or finalDecodedInspection.ok ~= true then
@@ -2246,10 +2148,8 @@ function P:LoadStore(id, options)
     store.writeFenceReason = nil
     store.lastError = nil
     store.needsBarrierVerify = false
-    -- Reaching this point means disk data decoded/applied successfully under the
-    -- current budget/schema/integrity contract. Any earlier in-session read
-    -- fence is therefore stale and is cleared above. Save-side budget fences are
-    -- not silently cleared because they do not pass through a successful load.
+    -- 到此说明磁盘数据已在当前预算/schema/完整性契约下成功 decode/apply，先前会话读隔离已过期并在上方清除。
+    -- 保存侧预算隔离未经过成功加载，不能静默清除。
     self.stats.loaded = (tonumber(self.stats.loaded) or 0) + 1
     Count("STORE_LOADED", 1)
     return true, DeepCopy(value), nil
@@ -2282,9 +2182,8 @@ function P:SaveValue(id, value, options)
     end
     local resolvedKey, scopeErr, scopeFingerprint
     if options.useBoundScope == true and store.scope == SCOPE.Character and store.resolvedKey ~= nil then
-        -- Dirty state belongs to the scope under which it was loaded/mutated. A
-        -- debounce/Flush that runs after a character switch must finish writing
-        -- the old bound key, never project that stale Domain into the new player.
+        -- dirty 状态归加载或修改时的 scope；角色切换后 debounce/Flush 必须完成旧绑定键的写入，不能把旧
+        -- Domain 投射到新玩家。
         resolvedKey = store.resolvedKey
         scopeFingerprint = store.resolvedScopeFingerprint
     else
@@ -2302,11 +2201,8 @@ function P:SaveValue(id, value, options)
                 local safeReplacementRebind = keyChanged == true and store.dirty ~= true and store.needsBarrierVerify ~= true
                     and options.allowUnloadedWrite == true and store.recoverableReplacement == true and verifyRequired == true
                 if safeReplacementRebind then
-                    -- Gear-style inactive journal shards are full replacement
-                    -- writes. A clean shard object may survive a character switch
-                    -- in the same Lua generation; rebind only when the PHYSICAL
-                    -- key changes. Identity-only collisions on the same lossy key
-                    -- remain fail-closed and can never be overwritten.
+                    -- Gear 类非活动 journal 分片采用完整替换写入。干净分片可在同一 Lua 代际中跨角色切换，只
+                    -- 在物理键变化时重新绑定；同一个有损键上的身份碰撞仍失败封闭，绝不可覆盖。
                     self.stats.scopeRebinds = (tonumber(self.stats.scopeRebinds) or 0) + 1
                 else
                     local bindingErr = keyChanged and "scope_binding_key_changed" or "scope_binding_identity_changed"
@@ -2329,9 +2225,8 @@ function P:SaveValue(id, value, options)
     local periodErr = nil
     if periodId == nil then periodId, periodErr = self:GetPeriodId(store.lifetime, store.resetPolicy) end
     if (store.lifetime == LIFETIME.Daily or store.lifetime == LIFETIME.Weekly) and periodId == nil then
-        -- Never fabricate a reset period while server time is cold.  The store
-        -- may still be saved if its Domain data already carries a trustworthy
-        -- period through periodIdFromValue; otherwise fence this attempt only.
+        -- 服务器时间未就绪时不能伪造重置周期；Domain 已通过 periodIdFromValue 携带可信周期时仍可保存，否则
+        -- 只隔离本次尝试。
         return false, "period unavailable: " .. tostring(periodErr or "unknown")
     end
 
@@ -2349,10 +2244,8 @@ function P:SaveValue(id, value, options)
             depth = payloadInspection.maxDepth, stringBytes = payloadInspection.stringBytes,
             maxTableEntries = payloadInspection.maxTableEntries,
         })
-        -- A rejection silently write-fences the store for the whole session —
-        -- the user must KNOW their edits are no longer being persisted
-        -- (2026-09-01: a 713-id tracked list starved the buff display store
-        -- for its entire lifetime without any visible signal).
+        -- 写入拒绝会使 Store 整会话停止持久化，必须明确告知用户修改无法保存；2026-09-01 的 713-ID 跟踪表曾
+        -- 使 Buff 显示 Store 持续受阻而无可见反馈。
         if S.WarnOnce ~= nil then
             S.WarnOnce("store_payload_rejected_" .. store.id,
                 "[" .. store.id .. "] 存档超出安全预算，本次会话的所有修改都无法保存！请在诊断页查看 STORE_PAYLOAD_REJECTED 详情。")
@@ -2360,14 +2253,9 @@ function P:SaveValue(id, value, options)
         return false, store.lastError
     end
 
-    -- Reliability v8 stamps Integrity v4 over the CANONICAL store value (the
-    -- store's own deterministic encode/normalize of the Domain), not over the
-    -- raw envelope. The fingerprint deliberately excludes __rsmeta, so its own
-    -- integrity fields do not create a recursive hash; non-integral numbers use
-    -- the serializer-stable token while exact Domain/business fingerprints
-    -- remain unchanged. For typed-codec stores the canonical value equals the
-    -- encoded business payload; for plain stores it is the store's fixed-shape
-    -- normalize of the Domain.
+    -- Reliability v8 对 Store 自身确定性 encode/normalize 的 canonical 值盖 Integrity v4 stamp，不对 raw
+    -- envelope 盖章。排除 __rsmeta 避免递归哈希；非整数使用序列化稳定 token，精确 Domain/业务指纹保持不变。
+    -- typed-codec 的 canonical 等于编码业务 payload，普通 Store 使用 Domain 的固定形状归一化结果。
     local canonicalValue, canonicalErr = self:CanonicalIntegrityValue(store, value)
     if canonicalValue == nil then
         store.lastError = tostring(canonicalErr or "canonical_value_missing")
@@ -2409,9 +2297,7 @@ function P:SaveValue(id, value, options)
     end
     raw.__rsmeta.envelopeFingerprint = envelopeFingerprint
 
-    -- Inspect the FINAL serialized table too. A custom encode() is allowed to
-    -- reshape data, so validating only the Domain snapshot would leave a path
-    -- for an encoder to exceed the RU SaveData serializer's safe envelope.
+    -- 最终序列化表也须检查；encode() 可重塑数据，仅验证 Domain 快照会使编码器突破 RU SaveData 安全 envelope。
     local encodedInspection = self:InspectPayload(raw, store.encodedBudget)
     store.lastEncodedInspection = encodedInspection
     if encodedInspection.ok ~= true then
@@ -2433,8 +2319,9 @@ function P:SaveValue(id, value, options)
         return false, store.lastError
     end
 
-    -- 中文维护注释：完整性指纹已经对逻辑 raw/Domain 完成；直到真正跨 SaveData 边界时才做物理 transport。
-    -- 这样 boolean false/空表在 RU 中不会消失，同时所有 Store codec、canonical、迁移和 Feature Apply 都保持原语义。
+    -- 完整性指纹已经对逻辑 raw/Domain 完成；直到真正跨 SaveData 边界时才做物理 transport。
+    -- 这样 boolean false/空表在 RU 中不会消失，同时所有 Store codec、canonical、迁移和 Feature Apply 都保持
+    -- 原语义。
     local physicalRaw, transportErr = self:EncodePhysicalEnvelope(raw)
     if physicalRaw == nil then
         store.lastError = "transport_encode_failed:" .. tostring(transportErr or "unknown")
@@ -2454,7 +2341,7 @@ function P:SaveValue(id, value, options)
         return false, store.lastError
     end
 
-    -- 中文维护（RU 实机 16383 字节截断）：显式声明的物理预算包括 Native 标签与缩进，
+    -- 显式声明的物理预算包括 Native 标签与缩进，
     -- 不是只计算字符串正文；拒绝发生在 Native 写入前，既有物理值不会因此被截坏。
     if store.nativeByteBudget~=nil then
         local bytes=T.EstimateNativeBytes(physicalRaw)
@@ -2468,7 +2355,8 @@ function P:SaveValue(id, value, options)
     end
     local ok, saveErr
     if type(store.save) == "function" then
-        -- 中文维护注释：custom save 也属于物理写入边界，因此必须收到 transport 后 envelope；第三参数仍保留原 Domain 快照供事务型分片实现使用。
+        -- custom save 也属于物理写入边界，因此必须收到 transport 后 envelope；第三参数仍保留原 Domain 快照
+        -- 供事务型分片实现使用。
         local callOk, result, customErr = pcall(store.save, resolvedKey, physicalRaw, DeepCopy(value), options)
         if callOk then
             ok = result == true
@@ -2481,10 +2369,8 @@ function P:SaveValue(id, value, options)
         ok, saveErr = S.Api:SaveData(resolvedKey, physicalRaw)
     end
     if ok ~= true then
-        -- A failed SaveData return does not prove the physical key was untouched.
-        -- Journal shards are pointer-committed separately and may safely leave a
-        -- failed inactive bank orphaned; other stores must be checked/restored at
-        -- the next durability barrier before Reload/Stop may proceed.
+        -- SaveData 返回失败不能证明物理键未被触碰。journal 分片单独通过指针提交，失败非活动 bank 可安全成为
+        -- 孤儿；其他 Store 必须在下一耐久屏障核对或恢复，之后才允许 Reload/Stop。
         if store.recoverableReplacement ~= true then store.needsBarrierVerify = true end
         store.lastError = tostring(saveErr or "save failed")
         self.stats.saveFailures = (tonumber(self.stats.saveFailures) or 0) + 1
@@ -2495,11 +2381,8 @@ function P:SaveValue(id, value, options)
                 "[" .. store.id .. "] 存档保存失败，本次修改可能无法保留：" .. tostring(saveErr or "unknown"))
         end
         store.consecutiveSaveFailures = (tonumber(store.consecutiveSaveFailures) or 0) + 1
-        -- Dirty writes are retried at a bounded cadence regardless of whether
-        -- the caller used an explicit Commit path. Without this, a failed
-        -- consumeDirty commit could be retried every Storage tick or simply be
-        -- forgotten by a caller that proceeds to reload. Direct transactional
-        -- writes that were never dirty remain caller-owned and are not queued.
+        -- dirty 写入无论是否走显式 Commit 都按有界节奏重试，避免 consumeDirty 失败后每个 Storage tick 重试
+        -- ，或调用者进入 reload 时遗忘。从未 dirty 的直接事务写仍归调用者，不自动排队。
         if store.dirty == true then
             store.dueAt = NowMs() + math.min(30000, math.max(2000, tonumber(options.retryMs) or 5000))
             self.stats.retryQueued = (tonumber(self.stats.retryQueued) or 0) + 1
@@ -2517,10 +2400,8 @@ function P:SaveValue(id, value, options)
             if options.durable == true then
                 self.stats.durableVerifyFailures = (tonumber(self.stats.durableVerifyFailures) or 0) + 1
             end
-            -- SaveData may already have touched the physical key even though the
-            -- immediate readback did not prove the write. Keep a durability
-            -- barrier obligation so a later Reload/Stop cannot silently proceed
-            -- over an uncertain key after the caller rolls its Domain state back.
+            -- 即时读回未证明成功时 SaveData 也可能已触碰物理键；保留耐久屏障义务，使调用者回滚 Domain 后
+            -- Reload/Stop 不能静默越过不确定键。
             store.needsBarrierVerify = true
             store.lastError = "readback_verify_failed:" .. tostring(verifyErr or "unknown")
             store.consecutiveSaveFailures = (tonumber(store.consecutiveSaveFailures) or 0) + 1
@@ -2538,9 +2419,8 @@ function P:SaveValue(id, value, options)
         end
         store.needsBarrierVerify = false
     else
-        -- Ordinary low-frequency settings keep the normal one-write fast path.
-        -- Their physical key is verified once at the explicit durability
-        -- barrier (Reload/Stop), never in Feature Tick or slider loops.
+        -- 普通低频设置保留单次写入快路径，只在显式 Reload/Stop 耐久屏障核验物理键一次，不进入 Feature Tick
+        -- 或滑块循环。
         store.needsBarrierVerify = true
     end
 
@@ -2592,9 +2472,8 @@ end
 function P:IsStoreLoaded(id)
     local store = self:GetStore(id)
     if store == nil then return false, "unknown store" end
-    -- `store.loaded` is the terminal-attempt bit retained for diagnostics. Public
-    -- readiness is narrower: corrupt/future/apply-failed stores are terminal but
-    -- must never be treated as safe Domain state by Feature/UI callers.
+    -- store.loaded 是供诊断保留的终态尝试位；公开就绪条件更严格，corrupt/future/apply-failed Store 虽已终止
+    -- 尝试，Feature/UI 仍不得视作安全 Domain 状态。
     if IsStoreReady(store) ~= true then return false, store.loadStatus end
     if store.scope == SCOPE.Character then
         local bindingOk, bindingErr = CurrentScopeBinding(store)
@@ -2603,12 +2482,8 @@ function P:IsStoreLoaded(id)
     return true, store.loadStatus
 end
 
--- Read-before-render helper for shared UI bindings and other generic consumers.
--- A settings surface can be constructed before the owning Feature is enabled;
--- it must never render Lua defaults as if they were persisted truth. Unlike
--- PrepareWrite this path does not require write permission and never marks the
--- Store dirty. It only establishes the current scope's authoritative Domain
--- state or fails closed with the existing terminal load reason.
+-- 共享 UI 绑定和通用消费者的渲染前读取辅助。设置面可先于 Feature 启用构造，不能把 Lua 默认值显示成已保存真
+-- 相。此路径不需写权限、不标 dirty，只建立当前 scope 权威 Domain，或按现有终态加载原因失败封闭。
 function P:PrepareRead(id)
     self.stats.readPrepareAttempts = (tonumber(self.stats.readPrepareAttempts) or 0) + 1
     local store = self:GetStore(id)
@@ -2619,10 +2494,8 @@ function P:PrepareRead(id)
     local ready, readyReason = self:IsStoreLoaded(id)
     if ready == true then return true end
 
-    -- Terminal failed attempts (corrupt/future/apply-failed/etc.) are already
-    -- diagnostic truth. Do not hammer LoadData once per field on the same page.
-    -- A ready-status Store can still be false here when character scope changed;
-    -- that case is intentionally allowed to rebind through LoadStore below.
+    -- 终态失败（corrupt/future/apply-failed 等）已是诊断事实，不能在同一页逐字段反复 LoadData。角色 scope
+    -- 变化时 ready-status Store 此处仍可为 false，允许在下方 LoadStore 重新绑定。
     if store.loaded == true and READY_LOAD_STATUS[tostring(store.loadStatus or "")] ~= true then
         self.stats.readPrepareFailures = (tonumber(self.stats.readPrepareFailures) or 0) + 1
         return false, store.lastError or readyReason or store.loadStatus or "store_not_ready"
@@ -2659,10 +2532,8 @@ function P:CanWrite(id)
     return true
 end
 
--- Pre-mutation helper for shared UI bindings and other generic callers. It is
--- intentionally called BEFORE Domain mutation; MarkDirty itself will never
--- auto-load because doing so after a mutation could re-apply disk state over the
--- very value the caller is trying to persist.
+-- 共享 UI 与通用调用者的修改前辅助必须在 Domain 修改前执行；MarkDirty 不自动加载，否则修改后加载会用磁盘状
+-- 态覆盖正要保存的值。
 function P:PrepareWrite(id)
     local store = self:GetStore(id)
     if store == nil then return false, "unknown store" end
@@ -2671,10 +2542,8 @@ function P:PrepareWrite(id)
     if IsStoreReady(store) == true and store.scope == SCOPE.Character then
         local bindingOk, bindingErr = CurrentScopeBinding(store)
         if bindingOk ~= true then
-            -- The loaded Domain belongs to the old character. Never overwrite it
-            -- with the new character key. First finish any outstanding old-scope
-            -- durability obligation; otherwise a clean store may safely rebind
-            -- by loading the current character before mutation.
+            -- 已加载 Domain 属于旧角色，不能写到新角色键；先完成旧 scope 的耐久义务。若无义务且 Store 干净
+            -- ，可在修改前加载当前角色来安全重新绑定。
             if store.dirty == true or store.needsBarrierVerify == true then
                 store.lastScopeBindingError = "scope_change_pending_persistence:" .. tostring(bindingErr or "changed")
                 self.stats.scopeBindingMismatches = (tonumber(self.stats.scopeBindingMismatches) or 0) + 1
@@ -2697,11 +2566,8 @@ function P:SaveStore(id, options)
     local store = self:GetStore(id)
     if store == nil then return false, "unknown store" end
     if store.lifetime == LIFETIME.Session then return self:SaveValue(id, store.memory, options) end
-    -- Direct SaveStore used to bypass the load-before-write fence entirely.
-    -- That allowed a Feature command to serialize default Domain memory over a
-    -- perfectly valid older Store when the Feature had not been enabled/loaded
-    -- yet. Full-replacement transactional shard writers may opt in explicitly;
-    -- ordinary settings/index stores must always be loaded first.
+    -- SaveStore 也必须遵守先加载后写隔离，避免未启用或加载 Feature 用默认内存覆盖有效旧 Store。完整替换事务
+    -- 分片可显式退出此要求；普通设置或索引 Store 始终先加载。
     local replacementWrite = options.replaceCorrupt == true and store.recoverableReplacement == true
     if IsStoreReady(store) ~= true and options.allowUnloadedWrite ~= true and replacementWrite ~= true then
         self.stats.unloadedWriteRejects = (tonumber(self.stats.unloadedWriteRejects) or 0) + 1
@@ -2720,14 +2586,9 @@ function P:SaveStore(id, options)
     return self:SaveValue(id, value, options)
 end
 
--- NOTE: the old ReadLegacy bridge (arbitrary SaveData key reads for old-plugin
--- migration) was removed on 2026-09-01 by directive: the old plugin generation
--- is reference-only and its data is never migrated into V3 stores.
-
--- Reliability v2+ mutation transaction. Public business mutations should prefer
--- this over "mutate Domain -> MarkDirty". The disk value is loaded before the
--- mutation, the registered Domain getter is snapshotted, and any mutation/commit
--- failure restores both Domain state and Persistence dirty metadata.
+-- 旧 ReadLegacy 任意 SaveData 键迁移桥已按指令移除；旧插件只作参考，数据不迁入 V3 Store。公开业务修改应采用
+-- Reliability v2+ 修改事务：先加载磁盘值，再快照已注册 Domain getter；修改或提交失败时恢复 Domain 状态与
+-- Persistence dirty 元数据，优于直接 mutate Domain -> MarkDirty。
 function P:MutateStore(id, mutate, options)
     options = type(options) == "table" and options or {}
     if type(mutate) ~= "function" then return false, "mutation callback required" end
@@ -2844,9 +2705,8 @@ function P:ClearStore(id, options)
         return false, clearErr or "clear failed"
     end
 
-    -- ClearData success is not a durability proof. Verify the exact key is gone
-    -- BEFORE applying defaults to Domain memory; otherwise a fake-success clear
-    -- makes settings look reset until the next Reload resurrects the old data.
+    -- ClearData 成功不等于耐久证明；把默认值应用到内存前必须确认精确键已消失，避免假成功清除让设置暂似重置
+    -- 、下次 Reload 又复活旧数据。
     if S.Api == nil or type(S.Api.LoadData) ~= "function" then
         self.stats.clearFailures = (tonumber(self.stats.clearFailures) or 0) + 1
         self.stats.clearVerifyFailures = (tonumber(self.stats.clearVerifyFailures) or 0) + 1
@@ -2928,8 +2788,7 @@ function P:MarkDirty(id, delayMs, reason)
     if delay <= 0 then
         store.dueAt = now
     else
-        -- True debounce: save after the latest edit, but bound continuous input
-        -- so a long slider drag cannot postpone persistence forever.
+        -- 真正 debounce 在最后一次修改后保存，同时限制连续输入最长推迟时间，避免长期滑块拖动永久延后持久化。
         local requested = now + delay
         local absoluteCap = (tonumber(store.firstDirtyAt) or now) + math.max(delay, tonumber(self.maxDebounceMs) or 5000)
         store.dueAt = math.min(requested, absoluteCap)
@@ -2998,7 +2857,7 @@ function P:Flush(owner)
     local saved, verified = 0, 0
     owner = NonEmptyText(owner)
 
-    -- Phase 1: commit all currently dirty Domain snapshots.
+    -- 第一阶段：提交当前全部 dirty Domain 快照。
     for _, id in ipairs(self.order) do
         local store = self.stores[id]
         if store ~= nil and store.dirty == true and (owner == nil or store.owner == owner) then
@@ -3012,12 +2871,9 @@ function P:Flush(owner)
         end
     end
 
-    -- Phase 2: durability barrier. Ordinary settings intentionally avoid an
-    -- immediate LoadData after every SaveData; however Reload/Stop is a hard
-    -- generation boundary. Any key written since the previous barrier must be
-    -- read back and fingerprint-matched here before code reload may continue.
-    -- This is bounded by the number of registered stores and never runs in a
-    -- Feature Tick/slider loop.
+    -- 第二阶段为耐久屏障。普通设置不在每次 SaveData 后立即 LoadData，但 Reload/Stop 是代际硬边界；上次屏障
+    -- 以来所有写入键须在此读回并匹配指纹，之后才继续代码重载。工作量以已注册 Store 数量为界，不进入 Feature
+    -- Tick/滑块循环。
     for _, id in ipairs(self.order) do
         local store = self.stores[id]
         if store ~= nil and store.lifetime ~= LIFETIME.Session and store.needsBarrierVerify == true
@@ -3057,10 +2913,8 @@ function P:Flush(owner)
                 self.stats.barrierVerifyFailures = (tonumber(self.stats.barrierVerifyFailures) or 0) + 1
                 failures[#failures + 1] = tostring(id) .. ":" .. reason
 
-                -- A barrier mismatch can be an immediate-read visibility delay,
-                -- so do not permanently write-fence the Store. Requeue the
-                -- current verified Domain snapshot for a bounded retry. The next
-                -- barrier must still pass before Reload is allowed.
+                -- 屏障失配可能只是即时读取可见性延迟，不永久隔离写入；重新排队当前已验证 Domain 快照作有界
+                -- 重试。下一屏障仍须通过才可 Reload。
                 if store.writeFenced ~= true and IsStoreReady(store) == true then
                     local now = NowMs()
                     if store.dirty ~= true then
@@ -3104,9 +2958,8 @@ function P:Tick()
             if IsStoreReady(store) == true and store.writeFenced ~= true then
                 self:SaveStore(id, { reason = "debounce", useBoundScope = true })
             else
-                -- Terminal/fenced stores keep their dirty evidence for Flush and
-                -- diagnostics, but must never hammer SaveStore from the runtime
-                -- cadence. Recovery is explicit through Load/Revalidate/Clear.
+                -- 终态或隔离 Store 保留 dirty 证据供 Flush/诊断使用，但运行节奏不能反复 SaveStore；恢复须显
+                -- 式通过 Load/Revalidate/Clear。
                 store.dueAt = now + math.max(5000, tonumber(self.maxDebounceMs) or 5000)
                 self.stats.terminalAutoRetrySuppressions = (tonumber(self.stats.terminalAutoRetrySuppressions) or 0) + 1
             end
@@ -3151,11 +3004,8 @@ function P:Tick()
 end
 
 
--- Stable, bounded content fingerprint used only by the RU Fresh Reload
--- acceptance workflow. This deliberately hashes the Domain snapshot rather
--- than the encoded SaveData envelope so framework metadata/timestamps cannot
--- create false mismatches across processes. It never loads, saves or mutates a
--- Store and is therefore safe to call only from explicit diagnostics actions.
+-- 稳定有界内容指纹仅供 RU Fresh Reload 验收。哈希 Domain 快照而非编码 SaveData envelope，避免框架元数据和时
+-- 间戳引发跨进程假失配；不加载、保存或修改 Store，只从显式诊断调用。
 local HASH_MOD = 2147483647
 local HASH_MULTIPLIER = 131
 
@@ -3174,25 +3024,18 @@ local function NumberToken(value)
     return string.format("%.17g", value)
 end
 
--- Historical integrity v2/v4 use a six-significant-digit token for non-integers.
--- Keep this contract for old stamps: it is NOT intrinsically stable under a
--- serializer which first rounds to six fractional decimals (actual trade fixture).
--- Transport v3 protects full numeric values at the Native boundary instead of
--- silently changing this algorithm or dropping numeric fields from integrity.
--- Integral values remain exact so ids, counters and timestamps retain their bits.
+-- 历史 integrity v2/v4 为非整数使用六位有效数字 token；须保持旧 stamp 契约，但它不能抵抗先按六位小数舍入的
+-- 序列化器（真实 trade 样本）。Transport v3 在 Native 边界保护完整数字，不能静默改算法或从完整性校验丢弃数
+-- 字字段。整数仍精确保留 ID、计数和时间戳位。
 local function DurableNumberToken(value)
     value = tonumber(value) or 0
     if value == 0 then return "0" end
     if value == math.floor(value) and math.abs(value) <= 9007199254740991 then
         return string.format("%.0f", value)
     end
-    -- Six significant decimal digits stay safely inside single-precision
-    -- serializer precision in common cases; this alone does NOT protect fixed-six-decimal
-    -- rounding (2026-09-12 real trade evidence). Transport v3 now preserves the number
-    -- before it crosses Native. Keep this historical hash unchanged for old saves.
-    -- This numeric token also exceeds the precision required by
-    -- Suite UI scale/opacity/color/geometry settings. This token is used only
-    -- by the persistence integrity layer, never by business-domain fingerprints.
+    -- 六位有效数字通常位于单精度安全范围，但不能单独防护固定六位小数舍入（2026-09-12 真实 trade 证据）；
+    -- Transport v3 在跨 Native 前保留数字，历史哈希保持不变。该 token 精度足以覆盖 UI
+    -- scale/opacity/color/geometry，仅用于持久化完整性，不用于业务 Domain 指纹。
     return string.format("%.6g", value)
 end
 
@@ -3247,25 +3090,18 @@ local function FingerprintPayloadWithNumberToken(self, value, budget, numberToke
     return string.format("%08X", math.floor(hash)), nil, inspection
 end
 
--- Exact Domain fingerprint remains intentionally unchanged because Gear's A/B
--- journal stores this business fingerprint in its own index contract. Do not
--- silently change that contract when evolving persistence-integrity hashing.
+-- 精确 Domain 指纹保持不变，Gear A/B journal 在自身索引契约中保存它；演进持久化哈希时不能静默改变业务契约。
 function P:FingerprintPayload(value, budget)
     return FingerprintPayloadWithNumberToken(self, value, budget, NumberToken)
 end
 
--- Readback/durability proof is allowed to canonicalize non-integral numbers: it
--- verifies business equivalence across the native SaveData serializer rather
--- than Lua's in-memory binary representation.
+-- 读回及耐久证明可归一化非整数，以验证跨原生 SaveData 序列化器的业务等价，而非 Lua 内存二进制表示。
 function P:FingerprintDurablePayload(value, budget)
     return FingerprintPayloadWithNumberToken(self, value, budget, DurableNumberToken)
 end
 
--- Fingerprint only the encoded business fields. Framework metadata is excluded
--- so the integrity stamp can live in __rsmeta without hashing itself. A shallow
--- top-level projection is sufficient: FingerprintPayload recursively walks the
--- referenced nested tables without mutating them, and InspectPayload rejects
--- cycles/over-budget shapes before hashing.
+-- 仅为编码业务字段计算指纹，排除框架元数据，让 stamp 位于 __rsmeta 而不哈希自身。浅层投影足够：
+-- FingerprintPayload 递归遍历引用的嵌套表而不修改，InspectPayload 在哈希前拒绝环和超预算形状。
 local function EncodedBusinessProjection(raw)
     if type(raw) ~= "table" then return nil, "encoded payload must be table" end
     local business = {}
@@ -3275,27 +3111,23 @@ local function EncodedBusinessProjection(raw)
     return business, nil
 end
 
--- Integrity v2: serializer-stable numeric canonicalization.
+-- Integrity v2 使用序列化稳定的数字归一化。
 function P:FingerprintEncodedPayload(raw, budget)
     local business, err = EncodedBusinessProjection(raw)
     if business == nil then return nil, err end
     return self:FingerprintDurablePayload(business, budget)
 end
 
--- Integrity v1 compatibility only. New saves must never stamp this form.
+-- 仅兼容 Integrity v1；新保存绝不能盖此形式的 stamp。
 function P:FingerprintEncodedPayloadV1(raw, budget)
     local business, err = EncodedBusinessProjection(raw)
     if business == nil then return nil, err end
     return self:FingerprintPayload(business, budget)
 end
 
--- Integrity v3: the canonical store value is a pure function of the logical
--- Domain state, computed through the Store's own typed codec (encode) or its
--- fixed-shape domain normalizer (migrate). RU SaveData/LoadData may change the
--- on-disk representation of order-sensitive maps, empty tables or floats; as
--- long as the decoded value is logically equivalent, re-canonicalizing it on
--- both sides yields the same fingerprint. Content corruption survives decode
--- and changes the canonical value, so verification still fails closed.
+-- Integrity v3 的 canonical 值是逻辑 Domain 状态经 Store typed codec（encode）或固定形状归一化器（migrate）
+-- 计算的纯函数。RU 可改变顺序敏感 map、空表或浮点磁盘表示，只要 decode 后逻辑等价，两侧重新 canonical 化便
+-- 得到相同指纹；内容损坏仍改变 canonical，校验继续失败封闭。
 function P:CanonicalIntegrityValue(store, domainValue)
     if type(store.encode) == "function" and type(store.decode) == "function" then
         local ok, encoded = pcall(store.encode, domainValue)
@@ -3311,26 +3143,30 @@ function P:CanonicalIntegrityValue(store, domainValue)
     return domainValue, nil
 end
 
--- Acceptance brief §8.4: a fingerprint mismatch alone ("A>B") is not
--- actionable. This walks the DISK domain and its canonical reconstruction in
--- the same deterministic key order the fingerprint uses and returns the FIRST
--- path where they differ, so one real-machine run names the exact field the
--- RU serializer (or a normalize gap) changed.
-local function SummarizeDivergenceScalar(value) -- 中文维护注释：诊断只需要证明“哪个字段/哪种值发生变化”，不应把完整用户字符串写进 Chat.log；单值摘要限制 80 字节并移除换行，避免新诊断本身造成日志爆量或泄露自由文本配置。
-    local text = tostring(value):gsub("[\r\n]+", " ") -- 中文维护注释：保持诊断单行可复制；不会修改 Store/Domain 原值，只处理临时日志字符串。
-    if #text > 80 then text = text:sub(1, 77) .. "..." end -- 中文维护注释：截断只作用于故障冷路径日志，不参与 fingerprint、恢复判定或业务比较。
-    return text -- 中文维护注释：返回 bounded 显示值；调用者仍同时输出 Lua type，足以区分 nil/false/0/空字符串等 serializer omission 类别。
+-- 验收简报 §8.4：仅指纹失配 A>B 无法指导操作。按与指纹相同的确定性键序遍历磁盘 Domain 与 canonical 重建，返
+-- 回首个分歧路径，使实机证据指出 RU 序列化或 normalize 缺口改变的精确字段。
+local function SummarizeDivergenceScalar(value) -- 诊断只需要证明“哪个字段/哪种值发生变化”，不应把完整用户字符
+                                                -- 串写进 Chat.log；单值摘要限制 80 字节并移除换行，避免新诊断
+                                                -- 本身造成日志爆量或泄露自由文本配置。
+    local text = tostring(value):gsub("[\r\n]+", " ") -- 保持诊断单行可复制；不会修改 Store/Domain 原值，只处理临时日
+                                                      -- 志字符串。
+    if #text > 80 then text = text:sub(1, 77) .. "..." end -- 截断只作用于故障冷路径日志，不参与 fingerprint、恢复判定或业
+                                                           -- 务比较。
+    return text -- 返回 bounded 显示值；调用者仍同时输出 Lua type，足以区分 nil/false/0/空字符串等
+                -- serializer omission 类别。
 end
 
 local function DescribeValueDivergence(expected, actual, path, depth, budget)
-    if depth > 8 or budget.used >= budget.max then return nil end -- 中文维护注释：最多 8 层/512 节点，避免损坏或恶意嵌套配置在错误处理路径制造长时间扫描。
+    if depth > 8 or budget.used >= budget.max then return nil end -- 最多 8 层/512 节点，避免损坏或恶意嵌套配置在错误处理路径制造
+                                                                  -- 长时间扫描。
     local expectedKind, actualKind = type(expected), type(actual)
     if expectedKind ~= actualKind then
-        return tostring(path) .. ": type " .. expectedKind .. " vs " .. actualKind -- 中文维护注释：类型变化优先报告；此处不展开表内容，避免日志复制完整配置。
+        return tostring(path) .. ": type " .. expectedKind .. " vs " .. actualKind -- 类型变化优先报告；此处不展开表内容，避免日志复制完整配置。
     end
     if expectedKind ~= "table" then
         if expected ~= actual then
-            return tostring(path) .. ": " .. expectedKind .. "(" .. SummarizeDivergenceScalar(expected) .. ") vs " .. actualKind .. "(" .. SummarizeDivergenceScalar(actual) .. ")" -- 中文维护注释：标量差异给出 bounded 值摘要，可直接识别 0/空串/false 等，同时不改变恢复 Authority。
+            return tostring(path) .. ": " .. expectedKind .. "(" .. SummarizeDivergenceScalar(expected) .. ") vs " .. actualKind .. "(" .. SummarizeDivergenceScalar(actual) .. ")" -- 标量差异给出 bounded 值摘要，可直接识别 0/空串/false 等，同
+                                                                                                                                                                                    -- 时不改变恢复 Authority。
         end
         return nil
     end
@@ -3357,14 +3193,13 @@ function P:DescribeCanonicalDivergence(expected, actual)
     return DescribeValueDivergence(expected, actual, "$", 0, budget)
 end
 
--- Fingerprint the canonical v3 value. Canonical values never contain __rsmeta,
--- so the durable (serializer-stable numeric token) hash applies directly.
+-- 对 canonical v3 值计算指纹；其中没有 __rsmeta，可直接使用耐久的序列化稳定数字 token 哈希。
 function P:FingerprintCanonicalValue(store, canonical, budget)
     if canonical == nil then return nil, "canonical_value_missing" end
     return self:FingerprintDurablePayload(canonical, budget or store.encodedBudget)
 end
 
--- 维护（真实udf，2026-09-12）：读出的数字可能经历binary32 -> 固定6位小数 -> binary32，
+-- （真实udf，2026-09-12）读出的数字可能经历binary32 -> 固定6位小数 -> binary32，
 -- 与此前只建模“固定6位 -> binary32”不同。这里只提供有限正/负数的独立投影用于旧章证明，
 -- 不覆盖Lua算术/format，不在Tick运行，不将此模型当作RU源码；新Transport3不需要该损失。
 -- 分支使用IEEE ties-to-even，调用者先限制数据范围；不会把数据库/Native对象带入计算。
@@ -3382,7 +3217,7 @@ local function LegacyFloatFirstProjection(value)
     return LegacyBinary32(tonumber(string.format("%.6f",LegacyBinary32(value))))
 end
 
--- 维护（F2窗口精度，2026-09-12）：跑商真实样本已证明“固定6位小数→binary32”可以改变
+-- （F2窗口精度，2026-09-12）跑商真实样本已证明“固定6位小数→binary32”可以改变
 -- 旧6位有效数字指纹；另外两个Store同样保存Floating的归一化中心，但未接入该受限恢复。
 -- 此处收敛原跑商算法，不放大到任意数字/多字段组合：仅既有normalizedCenterX/Y，每次
 -- 改一个标量，总计<=32个候选，完整原章唯一命中才返回。Hash是原项目一致性检查，非密码学证明。
@@ -3437,7 +3272,7 @@ function P:RebuildFixed6WindowCanonical(store, decoded, stamp, canonical, raw, s
                     local first,last=math.floor(low/step)-1,math.ceil(high/step)+1
                     field.reason="candidate_budget"
                     if last-first+1<=16 then
-                        -- 维护（诊断纠错）：进入枚举不等于执行了指纹测试。真实F2轴值没有
+                        -- 进入枚举不等于执行了指纹测试。真实F2轴值没有
                         -- 可区分候选；仅在实际计算候选Hash时标tested，避免tries=0却显示tested。
                         -- 不改变候选集合/步长/预算/恢复规则，不额外枚举或放行任何Hash。
                         field.reason="no_alternative"
@@ -3486,7 +3321,7 @@ function P:RebuildFixed6WindowCanonical(store, decoded, stamp, canonical, raw, s
     end
     proof.status=proof.matches==1 and "unique" or (proof.matches>1 and "ambiguous" or "no_match")
     proof.field=proof.matches==1 and matchedKey or nil
-    -- 维护：投影canonical与业务Domain不同（死亡codec / Buff历史schema），只修改声明的
+    -- 投影canonical与业务Domain不同（死亡codec / Buff历史schema），只修改声明的
     -- Domain叶子，保留已解码的完整历史/追踪集合；schema升级仍由调用方Core处理。
     if proof.matches==1 then
         local recovered=DeepCopy(decoded);recovered.widgetWindow[matchedKey]=matchedValue
@@ -3520,7 +3355,7 @@ function P:FingerprintEnvelopeIntegrity(raw)
     return self:FingerprintPayload(canonical, ENVELOPE_SEAL_BUDGET)
 end
 
--- 维护（failed-save-evidence-1）：事务回滚只还原 Domain/dirty 元数据，不撤销已经发生的
+-- 事务回滚只还原 Domain/dirty 元数据，不撤销已经发生的
 -- Native 写入；durable 回读失败可以没有 writeFenced，且 consecutiveSaveFailures 被回滚为0。
 -- Authority：此只读判定由 Core 统一，供取证授权和诊断选择共用；不尝试修复、不读盘。
 -- needsBarrierVerify 单独为 true 只是正常待验证，不能当故障导出健康玩家存档。
@@ -3529,7 +3364,7 @@ function P:GetStoreFailureKind(storeOrId)
     local store = type(storeOrId) == "table" and storeOrId or self:GetStore(storeOrId)
     if type(store) ~= "table" then return nil end
     if store.writeFenced == true then return "write_fenced" end
-    -- 维护：成功Load或普通Save会清lastError，但可能保留历史verify/counter；不可因此导出健康档。
+    -- 成功Load或普通Save会清lastError，但可能保留历史verify/counter；不可因此导出健康档。
     -- 当前保存/屏障失败的正式调用链都会设置lastError；仅pending本身仍只是待验证。
     if NonEmptyText(store.lastError) == nil then return nil end
     if store.needsBarrierVerify == true then
@@ -3541,7 +3376,7 @@ function P:GetStoreFailureKind(storeOrId)
     return nil
 end
 
--- 中文维护注释（RS-PERSIST-EVIDENCE-2）：实机仍是旧 Hash 不匹配且 sequence=unchanged，
+-- 实机仍是旧 Hash 不匹配且 sequence=unchanged，
 -- 继续增加猜测候选无法证明数据完整。此入口只在用户明确点击时读取一个当前失败 Store 的
 -- Native LoadData 返回表；绝不调用 LoadStore/default/decode/migrate/apply/SaveData/ClearData。
 -- Authority：Core 独占已解析 SaveKey 与角色 scope 校验，Diagnostics/页面只能取得分离文本。
@@ -3550,7 +3385,7 @@ end
 -- 整体拒绝，不返回截断档案。只在点击冷路径分配临时字符串，页面隐藏时须释放文本。
 function P:BuildFailedStoreEvidenceText(id, options)
     local store = self:GetStore(id)
-    -- 维护：加载写保护与当前保存失败都可只读取证；其余健康 Store 仍拒绝。
+    -- 加载写保护与当前保存失败都可只读取证；其余健康 Store 仍拒绝。
     -- 保留旧错误码供旧维护工具兼容；scope/已解析 key/硬预算和 Native 原表序列化门不变。
     if self:GetStoreFailureKind(store) == nil then return nil, "store_not_fenced" end
     if store.lifetime == LIFETIME.Session or NonEmptyText(store.resolvedKey) == nil then
@@ -3563,9 +3398,9 @@ function P:BuildFailedStoreEvidenceText(id, options)
     if not ok then return nil, "evidence_load_exception:" .. tostring(raw) end
     if readError ~= nil then return nil, "evidence_load_failed:" .. tostring(readError) end
     if type(raw) ~= "table" then return nil, "evidence_raw_type:" .. type(raw) end
-    -- 维护：先检查原始 Native 表，再序列化；拒绝环、非有限数、过深/过大表，不修正错误输入。
+    -- 先检查原始 Native 表，再序列化；拒绝环、非有限数、过深/过大表，不修正错误输入。
     local declared = store.encodedBudget or self.DefaultBudget
-    -- 维护：取证使用独立硬上限，并不扩大 Store 的预算；与离线解码器预算保持一致。
+    -- 取证使用独立硬上限，并不扩大 Store 的预算；与离线解码器预算保持一致。
     local budget = {
         maxDepth = math.min(declared.maxDepth or 12, 15),
         maxNodes = math.min(declared.maxNodes or 4096, 64000),
@@ -3581,7 +3416,7 @@ function P:BuildFailedStoreEvidenceText(id, options)
         capturedAtMs = NowMs(), source = "Native LoadData snapshot; unverified; not disk bytes",
         raw = raw,
     }
-    -- 维护（默认故障报告）：原取证外壳重复failure/key/build，导致一次复制预算被诊断文本
+    -- 原取证外壳重复failure/key/build，导致一次复制预算被诊断文本
     -- 而非真实字段耗尽。仅显式compact请求移除外壳冗余；raw整张Native表（含__rsmeta）
     -- 原样保留，先前scope/预算门不变。此选项不改变磁盘数据、解码、指纹或写保护Authority。
     -- 旧无参数入口保持原格式/信息；消费者必须标明这只是未验证的本次读取，不是全档恢复。
@@ -3595,7 +3430,7 @@ function P:BuildFailedStoreEvidenceText(id, options)
         parts[#parts + 1] = text
     end
     local function Hex(text)
-        -- 维护：HEX 保留任意 UTF-8/控制字节及 transport 哨兵；不会由聊天/文本框解释转义。
+        -- HEX 保留任意 UTF-8/控制字节及 transport 哨兵；不会由聊天/文本框解释转义。
         return (text:gsub(".", function(c) return string.format("%02X", string.byte(c)) end))
     end
     local function Serialize(value)
@@ -3604,7 +3439,7 @@ function P:BuildFailedStoreEvidenceText(id, options)
         elseif kind == "boolean" then Add(value and "B1;" or "B0;")
         elseif kind == "number" then Add("D" .. string.format("%.17g", value) .. ";")
         elseif kind == "string" then
-            -- 维护：先算编码后长度再分配 HEX，避免超限字符串产生无用的大临时副本。
+            -- 先算编码后长度再分配 HEX，避免超限字符串产生无用的大临时副本。
             local prefix = "S" .. tostring(#value) .. ":"
             if size + #prefix + #value * 2 + 1 > limit then error("evidence_text_limit") end
             Add(prefix .. Hex(value) .. ";")
@@ -3623,7 +3458,7 @@ function P:BuildFailedStoreEvidenceText(id, options)
     local serialized, serializationError = pcall(Serialize, snapshot)
     if not serialized then return nil, tostring(serializationError) end
     local body = table.concat(parts)
-    -- 维护：此 checksum 只检测复制缺段/改字，不替代存档 integrity，不提供密码学认证。
+    -- 此 checksum 只检测复制缺段/改字，不替代存档 integrity，不提供密码学认证。
     local checksum = string.format("%08X", HashText(146959810, body))
     return "RS-PERSIST-EVIDENCE-1\nBYTES=" .. tostring(#body) .. "\nCHECK=" .. checksum
         .. "\n" .. body .. "\nRS-PERSIST-EVIDENCE-END", nil
@@ -3682,7 +3517,8 @@ function P:BuildRuntimeAcceptanceSnapshot(options)
             lastIntegrityStatus = store.lastIntegrityStatus,
             lastIntegrityError = store.lastIntegrityError,
             historicalRecoveryProbe = store.lastHistoricalRecoveryProbe,
-            integrityRecoveryTrace = store.lastIntegrityRecoveryTrace, -- 中文维护注释：runtime-only 状态机轨迹供 Gate/诊断读取；不属于持久化 Domain。
+            integrityRecoveryTrace = store.lastIntegrityRecoveryTrace, -- runtime-only 状态机轨迹供 Gate/诊断读取；不属于持久化 Domain
+                                                                       -- 。
         }
         if row.loaded then loaded = loaded + 1 end
         if row.dirty then dirty = dirty + 1 end
@@ -3757,7 +3593,7 @@ function P:Describe()
             end
             if store.writeFenced == true then fenced = fenced + 1 end
             if store.needsBarrierVerify == true then barrierPending = barrierPending + 1 end
-            -- 中文维护注释（当前健康 Authority）：incident counter 是本次加载以来的历史事实，
+            -- incident counter 是本次加载以来的历史事实，
             -- 成功 durable retry / verified Load 后不能清零；发布 Gate 若直接读取累计失败数会把
             -- 已恢复玩家永久标成 blocker。这里复用 Core 已有 GetStoreFailureKind，只汇总“此刻仍
             -- 需要人工处理”的 Store。纯内存 O(store count)，Describe 本身只在诊断/验收冷路径调用。
@@ -3794,7 +3630,7 @@ function P:Describe()
             lastIntegrityStatus = store.lastIntegrityStatus,
             lastIntegrityError = store.lastIntegrityError,
             historicalRecoveryProbe = store.lastHistoricalRecoveryProbe,
-            integrityRecoveryTrace = store.lastIntegrityRecoveryTrace, -- 中文维护注释：与 AcceptanceSnapshot 同源，避免诊断页和 Gate 看到不同证据。
+            integrityRecoveryTrace = store.lastIntegrityRecoveryTrace, -- 与 AcceptanceSnapshot 同源，避免诊断页和 Gate 看到不同证据。
                 lastError = store.lastError,
                 lastSaveAt = store.lastSaveAt,
                 firstDirtyAt = store.firstDirtyAt,
@@ -3843,7 +3679,9 @@ function P:Describe()
         currentFailureKinds = DeepCopy(currentFailureKinds),
         frameworkVersion = self.FrameworkVersion,
         transportContractVersion = self.TransportContractVersion,
-        transportScalarOmissionProtectionContractVersion = self.TransportScalarOmissionProtectionContractVersion, -- 中文维护注释：把 Transport v2 的 false/空表/0/空字符串保护能力暴露给只读 Foundation/诊断；该字段不参与 Store 保存或任何业务 Authority。
+        transportScalarOmissionProtectionContractVersion = self.TransportScalarOmissionProtectionContractVersion, -- 把 Transport v2 的 false/空表/0/空字符串保护能力暴露给只读
+                                                                                                                  -- Foundation/诊断；该字段不参与 Store 保存或任何业务 Authority
+                                                                                                                  -- 。
         reliabilityContractVersion = self.ReliabilityContractVersion,
         integrityContractVersion = self.IntegrityContractVersion,
         legacyIntegrityContractVersion = self.LegacyIntegrityContractVersion,
@@ -3856,7 +3694,8 @@ function P:Describe()
         terminalLoadMemoizationContractVersion = self.TerminalLoadMemoizationContractVersion,
         historicalCanonicalRecoveryContractVersion = self.HistoricalCanonicalRecoveryContractVersion,
         knownLegacyCanonicalRecoveryContractVersion = self.KnownLegacyCanonicalRecoveryContractVersion,
-        integrityRecoveryTraceContractVersion = self.IntegrityRecoveryTraceContractVersion, -- 中文维护注释：只读能力声明，供 Foundation 验收诊断链没有被未来重构静默删除。
+        integrityRecoveryTraceContractVersion = self.IntegrityRecoveryTraceContractVersion, -- 只读能力声明，供 Foundation 验收诊断链没有被未来重构静默删除
+                                                                                            -- 。
         currentFailureSummaryContractVersion = self.CurrentFailureSummaryContractVersion,
         lastFlush = DeepCopy(self.lastFlush),
         rows = rows,

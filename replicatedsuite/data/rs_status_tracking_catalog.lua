@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- 中文维护注释：只读追踪目录，静态数据是身份 Authority，Feature 才拥有用户选择。
+-- Replicated Suite · 状态追踪目录
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 只读追踪目录，静态数据是身份 Authority，Feature 才拥有用户选择。
 -- 原因：实时 Aura 列表无法管理当前未出现的状态，新用户也不应逐职业手工拼 ID。
 -- 数据流：SkillEffects / CombatAbilityCatalog / Plates -> 一次编译索引 -> Feature 投影。
 -- 兼容：控制标签沿用现有名称推断，仅用于导航，绝不把它升级成已确认 Debuff；欢乐为空。
@@ -12,7 +16,7 @@ S.Data=S.Data or {}
 local Library=S.Data.SkillEffects or {}
 local Ability=S.Data.CombatAbilityCatalog or {}
 local Plates=S.GameIds and S.GameIds.Plates or {}
--- 维护（2026-09-20，builtin-catalog-version-2）：
+--
 -- 问题：一键加入追踪使用 importedPacks 水位做增量导入，但旧目录把所有后加 ID 都固定
 -- introducedVersion=1。已经导入过 v1 的用户再次点击时，这些新 ID 会被误判为“旧条目/用户主动删除”
 -- 而被跳过。Authority 仍由 Catalog 的版本元数据决定，不读取用户实时 Aura，也不全量复活旧选择。
@@ -88,7 +92,7 @@ for _,seed in ipairs(Plates.ImportantCooldownEntries or {}) do
     C.ByKey[row.key]=row;local pack=kind=="mate" and mate or glider
     pack.entries[#pack.entries+1]=row;C.counts.cooldowns=C.counts.cooldowns+1
 end
--- 维护（2026-09-12，一键追踪入口）：旧 all 只有职业效果，隐藏/特殊规则另散在分类中。
+-- 旧 all 只有职业效果，隐藏/特殊规则另散在分类中。
 -- Catalog 只汇总 ID，不启动冷却或改用户选择；旧包 key/version 原样保留，防止旧导入水位变化。
 -- 新用户默认 recommended 是全部已知状态的去重并集；未完成技能 CD 不混进 Buff/Debuff 主入口。
 local recommended=Pack("recommended","全部内置 Buff / Debuff（推荐）","一次加入全部内置状态；未知类型自动识别，取消项仅在主动重新导入时恢复。")

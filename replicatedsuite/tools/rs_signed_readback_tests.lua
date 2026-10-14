@@ -1,10 +1,16 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 10 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · 签名回读测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 维护（signed-readback-1）：真实 Core/Store/诊断；只将 Native 存盘替换为内存盘。
 -- 用户报告只证明 canonical buffs.y=-2 -> 0；以下负数省略/置零是独立故障模型，
 -- 不声称已取得用户原档或确定了 RU serializer 的内部实现。测试不加载进游戏 TOC。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, run)
     local ok, err = pcall(run)
@@ -128,7 +134,7 @@ Test('cold load recovers the proven schema8 transport5 distance.x omission witho
         local distance=type(settings)=='table' and type(settings.components)=='table' and settings.components.distance or nil
         if type(distance)=='table' then distance.x=nil end
     end
-    -- 中文维护：旧 schema8/T5 scalar 恢复属于注册 Legacy Store 的 Core 证据链，
+    -- 旧 schema8/T5 scalar 恢复属于注册 Legacy Store 的 Core 证据链，
     -- 当前 Feature startup 已走 split manifest，不能用它冒充历史 LoadStore 验真。
     local _,P,F,io=Boot({damage=OmitDistanceX});assert(P:LoadStore('v3.buff_display')=='empty')
     F.State.settings.components.distance.x=-1
@@ -245,7 +251,7 @@ Test('paged report attaches durable-failure evidence without rerunning save or r
     assert(io.reads==r+1 and io.writes==w and io.clears==0)
 end)
 Test('healthy normal save awaiting barrier is not a failed store and exports nothing',function()
-    -- 中文维护：普通窗口配置写入的活跃 Authority 是 settings 小 Store，隐私证据选择规则不变。
+    -- 普通窗口配置写入的活跃 Authority 是 settings 小 Store，隐私证据选择规则不变。
     local S,P,F,io=Boot();assert(F:EnsureStoreLoaded());assert(P:SaveStore(F.SettingsStoreId,{force=true}))
     local st=P:GetStore(F.SettingsStoreId);assert(st.needsBarrierVerify and not st.writeFenced)
     local r=io.reads;assert(#S.DiagnosticsManager:GetPersistenceFailureChoices()==0)
@@ -280,7 +286,7 @@ end)
 -- 维护：成功重新读取合法存档可清除当前错误，但历史连续计数/lastVerify未必归零；
 -- 不允许仅凭历史计数越过“只导出当前失败”隐私边界。使用真实Save/Load而非直接清故障标志。
 Test('successful verified load suppresses historical save counters from current failure exports',function()
-    -- 中文维护：真实 HUD 保存/回读故障只作用于 layout Store，历史计数不能扩张当前导出范围。
+    -- 真实 HUD 保存/回读故障只作用于 layout Store，历史计数不能扩张当前导出范围。
     local S,P,F,io=Boot();assert(F:EnsureStoreLoaded());assert(P:SaveStore(F.HudLayoutStoreId,{force=true,durable=true}))
     local st=P:GetStore(F.HudLayoutStoreId);local good=Copy(io.disk[st.resolvedKey])
     io.damage=function(raw)raw.payload.components.buffs.y=99 end

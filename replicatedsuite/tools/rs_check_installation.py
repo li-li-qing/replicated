@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Read-only TOC completeness check. Never loads Lua, edits the add-on or reads saves.
+# ---------------------------------------------------------------------
+# Replicated Suite · 安装完整性检查
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+"""只读检查 TOC 完整性，不加载 Lua、不修改插件、不读取存档。
 
-Run with either the Addon directory or its replicatedsuite subdirectory.
-This is a deployment check, not a replacement for Lua syntax or client startup/UI testing.
-维护（2026-09-18）：同时检查清单缺文件与未解决合并标记，避免“文件齐了但 Lua 无法解析”。
-Authority 仅为开发/安装工具；不进入 toc.g、不读取存档、不联网、不自动选择冲突版本或修改文件。
-兼容边界：PASS 只代表这两项静态门禁通过；后续仍需实际 Lua/客户端启动测试。
-"""
+可传入 Addon 目录或 replicatedsuite 子目录。
+这是部署检查，不能替代 Lua 语法检查或客户端启动和 UI 测试。
+同时检查清单缺文件与未解决的合并标记，避免文件齐全但 Lua 无法解析。
+仅作为开发和安装工具使用，不进入 toc.g、不联网，不自动选择冲突版本或修改文件。
+PASS 只代表上述静态检查通过，后续仍需实际 Lua 及客户端启动验证。"""
 import argparse
 import json
 import re

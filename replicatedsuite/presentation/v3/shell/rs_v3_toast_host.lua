@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Toast Host v1
+-- Replicated Suite · 临时通知宿主
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- One bounded, application-level transient-notification surface. It reuses a
--- fixed three-slot RSUI pool and the single Suite Scheduler; no notification
--- creates a private OnUpdate/Tick and no business Feature owns global chrome.
+-- 有界应用级临时通知复用固定三个 RSUI 槽与单一 Suite Scheduler；通知不创建私人 OnUpdate/Tick，业务 Feature 不持有全局外框。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

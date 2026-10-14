@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native Contract
+-- Replicated Suite · 原生客户端契约
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Suite-owned, curated ArcheRage RU client ABI used by the active V3 runtime.
--- This file deliberately contains only contracts required by migrated code.
--- New Feature migrations add their API/Object dependencies here only after the
--- corresponding client contract has been verified. Legacy globals are evidence
--- for migration only and are never a runtime Authority.
+-- Suite 精选的 ArcheRage RU 客户端 ABI 只包含活动 V3 已迁移代码需要的契约。新 Feature 的 API/Object 依赖须
+-- 在对应客户端契约验证后登记；旧全局仅作迁移证据，绝不作为运行权威。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite
@@ -18,21 +17,18 @@ S.NativeContract = {
     source = "Replicated Suite curated native ABI; legacy globals are migration evidence only",
 
     Api = {
-        -- Foundation namespaces.  IDs are the Suite-owned curated copy of the
-        -- ArcheAge API_TYPE ABI retained under legacy_reference/globals_archive;
-        -- runtime code never reads API_TYPE itself.
+        -- Foundation 命名空间 ID 是 Suite 精选并保留的 ArcheAge API_TYPE ABI 副本，来源在
+        -- legacy_reference/globals_archive；运行代码不读取 API_TYPE 本身。
         ADDON  = { id = 0,  nativeName = "ADDON",    foundation = true, autoImported = true },
         CHAT   = { id = 8,  nativeName = "X2Chat",   foundation = true },
         LOCALE = { id = 24, nativeName = "X2Locale", foundation = true },
         OPTION = { id = 31, nativeName = "X2Option", foundation = true },
         UNIT   = { id = 42, nativeName = "X2Unit",   foundation = true },
 
-        -- Feature namespaces.  Native import is namespace-scoped, while
-        -- Feature metadata intentionally remains method-capability scoped
-        -- (for example X2Friend:GetFriendList). NativeImports resolves the
-        -- method dependency to one of these namespace rows before ImportAPI.
+        -- Feature 元数据按方法能力描述（如 X2Friend:GetFriendList），原生导入按命名空间进行；NativeImports
+        -- 在 ImportAPI 前将方法依赖解析为此处命名空间行。
         ABILITY              = { id = 3,  nativeName = "X2Ability",             feature = true },
-        -- 中文维护（2026-10-04）：ACHIEVEMENT=67 来自用户工作版本 Addon1.2.zip
+        -- （2026-10-04）ACHIEVEMENT=67 来自用户工作版本 Addon1.2.zip
         -- 的 globals/apitypes.lua:114，SHA-256 08d3f23839086e97304383d1a4ebbf9926dba196a105f391c36879031a36d8a6。
         -- 仅给可见提醒的 lazy NativeImports 使用；不是 Foundation 或全部功能的必需依赖。
         ACHIEVEMENT          = { id = 67, nativeName = "X2Achievement",         feature = true },
@@ -41,14 +37,14 @@ S.NativeContract = {
         CRAFT                = { id = 9,  nativeName = "X2Craft",               feature = true },
         EQUIPMENT            = { id = 13, nativeName = "X2Equipment",           feature = true },
         FRIEND               = { id = 15, nativeName = "X2Friend",              feature = true },
-        -- 中文维护（2026-10-13）：FAMILY=17取自用户历史Addon1.2.zip!globals/apitypes.lua，
+        -- （2026-10-13）FAMILY=17取自用户历史Addon1.2.zip!globals/apitypes.lua，
         -- 与FRIEND=15/TEAM=38/UNIT=42同一客户端ABI；仅人员备注选家族时惰性导入，不进入Foundation依赖。
         FAMILY               = { id = 17, nativeName = "X2Family",              feature = true },
         HOTKEY               = { id = 19, nativeName = "X2Hotkey",              feature = true },
         HOUSE                = { id = 20, nativeName = "X2House",               feature = true },
         PLAYER               = { id = 32, nativeName = "X2Player",              feature = true },
         QUEST                = { id = 33, nativeName = "X2Quest",               feature = true },
-        -- 中文维护注释（2026-09-28，native-dependency-ownership-4）：SKILL=35 不再是猜测，而是取自
+        -- （2026-09-28，native-dependency-ownership-4）SKILL=35 不再是猜测，而是取自
         -- 本机历史资产中的客户端 API_TYPE 枚举表副本：Addon.zip / Addon1.2.zip 内的 globals/apitypes.lua
         -- （SHA-256 df8475b7cb31… / 08d3f2383908…）第 82 行 `SKILL = { id = 35, apiname = "X2Skill" }`。
         -- 该表与本工程此前已核的 24 个 namespace 100% 一致（含 UNIT=42 / CHAT=8 / ABILITY=3 / STORE=37 /
@@ -97,10 +93,8 @@ function C:GetApi(name)
     return self.Api[tostring(name or ""):upper()]
 end
 
--- Feature metadata names user-visible method capabilities (X2Foo:Bar), while
--- ADDON:ImportAPI imports the X2Foo namespace as a whole.  Resolve that split
--- here so FeatureRuntime can stay method-specific without teaching the Native
--- layer about every individual method string.
+-- Feature 元数据使用玩家可见方法能力 X2Foo:Bar，ADDON:ImportAPI 却整体导入 X2Foo。此处解析边界，使
+-- FeatureRuntime 保持方法级依赖，Native 层无需知道每个方法字符串。
 function C:ResolveApiKey(dependency)
     local value = tostring(dependency or ""):gsub("%s+", "")
     if value == "" then return nil end

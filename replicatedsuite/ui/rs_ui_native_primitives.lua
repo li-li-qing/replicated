@@ -1,30 +1,23 @@
 ------------------------------------------------------------------------
--- Replicated Suite - V3 Native Primitive Factory
+-- Replicated Suite · 原生控件工厂
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Active V3 Foundation only.  Legacy ManagedWindow/Page navigation helpers
--- were moved to legacy_reference/ui and are deliberately not loaded.  This
--- file owns primitive native control construction/registration only; geometry
--- and presentation mutations are subsequently owned by rs_ui_framework.lua.
+-- 仅活跃 V3 Foundation；旧 ManagedWindow/Page 导航 helper 已移 legacy_reference/ui 且不加载。
+-- 本文件仅构造/注册原生原语，后续几何/表现修改归 rs_ui_framework.lua。
 ------------------------------------------------------------------------
-
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.UI = {
     controls = {},
     registryMetrics = { duplicates = 0, v3Duplicates = 0, degraded = 0 },
-    -- Native Interaction Contract v7: all hit-test methods use the verified
-    -- one-argument RU WidgetBase ABI; boolean false-state setter returns are
-    -- distinguished from Action rejection; single/multiline edits are
-    -- explicitly enabled for mouse/keyboard focus; degraded primitives fail
-    -- closed to callers instead of masquerading as healthy controls.
+    -- Native 交互契约：全部命中方法使用已验证单参数 RU WidgetBase ABI；布尔 false 状态返回与操作拒绝分开；单/多行输入明确配置鼠标/键盘焦点，降级原语拒绝返回为健康控件。
     NativeInteractionContractVersion = 7,
     CriticalInteractionDeliveryContractVersion = 1,
-    -- Root transient popup/menu surfaces use a real native window; ordinary
-    -- in-tree Panel remains an emptywidget. This prevents RU cross-root
-    -- z-order loss without changing normal component allocation.
+    -- 根临时弹层/菜单使用真实 Native Window，树内普通 Panel 保持 emptywidget，避免 RU 跨根层级失效。
     TopLevelTransientWindowContractVersion = 1,
-    -- 中文维护注释（2026-09-17，visual-guide-native-layer-1）：世界空间 HUD 引导（当前仅范围圆/单位连线）
+    -- 约束（2026-09-17，visual-guide-native-layer-1）：世界空间 HUD 引导（当前仅范围圆/单位连线）
     -- 与普通插件 Window/Popup 的层级 Authority 分离。CreateOverlayWindow 必须固定进入 game 层，
     -- 让背包/拍卖/地图等 normal/dialog/system 原生窗口天然覆盖这些点；不能让 Feature/Presenter 自行
     -- Raise/切 system。数据流：CombatVisualGuides -> CreateOverlayWindow -> Native SetUILayer("game")。
@@ -51,8 +44,7 @@ local function MarkPrimitiveDegraded(widget, id, detail)
             if type(widget.EnableKeyboard) == "function" then pcall(function() widget:EnableKeyboard(false) end) end
             if type(widget.EnableFocus) == "function" then pcall(function() widget:EnableFocus(false) end) end
         end
-        -- Apply the final defensive state before marking the widget degraded;
-        -- the Diff Authority intentionally rejects already-degraded widgets.
+        -- 先应用最终防御状态再标降级，Diff 权威有意拒绝已降级控件。
         if type(UIX.SetEnabled) == "function" then UIX:SetEnabled(widget, false, owner) end
         if type(UIX.SetPickable) == "function" then UIX:SetPickable(widget, false, owner) end
         if type(UIX.SetVisible) == "function" then UIX:SetVisible(widget, false, owner) end
@@ -87,12 +79,8 @@ local function CallNativeAccepted(widget, methodName, ...)
     local args, count = { ... }, select("#", ...)
     local ok, result = pcall(function() return method(widget, unpack(args, 1, count)) end)
     if ok ~= true then return false, tostring(result or methodName .. "_failed") end
-    -- Native Widget setters do not document a success-return value. Boolean
-    -- setters can return the resulting state, making false a valid result for
-    -- calls such as SetReadOnly(false) / EnablePick(false). Only that exact
-    -- false-state setter case is ambiguous and accepted. Action methods (for
-    -- example StartMoving) and true-state setters continue to fail closed on
-    -- an explicit false result.
+    -- Native setter 无成功返回文档，布尔 setter 可返回最终状态，SetReadOnly(false)/EnablePick(false) 的 false 合法；
+    -- 仅精确 false 状态写接受歧义，StartMoving 等操作与 true 状态写显式 false 仍拒绝。
     if result == false then
         local falseStateSetter = NATIVE_BOOLEAN_STATE_SETTERS[tostring(methodName or "")] == true
             and count >= 1 and args[1] == false
@@ -129,9 +117,7 @@ end
 local function FailPrimitive(widget, id, detail)
     detail = tostring(detail or "native primitive configuration failed")
     MarkPrimitiveDegraded(widget, id, detail)
-    -- Keep the native identity/lifecycle registration so the current
-    -- Generation cannot accidentally reuse a C++ widget name that already
-    -- exists, but never return the degraded object as a usable control.
+    -- 保留 Native 身份/生命周期注册，防当前 Generation 复用已有 C++ 名；降级对象不能作为可用控件返回。
     UIX:Register(id, widget)
     return nil, detail
 end
@@ -166,12 +152,10 @@ function UIX:Register(id, widget)
             local previousOwner = tostring(previous.rsUiOwner or "")
             local strictV3 = owner:sub(1, 3) == "v3:" or previousOwner:sub(1, 3) == "v3:"
             if strictV3 then
-                -- V3 IDs are address/ownership identities, not labels. Never
-                -- keep legacy's last-writer-wins behavior for a strict tree.
+                -- V3 ID 表示地址/所有权，不能作为标签或在严格树保留旧后写覆盖。
                 self.registryMetrics.v3Duplicates = (tonumber(self.registryMetrics.v3Duplicates) or 0) + 1
                 widget.rsUiRegistrationRejected = true
-                -- SetVisible(false) may legitimately return false on a cache-hit;
-                -- it is still the only visibility Authority for rejected V3 UI.
+                -- SetVisible(false) 缓存命中可合法 false，仍是拒绝 V3 UI 的唯一显隐权威。
                 if type(UIX.SetVisible) == "function" then pcall(function() UIX:SetVisible(widget, false, owner) end) end
                 if type(S.RecordLog) == "function" then
                     S.RecordLog("error", "ui_v3", "DUPLICATE_COMPONENT_ID:" .. key .. ":owner=" .. owner .. ":previous=" .. previousOwner)
@@ -182,14 +166,10 @@ function UIX:Register(id, widget)
                         id = key, owner = owner, previousOwner = previousOwner,
                     })
                 end
-                -- Never alias the rejected native object to the previously
-                -- registered widget. Returning the old object lets the caller
-                -- continue layout with the wrong parent/type and can cross the
-                -- Lua/native ownership boundary with stale geometry.
+                -- 不能把被拒 Native 别名到先前注册对象；返回旧对象会用错误父/类型继续布局，并以旧几何跨 Lua/Native 所有权边界。
                 return nil
             end
-            -- Legacy remains compatible during migration, but every duplicate
-            -- is still counted so cleanup can proceed without silent aliases.
+            -- 迁移期保留旧兼容，但每次重复仍计数，清理不能依赖静默别名。
             S.WarnOnce("ui_control_duplicate:" .. key, "界面控件编号重复：" .. key)
         end
         self.controls[key] = widget
@@ -230,14 +210,10 @@ end
 
 function UIX:SafeHandler(widget, eventName, fn, label)
     if widget == nil or type(widget.SetHandler) ~= "function" or type(fn) ~= "function" then return false end
-    -- Handler binding is also a native write.  A rejected/stale widget must not
-    -- receive callbacks that can outlive its RSUI owner or reach a previous hot-
-    -- reload generation.  rs_ui_framework.lua installs IsWidgetUsable after this
-    -- primitive module loads; honor it whenever available.
+    -- 绑定处理器也是 Native 写；拒绝/陈旧控件不能接收超出 RSUI owner 或跨热重载代际的回调。框架在本模块后安装 IsWidgetUsable，可用时须遵循。
     if type(self.IsWidgetUsable) == "function" and self:IsWidgetUsable(widget) ~= true then return false end
     local generation = S.Generation
-    -- Create this packer once per binding rather than once per event dispatch;
-    -- sliders can emit many callbacks while being dragged.
+    -- 每次绑定只创建一次 packer，不每事件分配；滑块拖动可产生大量回调。
     local function Pack(...)
         local packed = { ... }
         packed.n = select("#", ...)
@@ -251,9 +227,7 @@ function UIX:SafeHandler(widget, eventName, fn, label)
         local result = nil
         local token = S.PerformanceMonitor and S.PerformanceMonitor:Begin("ui:" .. tostring(label or eventName)) or nil
         local ok, err = xpcall(function()
-            -- Preserve the exact result arity. A `{ fn(...) }` wrapper loses
-            -- trailing/intermediate nil values and can subtly change handler
-            -- contracts such as drag-start returning `false, nil`.
+            -- 保持精确返回数量；`{ fn(...) }` 丢尾部/中间 nil，可能改变拖动开始 `false,nil` 契约。
             result = Pack(fn(unpack(args, 1, argCount)))
         end, S.SafeTraceback)
         if S.PerformanceMonitor ~= nil then S.PerformanceMonitor:End(token) end
@@ -272,19 +246,13 @@ function UIX:SafeHandler(widget, eventName, fn, label)
         if result ~= nil then return unpack(result, 1, tonumber(result.n) or #result) end
         return nil
     end
-    -- Some RU widget builds expose only one of several historical event names.
-    -- Probe SetHandler itself safely and return whether the binding succeeded so
-    -- callers can stop at the first supported alias instead of double-binding.
+    -- 部分 RU 仅支持多个历史事件名中的一个；安全探测 SetHandler 并返回成功状态，在首个支持别名停止，避免重复绑定。
     local ok, bindResult = pcall(function() return widget:SetHandler(eventName, handler) end)
-    -- Some widget builds reject an unknown handler name by returning false
-    -- rather than throwing. Treat that as a failed probe so alias callers can
-    -- continue to the next supported event name.
+    -- 未知 handler 可返回 false 而不抛错；同样当探测失败，继续下个已支持事件名。
     local bound = ok == true and bindResult ~= false
     if bound and type(self.RegisterHandlerBinding) == "function" then self:RegisterHandlerBinding(widget, eventName) end
     if not bound then
-        -- A silently unbound OnClick reads to the user as a dead button (§9.3
-        -- bag regression candidate). Surface it once per label instead of
-        -- returning a flag every caller ignores.
+        -- 未绑 OnClick 会呈现死按钮，应每标签报告一次，不能只返回调用方常忽略的标志。
         local diagnostics = S.DiagnosticsManager
         if type(diagnostics) == "table" and type(diagnostics.Warn) == "function" then
             diagnostics:Warn("ui_event", "UI_HANDLER_BIND_FAILED", "原生界面事件绑定失败，该控件点击将无响应", {
@@ -300,21 +268,15 @@ function UIX:SafeHandler(widget, eventName, fn, label)
     return bound
 end
 
--- SetUILayer is optional in ArcheAge/RU: ui_functions exposes it on Window,
--- while several WidgetBase variants do not implement it at all. Active V3
--- code must therefore never call SetUILayer directly or assume the legacy
--- UI factory is loaded. This adapter is intentionally fail-open; callers can
--- fall back to draw priority without making a whole Page/Dropdown transaction
--- fail.
+-- SetUILayer 为可选能力，ui_functions 在 Window 提供，但若干 WidgetBase 无实现；V3 不能直接调用或假设旧工厂加载。
+-- 适配器允许兜底 draw priority，避免整个 Page/Dropdown 事务失败。
 function UIX:TrySetUILayer(widget, layerName)
     if widget == nil or type(widget.SetUILayer) ~= "function" then return false end
     local ok, result = pcall(function() return widget:SetUILayer(layerName or "system") end)
     return ok == true and result ~= false
 end
 
--- Standard lifecycle for ordinary dialogs. HUD widgets keep using WidgetBase
--- and HudManager; dialogs get a smaller API with the same logical placement,
--- safe drag, sizing bounds, opacity and font ownership rules.
+-- 普通对话框标准生命周期；HUD 继续用 WidgetBase/HudManager，对话框提供更小 API，但共用逻辑位置、安全拖动、尺寸边界、透明度、字体归属。
 function UIX:CreateEmptyWidget(parent, id, x, y, width, height, pickable, explicitOwner)
     local factory = S.NativeObjectFactory
     if type(factory) ~= "table" or parent == nil then return nil, "native_factory_or_parent_unavailable" end
@@ -366,10 +328,7 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
     local nativeParent = RootNativeParent(parent)
     local anchorParent = RootAnchorParent(parent)
     local stateParent = RootStateParent(parent)
-    -- Interactive top-level transient surfaces must be real native windows.
-    -- RU clients do not reliably put root emptywidgets into the "system" layer,
-    -- so a dropdown/menu can be alive but rendered behind the V3 application
-    -- window. Ordinary in-tree panels remain emptywidgets.
+    -- 交互顶层临时面必须真实 Window；RU 根 emptywidget 不可靠进入 system，弹层/菜单可能活跃却被应用窗口遮挡；树内普通面板仍 emptywidget。
     local transientWindow = rootParent == true and opts.transientWindow == true
     local panel, nativeErr
     if transientWindow then
@@ -382,20 +341,14 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
     TrackNativeBuildWidget(panel)
     local ownerParent = rootParent and nil or parent
     panel.rsHudOwner = ownerParent and ownerParent.rsHudOwner or nil
-    -- Top-level transient presentation surfaces (dropdowns/tooltips/menus) are
-    -- physically parented to UIParent for z-order safety.  They still belong to
-    -- the page/widget that created them, so callers may provide an explicit
-    -- logical owner before Register() runs.  This keeps V3 duplicate-ID and
-    -- lifecycle checks strict instead of briefly registering the surface as an
-    -- unowned legacy widget.
+    -- 顶层弹层/提示/菜单物理父为 UIParent 保层级，逻辑归创建页面/组件；Register 前提供明确 owner，维持严格 V3 重复 ID/生命周期检查，不短暂注册成无主旧控件。
     panel.rsUiOwner = opts.owner or (ownerParent and (ownerParent.rsUiOwner or (ownerParent.rsHudOwner and ("hud:" .. tostring(ownerParent.rsHudOwner)))) or nil)
     panel.rsUiParent = stateParent
     panel.rsUiTransientWindow = transientWindow == true
 
     local function ApplyTransientWindowPolicy()
         if transientWindow ~= true then return true end
-        -- Window policy mirrors the application root: never become modal and
-        -- never let Native Escape close behind V3 lifecycle/persistence.
+        -- 窗口策略与应用根一致：不能模态，也不让 Native Escape 绕过 V3 生命周期/持久化关闭。
         if type(panel.SetUILayer) == "function" then
             local ok, result = pcall(function() return panel:SetUILayer(tostring(opts.uiLayer or "system")) end)
             if ok ~= true or result == false then return false, "transient_window_layer_rejected" end
@@ -426,10 +379,7 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
         panel:SetExtent(math.max(1, width or 1), math.max(1, height or 1))
         S.Theme:AddBorder(panel, kind == "soft")
         local theme = S.Constants and S.Constants.Theme or {}
-        -- Master-switch behaviour: by default card/header/soft panels are skinned
-        -- with the modern gradient unless Theme.modern is off or the caller opts
-        -- out explicitly with { gradient = false }.  Panels that must keep a flat
-        -- look (e.g. tiny overlay strips) pass gradient = false.
+        -- 卡片/表头/柔和面板默认现代渐变，Theme.modern 关闭或 {gradient=false} 明确退出；小覆盖条等平面外观须传 gradient=false。
         local useGradient = opts.gradient
         if useGradient == nil then
             useGradient = theme.modern ~= false
@@ -438,11 +388,11 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
                     or (kind == "header" and theme.gradientHeaders ~= false))
         end
         if useGradient == true then
-            -- kind string also selects the gradient band set (titlebar/header/card).
+            -- kind 同时选择 titlebar/header/card 渐变 band 集。
             local gradientKind = opts.gradientKind
                 or (kind == "header" and "header" or (kind == "card" and "card" or (kind == "titlebar" and "titlebar" or nil)))
             S.Theme:AddGradientBackground(panel, gradientKind or kind, nil)
-            -- Headers carry the golden accent strip by default (still overridable).
+            -- 表头默认金色强调条，允许覆写。
             if kind == "header" and opts.accentStrip ~= false and theme.gradientHeaders ~= false then
                 S.Theme:AddAccentStrip(panel, nil, nil)
             end
@@ -477,15 +427,10 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
     return self:Register(id, panel)
 end
 
--- Non-interactive screen-space overlay host for world-anchored visuals (unit
--- line / range circle dot pools). MUST be a real native WINDOW: the historical
--- emptywidget host was invisible on RU clients, so the proven top-level WINDOW
--- allocation remains unchanged. 维护（2026-09-17）：WINDOW 类型不等于 system 层。
--- 这两类点属于 world HUD Presentation，不是可交互插件窗口；system 会让点压住
--- 背包/拍卖/地图等原生窗口。层级 Authority 因此固定为 game，依靠 Native layer
--- hierarchy 让 normal/dialog/system 原生 UI 自然覆盖。DrawPriority 仅处理 game 层
--- 内部稳定排序；host 继续 non-pickable，不能截获鼠标。兼容边界：不改变坐标、
--- child dot、可见性或生命周期，仅修 Native z-layer。
+-- 单位连线/范围圆点池的非交互屏幕宿主必须为真实 Native WINDOW；RU emptywidget 不可见。
+-- WINDOW 类型不代表 system 层；世界 HUD 固定 game 层，使 normal/dialog/system 原生窗口自然覆盖。
+-- DrawPriority 仅负责 game 层内部排序，host 保持不可拾取，不截获鼠标。
+-- 层级策略不改变投影坐标、子点、可见性或生命周期；不能为解决显示问题升到 system 遮挡背包/拍卖/地图。
 function UIX:CreateOverlayWindow(id, explicitOwner)
     local factory = S.NativeObjectFactory
     if type(factory) ~= "table" or type(factory.CreateWindow) ~= "function" then return nil, "overlay_window_factory_unavailable" end
@@ -513,17 +458,14 @@ function UIX:CreateOverlayWindow(id, explicitOwner)
                 if ok ~= true then error("overlay window policy failed:" .. tostring(row.method)) end
             end
         end
-        -- Draw priority is part of the PROVEN transient-window policy
-        -- (CreatePanel/popup): without it the window can sit below the
-        -- application/world and every child dot renders invisible.
+        -- 绘制优先级属已验证 CreatePanel/popup 策略，缺少时窗口可能在应用/世界下方，全部子点不可见。
         local priority = S.UITokens and type(S.UITokens.Number) == "function" and S.UITokens:Number("layer.popupPriority", 10000) or 10000
         if type(window.SetDrawPriority) == "function" then pcall(function() window:SetDrawPriority(priority) end) end
         -- 维护（overlay-root-anchor-1）：实机日志在此拒绝 UIParent Table 参数。
         -- 复用同文件的根锚点转换，Native 用 "UIParent"，下方 Diff 缓存仍持有真实对象；
         -- 不改变层级、拾取、坐标或刷新频率。避免构造被隔离而影响世界 HUD 显示。
         if window.AddAnchor ~= nil then window:AddAnchor("TOPLEFT", RootAnchorParent(UIParent), 0, 0) end
-        -- Reference hosts stay small; child dot anchors overflow the extent
-        -- freely (rp_ui.lua EnsureLinesHost SetExtent(200,200)).
+        -- 参考宿主保持小尺寸，子点锚可越 extent（rp_ui.lua EnsureLinesHost SetExtent(200,200)）。
         if window.SetExtent ~= nil then window:SetExtent(200, 200) end
         if ConfigureNativePickable(window, false) ~= true then error("overlay window hit-test unavailable") end
         if window.CorrectOffsetByScreen ~= nil then pcall(function() window:CorrectOffsetByScreen() end) end
@@ -566,8 +508,7 @@ function UIX:CreateLabel(parent, id, text, x, y, width, height, fontSize, tone, 
         if label.SetAutoResize ~= nil then label:SetAutoResize(false) end
         label:SetExtent(math.max(1, width or 1), math.max(1, height or 1))
         if ConfigureNativePickable(label, false) ~= true then error("label hit-test state unavailable") end
-        -- Automatic title shadow: fontSize >= 13 labels get a subtle shadow unless
-        -- the master switch is off or the caller passes an explicit false.
+        -- fontSize>=13 标签默认细阴影，除总开关关闭或调用方显式 false。
         local theme = S.Constants and S.Constants.Theme or {}
         local useShadow = shadow
         if useShadow == nil then
@@ -613,7 +554,7 @@ end
 
 function UIX:ConfigureEditCaret(edit, height)
     if edit == nil then return false, nil end
-    -- 中文维护注释（2026-09-14，RU 单行 EditBox caret 几何）：实机 .18.215 证明
+    -- 约束（2026-09-14，RU 单行 EditBox caret 几何）：实机 .18.215 证明
     -- SetCursorHeight(14) 并不是 14px 最终高度，而会渲染为约 29px 的竖线（接近 2*N+1），
     -- 因此旧实现把“最终像素高度”直接传给 Native，导致 caret 穿过输入框下边界。这里统一把
     -- 目标视觉高度转换为 Native half-extent，并把最终视觉预算限制在单行输入框内部。Authority
@@ -622,7 +563,7 @@ function UIX:ConfigureEditCaret(edit, height)
     local desiredVisual = math.max(11, math.min(19, outer - 6))
     local nativeHalf = math.max(5, math.min(9, math.floor((desiredVisual - 1) * 0.5)))
     if type(edit.SetCursorColor) == "function" then
-        -- 中文维护（2026-10-09）：布局只调光标几何，颜色仍遵循 Theme 的透明表面策略，不能恢复浅底深色。
+        -- 约束（2026-10-09）：布局只调光标几何，颜色仍遵循 Theme 的透明表面策略，不能恢复浅底深色。
         local c=S.Theme and type(S.Theme.ResolveTextColor)=='function' and S.Theme:ResolveTextColor('input.caret',edit) or (S.UITokens and S.UITokens.input and S.UITokens.input.caret) or {1,.82,.36,1};edit:SetCursorColor(unpack(c))
     end
     if type(edit.SetCursorHeight) == "function" then
@@ -636,9 +577,7 @@ end
 
 function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
     if parent == nil or type(parent.CreateChildWidgetByType) ~= "function" then return nil end
-    -- RU clients are inconsistent about which single-line editbox token is
-    -- exported. Prefer X2_EDITBOX, then fall back to the regular EDITBOX.
-    -- A missing text field must never break the entire Suite layout.
+    -- RU 单行输入 token 导出不一致，优先 X2_EDITBOX，再普通 EDITBOX；缺文本框不能破坏整个 Suite 布局。
     local factory = S.NativeObjectFactory
     if type(factory) ~= "table" or type(factory.CreateChildByObject) ~= "function" then return nil end
     local edit = factory:CreateChildByObject(parent, "X2_EDITBOX", S.PhysicalId(id), 0, true)
@@ -653,16 +592,12 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
     local configured, configureErr = pcall(function()
         edit:SetExtent(math.max(1, width or 120), math.max(1, height or 26))
         if edit.SetInset ~= nil then edit:SetInset(5,5,5,5) end
-        -- RU typed EditBox widgets are not guaranteed to start mouse-interactive.
-        -- Keep hit-testing/focus at the shared native boundary so every
-        -- TextInput/NumericInput inherits the same interaction contract.
+        -- RU typed EditBox 初建未必可鼠标交互；共享 Native 边界负责命中/焦点，让 TextInput/NumericInput 继承同一契约。
         local accepted = CallNativeAccepted(edit, "Enable", true)
         if accepted ~= true then error("editbox Enable rejected") end
         accepted = CallNativeAccepted(edit, "EnableFocus", true)
         if accepted ~= true then error("editbox focus unavailable") end
-        -- Deferred keyboard activation: merely constructing an EditBox must not
-        -- take ArcheAge movement/skill keyboard ownership. Keyboard input is
-        -- armed only after an explicit user click through RSUI input lifecycle.
+        -- 仅构造 EditBox 不能抢 ArcheAge 移动/技能键；通过 RSUI 输入生命周期明确点击后才启键盘。
         accepted = CallNativeAccepted(edit, "EnableKeyboard", false)
         if accepted ~= true then error("editbox keyboard inert state unavailable") end
         edit.rsUiKeyboardArmed = false
@@ -677,9 +612,7 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
         end
         if edit.UseSelectAllWhenFocused ~= nil then edit:UseSelectAllWhenFocused(false) end
         UIX:ConfigureEditCaret(edit, height)
-        -- RSUI owns the Draft -> Commit transaction.  Some RU EditBox variants
-        -- clear their native text on Enter before the submit handler can read it
-        -- unless this verified flag is disabled.
+        -- RSUI 持有 Draft -> Commit；部分 RU EditBox Enter 会在处理器读取前清 Native 文本，须关闭此已验证标志。
         if edit.ClearTextOnEnter ~= nil then
             accepted = CallNativeAccepted(edit, "ClearTextOnEnter", false)
             if accepted ~= true then error("editbox clear-on-enter state rejected") end
@@ -696,7 +629,7 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
             local bg=edit:CreateColorDrawable(0.015,0.022,0.032,0.995,"background")
             edit.rsUiEditBackgroundDrawable=bg
             if bg and bg.AddAnchor then bg:AddAnchor("TOPLEFT",edit,1,1); bg:AddAnchor("BOTTOMRIGHT",edit,-1,-1) end
-            -- 中文维护：原生输入底板显式归入背景通道，避免透明页面变亮字后仍留一块不透明浅底。
+            -- 原生输入底板显式归入背景通道，避免透明页面变亮字后仍留一块不透明浅底。
             if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(edit,bg,'input.background',nil,'background') end
         end
         if S.Theme and S.Theme.RefreshTextColor then edit.rsThemeTextRole='input.text';S.Theme:RefreshTextColor(edit) end
@@ -732,15 +665,12 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
     local configured, configureErr = pcall(function()
         edit:SetExtent(math.max(1, width or 220), math.max(1, height or 96))
         if edit.SetInset ~= nil then edit:SetInset(8,8,10,8) end
-        -- EDITBOX_MULTILINE inherits WidgetBase interaction flags but does not
-        -- expose Edit:SetReClickable in the RU reference. Configure only the
-        -- verified shared WidgetBase/Editmultiline surface here.
+        -- EDITBOX_MULTILINE 继承 WidgetBase 交互标志，但 RU 参考无 Edit:SetReClickable；仅配置已验证共享 WidgetBase/Editmultiline 接口。
         local accepted = CallNativeAccepted(edit, "Enable", true)
         if accepted ~= true then error("multieditbox Enable rejected") end
         accepted = CallNativeAccepted(edit, "EnableFocus", true)
         if accepted ~= true then error("multieditbox focus unavailable") end
-        -- Same deferred keyboard contract as single-line EditBox. Hidden tab
-        -- content must remain keyboard-inert until the user explicitly clicks it.
+        -- 与单行共用延迟键盘契约，隐藏页签在明确点击前保持键盘静默。
         accepted = CallNativeAccepted(edit, "EnableKeyboard", false)
         if accepted ~= true then error("multieditbox keyboard inert state unavailable") end
         edit.rsUiKeyboardArmed = false
@@ -787,10 +717,7 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
 end
 
 function UIX:EnsureHorizontalSlider(slider)
-    -- Kept as a compatibility shim for callers created before UI2.  Since
-    -- 1.0.22 Suite sliders are no longer native Slider widgets at all.  Their
-    -- drag surface is an ordinary movable EmptyWidget and only its X delta is
-    -- consumed, so native RU Slider orientation cannot affect the drag axis.
+    -- 旧 UI2 前调用方兼容垫片；Suite 滑块用可移动 EmptyWidget 而非 Native Slider，仅取 X delta，原生 Slider 朝向不影响拖动轴。
     return slider ~= nil and slider.rsCustomHorizontal == true
 end
 
@@ -820,10 +747,7 @@ function UIX:UpdateSliderVisual(slider, explicitValue)
     local height = slider.GetHeight and slider:GetHeight() or tonumber(slider.rsHeight) or 20
     local dragging = slider.rsDragging == true
 
-    -- A custom slider is a composite widget: resizing its root does not resize
-    -- the rail/drag surface automatically. Cache the visual geometry separately
-    -- so framework SetExtent() can cheaply resynchronise stale children without
-    -- introducing permanent OnUpdate/Tick work.
+    -- 自定义滑块为组合，根缩放不自动缩 rail/drag；单独缓存视觉几何，让 SetExtent 低成本同步旧子节点，无永久 OnUpdate/Tick。
     if tonumber(slider.rsVisualWidth) == tonumber(width)
         and tonumber(slider.rsVisualHeight) == tonumber(height)
         and tonumber(slider.rsVisualValue) == tonumber(value)
@@ -850,9 +774,7 @@ function UIX:UpdateSliderVisual(slider, explicitValue)
     if thumb.SetExtent ~= nil then thumb:SetExtent(thumbW, thumbH) end
     if thumb.Raise ~= nil then pcall(function() thumb:Raise() end) end
 
-    -- The drag surface is deliberately invisible and may move vertically while
-    -- the mouse is held.  Re-anchor it only when the drag transaction ends;
-    -- during dragging its effective X position is our cursor substitute.
+    -- 拖动面刻意不可见，按鼠标时可纵向移动；仅事务结束重锚，期间有效 X 作为光标替代。
     local drag = slider.rsDragSurface
     if drag ~= nil and slider.rsDragging ~= true then
         if drag.RemoveAllAnchors ~= nil then drag:RemoveAllAnchors() end
@@ -870,11 +792,8 @@ end
 function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, step, value)
     if parent == nil or type(parent.CreateChildWidget) ~= "function" then return nil end
 
-    -- Do NOT use UOT_SLIDER here.  ArcheRage RU has been observed to keep the
-    -- native drag axis vertical even after SetOrientation("HORIZONTAL").  This
-    -- widget implements horizontal dragging from first principles with an
-    -- invisible movable surface.  StartMoving() supplies mouse movement, while
-    -- only its X delta contributes to the slider value; Y is ignored entirely.
+    -- 禁止 UOT_SLIDER，RU 即便 SetOrientation("HORIZONTAL") 仍可能纵轴拖动；
+    -- 透明移动面自行实现横拖，StartMoving 提供移动，仅 X delta 改值，完全忽略 Y。
     local slider = S.NativeObjectFactory and S.NativeObjectFactory:CreateChild(parent, "emptywidget", S.PhysicalId(id), 0, true) or nil
     if slider == nil then return nil end
     TrackNativeBuildWidget(slider)
@@ -920,10 +839,7 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
         slider.rsThumbButton = thumb
         thumb:Show(true)
 
-        -- Full-width transparent drag surface.  It is allowed to move in both
-        -- native axes, but remains invisible; only its effective X delta is
-        -- sampled.  The visible thumb is always re-positioned on the horizontal
-        -- rail, so dragging vertically can never change the value or visual Y.
+        -- 全宽透明拖动面可在 Native 双轴移动但不可见，仅采有效 X；可见滑块始终放横轨，纵拖不能改值或视觉 Y。
         local drag = S.NativeObjectFactory:CreateChild(slider, "emptywidget", S.PhysicalId(id .. "_drag"), 0, true)
         if drag == nil then error("slider drag surface creation failed") end
         drag:SetExtent(sliderW, sliderH)
@@ -958,9 +874,7 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
             end
             return nv
         end
-        -- Adaptive range updates are event-driven (NumericInput commit only).
-        -- Never rebuild the Native slider just to expand an endpoint: the same
-        -- drag surface/thumb remain attached, preventing hover/drag state churn.
+        -- 自适应范围仅 NumericInput 提交事件更新；扩端点不能重建 Native Slider，同一拖动面/滑块保持附着，避免悬浮/拖动状态抖动。
         function slider:SetRange(minimumValue, maximumValue, stepValue)
             local minimumNext = tonumber(minimumValue)
             local maximumNext = tonumber(maximumValue)
@@ -1010,10 +924,7 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
             UIX:UpdateSliderVisual(target, target.rsValue)
             return true, target.rsEnabled
         end
-        -- UI:SetEnabled normally targets a native root. This composite root has
-        -- a dedicated transparent drag child, so expose an explicit adapter;
-        -- otherwise WidgetBase:Enable(false) would leave the real hit surface
-        -- interactive behind a visually disabled RSUI Slider.
+        -- UI:SetEnabled 通常作用根，但此组合实际命中为透明拖动子节点，须明确适配器；仅根 Enable(false) 会留下视觉禁用仍交互的 Slider。
         slider.rsUiSetEnabledAdapter = ApplySliderEnabled
         function slider:SetEnabled(enabled) return ApplySliderEnabled(self, enabled) end
 
@@ -1047,8 +958,7 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
             if changed and type(slider.rsValueChanged) == "function" then
                 slider.rsValueChanged(nv, final == true)
             elseif final == true and type(slider.rsValueChanged) == "function" then
-                -- Commit even when quantisation returns to the same value so a
-                -- staged preview always receives its final persistence fence.
+                -- 量化回同值也提交，使暂存预览获得最终持久化边界。
                 slider.rsValueChanged(nv, true)
             end
         end
@@ -1060,10 +970,7 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
             slider.rsDragging = true
             slider.rsDragStartX = EffectiveX(drag)
             slider.rsDragStartValue = slider.rsValue
-            -- Interactive sampling borrows the single Suite frame driver only
-            -- for the lifetime of this gesture.  Ordinary service tasks retain
-            -- their 50 ms floor; sliders can preview at ~16 ms without adding a
-            -- permanent widget Tick.
+            -- 手势期间借单一 Suite 帧驱动，普通服务保 50 ms 下限，滑块可约 16 ms 预览而不常驻 Tick。
             local scheduled = false
             if S.Scheduler ~= nil and type(S.Scheduler.AddInteractiveTask) == "function" then
                 S.Scheduler:RemoveTask(dragTaskName)
@@ -1078,9 +985,7 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
                 end, true, slider, "P0", 1) == true
             end
             if scheduled ~= true then
-                -- Early boot *and scheduler rejection* fallback. It exists only
-                -- for this active gesture and is released on drag stop, so idle
-                -- sliders still own no permanent OnUpdate/Tick.
+                -- 启动早期与 Scheduler 拒绝的兜底仅本手势存在，停止即释放，闲置滑块无永久 OnUpdate/Tick。
                 UIX:SafeHandler(drag, "OnUpdate", function()
                     if slider.rsDragging == true then SyncFromDrag(false) end
                     return true
@@ -1116,11 +1021,8 @@ function UIX:CreateButton(parent, id, text, x, y, width, height, fontSize, activ
     local factory = S.NativeObjectFactory
     if type(factory) ~= "table" then return nil, "native_factory_unavailable" end
 
-    -- UIParent is not a normal child-widget host on every RU build.  Top-level
-    -- screen controls must go through UIParent:CreateWidget (factory CreateButton),
-    -- while panel/page children continue through CreateChildWidget.  Treating a
-    -- root button as a child silently returned nil on affected clients, which is
-    -- exactly why Gear quick-plan buttons had valid state but no native control.
+    -- RU UIParent 并非普通子宿主；顶层屏幕控件须 UIParent:CreateWidget（CreateButton），树内仍 CreateChildWidget。
+    -- 根按钮当子创建可静默 nil，导致 Gear 有状态却无控件。
     local rootParent = IsRootParent(parent)
     local anchorTarget = RootAnchorParent(parent)
     local anchorStateParent = RootStateParent(parent)

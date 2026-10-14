@@ -1,12 +1,15 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 11 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- 中文维护注释（tracking-scope-v1 / 文本格式 v3）：
+-- Replicated Suite · 状态显示导入与导出
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并前必须清除冲突标记，核对源码与加载清单完整性。
+-- Authority、调用数据流与存档协议保持下方实现的原有责任，
+-- 禁止通过清配置、跳过加载或恢复Legacy绕过故障；源码与toc.g、UI实现必须成套，
+-- 合并后先检查Lua语法，再做运行时验收。
 -- 原因：schema8 将追踪 Authority 从全局 buff/debuff/auto 拆成
 -- player/target × buff/debuff/auto 六个独立通道；旧 v1/v2 文本仍必须可导入。
--- Authority：本文件只负责纯文本解析/规范化/预览；真正写入仍由 Feature:ImportAll
+-- 权威边界：本文件只负责纯文本解析/规范化/预览；真正写入仍由 Feature:ImportAll
 -- 的单一 Persistence 事务完成。任何解析/容量错误都在事务前整体拒绝。
 -- 数据流：文本 -> scoped draft -> PrepareTrackingImport -> ImportAll -> Store schema8。
 -- 兼容：旧 BUFF/DEBUFF/AUTO 复制到 player 与 target，保留旧版本“两个 HUD 同时显示”语义。
@@ -50,7 +53,7 @@ local function NormalizeInputTracked(value)
             for _,category in ipairs(CATEGORIES) do out[scope][category]=Copy(type(scoped[category])=="table" and scoped[category] or {}) end
         end
     else
-        -- Legacy in-memory callers keep global semantics: one list applies to both HUDs.
+        -- 旧内存调用者保持全局语义：同一列表应用于两个 HUD。
         for _,scope in ipairs(SCOPES) do
             for _,category in ipairs(CATEGORIES) do out[scope][category]=Copy(type(value[category])=="table" and value[category] or {}) end
         end
@@ -76,9 +79,7 @@ end
 function F:SerializeExport(data)
     data=type(data)=="table" and data or self:ExportAll()
     local tracked=NormalizeInputTracked(data.tracked)
-    -- Reuse the frozen legacy serializer only for HUD/policy/classification lines.
-    -- Give it an empty flat tracking shape, then strip its version headers so the
-    -- v3 header below is the sole transfer authority.
+    -- 固定旧序列化器仅用于 HUD/policy/classification 行；传入空平面追踪形态后去掉它的版本头，下方 v3 头是唯一传输权威。
     local legacy=Copy(data)
     legacy.format="replicatedsuite.buff_display"
     legacy.schemaVersion=7
@@ -145,8 +146,7 @@ function F:ParseImportText(text)
             mode=value
             if mode~="full" and mode~="tracking" then errors[#errors+1]="导出模式无效" end
         elseif key=="BUFF" or key=="DEBUFF" or key=="AUTO" then
-            -- v1/v2 global selection is duplicated to both scopes so upgrading a
-            -- text backup cannot silently remove statuses from one HUD.
+            -- v1/v2 全局选择复制到两个 scope，升级文本备份不能静默从一个 HUD 删除状态。
             businessLines=businessLines+1
             local tmp={};ReadIds(value,tmp,errors,"第 "..lineCount.." 行")
             local category=key:lower();AppendAll(tracked.player[category],tmp);AppendAll(tracked.target[category],tmp)
@@ -161,7 +161,7 @@ function F:ParseImportText(text)
             ReadIds(value,cooldowns[key=="COOLDOWN_SKILL" and "skill" or "mate"],errors,"第 "..lineCount.." 行")
         elseif key=="CLASSIFICATION" then
             businessLines=businessLines+1
-            -- 中文维护注释：同一文本里对同 ID 给出 Buff 与 Debuff 两个 override 是歧义输入，
+            -- 同一文本里对同 ID 给出 Buff 与 Debuff 两个 override 是歧义输入，
             -- 不能依赖“后写覆盖前写”的行顺序决定业务结果；先记录冲突，再继续交给 legacy parser
             -- 做既有格式/数值校验。相同值重复允许，由最终 map 自然去重。
             local rawId,rawCategory=tostring(value or ""):match("^(%d+):([%a]+)$")
@@ -199,7 +199,7 @@ function F:PrepareTrackingImport(data,mode)
     for _,field in ipairs({"tracked","trackedCooldowns","classification","components","hud","settings"}) do
         if data[field]~=nil and type(data[field])~="table" then return nil,"导入字段不是表："..field end
     end
-    -- 中文维护注释（导入结构 fail-closed）：NormalizeInputTracked 负责兼容形状转换，不负责吞掉
+    -- NormalizeInputTracked 负责兼容形状转换，不负责吞掉
     -- 错类型。直接 API/未来 UI 若传 player.auto="..."，必须在任何 merge/overwrite 前整体拒绝；
     -- 否则“坏字段 -> 空列表”会在覆盖模式合法清空用户通道。旧 flat 三桶仍允许，但桶本身必须是 table。
     if type(data.tracked)=="table" then
@@ -252,7 +252,7 @@ function F:PrepareTrackingImport(data,mode)
             if not ids then return nil,err end
             out.tracked[scope][category]=ids
         end
-        -- Explicit placement is stronger than Auto only within the same scope.
+        -- 显式放置仅在同 scope 内优先于 Auto。
         local explicit={};for _,category in ipairs({"buff","debuff"}) do for _,id in ipairs(out.tracked[scope][category]) do explicit[id]=true end end
         local auto={};for _,id in ipairs(out.tracked[scope].auto) do if not explicit[id] then auto[#auto+1]=id end end
         out.tracked[scope].auto=auto
@@ -307,8 +307,7 @@ function F:ImportTrackedIds(text,category,mode,scope)
         if mode=="overwrite" then data.tracked[targetScope][category]=Copy(ids)
         else AppendAll(data.tracked[targetScope][category],ids) end
     end
-    -- `data` already contains the exact preserved state for non-selected channels;
-    -- use overwrite at the final transaction boundary to avoid merge duplicating it again.
+    -- data 已精确保留未选通道状态；最终事务使用 overwrite，避免 merge 再次重复这些数据。
     return self:ImportAll(data,"overwrite")
 end
 

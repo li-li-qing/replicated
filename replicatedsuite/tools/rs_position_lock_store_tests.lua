@@ -1,4 +1,10 @@
--- 中文维护：锁偏好的真实 Persistence/Transport 往返；Native 与物理磁盘仍是模型。
+------------------------------------------------------------------------
+-- Replicated Suite · 位置锁定存储测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 锁偏好的真实 Persistence/Transport 往返；Native 与物理磁盘仍是模型。
+------------------------------------------------------------------------
 local NewHost=dofile('tools/rs_gear_page_test_host.lua')
 local passed=0
 local function Test(name,fn)fn();passed=passed+1;print('PASS lock-store '..name)end

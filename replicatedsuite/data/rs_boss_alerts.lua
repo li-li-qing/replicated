@@ -1,22 +1,14 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Boss mechanism alert data (report 七-方案A)
--- Author: Replicated
+-- Replicated Suite · 首领机制提示
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- S.Data.BossAlerts: data-driven alert table. Each entry:
---   key        stable id used for the per-alert enable switch (items[key])
---   kind       "cast" (match a unit's current cast name) or
---              "debuff" (match an active debuff by numeric id)
---   names      multilingual exact cast names. Runtime builds a one-time lookup
---              table; the observation loop performs no fuzzy string matching.
---   debuffId   numeric debuff id for kind="debuff"
---   alert      the alert text pushed to the screen
---   style      "countdown" (big text + remaining seconds) or "bigtext"
---
--- Source: 参考的项目/wbdebuff (data only, engineering not copied).
---   jumpblackdragon.lua castMessages :30-51 (EN/RU/DE/FR/ZH cast names)
---   buffblackdragon.lua :46 (撞鬼 debuff 23474)
---   buffcharybdis.lua   :46 (下水 debuff 25846)
--- Runtime performs exact localized-name lookup; add observed RU aliases here when verified.
+-- S.Data.BossAlerts 为数据驱动提示表，每项字段：
+-- key：稳定ID，用于items[key]逐提示开关；kind：cast按当前施法名称匹配，debuff按数字ID匹配活动减益。
+-- names：多语言精确施法名，运行时一次构建查询表，观察循环禁止模糊匹配；debuffId：kind=debuff的数字ID。
+-- alert：屏幕提示文本；style：countdown显示大字和剩余秒数，bigtext仅大字。
+-- 来源：参考的项目/wbdebuff，仅使用数据、不复制工程实现；jumpblackdragon.lua castMessages:30-51为EN/RU/DE/FR/ZH名称，buffblackdragon.lua:46为撞鬼debuff23474，buffcharybdis.lua:46为下水debuff25846。
+-- 运行时按本地化名称精确查询，新增RU别名必须经观察核实。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

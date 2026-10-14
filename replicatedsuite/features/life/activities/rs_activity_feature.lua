@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Activity Feature Lifecycle
+-- Replicated Suite · 活动追踪功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 活动功能生命周期。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -29,7 +33,7 @@ function F:Initialize()
     if ok ~= true then return false, err end
     local progress = S.Services and S.Services.QuestProgressV3 or nil
     if type(progress) == "table" then
-        -- 中文维护注释（2026-09-21，activity-progress-selection-1）：只有 QuestProgress 明确提供 detached
+        -- 只有 QuestProgress 明确提供 detached
         -- per-objective facts 契约时，Activity Authority 才启用个人分母投影。这样用户只覆盖一部分补丁文件时
         -- 会安全退回原始 0/N，而不是因为 objectiveStates 缺失把进度变成 --/0。QuestProgress 仍独占 Native
         -- 任务事实；正常路径不会增加 Quest API 读取，只过滤其刷新时已经生成的 detached objectiveStates。
@@ -67,9 +71,8 @@ local function CopyShallow(value)
     return out
 end
 
--- Personal x/y projection. Missing/unreadable preference Store always falls back to all canonical main objectives,
--- so a UI preference failure can never turn a verified 0/6 into -- or 0/0. Tail-in-flight counters remain raw quest
--- facts: hiding a stage from personal progress must not prematurely end the event's schedule tail while that quest is active.
+-- 个人 x/y 投影：偏好 Store 缺失/不可读时回退全选标准主目标，UI 偏好失败不能把真实0/6变为 -- 或0/0。
+-- 尾部进行中计数保持原始任务事实，个人进度隐藏阶段不能在任务仍活动时提前结束日程尾部。
 function F:ProjectActivityProgress(scope, key, snapshot)
     scope, key = tostring(scope or "event"), tostring(key or "")
     if type(snapshot) ~= "table" or scope ~= "event" or snapshot.progressSelectionEnabled ~= true then return snapshot end
@@ -85,8 +88,7 @@ function F:ProjectActivityProgress(scope, key, snapshot)
             if fact.ready == true then readyCount = readyCount + 1 end
         end
     end
-    -- Defensive fallback for malformed/stale selection. Command rejects removing the final item, but a future data
-    -- migration must not render an impossible denominator if all saved tokens vanished from the verified catalog.
+    -- 防御畸形/陈旧选择：命令禁止移除最后目标；未来数据迁移使所有保存 token 消失时，也不能投影不可能分母。
     if total <= 0 and #eligible > 0 then
         selected = {}; completed, activeCount, readyCount, total = 0, 0, 0, 0
         for _, fact in ipairs(snapshot.objectiveStates or {}) do
@@ -122,8 +124,7 @@ function F:GetActivityQuestProgress(scope, key)
     return self:ProjectActivityProgress(scope, key, snapshot)
 end
 
--- Detail projection uses the same Store semantics as the compact activity row. Presentation receives detached rows
--- already marked progressSelected/progressSelectable and never computes its own denominator.
+-- 详情与紧凑活动行共用 Store 语义；Presentation 获取已标记 progressSelected/progressSelectable 的独立行，禁止自行计算分母。
 function F:ProjectActivityDetail(detail)
     if type(detail) ~= "table" or tostring(detail.scope or "event") ~= "event" or detail.progressSelectionEnabled ~= true then
         return detail
@@ -164,7 +165,7 @@ function F:ProjectActivityDetail(detail)
         out.children[#out.children + 1] = row
     end
     if total <= 0 and #eligible > 0 then
-        -- Same stale-selection recovery as compact projection; mark every main row selected without writing Store.
+        -- 与紧凑投影相同的陈旧选择恢复：只在投影标记全部主目标选中，禁止写 Store。
         completed, activeCount, readyCount, total = 0, 0, 0, 0
         for _, row in ipairs(out.children) do
             if row.related ~= true and row.counted == true and row.journal ~= true and tostring(row.trackingKey or "") ~= "" then
@@ -207,12 +208,11 @@ function F:SetProgressTaskSelected(eventKey, token, enabled, source)
     local eligible = ObjectiveTokens(snapshot)
     local changed, changeErr = self:SetDetailProgressTaskSelected(eventKey, token, enabled == true, eligible, source or "activity_detail")
     if changed ~= true then return false, changeErr end
-    -- Selection is pure preference; recompute existing Activity rows immediately from cached Quest facts. No Native
-    -- refresh is needed, and if the main page/widget is closed there is no Activity consumer to wake.
+    -- 选择仅属偏好；从缓存 Quest 事实立即重算已有活动行，无需 Native 刷新；页面/Widget 关闭时没有消费端可唤醒。
     if self.enabled == true and self.consumerCount > 0 then
         local refreshed, refreshErr = self.Authority:Refresh("progress_selection")
         if refreshed == false and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Record) == "function" then
-            -- 中文维护注释：到这里 Store 事务已经成功，不能因为一次 Presentation 投影刷新失败而
+            -- 到这里 Store 事务已经成功，不能因为一次 Presentation 投影刷新失败而
             -- 对调用者谎报“设置失败”，否则用户重试会对同一持久化偏好执行相反操作。记录告警后
             -- 保持成功；下一次 Activity 定时刷新/重新打开会从 Store + 缓存 Quest facts 自动收敛。
             S.DiagnosticsManager:Record("warning", "activities_v3",
@@ -318,9 +318,7 @@ function F:Enable(reason)
 
     local zoneAdded = S.Scheduler:AddTask(self.zoneTask, 5000, function()
         if F.enabled == true and F.consumerCount > 0 then
-            -- The one-second timer is the presentation publish cadence. Zone
-            -- polling only updates transient zone state here; publishing again
-            -- in the same five-second window needlessly rebuilds/binds all rows.
+            -- 1s定时器负责发布表现；地区轮询这里只更新临时状态，同一5s窗口重复发布会无谓重建/绑定全部行。
             F.Authority:ScanTrackedZones()
         end
     end, false, self, "P2", 2)
@@ -366,8 +364,7 @@ function F:Enable(reason)
     end
 
     self.enabled = true
-    -- Floating widget visibility is a Presentation reaction bound to
-    -- `v3.feature.lifecycle`; Domain only owns the persisted preference.
+    -- 浮窗可见性由 Presentation 响应 v3.feature.lifecycle，Domain 仅拥有持久偏好。
     return true
 end
 
@@ -398,18 +395,14 @@ function F:Refresh(reason)
 end
 
 function F:PublishWidgetProjection(kind)
-    -- Domain publishes a fact; Presentation decides whether a live widget
-    -- re-reads the projection. This keeps the Feature → Presentation edge out
-    -- of the Domain entirely.
+    -- Domain 只发布事实，Presentation 决定实时 Widget 是否重读投影，Feature→Presentation 边沿不能进入 Domain。
     if S.Events ~= nil and type(S.Events.Publish) == "function" then
         S.Events:Publish("v3.activities.widget_projection", tostring(kind or "projection"))
     end
     return true
 end
 
--- Narrow Presentation read model. Geometry/row-count/visibility remain
--- persisted by this Feature, while Pages and Widgets consume only these
--- getters instead of reaching into the backing State table.
+-- 窄 Presentation 读模型：几何/行数/可见性由 Feature 持久化，页面/Widget 只消费 getter，禁止接触背后 State 表。
 function F:GetWidgetWindowState()
     local value = self.State and self.State.widgetWindow or nil
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
@@ -444,13 +437,12 @@ function F:GetWidgetVisiblePreference()
     return self.State and self.State.widgetVisible == true or false
 end
 
--- Public Projection/Commands boundary for Active V3. Presentation does not
--- retain or call the Activity Authority object directly.
+-- 公共 Projection/Commands 边界；Presentation 禁止持有或直接调用 Activity Authority。
 function F:GetRows()
     return self.Authority:GetRows()
 end
 
--- 中文维护注释（2026-09-18，Activity Timeline v2 只读边界）：
+--
 -- Presentation 需要区分“时间线”和“实时区域”，但 Feature 仍是唯一对外 read-model 边界，
 -- 页面/悬浮窗禁止直接持有 Authority 表或自行重新排序。这里仅透传 Authority 的同一 revision 快照；
 -- 不创建缓存、不触发 Native、不写 Store。以后如果 UI 需要分段渲染，应继续通过这两个 getter，
@@ -559,7 +551,7 @@ function F:GetHealth()
         consumers = self.consumerCount,
         rows = summary.total,
         active = summary.active, -- 历史兼容健康字段；新诊断/Presentation 应优先使用下面的 timeline/live 分离字段。
-        -- 中文维护注释：Health 只投影计数和契约版本，不能反向成为排序 Authority；诊断读取这些值也不得启动 Consumer。
+        -- Health 只投影计数和契约版本，不能反向成为排序 Authority；诊断读取这些值也不得启动 Consumer。
         timelineActive = summary.timelineActive,
         timelineRows = summary.timelineTotal,
         liveActive = summary.liveActive,
@@ -585,15 +577,14 @@ function F.Commands:SetWidgetSize(width, height, source) return F:SetWidgetSize(
 function F.Commands:RefreshProjection(reason, scanZones) return F:RefreshProjection(reason or "activity_command", scanZones) end
 function F.Commands:HideEvent(key) return F:HideEvent(key) end
 function F.Commands:RestoreHiddenEvents() return F:RestoreHiddenEvents() end
--- 中文维护注释（2026-09-21，活动个人进度 Command 边界）：勾选集合直接决定该活动的个人 x/y。
+-- 勾选集合直接决定该活动的个人 x/y。
 -- Command 只允许 QuestProgressV3 已发布、且静态组显式 opt-in 的 main objective token；related/journal
 -- 永远不能通过 UI 混入分母。修改后只从缓存任务事实重建 Activity Projection，不额外读取 Native。
 function F.Commands:SetProgressTaskSelected(eventKey, token, enabled, source)
     return F:SetProgressTaskSelected(eventKey, token, enabled == true, source or "activity_detail")
 end
 function F.Commands:ResetWidgetVisibility(source)
-    -- Presentation calls this when a lifecycle auto-show fails so the persisted
-    -- preference cannot claim a window that is not on screen.
+    -- 生命周期自动显示失败时由 Presentation 调用，避免持久偏好宣称屏幕上不存在的窗口。
     if F.State.widgetVisible ~= false then
         local marked, markErr = F:MutateStore(function() F.State.widgetVisible = false; return true end, 250, tostring(source or "widget_visibility_reset"))
         if marked ~= true then return false, markErr or "活动悬浮窗复位未保存，已回滚" end

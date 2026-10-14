@@ -1,4 +1,10 @@
--- Real Bag / InventorySnapshot / Demand / Persistence / Scheduler; native containers only are fixtures.
+------------------------------------------------------------------------
+-- Replicated Suite · 背包操作测试宿主
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用真实 Bag、InventorySnapshot、Demand、Persistence 和 Scheduler；仅原生容器由测试数据替代。
+------------------------------------------------------------------------
 return function(options)
     options=options or {}
     local h=dofile('tools/rs_gear_page_test_host.lua')({disk=options.disk})
@@ -20,7 +26,7 @@ return function(options)
         h.moves[#h.moves+1]=item.itemType
         if h.rejected[item.itemType] then return false end
         if #h.storage>=h.storageCapacity then return false end
-        h.storage[#h.storage+1]=table.remove(h.bag,slot) -- native slot compaction
+        h.storage[#h.storage+1]=table.remove(h.bag,slot) -- 模拟原生背包操作后的槽位压缩。
         return true
     end
     UIC_BAG,UIC_BANK,UIC_COFFER='bag','bank','coffer'
@@ -32,7 +38,7 @@ return function(options)
     end
     function ADDON:GetContent()return nil end
     S.Api.IsCapabilityAllowed=function()return true end
-    -- Real API dispatch/cooldown and false-return semantics; only Native hosts are fixtures.
+    -- 使用真实 API 派发、冷却及 false 返回语义；仅原生宿主为测试替身。
     dofile('core/rs_demand.lua')
     dofile('features/shared/rs_feature_slice_factory.lua');dofile('features/shared/rs_shared_bounds.lua')
     dofile('services/rs_inventory_snapshot_v3.lua');dofile('features/tools/bag/rs_bag_feature.lua')

@@ -1,6 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Analytics Metric Common
--- Bounded containers and projection helpers shared by every metric plugin.
+-- Replicated Suite · 战斗指标共享工具
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 各指标插件共享的有界容器与投影助手。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -13,8 +16,7 @@ function M:NowMs() return math.max(0, tonumber(S.NowMs and S.NowMs()) or 0) end
 function M:Trim(value) return tostring(value or ""):match("^%s*(.-)%s*$") or "" end
 function M:ActorKey(name, stableId)
     local text = self:Trim(name)
-    -- Exact display name is the cross-fact key because stable ids are not
-    -- guaranteed on every CombatFact. Keep Name@World intact to avoid collision.
+    -- 每个 CombatFact 不保证提供稳定 ID，因此跨事实关联使用精确展示名；完整保留 Name@World，避免同名碰撞。
     if text ~= "" then return "name:" .. text end
     local id = stableId ~= nil and tostring(stableId) or ""
     if id ~= "" then return "id:" .. id end

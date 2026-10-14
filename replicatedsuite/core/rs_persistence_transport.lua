@@ -1,12 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Persistence Transport 编解码（v1-v5，纯函数、无状态）
+-- Replicated Suite · 持久化传输编码
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 2026-09-30（giant-file-1）：从 core/rs_persistence.lua 原样迁出（427 行）。
--- 这是**纯移动**：函数体与递归调用逐字保留，不改变任何编解码语义 ——
--- 这些函数承载用户配置的磁盘格式，任何行为差异都等于数据损坏风险。
--- 迁出动机：rs_persistence.lua 曾达 4267 行（GIANT_FILE 审计项）。
--- 边界：本模块不持有事实、不读写 Store、不做完整性验证；只做「值 <-> 传输编码」。
--- 加载顺序：必须在 core/rs_persistence.lua **之前**（见 toc.g）。
+-- 纯值与传输编码转换；承载用户配置磁盘格式，行为变化须验证已有存档兼容。
+-- 不持有领域事实、不读写 Store、不执行完整性验证；必须先于 core/rs_persistence.lua 加载（见 toc.g）。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -25,7 +23,7 @@ local TRANSPORT_V2_ZERO = TRANSPORT_V2_PREFIX .. "z"
 local TRANSPORT_V2_EMPTY_STRING = TRANSPORT_V2_PREFIX .. "e"
 local TRANSPORT_V2_STRING = TRANSPORT_V2_PREFIX .. "s"
 
-local function TransportEncodeValueV1(value, seen) -- 中文维护注释：只用于兼容 Harness/历史语义说明；生产新写由 v3 承担。
+local function TransportEncodeValueV1(value, seen) -- 只用于兼容 Harness/历史语义说明；生产新写由 v3 承担。
     local kind = type(value)
     if kind == "boolean" then return value == false and TRANSPORT_V1_FALSE or true, nil end
     if kind == "string" then
@@ -49,7 +47,8 @@ local function TransportEncodeValueV1(value, seen) -- 中文维护注释：只�
     return out, nil
 end
 
-local function TransportDecodeValueV1(value, seen) -- 中文维护注释：Transport v1 永久保留只读解码，保证用户从 `.18.194-.196` 升级时无需清配置。
+local function TransportDecodeValueV1(value, seen) -- Transport v1 永久保留只读解码，保证用户从 `.18.194-.196` 升
+                                                   -- 级时无需清配置。
     local kind = type(value)
     if kind == "string" then
         if value == TRANSPORT_V1_FALSE then return false, nil end
@@ -74,7 +73,8 @@ local function TransportDecodeValueV1(value, seen) -- 中文维护注释：Trans
     return out, nil
 end
 
-local function TransportEncodeValueV2(value, seen) -- 维护：冻结历史 v2 语义供兼容；非零数字不保护的缺口由新的 v3 处理，禁止偷换 v2 解码。
+local function TransportEncodeValueV2(value, seen) -- 冻结历史 v2 语义供兼容；非零数字不保护的缺口由新的 v3 处理，
+                                                   -- 禁止偷换 v2 解码。
     local kind = type(value)
     if kind == "boolean" then return value == false and TRANSPORT_V2_FALSE or true, nil end
     if kind == "number" then return value == 0 and TRANSPORT_V2_ZERO or value, nil end
@@ -100,7 +100,8 @@ local function TransportEncodeValueV2(value, seen) -- 维护：冻结历史 v2 �
     return out, nil
 end
 
-local function TransportDecodeValueV2(value, seen) -- 中文维护注释：v2 只识别 `__rs_t2:`，因此真实业务字符串即使以旧 `__rs_t1:` 开头也不会被误解；v2 自身前缀在写前必定转义。
+local function TransportDecodeValueV2(value, seen) -- v2 只识别 `__rs_t2:`，因此真实业务字符串即使以旧 `__rs_t1:`
+                                                   -- 开头也不会被误解；v2 自身前缀在写前必定转义。
     local kind = type(value)
     if kind == "string" then
         if value == TRANSPORT_V2_FALSE then return false, nil end
@@ -127,7 +128,7 @@ local function TransportDecodeValueV2(value, seen) -- 中文维护注释：v2 �
     return out, nil
 end
 
--- 中文维护注释（2026-09-12 真实跑商取证）：normalizedCenterX 的旧业务 token 是
+-- （2026-09-12 真实跑商取证）normalizedCenterX 的旧业务 token 是
 -- 0.0903896（整表精确复现旧章），Native 返回 0.09038999676704407，token 变成 0.09039。
 -- “六位有效数字 Hash”并不能抵抗“先保留六位小数，再转单精度”的传输损失。
 -- Authority：只有 Persistence 拥有物理传输；Store/Feature 仍接收原数值，不量化其 Domain。
@@ -149,7 +150,7 @@ local function TransportEncodeValueV3(value, seen)
     if kind == "number" then
         if value ~= value or value == math.huge or value == -math.huge then return nil, "transport_nonfinite_v3" end
         if value == 0 then return TRANSPORT_V3_ZERO, nil end
-        -- 维护（2026-09-12）：实机回读证据为 buffs.y 的 -2 -> 0，负整数原先绕过了
+        -- （2026-09-12）实机回读证据为 buffs.y 的 -2 -> 0，负整数原先绕过了
         -- n-token。尚无该次原始 LoadData 表，不能断言 Native 内部是省略还是置零；
         -- 但负号不应继续裸传。Core 在 Save/Load 冷边界复用旧版已可读的 n-token，
         -- Domain 仍持有原负数；旧裸负整数解码保留。正整数 ID/路由不变，预算照旧。
@@ -181,7 +182,7 @@ local function TransportEncodeValueV3(value, seen)
     return out, nil
 end
 
--- 维护：C runtime 可能把同一科学计数法指数写成 e-021/e-21；只归一指数的补零，
+-- C runtime 可能把同一科学计数法指数写成 e-021/e-21；只归一指数的补零，
 -- 不接受不同尾数或非规范数字。防止跨运行库升级让精确数值串无故变成坏档。
 local function ComparableTransportNumberToken(token)
     local mantissa, exponent = token:match("^(.-)[eE]([%+%-]?%d+)$")
@@ -200,7 +201,7 @@ local function TransportDecodeValueV3(value, seen)
         if value:sub(1, #TRANSPORT_V3_NUMBER) == TRANSPORT_V3_NUMBER then
             local token = value:sub(#TRANSPORT_V3_NUMBER + 1)
             local number = #token > 0 and #token <= 32 and not token:find("[^%d%.eE%+%-]") and tonumber(token) or nil
-            -- 维护：只接受本编码器产生的有限规范串，不接受 NaN/Inf/hex/空白/另一种写法；
+            -- 只接受本编码器产生的有限规范串，不接受 NaN/Inf/hex/空白/另一种写法；
             -- 此处不 loadstring、不修复输入。业务字面前缀已走 s 转义，不会误当数值。
             if number == nil or number ~= number or number == math.huge or number == -math.huge
                 or ComparableTransportNumberToken(string.format("%.17g", number)) ~= ComparableTransportNumberToken(token) then
@@ -213,7 +214,7 @@ local function TransportDecodeValueV3(value, seen)
     end
     if kind == "number" then
         if value ~= value or value == math.huge or value == -math.huge then return nil, "transport_nonfinite_v3" end
-        -- 维护：v3 风险数值必须来自 n-token；未封装的小数/大整数不能冒充安全 v3 数据。
+        -- v3 风险数值必须来自 n-token；未封装的小数/大整数不能冒充安全 v3 数据。
         if value ~= math.floor(value) or math.abs(value) > NATIVE_EXACT_INTEGER_LIMIT then return nil, "transport_native_number_v3" end
         return value, nil
     end
@@ -229,7 +230,7 @@ local function TransportDecodeValueV3(value, seen)
         if type(decodedKey) ~= "number" and type(decodedKey) ~= "string" then seen[value] = nil; return nil, "transport_key_type_v3" end
         local decodedChild, childErr = TransportDecodeValueV3(child, seen)
         if childErr ~= nil then seen[value] = nil; return nil, childErr end
-        -- 维护：损坏输入可以把两个物理键映射成同一逻辑键，必须整体拒绝，禁止后一个覆盖前一个。
+        -- 损坏输入可以把两个物理键映射成同一逻辑键，必须整体拒绝，禁止后一个覆盖前一个。
         if out[decodedKey] ~= nil then seen[value] = nil; return nil, "transport_key_collision_v3" end
         out[decodedKey] = decodedChild
     end
@@ -238,7 +239,7 @@ local function TransportDecodeValueV3(value, seen)
 end
 
 
--- 维护（2026-09-12 批量追踪实机）：397条导入在回读auto[189]首次缺失，
+-- （2026-09-12 批量追踪实机）397条导入在回读auto[189]首次缺失，
 -- 测试的“保留前188个数字键”可精确复现04287DD8>3AF652D5，但不是Native上限的断言。
 -- Authority：Core独占物理表示；Store只显式选择transport4。业务结构、canonical及旧章不改。
 -- v4继承v3标量精度保护，只将>32项的连续正整数序列装成16项/串、最多2048项的短块。
@@ -319,7 +320,7 @@ local function TransportDecodeValueV4(value,seen)
     if type(value)=="string" and value:sub(1,#TRANSPORT_V4_PREFIX)==TRANSPORT_V4_PREFIX then
         if value:sub(1,#TRANSPORT_V4_STRING)==TRANSPORT_V4_STRING then
             local literal=value:sub(#TRANSPORT_V4_STRING+1)
-            -- 维护：仅Encoder能产生的保留前缀转义可读；拒绝残缺/伪造标记，不做容错补字。
+            -- 仅Encoder能产生的保留前缀转义可读；拒绝残缺/伪造标记，不做容错补字。
             if literal:sub(1,#TRANSPORT_V4_PREFIX)==TRANSPORT_V4_PREFIX then return literal,nil end
             return nil,"invalid_transport_escape_v4"
         end
@@ -339,7 +340,7 @@ local function TransportDecodeValueV4(value,seen)
     seen[value]=nil;return out,nil
 end
 
--- 维护（2026-09-17，schema8 六通道实机）：Transport4 在 schema7->8 自动迁移后
+-- （2026-09-17，schema8 六通道实机）Transport4 在 schema7->8 自动迁移后
 -- 立即回读出现 transport_vector_missing_chunk_v4。旧 v4 用同一表上的 p1..pN
 -- 字符串键承载分块；schema8 把原全局追踪复制到 player/target 后物理体积翻倍，
 -- 实机证明这种表示仍可能被 SaveData 丢失某个 pN 字段。我们只把“字段丢失”
@@ -443,7 +444,7 @@ local function TransportDecodeValueV5(value,seen)
 end
 
 -- 导出（供 rs_persistence.lua 以 T.<名> 调用）
--- 中文维护（实机 16383 字节截断）：v6 仅压紧完整的死亡摘要标量树。
+-- v6 仅压紧完整的死亡摘要标量树。
 -- Domain、codec1、schema2 与指纹均不改变；所有其他值仍经过 v3 的精确数值/假值保护。
 -- 固定字段顺序 + 数值往返文本 + 字符串 HEX 消除每行 11 个键/缩进的 Native 开销。
 local V6_PREFIX = '__rs_t6:'
@@ -515,7 +516,7 @@ function T.DecodeV6(value)
     return CompactV6(decoded,true)
 end
 
--- 中文维护：Native 的文本标签、固定六位数、引号/转义、每层四空格均计入保守预算。
+-- Native 的文本标签、固定六位数、引号/转义、每层四空格均计入保守预算。
 -- 每个字段按最占空间的另起一行估算；在 SaveData 之前拒绝，不能等截断后才回滚 RAM。
 function T.EstimateNativeBytes(value, depth)
     depth=depth or 0

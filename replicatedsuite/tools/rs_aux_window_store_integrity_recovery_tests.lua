@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Auxiliary Window Store historical policy recovery
+-- Replicated Suite · 辅助窗口存储完整性恢复测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Offline Persistence v4 regression. The schema1 Store originally normalized
--- only the auxiliary window types that existed at that time. Adding quest_detail
--- later changed canonical output without a schema bump and could fence healthy
--- users. This test writes the published pre-quest-detail shape, then boots the
--- current schema2 Store and proves exact historical authentication + restamp.
+-- 离线 Persistence v4 回归：schema1 原先只归一化当时已有的辅助窗口类型。
+-- 后来加入 quest_detail 却未升级结构版本，改变规范数据后可能对健康存档触发写保护。
+-- 测试先写入发布过的旧结构，再启动当前 schema2 Store，验证按历史规则精确认证并重新盖章。
 ------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)

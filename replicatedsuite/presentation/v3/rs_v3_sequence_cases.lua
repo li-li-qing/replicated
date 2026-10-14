@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Sequence Cases
+-- Replicated Suite · 表现层序列验收用例
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Synchronous, bounded probes only. They never register Tick/OnUpdate and must
--- preserve the current V3 shell visibility because Diagnostics itself is a V3
--- page in rebuild mode.
+-- 仅执行同步、有界探测，不注册 Tick/OnUpdate；必须保留当前 V3 Shell 可见性，因为重建模式的 Diagnostics 本身也是 V3 页面。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -356,9 +356,7 @@ G:RegisterSequenceCase("v3_14_widget_responsive_reflow", function()
     local state = widgetHost:GetState("life.activities")
     if state == nil then return Fail("activity_widget_missing") end
 
-    -- Diagnostics must remain valid when the user has explicitly disabled the
-    -- Activity Feature. In that state there is intentionally no live widget to
-    -- reflow, so only the host contract is asserted.
+    -- 用户明确停用 Activity Feature 时 Diagnostics 仍应有效；此时没有活跃组件可重新布局，因此仅断言宿主契约。
     if S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("life_activities") ~= true then return true end
 
     local wasVisible = state.visible == true
@@ -418,8 +416,7 @@ G:RegisterSequenceCase("v3_16_live_resize_projection", function()
     local restoreX, restoreY, restoreW, restoreH = S.Layout:GetLogicalRect(window)
     if controller:BeginInteraction("resize", "BOTTOMRIGHT") ~= true then return Fail("live_resize_begin") end
 
-    -- The mock/native host may not emulate mouse sizing, so emulate only the
-    -- Native rect mutation that StartSizing owns during a real RU drag.
+    -- 模拟/原生宿主可能不模拟鼠标缩放；仅模拟 RU 实际拖动时由 StartSizing 持有的原生矩形变更。
     local sizePolicy = S.UIV3 and S.UIV3.ShellSizePolicy or { minWidth = 1, minHeight = 1 }
     if type(window.SetExtent) == "function" then
         window:SetExtent(math.max(tonumber(sizePolicy.minWidth) or 1, restoreW - 64), math.max(tonumber(sizePolicy.minHeight) or 1, restoreH - 48))
@@ -429,8 +426,7 @@ G:RegisterSequenceCase("v3_16_live_resize_projection", function()
     local rootW, rootH = tonumber(shell.root.width) or 0, tonumber(shell.root.height) or 0
     if math.abs(rootW - nativeW) > 1 or math.abs(rootH - nativeH) > 1 then controller:EndInteraction(); return Fail("live_resize_content_reflow") end
 
-    -- A normal shell layout request during the gesture must not overwrite the
-    -- Native dimensions being driven by the mouse.
+    -- 手势中的普通 Shell 布局请求不能覆盖鼠标正在控制的原生尺寸。
     shell:ApplyLayout(false)
     local afterW, afterH = window:GetWidth(), window:GetHeight()
     if math.abs(afterW - nativeW) > 1 or math.abs(afterH - nativeH) > 1 then controller:EndInteraction(); return Fail("live_resize_geometry_fight") end
@@ -458,9 +454,7 @@ G:RegisterSequenceCase("v3_17_unbounded_window_placement", function()
     local stateBackup = {}
     for k,v in pairs(state) do stateBackup[k] = v end
 
-    -- Deliberately place the window fully outside the viewport. Free mode must
-    -- preserve the exact coordinate; recovery is an explicit user action, not
-    -- an invisible clamp during drag/commit/restore.
+    -- 故意把窗口完整放到视口之外；自由模式必须保留精确坐标，恢复由用户显式触发，不能在拖动/提交/还原时隐藏钳制。
     local candidateX = (tonumber(context.logicalWidth) or 1024) + 360
     local candidateY = (tonumber(context.logicalHeight) or 768) + 220
     if controller:BeginInteraction("drag") ~= true then return Fail("free_drag_begin") end
@@ -482,9 +476,7 @@ G:RegisterSequenceCase("v3_17_unbounded_window_placement", function()
     good = good and Approx(resolvedX, candidateX, 0.5) and Approx(resolvedY, candidateY, 0.5)
         and Approx(resolvedW, oversizedW, 0.5) and Approx(resolvedH, oversizedH, 0.5)
 
-    -- Main shell and Windowing must not re-introduce the retired 1180x900 or
-    -- current-viewport caps. Explicit semantic max values remain supported for
-    -- truly fixed windows, but the application shell intentionally has none.
+    -- 主 Shell 与 Windowing 不能重新引入废弃的 1180x900 或当前视口上限；真正固定窗口仍支持显式语义 max，应用 Shell 刻意不设置此限制。
     local designW, designH = oversizedW / scale, oversizedH / scale
     local _, _, shellW, shellH = shell:ResolveRect(designW, designH)
     good = good and controller.maxWidth == nil and controller.maxHeight == nil
@@ -666,8 +658,7 @@ G:RegisterSequenceCase("v3_24_invalidation_reactivation_contract", function()
     local rsui = S.RSUI
     if rsui == nil or type(rsui.ShouldCoalesceInvalidation) ~= "function" then return Fail("invalidation_predicate") end
     local sticky = { measureDirty=true, layoutDirty=true }
-    -- Critical regression: a dirty child/parent after the prior layout transaction
-    -- has ended must propagate again instead of being suppressed by stale bits.
+    -- 关键回归约束：前次布局事务结束后，子/父节点再次变脏必须重新传播，不能被残留标志抑制。
     if rsui:ShouldCoalesceInvalidation(false, sticky, true) ~= false then return Fail("sticky_dirty_suppressed") end
     if rsui:ShouldCoalesceInvalidation(true, sticky, true) ~= true then return Fail("active_transaction_not_coalesced") end
     if rsui:ShouldCoalesceInvalidation(true, {measureDirty=false,layoutDirty=false}, true) ~= false then return Fail("clean_parent_coalesced") end
@@ -722,10 +713,7 @@ G:RegisterSequenceCase("v3_26_table_resize_contract", function()
         return Fail("table_manual_fill_stopped_responding")
     end
 
-    -- Trade regression: dragging the first Fill/Fixed boundary while a later
-    -- Fill column exists used to jump on DragStop because that untouched Fill
-    -- column restarted from minWidth and re-consumed slack. A committed preview
-    -- must seed the whole resolved baseline, not just the edited pair.
+    -- 拖动首个 Fill/Fixed 边界时，后续未编辑 Fill 列不能在 DragStop 从 minWidth 重新分配剩余空间而跳变；提交预览必须为全部解析列保存基线，不能只保存编辑的两列。
     local tradeColumns = util.NormalizeColumns({
         { id="name", size="fill", minWidth=150, absoluteMinWidth=1, fill=1 },
         { id="rate", size="fixed", width=70, minWidth=60, absoluteMinWidth=1 },
@@ -841,9 +829,7 @@ G:RegisterSequenceCase("v3_30_menu_information_architecture_contract", function(
     local router = S.UIV3 and S.UIV3.Router or nil
     if type(features) ~= "table" or type(router) ~= "table" then return Fail("menu_registry_missing") end
 
-    -- Titles are already part of Replicated Gear's real save/capture/runtime
-    -- contract. A second top-level title feature would duplicate both the UX
-    -- entry and the eventual persistence Authority.
+    -- 称号属于 Replicated Gear 的真实保存/捕获/运行契约；新增顶层称号功能会重复用户入口与持久化权威层。
     if features:Get("tools_title_profiles") ~= nil or router:Get("tools.title_profiles") ~= nil then
         return Fail("duplicate_title_feature")
     end
@@ -851,8 +837,7 @@ G:RegisterSequenceCase("v3_30_menu_information_architecture_contract", function(
     if gear == nil or tostring(gear.name or ""):find("称号", 1, true) == nil then return Fail("gear_title_affinity_missing") end
     if tostring(gear.group or "") ~= "combat_loadout" then return Fail("gear_group_missing") end
 
-    -- A group may appear only once in a category's sorted navigation. This
-    -- guarantees related entries remain contiguous instead of being scattered.
+    -- 同一分组在分类排序导航中只能出现一次，保证关联条目连续排列。
     for _, category in ipairs({ "combat", "life", "tools" }) do
         local seen, previous = {}, nil
         for _, route in ipairs(router:List(category)) do
@@ -865,8 +850,7 @@ G:RegisterSequenceCase("v3_30_menu_information_architecture_contract", function(
         end
     end
 
-    -- Schema v6 intentionally drops retired edge-v1 shell placement so an old
-    -- LEFT/TOP default cannot keep reopening the rebuilt menu in the corner.
+    -- Schema v6 丢弃废弃 edge-v1 Shell 位置，防止旧 LEFT/TOP 默认值让重建菜单持续在角落打开。
     local store = S.Persistence and S.Persistence:GetStore("v3.shell") or nil
     if store == nil or type(store.migrate) ~= "function" or (tonumber(store.schemaVersion) or 0) < 6 then return Fail("shell_center_migration_missing") end
     local legacy = store.migrate({
@@ -901,9 +885,7 @@ G:RegisterSequenceCase("v3_31_floating_surface_contract", function()
         end
     end
 
-    -- Native collapse semantics are exercised only when the Activity Feature is
-    -- already enabled. Diagnostics must never start a disabled feature merely
-    -- to validate Presentation infrastructure.
+    -- 仅当 Activity Feature 已启用时检查原生折叠语义；Diagnostics 不能为了验证表现基础设施而启动停用功能。
     if S.FeatureRuntime == nil or S.FeatureRuntime:IsEnabled("life_activities") ~= true then return true end
     local id = "life.activities"
     local initial = host:GetState(id)
@@ -944,8 +926,7 @@ G:RegisterSequenceCase("v3_32_view_action_settings_contract", function()
     local binding = S.UI and S.UI.Binding or nil
     if binding == nil or (tonumber(binding.version) or 0) < 2.2 or type(S.UI.CreatePersistentSettingBinding) ~= "function" then return Fail("persistent_binding_missing") end
 
-    -- Re-entrant same-id invocation must be rejected while the outer command is
-    -- active. This is synchronous and leaves no Scheduler task or UI mutation.
+    -- 外层命令执行期间须拒绝同 id 重入；检查同步执行，不留下 Scheduler 任务或 UI 修改。
     local duplicateRejected = false
     local ok, err = runner:Run({
         id = "sequence.action_runner.reentry",
@@ -962,9 +943,7 @@ G:RegisterSequenceCase("v3_32_view_action_settings_contract", function()
 end)
 
 G:RegisterSequenceCase("v3_33_floating_close_contract", function()
-    -- The close chain is a Foundation contract, not a per-feature behaviour:
-    --   user X -> WindowShell:Close -> onClose (veto only when opted in)
-    --           -> native hide -> onClosed -> FloatingSurface sync -> Host sync
+    -- 关闭链是 Foundation 契约：用户 X -> WindowShell:Close -> onClose（仅显式选择时可否决）-> 原生隐藏 -> onClosed -> FloatingSurface 同步 -> Host 同步。
     local shellAuthority = S.UI and S.UI.WindowShell or nil
     if shellAuthority == nil or (tonumber(shellAuthority.version) or 0) < 10 then return Fail("window_shell_missing") end
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
@@ -979,8 +958,7 @@ G:RegisterSequenceCase("v3_33_floating_close_contract", function()
     for _, key in ipairs({ "closeRequests", "closeVetoes", "closeCallbackFailures", "closedCallbacks" }) do
         if metrics[key] == nil then return Fail("window_shell_metric:" .. key) end
     end
-    -- A veto must be an explicit opt-in. Fail-open is the default so a business
-    -- callback can never make a normal window undismissable.
+    -- 关闭否决必须显式选择启用；默认允许关闭，业务回调不能使普通窗口无法关闭。
     if metrics.closeVetoes ~= nil and tonumber(metrics.closeVetoes) ~= tonumber(metrics.closeVetoes) then return Fail("close_veto_metric") end
     local floatingSnapshot = type(floating.GetSnapshot) == "function" and floating:GetSnapshot() or nil
     if type(floatingSnapshot) ~= "table" or floatingSnapshot.closeRequests == nil or floatingSnapshot.closedCallbacks == nil then
@@ -995,15 +973,13 @@ G:RegisterSequenceCase("v3_34_combat_event_bus_lifecycle_contract", function()
     if type(bus._MarkInert) ~= "function" then return Fail("combat_forced_inert_missing") end
     if type(bus.AcceptsTransport) ~= "function" then return Fail("combat_scope_filter_missing") end
 
-    -- Scope is a dispatch contract: self-scope consumers must never receive
-    -- all-scope traffic once DPS-like consumers enable the global bridge.
+    -- Scope 是派发契约：DPS 类 Consumer 启用全局桥后，self-scope Consumer 仍不能接收 all-scope 流量。
     if bus:AcceptsTransport({ scope = "self" }, "private") ~= true then return Fail("scope_self_private") end
     if bus:AcceptsTransport({ scope = "self" }, "global:UI") ~= false then return Fail("scope_self_global") end
     if bus:AcceptsTransport({ scope = "all" }, "global:UIParent") ~= true then return Fail("scope_all_global") end
     if bus:AcceptsTransport({ scope = "all" }, "private") ~= true then return Fail("scope_all_private") end
 
-    -- Generation guard must be absolute: a handler owned by a previous addon
-    -- load can never dispatch combat facts.
+    -- Generation 守卫必须严格：前一次插件加载持有的处理器绝不能派发战斗事实。
     if type(bus._IsCurrentGeneration) == "function" then
         if bus:_IsCurrentGeneration(S.Generation) ~= true then return Fail("generation_current") end
         if bus:_IsCurrentGeneration((tonumber(S.Generation) or 0) + 1) ~= false then return Fail("generation_stale") end
@@ -1020,8 +996,7 @@ G:RegisterSequenceCase("v3_34_combat_event_bus_lifecycle_contract", function()
 end)
 
 G:RegisterSequenceCase("v3_35_feature_presentation_boundary_contract", function()
-    -- Domain code must not reach WidgetHost. Feature lifecycle travels through
-    -- the shared `v3.feature.lifecycle` topic; Presentation reacts.
+    -- Domain 不能访问 WidgetHost；Feature 生命周期通过共享 `v3.feature.lifecycle` 主题传递，由表现层响应。
     local runtime = S.FeatureRuntime
     local host = S.UIV3 and S.UIV3.WidgetHost or nil
     if type(runtime) ~= "table" or (tonumber(runtime.version) or 0) < 3 or type(runtime.LifecycleTopic) ~= "string" then
@@ -1102,9 +1077,7 @@ G:RegisterSequenceCase("v3_37_migrated_page_build_matrix", function()
         builtRoutes[route] = true
     end
 
-    -- The specialized matrix above covers migrated features. The registry
-    -- loop also exercises every current Active Route, including planned routes
-    -- that intentionally resolve through the bounded fallback placeholder.
+    -- 上方专用矩阵覆盖已迁移功能；注册表循环还检查全部当前 Active Route，包括明确使用有界占位兜底的计划路由。
     local registry = S.FeatureRegistry
     if type(registry) ~= "table" or type(registry.List) ~= "function" or type(pageHost.fallbackFactory) ~= "function" then
         if restoreRoute ~= "" then pcall(function() shell:Navigate(restoreRoute, { source = "sequence_restore", keepHidden = true }) end) end
@@ -1187,10 +1160,7 @@ G:RegisterSequenceCase("v3_39_modal_build_matrix", function()
                 return Fail("modal_build:" .. modalId .. ":" .. tostring(buildErr or "missing card"))
             end
 
-            -- The gear settings modal has no runtime-data dependency, so it is
-            -- safe to exercise the complete visible transaction locally. The
-            -- quest modal is only built here; opening it needs a real RU task
-            -- group key and must not be faked by this foundation sequence.
+            -- 装备设置弹窗不依赖运行数据，可在本地检查完整可见事务；任务弹窗这里只构建，打开需要真实 RU 任务组 key，基础序列不能伪造它。
             if modalId == "v3_gear_quick_settings_modal" then
                 local before = modalHost:Describe().count or 0
                 local opened, openErr = modal:Open()
@@ -1445,9 +1415,7 @@ G:RegisterSequenceCase("v3_45_ui_layout_editor_gesture_contract", function()
     if type(rsui.SelectionOverlay) ~= "function" or type(rsui.LayoutGuideOverlay) ~= "function" then
         return Fail("gesture_overlay_dependencies")
     end
-    -- Runtime-native gesture capture is RU-widget dependent and is covered by
-    -- the dedicated offline harness; sequence acceptance fences the shared
-    -- contract and the no-generic-capture policy without synthesizing input.
+    -- 运行时原生手势捕获依赖 RU 控件，由专用离线工具验证；序列验收约束共享契约及禁止通用捕获策略，不合成输入。
     if type(rsui.Pointer) ~= "table" or rsui.Pointer.captureSupported ~= false then
         return Fail("generic_capture_policy")
     end
@@ -1652,8 +1620,7 @@ G:RegisterSequenceCase("v3_51_ui_layout_edit_history_contract", function()
         return Fail("layout_edit_history_contract")
     end
 
-    -- Standalone transaction semantics: cursor changes only after accepted
-    -- apply; a partially-mutating rejected apply is restored by rollback.
+    -- 独立事务语义：仅接受 apply 后才改变游标；被拒绝但已部分修改的 apply 由 rollback 恢复。
     local external = { a = { x = 0, y = 0, width = 100, height = 50 } }
     local rejectApply = false
     local history, historyErr = rsui:CreateLayoutEditHistoryModel({
@@ -1703,8 +1670,7 @@ G:RegisterSequenceCase("v3_51_ui_layout_edit_history_contract", function()
         return Fail("layout_history_bounded_trim")
     end
 
-    -- Adapter integration: preview/cancel creates no command; successful commit
-    -- does. Anchor/Pivot state is reversible even when visual rect is unchanged.
+    -- 适配器集成：预览/取消不创建命令，成功提交才创建；即使视觉矩形不变，Anchor/Pivot 状态仍可撤销。
     local selection = rsui:CreateSelectionModel({ id = "__layout_history_adapter_selection", mode = "single", selectedKeys = { "a" } })
     local source = { a = { x = 0, y = 0, width = 100, height = 50 } }
     local anchorState = { anchorX = 0, anchorY = 0, pivotX = 0, pivotY = 0 }
@@ -1868,8 +1834,7 @@ G:RegisterSequenceCase("v3_53_ui_layout_edit_session_contract", function()
         return Fail("layout_edit_session_initial_projection")
     end
 
-    -- Simulate a successful editor commit: Domain changes first, History Record
-    -- then notifies Session. No polling/explicit page dirty flag is needed.
+    -- 模拟成功编辑提交：先修改 Domain，再由 History Record 通知 Session；无需轮询或显式页面脏标志。
     working.layout.x = 25
     if history:Record({
         source = "session_edit_1",
@@ -1881,7 +1846,7 @@ G:RegisterSequenceCase("v3_53_ui_layout_edit_session_contract", function()
         return Fail("layout_edit_session_history_refresh")
     end
 
-    -- Reset is staging only: Working <- Defaults, no persistence, history barrier.
+    -- Reset 只暂存 Working <- Defaults，不持久化，并设置历史屏障。
     if session:ExecuteCommand("reset", { source = "sequence" }) ~= true then return Fail("layout_edit_session_reset") end
     if working.layout.x ~= 0 or persistCalls ~= 0 or history:GetSnapshot().count ~= 0 then
         return Fail("layout_edit_session_reset_boundary")
@@ -1891,7 +1856,7 @@ G:RegisterSequenceCase("v3_53_ui_layout_edit_session_contract", function()
         return Fail("layout_edit_session_reset_projection")
     end
 
-    -- Revert returns to SessionBaseline and still never persists.
+    -- Revert 回到 SessionBaseline，同样不持久化。
     if session:ExecuteCommand("revert", { source = "sequence" }) ~= true then return Fail("layout_edit_session_revert") end
     if working.layout.x ~= 10 or persistCalls ~= 0 then return Fail("layout_edit_session_revert_boundary") end
     if session:GetCommandSnapshot().dirty ~= false then return Fail("layout_edit_session_revert_dirty") end
@@ -1927,9 +1892,7 @@ G:RegisterSequenceCase("v3_53_ui_layout_edit_session_contract", function()
         return Fail("layout_edit_session_apply_boundary")
     end
 
-    -- SessionBaseline and Persisted are intentionally distinct states. An
-    -- editor may open on a valid runtime Working snapshot that differs from the
-    -- last durable snapshot; Apply must be available without inventing Revert.
+    -- SessionBaseline 与 Persisted 明确分离；编辑器可能从不同于最后耐久快照的有效 Working 快照打开，此时 Apply 应可用，无需人为制造 Revert。
     local working2 = { layout = { x=50,y=0,width=10,height=10 } }
     local persisted2 = { layout = { x=40,y=0,width=10,height=10 } }
     local session2 = rsui:CreateLayoutEditSessionModel({
@@ -2039,9 +2002,7 @@ G:RegisterSequenceCase("v3_55_unit_line_adaptive_sampling_contract", function()
     if tonumber(budget) ~= 256 or total > 256 then return Fail("unit_line_fast_refresh_budget") end
     local pressured,criticalBudget = guides:BuildUnitLineSamplePlan(rows, fastProjection, 1024, 768, "Critical")
     local pressuredTotal=0; for _,plan in ipairs(pressured or {}) do pressuredTotal=pressuredTotal+(tonumber(plan.count) or 0) end
-    -- With four explicit base=48 edges, the configured base floor (192) wins
-    -- over the nominal Critical factor. Pressure may shed only adaptive EXTRA
-    -- density, never the user's persisted base density.
+    -- 四条边均显式 base=48 时，配置基线下限 192 优先于名义 Critical 因子；压力只能削减自适应额外密度，不能减少用户持久化的基线密度。
     if tonumber(criticalBudget) ~= 192 or pressuredTotal ~= 192 then return Fail("unit_line_pressure_budget_base_floor") end
     return true
 end)

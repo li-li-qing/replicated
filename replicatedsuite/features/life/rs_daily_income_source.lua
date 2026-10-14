@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 每日收益事件来源
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 今日收益原生事件适配器 / overview-income-source-9
 -- Authority: PLAYER_MONEY / PLAYER_HONOR_POINT / PLAYER_LIVING_POINT / EXP_CHANGED 的 Native
 -- payload 直接提供本次变化量；EXP_CHANGED 额外校验 player unitId，适配器只做结构校验与精确数值归一化，再交给 DailyLedger
@@ -37,10 +41,7 @@ local function Category(info,channel)
     if type(info)=="table" then
         for _,key in ipairs(CATEGORY_KEYS)do local n=Integer(info[key]);if IsKnownCategory(n) then return n,"info."..key end end
     end
-    -- Maintenance: RU 10.0 evidence showed the previous adapter could report samples=0 even
-    -- while enabled. CHAT_MESSAGE's first argument is therefore treated as an alternate
-    -- category carrier only when it equals one of the three exact CMF constants. This is
-    -- evidence collection, not broad numeric-chat parsing.
+    -- RU10.0证据显示旧适配器启用时仍可能 samples=0；CHAT_MESSAGE 第一参数仅精确等于三个 CMF 常量之一时可作替代 category 来源。这是证据收集，禁止广泛解析数字聊天。
     local ch=Integer(channel);if IsKnownCategory(ch) then return ch,"channel" end
     return nil
 end
@@ -51,7 +52,7 @@ local function Unit(info)
 end
 local function Delta(info,spec)
     for _,key in ipairs(spec.deltaKeys)do local n=Integer(info[key]);if n~=nil then return n,key end end
-    -- Generic `delta` is accepted only when the payload also names the expected unit.
+    -- 通用 delta 仅在 payload 同时明确预期 unit 时接受。
     local generic=Integer(info.delta);local unit=Unit(info)
     if generic~=nil and unit~=nil and spec.units[unit]==true then return generic,"delta" end
     return nil
@@ -148,9 +149,7 @@ function A:HandleExpChanged(stringId,expNum,expStr)
         self.nativeInvalidDeltas.experience=(self.nativeInvalidDeltas.experience or 0)+1
         return false,deltaWhy or "invalid_experience_delta"
     end
-    -- Maintenance (overview-income-source-9): do not call forbidden GetExpInfo/GetHeirExpInfo.
-    -- The stock client consumes EXP_CHANGED for the player and renders expStr itself as the gain,
-    -- so this event is the direct-delta authority and remains safe across level/heir-level rollover.
+    -- 禁止调用 GetExpInfo/GetHeirExpInfo；原生客户端为玩家消费 EXP_CHANGED，直接将 expStr 显示为增量，该事件是 direct-delta 权威，跨普通/继承等级升级仍安全。
     return CommitNativeDelta(self,eventName,spec,delta,deltaSource=="changeStr" and "expStr" or deltaSource,
         "EXP_CHANGED(playerUnitId, expNum, expStr) stock-client contract; expStr is the displayed gained experience")
 end
@@ -216,22 +215,14 @@ end
 function A:Start()
     if self.started then return true end
     if type(S.Events)~="table" or type(S.Events.SubscribeOptional)~="function" then return false,"event_bus_unavailable" end
-    -- Maintenance (overview-income-source-3): rs_events Dispatch always prepends
-    -- listener.owner before the native payload. The old callback omitted this slot, so
-    -- RU CHAT_MESSAGE shifted left by one argument and the real `info` value was dropped;
-    -- diagnostics therefore showed channel=<adapter table> and could never match a CMF.
-    -- Keep the owner slot explicit instead of special-casing payload shapes downstream.
+    -- rs_events Dispatch 必须在 Native payload 前加 listener.owner；回调显式保留 owner 槽，避免 CHAT_MESSAGE 参数左移丢 info，禁止在下游按形态特判掩盖错位。
     local subscribed=S.Events:SubscribeOptional("CHAT_MESSAGE",self,function(_,channel,relation,name,message,info)
         A:HandleChatMessage(channel,relation,name,message,info);return true
     end)
     if subscribed~=true then return false,"chat_message_unavailable" end
-    -- Native PLAYER_* is the preferred authority. Client UI source defines these payloads as
-    -- direct changes, not balances; register the source only when the optional event exists.
-    -- If a client lacks one Native event, the exact-CMF explicit-delta chat fallback remains
-    -- free to claim that one channel instead of being blocked by a dead source.
+    -- Native PLAYER_* 为优先权威，客户端 UI 源码将 payload 定义为直接增量而非余额；仅可选事件存在时注册。缺某个 Native 事件时，精确 CMF 显式增量聊天回退仍可接管该通道，不能被无效来源阻断。
     for _,eventName in ipairs({"PLAYER_MONEY","PLAYER_HONOR_POINT","PLAYER_LIVING_POINT","EXP_CHANGED"})do
-        -- Register the direct-delta contract before the first event so the homepage shows
-        -- “监听中” rather than “待接入”. runtimeVerified remains false until a real RU event.
+        -- 首事件前先注册direct-delta契约，首页显示监听中而非待接入；真实RU事件到达前runtimeVerified仍false。
         local nativeEventName=eventName
         local subscribedNative=S.Events:SubscribeOptional(nativeEventName,self,function(_,...)
             if nativeEventName=="EXP_CHANGED" then A:HandleExpChanged(...) else A:HandleNativeDelta(nativeEventName,...) end

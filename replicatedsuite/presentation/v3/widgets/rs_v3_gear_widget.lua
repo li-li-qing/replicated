@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Gear / Title Screen Buttons
+-- Replicated Suite · 装备方案快捷按钮
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- One configured plan -> one compact draggable button. There is deliberately
--- no shared HUD frame: the controls stay small, direct, and independently
--- placeable while one manager owns lifecycle/handlers and never recreates a
--- physical button ID for a different plan.
+-- 每个配置方案对应一个紧凑可拖动按钮，不使用共享 HUD 框；控件小且直接、位置独立，单一管理器持有生命周期/处理器，物理按钮 ID 不得改用于另一方案。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -202,7 +201,7 @@ local function CreateGearQuickWidget()
             local moving = UI:TryInteractionCall(button, "StartMoving")
             if moving ~= true then return false end
             -- 维护：开始时缓存与 Native 尺寸一致，冻结单位；拖动后的旧锚点不能重新参与单位猜测。
-            -- 中文维护：同源修复——以实际 Native 起点区分 Gear 点击与真实位移，不因空拖动吃掉按钮。
+            -- 同源修复——以实际 Native 起点区分 Gear 点击与真实位移，不因空拖动吃掉按钮。
             local startX,startY,_,_,unit=LogicalRect(button)
             record.dragStartX,record.dragStartY=startX,startY
             record.geometryUnitScale=unit and unit.effectiveScale or nil
@@ -217,7 +216,7 @@ local function CreateGearQuickWidget()
             if type(button.StopMovingOrSizing)=="function" then pcall(button.StopMovingOrSizing,button) end
             record.dragging=false;record.ignoreClick=true
             local x,y,w,h=LogicalRect(button,record.geometryUnitScale)
-            -- 中文维护：3 个逻辑像素阈值与功能方案一致；未移动时不保存用户位置或抑制点击。
+            -- 3 个逻辑像素阈值与功能方案一致；未移动时不保存用户位置或抑制点击。
             local moved=x~=nil and y~=nil and record.dragStartX~=nil and record.dragStartY~=nil
                 and (math.abs(x-record.dragStartX)>=3 or math.abs(y-record.dragStartY)>=3)
             record.ignoreClick=moved==true
@@ -228,7 +227,7 @@ local function CreateGearQuickWidget()
             record.dragViewport,record.pendingPlacement=nil,nil
             if changed then return instance:ApplyLayout(true) end
             if x==nil or y==nil then return false,"gear_drag_rect_unavailable" end
-            if moved~=true then return true end -- 中文维护：保持原来的位置配置，静止手势不是拖动提交。
+            if moved~=true then return true end -- 保持原来的位置配置，静止手势不是拖动提交。
             local snap=type(Feature.GetQuickSnapSettings)=="function" and Feature:GetQuickSnapSettings() or {enabled=true,distance=16,gap=0}
             if S.Layout and type(S.Layout.ResolveScreenSnap)=="function" then
                 local sx,sy,snapped=S.Layout:ResolveScreenSnap(record.snapId,x,y,w,h,{
@@ -349,10 +348,7 @@ local function CreateGearQuickWidget()
             if type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(self) end
             return false, "gear quick event subscription failed"
         end
-        -- Native change events are accelerators only. ArcheRage RU builds may
-        -- omit one of these names; that must never make the screen buttons fail
-        -- to exist. Optional registration degrades to the existing Gear refresh
-        -- and bounded current-set detection paths.
+        -- 原生变化事件仅加速更新；ArcheRage RU 可能缺少事件名，不能影响屏幕按钮创建。可选注册失败回退已有 Gear 刷新与有界当前方案检测。
         if type(S.Events.SubscribeOptional) == "function" then
             S.Events:SubscribeOptional("UNIT_EQUIPMENT_CHANGED", self, function() instance:ScheduleCurrentDetection("equipment_changed", 260) end)
             S.Events:SubscribeOptional("APPELLATION_CHANGED", self, function() instance:ScheduleCurrentDetection("title_changed", 260) end)
@@ -500,10 +496,9 @@ local ok, err = Host:Register(WIDGET_ID, {
 if ok ~= true then error(err) end
 
 ------------------------------------------------------------------------
--- Presentation-owned visibility reaction.
+-- 由表现层负责可见性响应。
 --
--- Domain publishes `v3.gear.quick.visibility` / `v3.feature.lifecycle` and
--- keeps the service lease; only this file touches WidgetHost visibility.
+-- Domain 发布 `v3.gear.quick.visibility`/`v3.feature.lifecycle` 并持有服务租约；仅本文件操作 WidgetHost 可见性。
 ------------------------------------------------------------------------
 if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
     local Reaction = { id = "v3:gear_quick:host_reaction" }

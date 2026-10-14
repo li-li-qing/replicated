@@ -1,31 +1,20 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 6 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Acceptance (schema 8)
--- Non-destructive contract checks. No feature is enabled by this case.
+-- Replicated Suite · 状态显示契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Schema 8 contracts covered here:
---   * store schemaVersion == 8, with exact schema4/5/6/7 historical integrity rebuild
---   * per-HUD gearScoreFormat full/compact migration plus scoped player/target tracking contracts
---   * shared StatusClassificationV3 service resolves category + detection
---     source (hidden is a detection source, never a user category)
---   * Feature commands: SetTrackedChannel(id, scope, category, enabled) owns the
---     four visible player/target × Buff/Debuff channels; legacy SetTrackedId is compatibility-only
---   * SetComponentField; scoped tracked-id import; full export/import v3
---   * 10 head components projected through GetSettingsProjection
---   * ProjectStatusMap rows carry category/detectionSource; hidden-sourced
---     rows classify as debuff
---   * equipment projection preserves the verified grade overlay texture
+-- 非破坏验收，禁止启用任何功能。合并后先查冲突标记、toc.g完整性和Lua语法，再运行验收；不能清配置、跳加载或恢复Legacy绕过错误。
+-- 覆盖契约：Store schemaVersion==8与schema4/5/6/7精确历史完整性重建；各HUD gearScoreFormat full/compact迁移和player/target追踪。
+-- StatusClassificationV3解析分类与检测来源，hidden仅检测来源；SetTrackedChannel(id,scope,category,enabled)拥有player/target×Buff/Debuff四可见通道，SetTrackedId仅兼容。
+-- SetComponentField、分scope追踪导入、完整v3导出/导入；GetSettingsProjection投影十个头顶组件；ProjectStatusMap行携category/detectionSource，hidden来源归debuff；装备投影保留已核实品质覆盖纹理。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 中文维护注释（Phase 3 Batch H，2026-09-29，core-feature-decoupling-1）：本文件是 combat_buff_display
+-- 本文件是 combat_buff_display
 -- 的**唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
--- 断言兜底；Phase 3 正在删掉那处硬编码，所以这里必须**无条件注册** case，并在实现缺失时明确失败。
+-- 独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败。
 local F = S.Features and S.Features.BuffDisplay or nil
 
 G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(runtimeOnly)
@@ -41,14 +30,14 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
     local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.buff_display") or nil
     if store == nil or tostring(store.owner or "") ~= "v3.buff_display" or tonumber(store.schemaVersion) ~= 8 then return false, "store_contract" end
     local layoutStore = S.Persistence and S.Persistence:GetStore(F.HudLayoutStoreId or "v3.buff_display.layout") or nil
-    -- 中文维护注释（.18.241 HUD Layout Authority）：校准/策略/Reset 已从追踪大 Store 拆出。
+    -- 校准/策略/Reset 已从追踪大 Store 拆出。
     -- Acceptance 必须同时看到小 Store，防止只覆盖 Feature 文件却漏掉 Store 注册，导致 HUD 编辑
     -- 静默退回 v3.buff_display 全量保存。这里只读注册定义，不 Load/Save/Apply。
     if layoutStore == nil or tostring(layoutStore.owner or "") ~= "v3.buff_display.layout"
         or tonumber(layoutStore.schemaVersion) ~= 1 or tonumber(layoutStore.transportVersion) ~= 3 then
         return false, "hud_layout_store_contract"
     end
-    -- 中文维护注释（.18.243 分片 Authority 验收）：旧 v3.buff_display 仅保留历史迁移 hooks，
+    -- 旧 v3.buff_display 仅保留历史迁移 hooks，
     -- 正常运行必须由 settings/layout + tracking A/B + manifest 共同组成 Authority。这里故意逐个
     -- 验证注册与版本，防止“只覆盖 Feature 文件/漏覆盖 Store 注册”后静默退回单体大 Store。
     -- 兼容边界：Acceptance 只读 Store 定义，不 LoadData、不触发迁移、不写用户配置。
@@ -72,10 +61,10 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
     end
     if type(store.rebuildCanonicalForIntegrity) ~= "function" or type(store.recoverKnownLegacyCanonical) ~= "function"
         or type(store.migrate) ~= "function" then return false, "historical_migration_hooks_missing" end
-    -- 中文维护注释（非破坏性 schema4→5 验收）：构造一个“不含 targetLayout”的旧单 HUD
+    -- 构造一个“不含 targetLayout”的旧单 HUD
     -- Domain，要求 historical hook 返回仍不含新字段的旧 canonical；随后正式 migrate 必须补出
     -- targetLayout。这里只验证纯函数边界，不 Apply、不保存、不取得 Consumer。
-    -- 维护（2026-09-30）：历史恢复 hook 会写探针，合成迁移不属于玩家只读诊断。
+    -- 历史恢复 hook 会写探针，合成迁移不属于玩家只读诊断。
     if runtimeOnly ~= true then
         local legacyProbeSettings = type(F.GetDefaultSettingsSnapshot) == "function" and F:GetDefaultSettingsSnapshot() or nil
         if type(legacyProbeSettings) ~= "table" then return false, "schema5_migration_probe_defaults_missing" end
@@ -88,7 +77,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         local historicalProbe, recoveredProbe = store.rebuildCanonicalForIntegrity(legacyProbe, "ACCEPTANCE", nil, {
             __rsmeta = { store = "v3.buff_display", owner = "v3.buff_display", framework = 3, schema = 4, transportVersion = 1 },
         })
-        -- 中文维护注释：Acceptance 不得污染实机恢复诊断。hook 为了真实故障会写 runtime-only
+        -- Acceptance 不得污染实机恢复诊断。hook 为了真实故障会写 runtime-only
         -- probe，因此合成验收完成后必须原样恢复旧值，保证“恢复探针”只反映真实 LoadStore。
         store.lastHistoricalRecoveryProbe = previousHistoricalProbe
         if type(historicalProbe) ~= "table" or type(historicalProbe.settings) ~= "table"
@@ -102,15 +91,15 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
             or type(migratedProbe.settings.tracked.player) ~= "table"
             or type(migratedProbe.settings.tracked.target) ~= "table" then return false, "schema4_to_8_scoped_migration" end
     end
-    -- Shared classification service (schema 4+ Authority; schema5 only adds dual-HUD persistence).
+    -- 共享分类服务：schema4+ 的分类权威；schema5 仅增加双 HUD 持久化。
     local classification = S.Services and S.Services.StatusClassificationV3 or nil
     if type(classification) ~= "table" or (tonumber(classification.version) or 0) < 2
         or type(classification.ClassifyEntry) ~= "function" or type(classification.ClassifyId) ~= "function"
         or type(classification.SetOverride) ~= "function" or type(classification.GetOverrides) ~= "function"
         or type(classification.ApplyOverrides) ~= "function" or type(classification.GetRegistrySnapshot) ~= "function"
         or type(classification.GetHealth) ~= "function" then return false, "classification_service_contract" end
-    -- 中文维护注释（.18.208 装分/API 与目标默认模板契约）：
-    -- 问题原因：UnitGearScore 的 comma 参数曾被误作 target 标志，且 target 装分被 kind gate
+    --
+    -- UnitGearScore 的 comma 参数曾被误作 target 标志，且 target 装分被 kind gate
     -- 阻断；同时发行模板开始拥有已实机确认的 TARGET|EQUIP 默认值。Acceptance 只验证声明
     -- 能力与共享 parser，不主动读取目标、不调用 X2Unit、不写 Store。旧模块热重载残留必须
     -- fail-closed，避免 UI 看似可用却继续吞掉格式化装分或恢复成错误目标默认值。
@@ -123,13 +112,13 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or (tonumber(F.HudCalibrationContractVersion) or 0) < 1
         or (tonumber(F.HudLayoutStoreContractVersion) or 0) < 1
         or (tonumber(F.LayoutPersistenceBoundaryContractVersion) or 0) < 3
-        -- 中文维护注释（.18.241）：布局拆 Store 只解决未来保存；旧 .240 失败写入若已把
+        -- 布局拆 Store 只解决未来保存；旧 .240 失败写入若已把
         -- main Store 的 distance.x 省略，Reload 仍需受旧章唯一命中的单字段冷恢复。
         -- Acceptance 只验能力版本，不执行 801 次 Hash 枚举，也不读/写实机 Store。
         or (tonumber(F.Schema8Transport5RecoveryContractVersion) or 0) < 8
         or (tonumber(F.Schema8Transport5DistanceXOmissionRecoveryContractVersion) or 0) < 1
         or (tonumber(F.Schema8Transport5ScopedPrefixRecoveryContractVersion) or 0) < 2
-        -- 中文维护注释（Phase 3 Batch M，2026-09-29，core-feature-decoupling-1）：以下两项原先只在
+        -- 以下两项原先只在
         -- core/rs_foundation_gate.lua 的 buff_display_v3_statusmap_contract 里检查，acceptance 缺；
         -- 搬迁前补齐，避免删掉 Foundation 分支时把这两条恢复契约一起丢掉。
         or (tonumber(F.Schema8Transport4RecoveryProbeContractVersion) or 0) < 4
@@ -182,7 +171,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or type(F.Commands.ExportAll) ~= "function" or type(F.Commands.SerializeExport) ~= "function"
         or type(F.Commands.ParseImportText) ~= "function" or type(F.Commands.ImportAll) ~= "function"
         or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 11 then return false, "feature_contract" end
-    -- 中文维护注释：schema8 必须同包加载 scope Store、管理投影与文本格式 v3；否则半覆盖会
+    -- schema8 必须同包加载 scope Store、管理投影与文本格式 v3；否则半覆盖会
     -- 把 player/target 六通道压回旧全局白名单。这里只检查声明与纯读能力，不写 Store/不取 Consumer。
     local catalog=S.Data and S.Data.StatusTrackingCatalogV3
     if (tonumber(F.Schema6TrackingMigrationContractVersion) or 0)<1
@@ -193,7 +182,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or type(F.Commands.ImportBuiltinPack)~="function" or type(F.Commands.PreviewImport)~="function" then
         return false,"schema8_tracking_modules_missing"
     end
-    -- 维护（2026-09-30，live-contract-state-1）：Catalog.version 是内置条目的增量导入
+    -- Catalog.version 是内置条目的增量导入
     -- 水位，不是 Store schema 或交换格式。目录已升为 v2（853 introducedVersion=2），
     -- 写死 ==1 会误报完整安装。允许兼容的正整数数据修订，并验证消费者依赖的索引；
     -- 不降目录版本、不重置 importedPacks、不改 schema8/transfer v3 的精确门禁。
@@ -206,8 +195,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
     for _, key in ipairs({ "ByEffectId", "ByKey", "Packs", "PackOrder" }) do
         if type(catalog[key]) ~= "table" then return false, "schema8_tracking_catalog_index_missing:" .. key end
     end
-    -- Head renderer gate contract: tracked-independent start (HasRenderableComponents
-    -- gate) + GetDiagnostics triage surface + anchorFailure trail on hidden scopes.
+    -- 头顶渲染器契约：通过 HasRenderableComponents 独立于追踪列表启动，GetDiagnostics 提供分诊信息，隐藏 scope 保留 anchorFailure 证据。
     local headMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 or nil
     if type(headMarkers) ~= "table" or (tonumber(headMarkers.version) or 0) < 2
         or type(headMarkers.GetDiagnostics) ~= "function"
@@ -222,7 +210,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or (tonumber(headMarkers.TargetAliasHudContractVersion) or 0) < 2
         or type(headMarkers.ComputeTargetAliasLayout) ~= "function"
         or type(headMarkers.SetCalibrationSuppressed) ~= "function" then return false, "head_marker_gate_contract" end
-    -- 中文维护注释（HUD 校准交互契约 v3）：.18.206 在方向适配/面板拖动基础上增加全局位置预览，
+    -- .18.206 在方向适配/面板拖动基础上增加全局位置预览，
     -- 并要求正式 Renderer 支持仅 Presentation 层的校准隐藏。Acceptance 只检查声明能力，不创建
     -- Native Widget、不写 Draft/Store、不取得或释放 Consumer。兼容边界：schema5 不变；旧校准器、
     -- 旧 Renderer 或旧 HUD 布局页若热重载残留必须 fail-closed，避免校准画面同时出现正式 HUD。
@@ -259,11 +247,9 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
     if type(pageHost) ~= "table" or type(pageHost.factories) ~= "table" or type(pageHost.factories["combat.buff_display"]) ~= "function" then return false, "page_registration" end
     if type(widgetHost) ~= "table" or type(widgetHost.specs) ~= "table" or type(widgetHost.specs["combat.buff_display"]) ~= "table" then return false, "widget_registration" end
     if (tonumber(F.consumerCount) or 0) <= 0 and (F.auraHeld == true or (S.Scheduler and S.Scheduler.tasks and S.Scheduler.tasks[F.taskName] ~= nil)) then return false, "dormant_resource_contract" end
-    -- 维护（2026-09-30）：后续投影/快照别名探针仅离线运行，不扰动实机状态。
+    -- 后续投影/快照别名探针仅离线运行，不扰动实机状态。
     if runtimeOnly == true then return true end
-    -- Schema 4 projection: hidden is a detection source; the hidden-sourced
-    -- entry classifies as debuff. Explicit overrides keep this deterministic
-    -- regardless of the seeded registry.
+    -- schema4 投影：hidden 是检测来源，该来源条目分类为 debuff；显式覆盖确保判定不受预置注册表影响。
     local map = { [101] = { id = 101, name = "A", iconPath = "a.dds", stack = 2, timeLeft = 3000, sources = { buff = true } }, [202] = { id = 202, name = "B", sources = { debuff = true } }, [303] = { id = 303, name = "H", sources = { hidden = true } } }
     local mapSettings = { showBuffs = true, showDebuffs = true, showHidden = false, classification = { [101] = "buff", [202] = "debuff", [303] = "debuff" } }
     local rows = F.ProjectStatusMap(map, { available = true, complete = true, reliable = true, revision = 1 },
@@ -272,13 +258,12 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or rows[1].category ~= "buff" or rows[2].category ~= "debuff" or rows[3].category ~= "debuff"
         or rows[3].detectionSource ~= "hidden" or rows[1].timeText ~= "3.0" or rows[1].tracked ~= true
         or rows[1].trackedText ~= "已追踪" or rows[3].trackedText ~= "" then return false, "projection_contract" end
-    -- Hidden-sourced statuses are an independent fact source: they must survive
-    -- a disabled buff/debuff category toggle so 只看隐藏 always has rows to show.
+    -- Hidden来源是独立事实源；Buff/Debuff分类开关关闭时仍保留，让只看隐藏始终可展示对应行。
     local hiddenOnlyRows = F.ProjectStatusMap(map, { available = true, complete = true, reliable = true, revision = 1 },
         { showBuffs = true, showDebuffs = false, showHidden = false, classification = mapSettings.classification }, "player", 8)
     if type(hiddenOnlyRows) ~= "table" or #hiddenOnlyRows ~= 2 or hiddenOnlyRows[1].id ~= 101
         or hiddenOnlyRows[2].id ~= 303 or hiddenOnlyRows[2].detectionSource ~= "hidden" then return false, "hidden_source_not_suppressed_by_category_toggle" end
-    -- Settings projection exposes all 10 head components + player/target scoped tracked channels.
+    -- 设置投影暴露全部十个头顶组件，以及 player/target 各自追踪通道。
     if (tonumber(F.LayoutAuthorityContractVersion) or 0) < 2
         or (tonumber(F.LayoutPersistenceBoundaryContractVersion) or 0) < 3 then
         return false, "layout_persistence_boundary_contract_missing"
@@ -307,7 +292,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or tostring(defaultHudSnapshot.target.info and defaultHudSnapshot.target.info.gearScoreFormat or "") ~= "full" then
         return false, "dual_hud_calibration_snapshot_missing"
     end
-    -- Detached-snapshot contract: calibration draft edits must never mutate Store before Save & Exit.
+    -- 独立快照契约：校准草稿在 Save & Exit 前禁止修改 Store。
     local freshBefore = F.Commands:GetHudCalibrationSnapshot()
     local oldTargetX = tonumber(freshBefore.target.plate and freshBefore.target.plate.x) or 0
     hudSnapshot.target.plate.x = oldTargetX + 17
@@ -332,7 +317,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or type(tracked.player.buff) ~= "table" or type(tracked.player.debuff) ~= "table" or type(tracked.player.auto) ~= "table"
         or type(tracked.target.buff) ~= "table" or type(tracked.target.debuff) ~= "table" or type(tracked.target.auto) ~= "table"
         or settingsProjection.freezeEnabled ~= false or settingsProjection.showHidden ~= false then return false, "schema8_settings_projection" end
-    -- Head plates projection: bounded tracked rows + enabled component data.
+    -- 头顶投影：有界追踪行与启用组件数据。
     local plates = F.ProjectPlates({
         buffRows = { { id = 101, name = "A" } }, distance = 1234.5, class = "法师", gearScore = 12345,
         mainHand = { icon = "weapon.dds", gradeIconPath = "grade.dds", name = "武器" },
@@ -343,8 +328,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or type(plates.gearScore) ~= "table" or plates.gearScore.value ~= "12345"
         or type(plates.mainHand) ~= "table" or plates.mainHand.icon ~= "weapon.dds"
         or plates.mainHand.gradeIconPath ~= "grade.dds" then return false, "plates_projection_contract" end
-    -- Pure compatibility checks: import must match the Store's 1024/category
-    -- budget, and component-specific fields exposed by the UI must round-trip.
+    -- 纯兼容检查：导入必须遵守 Store 每分类 1024 条预算；UI 暴露的组件专用字段必须完整往返。
     local ids = {}
     for i = 1, 40 do ids[#ids + 1] = tostring(70000 + i) end
     local parsed40 = F:ParseImportText("BUFF=" .. table.concat(ids, ","))
@@ -375,11 +359,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
     return true
 end, { runtime = true })
 
-------------------------------------------------------------------------
--- v6: HealthBarProxy anchor layout geometry (pure function contract).
--- Covers the 15 acceptance geometry cases from the plate-layout task. All
--- assertions run against ComputePlateLayout without touching widgets/native.
-------------------------------------------------------------------------
+-- HealthBarProxy 锚点布局几何的纯函数契约，覆盖布局任务十五个验收场景。所有断言仅调用 ComputePlateLayout，不接触 Widget 或 Native。
 G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     local markers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 or nil
     if type(markers) ~= "table" or type(markers.ComputePlateLayout) ~= "function" then
@@ -387,7 +367,7 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     end
     local Compute = markers.ComputePlateLayout
 
-    -- Base settings use the 1.2× defaults (icons 29, equip 26, bar 180×24).
+    -- 基础设置采用 1.2 倍默认尺寸：图标 29、装备 26、血条 180×24。
     local function base(overrides)
         local s = {
             plate = { x = 0, y = 0, width = 180, height = 24 },
@@ -412,12 +392,11 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
         return Compute(500, 400, settings or base(), buffCount, debuffCount, equip or { mainHand = true, offHand = true, wings = true, ranged = true })
     end
 
-    -- CASE 1: 0 buff / 0 debuff -> info owns a fixed slot above the bar.
+    -- 场景 1：无 Buff/Debuff 时，信息行仍占据血条上方的固定槽位。
     local l1 = layout(0, 0)
     if l1.info.top + l1.info.height >= l1.bar.top then return false, "case1_info_not_above_bar" end
 
-    -- CASE 2/3/4: actual rows still describe Buff rendering, but may never move
-    -- the independent info slot.
+    -- 场景 2/3/4：实际行数描述 Buff 渲染，但不能移动独立信息槽。
     local l1buff = layout(1, 0)
     local l8buff = layout(8, 0)
     local l9buff = layout(9, 0)
@@ -428,15 +407,14 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     if l1buff.info.top + l1buff.info.height >= l1buff.buff.topMostTop then return false, "case2_info_not_above_reserved_row" end
     if l9buff.buff.topMostTop >= l1buff.buff.topMostTop then return false, "case4_rows_not_stacking_upward" end
 
-    -- CASE 5: 1 debuff first row = bar.bottom + DebuffToBarGap(8).
+    -- 场景 5：一个 Debuff 的首行位置为 bar.bottom + DebuffToBarGap(8)。
     local l1deb = layout(0, 1)
     local expectedGap = 8 * 1.0
     if math.abs(l1deb.debuff.firstTop - (l1deb.bar.bottom + expectedGap)) > 1 then
         return false, "case5_debuff_gap_wrong:" .. tostring(l1deb.debuff.firstTop - l1deb.bar.bottom)
     end
 
-    -- CASE 6/7/8: missing equipment hides only itself; semantic sibling slots
-    -- remain reserved and cannot collapse toward the bar.
+    -- 场景 6/7/8：缺失装备仅隐藏自身；同级语义槽继续保留，不能向血条塌缩。
     local lOff = layout(0, 0, { mainHand = true, offHand = false, wings = true, ranged = false })
     if lOff.equip.offHand ~= false or lOff.equip.mainHand ~= true then return false, "case6_collapse_wrong" end
     local lMain = layout(0, 0, { mainHand = false, offHand = true, wings = true, ranged = false })
@@ -444,8 +422,7 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     local lNoWing = layout(0, 0, { mainHand = true, offHand = true, wings = false, ranged = false })
     if lNoWing.equip.wings ~= false then return false, "case8_collapse_wrong" end
 
-    -- CASE 9/10: left flank is offHand (closest) -> mainHand -> ranged;
-    -- right flank contains wings/back only.
+    -- 场景 9/10：左侧由近到远为 offHand → mainHand → ranged，右侧仅放 wings/back。
     local lBoth = layout(0, 0, { mainHand = true, offHand = true, wings = true, ranged = true })
     if #lBoth.leftGroup.slots ~= 3 or #lBoth.rightGroup.slots ~= 1 then
         return false, "case9_10_equip_group_slot_count_wrong:left=" .. tostring(#lBoth.leftGroup.slots) .. ",right=" .. tostring(#lBoth.rightGroup.slots)
@@ -455,7 +432,7 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
         return false, "case9_left_order_wrong:" .. tostring(sl[1].key) .. "," .. tostring(sl[2].key) .. "," .. tostring(sl[3].key)
     end
     if lBoth.rightGroup.slots[1].key ~= "wings" then return false, "case9_right_order_wrong" end
-    -- Current runtime gap is 4px: offHand remains closest to bar at 410-4-26=380.
+    -- 当前运行时间隔 4px，offHand 仍最靠近血条：410-4-26=380。
     if sl[1].x ~= 380 then return false, "case9_offhand_position_wrong:" .. tostring(sl[1].x) end
     if sl[3].x >= sl[2].x then return false, "case9_ranged_not_outermost" end
     local function slotX(layoutValue, key)
@@ -470,11 +447,11 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
         return false, "case6_8_equipment_semantic_slot_reflowed"
     end
 
-    -- CASE 11/12: bar geometry stable regardless of info toggle.
+    -- 场景 11/12：信息开关不改变血条几何。
     local lNoInfo = Compute(500, 400, base({ info = { enabled = false, fontSize = 12 } }), 3, 0, { mainHand = true, offHand = true, wings = true, ranged = true })
     if lNoInfo.bar.top >= lNoInfo.bar.bottom then return false, "case11_bar_geometry_wrong" end
 
-    -- CASE 13: fresh config defaults are anchor-relative (component y == 0).
+    -- 场景 13：新配置默认相对锚点，component y == 0。
     local defaultSettings = F:GetDefaultSettingsSnapshot()
     local comps = type(defaultSettings.components) == "table" and defaultSettings.components or {}
     if type(comps.buffs) ~= "table" or comps.buffs.y ~= 0 or comps.debuffs.y ~= 0 then
@@ -495,38 +472,33 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
         return false, "case13_duplicate_icon_authority_present"
     end
 
-    -- CASE 14/15: geometry with 1.2× sizes. anchor(500,400), bar 180x24 ->
-    -- left 410/right 590/top 388/bottom 412. Buff 29px: firstTop=388-8-29=351.
-    -- Debuff: firstTop=412+8=420. Equip 26px: offHand at 410-4-26=380, wings at 590+4=594.
+    -- 场景 14/15：1.2 倍尺寸，anchor(500,400)、血条 180×24，对应 left410/right590/top388/bottom412；Buff29px 的 firstTop=388-8-29=351，Debuff firstTop=412+8=420；装备26px，offHand=410-4-26=380，wings=590+4=594。
     if l1.bar.left ~= 410 or l1.bar.right ~= 590 or l1.bar.top ~= 388 or l1.bar.bottom ~= 412 then
         return false, "case14_bar_rect_wrong:" .. tostring(l1.bar.left) .. "," .. tostring(l1.bar.right)
     end
     if l1buff.buff.firstTop ~= 351 or l1deb.debuff.firstTop ~= 420 then
         return false, "case14_row_positions_wrong:" .. tostring(l1buff.buff.firstTop) .. "," .. tostring(l1deb.debuff.firstTop)
     end
-    local sL = l1.leftGroup.slots[1]  -- offHand (closest to bar)
-    local sR = l1.rightGroup.slots[1] -- wings
+    local sL = l1.leftGroup.slots[1]  -- offHand，最靠近血条。
+    local sR = l1.rightGroup.slots[1] -- wings，右侧滑翔翼槽。
     if sL.key ~= "offHand" then return false, "case14_left_first_key_wrong:" .. tostring(sL.key) end
     if sL.x ~= 380 or sR.x ~= 594 then
         return false, "case14_equip_positions_wrong:" .. tostring(sL.x) .. "," .. tostring(sR.x)
     end
-    -- Vertical separation: no two regions overlap (info < buff < bar < debuff).
+    -- 垂直分区互不重叠：info < buff < bar < debuff。
     local buffBottom = l1buff.buff.firstTop + 29
     if l1buff.info.top + l1buff.info.height > l1buff.buff.firstTop - 2
         or buffBottom > l1.bar.top - 4
         or l1deb.debuff.firstTop < l1.bar.bottom + 4 then
         return false, "case15_vertical_separation_failed"
     end
-    -- Cast semantic slot is stable regardless of live debuff count.
+    -- 施法语义槽不随实时 Debuff 数量移动。
     local lManyDeb = layout(0, 16)
     if type(l1.cast) ~= "table" or type(lManyDeb.cast) ~= "table" or l1.cast.top ~= lManyDeb.cast.top then
         return false, "case15_cast_slot_reflowed"
     end
 
-    -- Name resolution + compact time format tests.
-    -- Name passthrough for a buff entry. Self-contained: the statusmap_contract
-    -- case is a separate closure that owns its own `rows`/`map`, so re-project
-    -- here instead of reading an undefined upvalue (would throw at runtime).
+    -- 名称解析与紧凑时间格式测试：Buff 名称原样透传。statusmap_contract 是独立闭包，拥有自己的 rows/map；这里重新投影，禁止读取不存在的外部变量造成运行时异常。
     local nameProbe = F.ProjectStatusMap(
         { [101] = { id = 101, name = "A", iconPath = "a.dds", stack = 2, timeLeft = 3000, sources = { buff = true } } },
         { available = true, complete = true, reliable = true, revision = 1 },
@@ -544,7 +516,7 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     local idNameRows = F.ProjectStatusMap(idNameMap, { available = true }, { showBuffs = true, showDebuffs = true, classification = {} }, "player", 8)
     if type(idNameRows) ~= "table" or #idNameRows ~= 1 then return false, "case_b_row_count" end
     if idNameRows[1].name == "22263" then return false, "case_b_name_equals_id_not_resolved" end
-    -- Compact time: 80010ms = 1m20s1cs → "1.20.01".
+    -- 紧凑时间：80010ms = 1分20秒1厘秒，输出 1.20.01。
     local timeMap = { [999] = { id = 999, name = "T", stack = 1, timeLeft = 80010, sources = { buff = true } } }
     local timeRows = F.ProjectStatusMap(timeMap, { available = true }, { showBuffs = true, showDebuffs = true, classification = {} }, "player", 8)
     if type(timeRows) ~= "table" or #timeRows ~= 1 or timeRows[1].timeText ~= "1.20.01" then
@@ -554,7 +526,7 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     return true
 end)
 
--- Phase 3 Batch H（2026-09-29，core-feature-decoupling-1）：观察契约版本。
+-- 观察契约版本。
 -- 原先由 core/rs_foundation_gate.lua 的 v3_combat_life_usability_contract 里的 buff_observation 判定
 -- 点名检查（取实现表的 GetHealth 再读 observationContractVersion）；搬到这里之后 Core 不再认识
 -- 具体业务 Feature。判定与旧版**逐条等价**：health 可取 + observationContractVersion >= 2。

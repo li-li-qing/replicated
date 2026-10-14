@@ -1,7 +1,13 @@
+------------------------------------------------------------------------
+-- Replicated Suite · HUD模板复制测试宿主
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 中文维护（2026-10-07）：复制/校准替身恢复自真实历史 044ffed，显式使用完整 HUD Runtime。
 -- 维护（hud-template-copy-2）：仅开发期。实际 Calibration/Feature/Store/分页编码器保留；
 -- 原生图形、键盘、SetText容量和聊天为有故障注入的替身，不能据此声称RU已验证。
 -- 输入框草稿/选区由模型记录；公共焦点绑定的真实实现另由rs_report_selection_tests覆盖。
+------------------------------------------------------------------------
 return function(options)
     options=options or {}
     local h,S,F,P=dofile('tools/rs_pvp_hud_test_host.lua')({runtimeHud=true})
@@ -67,7 +73,7 @@ return function(options)
             return original(ui,e,...)
         end
     end
-    -- 中文维护：当前校准包括独立 Alias HUD Store；完整宿主加载实际 Authority，不能以缺服务冒充保存失败。
+    -- 当前校准包括独立 Alias HUD Store；完整宿主加载实际 Authority，不能以缺服务冒充保存失败。
     dofile('features/combat/buff_display/rs_buff_display_alias_store.lua')
     dofile('core/rs_report_copy_transport.lua')
     dofile('presentation/v3/widgets/rs_v3_buff_hud_calibration.lua')

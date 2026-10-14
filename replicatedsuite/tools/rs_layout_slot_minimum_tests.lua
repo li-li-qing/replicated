@@ -1,6 +1,12 @@
--- 中文维护：真实 RSUI Panel Measure/Layout，Native 几何来自测试宿主。
+------------------------------------------------------------------------
+-- Replicated Suite · 布局槽位最小值测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 真实 RSUI Panel Measure/Layout，Native 几何来自测试宿主。
 -- 回归 2026-09-14：Linear Measure 忽略 slot.minHeight/minWidth 时，父容器会低估所需尺寸；
 -- Layout 随后又按最小值排版，造成子项溢出/裁切，看起来像标题、颜色、状态文本互相重叠。
+------------------------------------------------------------------------
 local Base = dofile('tools/rs_gear_page_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)

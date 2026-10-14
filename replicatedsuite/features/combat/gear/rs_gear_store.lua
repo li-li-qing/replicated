@@ -1,12 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Gear / Title Store
+-- Replicated Suite · 装备与称号方案设置存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Character-scoped permanent storage. The lightweight set index and every
--- equipment/title payload are split into separate SaveData keys. Reliability
--- v3 further protects every payload with a two-bank A/B journal: the inactive
--- bank is written + readback-verified before the index pointer is committed.
--- A failed payload write or failed index commit therefore cannot destroy the
--- last index-referenced loadout.
+-- 角色永久存储将轻量方案索引与装备/称号 payload 分开 SaveData key；每 payload 使用双库 A/B journal。
+-- 先写 inactive 库并读回核实，再提交索引指针；payload 写入或索引提交失败不能破坏最后仍被索引引用的装备方案。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -28,9 +26,7 @@ local PAYLOAD_SCHEMA = 2
 local PAYLOAD_FORMAT = 2
 local VALID_BANK = { legacy = true, a = true, b = true }
 
--- Domain budgets remain deliberately bounded even though the on-disk payload
--- now uses a compact encoder. The domain snapshot is still inspected before
--- every save; the encoded envelope receives the framework's separate overhead.
+-- 磁盘 payload 虽采用紧凑编码，Domain 预算仍有界；每次保存前检查 Domain 快照，编码封装另有框架开销。
 local INDEX_BUDGET = { maxDepth = 6, maxNodes = 1280, maxStringBytes = 18000, maxEntriesPerTable = 160 }
 local PAYLOAD_BUDGET = { maxDepth = 8, maxNodes = 640, maxStringBytes = 18000, maxEntriesPerTable = 64 }
 
@@ -134,10 +130,7 @@ local function NormalizePayload(value)
         local normalized = NormalizeItem(item)
         if normalized.slot ~= nil then items[#items + 1] = normalized end
     end
-    -- Saved payload order is presentation/business semantic order, not the
-    -- sparse Native equipment-slot numeric id.  Capture already follows
-    -- GearV3.EquipmentSlots; preserving that order prevents the visible list
-    -- from reshuffling after “获取当前 → 保存方案 → Reload”.
+    -- 保存payload顺序是业务/表现语义，不是稀疏Native槽ID顺序；Capture遵守GearV3.EquipmentSlots，必须保留此顺序，避免获取当前→保存→重载后列表重排。
     table.sort(items, function(a, b)
         local ao, bo = EquipmentOrder(a and a.slot), EquipmentOrder(b and b.slot)
         if ao ~= bo then return ao < bo end
@@ -167,9 +160,7 @@ local function CompactPackedAppellation(value)
     return out
 end
 
--- Compact on-disk representation. Slot labels/keys/alternative flags are static
--- service metadata and are reconstructed from slot id on load rather than being
--- duplicated 19 times in every SaveData payload.
+-- 紧凑磁盘表示：槽标签/key/替代标志是 Service 静态元数据，加载按 slot ID 重建，不能在每个 payload 重复 19 次。
 local function EncodeCompactPayload(value)
     value = NormalizePayload(value)
     local raw = {
@@ -198,11 +189,8 @@ local function EncodeCompactPayload(value)
     return raw
 end
 
--- Framework2 RU serializer repair for compact-v2 boolean omissions. EncodeCompactPayload
--- ALWAYS emitted c/ti.a/item.e/item.m, so a missing one in a valid v2 payload means the
--- physical serializer removed false; it was never an optional business field. Persistence
--- still hashes the reconstructed candidate against the old stamped canonical fingerprint
--- before accepting it, so truncation/corruption cannot use this as a generic bypass.
+-- compact-v2 的 EncodeCompactPayload 必然输出 c/ti.a/item.e/item.m；有效 v2 payload 缺这些字段表示 RU 序列化器省略 false，不是可选业务字段。
+-- Persistence 接受重建候选前仍比对原盖章 canonical 指纹，禁止截断/损坏借此绕过验证。
 local function RebuildCompactV2Canonical(decoded, _stampedFingerprint, _currentCanonical, raw)
     local meta = type(raw) == "table" and raw.__rsmeta or nil
     if type(meta) ~= "table" or (tonumber(meta.framework) or 0) > 2 or tonumber(meta.schema) ~= PAYLOAD_SCHEMA
@@ -232,7 +220,7 @@ end
 
 local function DecodePayloadEnvelope(raw)
     if type(raw) ~= "table" then return nil, "gear payload raw must be table" end
-    -- Schema 1 / pre-Reliability-v3 payloads used the framework default wrapper.
+    -- schema1 与旧 Reliability-v3 前 payload 使用框架默认包装。
     if raw.payload ~= nil then return NormalizePayload(raw.payload), nil end
     if tonumber(raw.v) ~= PAYLOAD_FORMAT then return nil, "unsupported gear payload format:" .. tostring(raw.v) end
     return NormalizePayload(raw), nil
@@ -269,10 +257,7 @@ local function NormalizeSetMeta(value, index)
         quickX = quickCustomized and math.floor(quickX + 0.5) or nil,
         quickY = quickCustomized and math.floor(quickY + 0.5) or nil,
         quickPositionCustomized = quickCustomized,
-        -- Responsive screen-button placement. quickX/quickY remain as the
-        -- backward-compatible last logical TOPLEFT coordinate; the edge anchor
-        -- is the authoritative placement once available so resolution changes
-        -- can re-resolve without rewriting the user's saved layout.
+        -- 响应式按钮位置：quickX/quickY 保留为兼容的最后逻辑 TOPLEFT 坐标；一旦存在 edge anchor 就以其为权威，分辨率变化可重解析，禁止重写用户布局。
         quickCoordinateSpace = quickResponsive and "logical-edge-v1" or nil,
         quickAnchorH = quickResponsive and quickAnchorH or nil,
         quickAnchorV = quickResponsive and quickAnchorV or nil,
@@ -287,9 +272,7 @@ local function NormalizeSetMeta(value, index)
     }
 end
 
--- Kept under the historical quickHud key for schema compatibility, but V3 M4
--- no longer owns a large HUD window. This table stores GLOBAL behavior for the
--- independent per-plan screen buttons only.
+-- 历史 quickHud key 为 schema 兼容保留；该表仅保存各方案独立按钮的全局行为，不拥有大型 HUD 窗口。
 local function NormalizeQuickHud(value)
     value = type(value) == "table" and value or {}
     local buttonMode = tostring(value.layoutMode or "") == "buttons-v1"
@@ -309,9 +292,7 @@ local function NormalizeQuickHud(value)
         overallOpacity = math.max(0, math.min(1, tonumber(value.overallOpacity) or 0.94)),
         backgroundOpacity = math.max(0, math.min(1, tonumber(value.backgroundOpacity) or 1.0)),
         textOpacity = math.max(0, math.min(1, tonumber(value.textOpacity) or 1.0)),
-        -- Optional numeric sentinel. Historical rows omit it entirely, so adding
-        -- the contract does not perturb existing canonical fingerprints until a
-        -- one-time startup intent repair is actually committed.
+        -- 可选数值哨兵：历史行完全省略它，一次性启动意图修复真正提交前不能扰动旧 canonical 指纹。
         runtimePreferenceLink = tonumber(value.runtimePreferenceLink) == 1 and 1 or nil,
     }
 end
@@ -399,14 +380,8 @@ function F:PayloadFingerprint(payload)
     return P:FingerprintPayload(NormalizePayload(payload), PAYLOAD_BUDGET)
 end
 
--- Legacy (pre-2026-09-05) shards were normalized and fingerprinted under the
--- plain slot-digit order. The stable display-order fix re-sorts items into
--- EquipmentSlots definition order, which changes the normalized array and
--- therefore the fingerprint: without this bridge every pre-existing saved
--- loadout would fail Try() and fall through the whole recovery chain into
--- "分片不可用". The bridge re-fingerprints a digit-order copy; a match proves
--- the content is intact and the shard is accepted once -- the next SavePayload
--- re-normalizes under the new order and re-stamps the index fingerprint.
+-- 2026-09-05前旧分片按槽数值顺序归一化并盖章；当前EquipmentSlots显示顺序改变数组与指纹。兼容桥对数字顺序副本重新算指纹，匹配证明内容完整，可接受一次。
+-- 下次SavePayload按新顺序归一化并重盖索引，禁止旧方案直接落入分片不可用。
 local function LegacyDigitOrderPayload(payload)
     local normalized = NormalizePayload(payload)
     local items = {}
@@ -421,10 +396,7 @@ function F:LegacyPayloadFingerprint(payload)
     return P:FingerprintPayload(LegacyDigitOrderPayload(payload), PAYLOAD_BUDGET)
 end
 
--- A configured loadout is never legitimately an empty shell. SaveDraft already
--- enforces the same business rule before writing; repeating the invariant here
--- turns a partially truncated historical shard into an explicit recovery case
--- instead of letting Apply/Validate continue with missing equipment identity.
+-- 已配置方案不可能合法为空壳。SaveDraft 写前遵守同一规则；这里重复验证，使历史分片局部截断成为显式恢复场景，禁止缺装备身份时继续 Apply/Validate。
 function F:ValidatePayloadStructure(payload)
     payload = NormalizePayload(payload)
     if payload.configured ~= true then return true end
@@ -531,9 +503,7 @@ function F:LoadPayloadForSet(set)
         local fingerprint, fingerprintErr = self:PayloadFingerprint(payload)
         if fingerprint == nil then return nil, nil, fingerprintErr end
         if expectedFingerprint ~= nil and tostring(fingerprint) ~= tostring(expectedFingerprint) then
-            -- Legacy order bridge: a digit-order fingerprint match proves the
-            -- shard content is intact and only predates the stable display
-            -- order. Accept it; the deferred re-save migrates the index stamp.
+            -- 旧顺序兼容：数字顺序指纹匹配证明分片完整，仅早于稳定显示顺序；可以接受，延后保存迁移索引 stamp。
             local legacyFingerprint, legacyErr = self:LegacyPayloadFingerprint(payload)
             if legacyFingerprint ~= nil and tostring(legacyFingerprint) == tostring(expectedFingerprint) then
                 return payload, fingerprint, nil, "legacy_slot_order_migrated"
@@ -561,8 +531,7 @@ function F:LoadPayloadForSet(set)
         activeErr = tostring(activeErr or "active payload unavailable") .. "; backup=" .. tostring(backupErr or "unavailable")
     end
 
-    -- Schema 4 indexes did not contain bank metadata. The historical single-key
-    -- shard remains readable forever; it is only retired from the write path.
+    -- schema4 索引不含 bank 元数据；历史单 key 分片持续可读，但禁止再写入。
     if activeBank ~= "legacy" and backupBank ~= "legacy" then
         local legacyPayload, legacyFingerprint, legacyErr = Try("legacy", nil)
         if legacyPayload ~= nil and legacyPayload.configured == true then

@@ -1,4 +1,10 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 冷却HUD链路测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 开发期真实 Service -> Feature -> Scheduler -> Renderer 回归；仅 Native/磁盘使用模型，不代表 RU 实测。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

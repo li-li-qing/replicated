@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - ArcheRage RU event schedule
--- Event names keep the established Suite/quest wording.
--- Responsive widgets use curated short/micro aliases only at narrow widths.
+-- Replicated Suite · 活动日程数据
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 活动名称沿用 Suite/任务现有称谓；响应式控件仅在狭窄宽度使用人工整理的 short/micro 别名。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -28,19 +30,15 @@ local function Add(fullName, shortName, entries, questKey, options)
     for _, item in ipairs(entries) do
         item.name = fullName
         item.fullName = fullName
-        -- Responsive event widgets choose among full / short / micro names.
-        -- Keep these semantic aliases in data instead of truncating rendered text
-        -- so narrow layouts remain recognizable and never bleed into the timer.
+        -- 响应式活动控件在 full / short / micro 名称间选择；语义别名留在数据层，禁止截断渲染文字，保证窄布局可辨认且不侵入倒计时。
         item.shortName = shortName or fullName
         item.microName = options.microName or shortName or fullName
         item.questScope = questKey and "event" or nil
         item.questKey = questKey
-        -- Seasonal/custom events are date-gated by server date in EventService.
-        -- The schedule remains in one canonical table, but inactive festivals
-        -- never produce rows or reminders outside their official active window.
+        -- EventService 按服务器日期控制季节/自定义活动。日程保留在唯一标准表中；节庆非官方开放期不产生行或提醒。
         item.activeFrom = options.activeFrom
         item.activeUntil = options.activeUntil
-        -- 维护（activity-time-audit）：证据等级仅供显示/诊断；不改 fullName/key 或旧关注配置。
+        -- 证据等级仅供显示/诊断；不改 fullName/key 或旧关注配置。
         -- 两份第三方表一致也不等于当前官方核验，计划时长不能作为首领存活 Authority。
         item.scheduleConfidence = options.scheduleConfidence
         item.scheduleEvidence = options.scheduleEvidence
@@ -48,31 +46,17 @@ local function Add(fullName, shortName, entries, questKey, options)
     end
 end
 
--- ArcheRage RU schedule. Static entries use server wall-clock time.
--- Keep full Chinese names as Authority; short aliases are presentation-only.
--- Grimghast Rift / 迷雾战争 officially starts at 00:05 in-game time.
--- On the current RU server phase that maps to xx:20 server time every four hours.
--- Use server wall-clock Authority here so instances/scenes with a different local
--- day/night clock cannot skew the countdown. The preparation phase is treated as
--- the single task-start time; do not add a separate combat-start row.
+-- RU静态日程使用服务器墙钟；完整中文名为权威，短别名仅表现。迷雾战争官方游戏时间00:05开始，当前RU阶段对应每四小时服务器xx:20。
+-- 必须用服务器墙钟，避免不同场景/副本昼夜时钟影响倒计时；准备阶段是唯一任务开始时刻，禁止再加独立战斗开始行。
 Add(O.GR or "迷雾战争", "迷雾", Times(ALL,20,{{2,20},{6,20},{10,20},{14,20},{18,20},{22,20}}), "ghost", { microName="迷雾" })
--- Continental Crimson Rift: Rank 1-3 -> Hounds -> Shadow Demons -> Shadow Fang.
--- Anthalon is never part of this row. Quest progress is separate from the schedule.
+-- 大陆红龙之渊：Rank 1-3 → Hounds → Shadow Demons → Shadow Fang；Anthalon 不属于本行，任务进度与日程分别处理。
 Add(O.CR or "征兆之痕", "征兆", Times(ALL,10,{{0,20},{4,20},{8,20},{12,20},{16,20},{20,20}}), "crimson", { microName="征兆" })
 Add(O.HIRAM_T6 or "空虚军团入侵", "空虚军团", Times(ALL,40,{{1,50},{5,50},{9,50},{13,50},{17,50},{21,50}}), "hiram_t6", { microName="空虚" })
--- Sungold/Auroria uses its own activity group. It shares the early Rift ranks,
--- but Anthalon is the Auroria-only world-boss gate before Shadow Totem / Shadow
--- Demons / Xarkath. Shadow Fang quest 10734 belongs to the continental branch.
+-- Sungold/原大陆使用独立活动组，虽然共享早期 Rift 阶段，但 Anthalon 是 Shadow Totem / Shadow Demons / Xarkath 前的原大陆专属世界首领门槛。Shadow Fang 任务 10734 属于大陆分支。
 Add(O.SUNGOLD_CRIMSON or "煦日之野征兆", "煦日征兆", Times(ALL,10,{{1,20},{5,20},{9,20},{13,20},{17,20},{21,20}}), "sungold_crimson", { microName="煦日" })
--- JMG is one of the RU schedules that may be adjusted for regional prime time.
--- These are server-clock slots from the current addon baseline; do NOT apply a
--- blanket Beijing +/-5h conversion. Change them only after a current RU schedule
--- source or live server observation verifies the exact occurrence times.
+-- JMG 的 RU 日程可能按地区黄金时段调整。这里保存当前插件基线的服务器时刻，禁止统一套用北京时间 ±5h 换算；只在当前 RU 日程来源或实机观察确认确切时刻后修改。
 Add(O.JMG or "JMG", "JMG", Times(ALL,15,{{3,20},{7,20},{11,20},{15,20},{19,20},{23,20}}), "jmg", { microName="JMG", scheduleConfidence="reference", scheduleEvidence="当前工程与用户 TimeUntil(1) 时刻一致；当前 RU 具体场次待实机核对；15 分钟为计划显示窗口" })
--- Lusca / 海妖之乱: use the portal/main-event opening as schedule Authority.
--- Current RU live observation reports the portal at 12:30 / 22:00 server
--- time.  Do not subtract ten minutes for an earlier monster-wave phase: the
--- activity timer is meant to tell players when they can actually enter.
+-- 海妖之乱/Lusca以传送门和主活动开放为日程权威；当前RU实机观察为服务器12:30/22:00。不能为早期怪物波减10分钟，倒计时必须告知玩家实际可进入时刻。
 Add(O.LUSCA or "海妖之乱", "海妖", Times(ALL,30,{{12,30},{22,0}}), "lusca", { microName="海妖" })
 Add(O.BLACK_DRAGON or "黑龙柯萨纳斯", "黑龙", Times({3,5},60,{{21,30}}), "black_dragon", { microName="黑龙" })
 Add(O.BLACK_DRAGON or "黑龙柯萨纳斯", "黑龙", Times({7},60,{{18,30}}), "black_dragon", { microName="黑龙" })
@@ -82,74 +66,52 @@ Add("利维坦", "利维坦", Times({3,5},60,{{20,5}}), "leviathan", { microName
 Add("利维坦", "利维坦", Times({7},60,{{17,5}}), "leviathan", { microName="利维坦" })
 Add(O.CHARYBDIS or "死亡捕食者卡里迪斯", "卡里迪斯", Times({1,5},60,{{21,30}}), "charybdis", { microName="卡里" })
 Add("庭院安塔伦", "庭安塔伦", Times({1,2,6},45,{{21,30}}), "garden_anthalon", { microName="庭安" })
--- Upstream corrected these RU Halcy windows on 2026-08-05.
+-- RU Halcy 时间窗口依据上游 2026-08-05 的校正记录。
 Add(O.HALCY or "黄金平原战争", "黄金", Times(ALL,30,{{1,30,30},{11,0,90},{20,30,60}}), "halcy", { microName="黄金" })
--- RuTimers uses 30 minutes for all three Red Dragon windows.
+-- RuTimers 的三个 Red Dragon 时间窗口均为 30 分钟。
 Add("红龙", "红龙", Times({1,2,4,6},30,{{2,0},{10,30},{20,0}}), "red_dragon", { microName="红龙" })
--- 血之使者卡杜姆 / Kadum is the second one-entry-per-account team raid of the
--- same class as 红龙巢穴 (both are instances, NOT quests; completion is the
--- "1/1" entry counter read from X2BattleField).  ArcheRage's event guide lists
--- Kadum on Sun/Tue/Thu/Sat while 红龙巢穴 runs Sun/Mon/Wed/Fri; the RU windows
--- mirror the red_dragon row (server wall-clock Authority, same as above).
+-- 血之使者卡杜姆/Kadum与红龙巢穴同属账号每轮一次进入的团队副本，完成为X2BattleField的1/1进入计数，不能按任务处理。
+-- 活动指南列Kadum周日/二/四/六，红龙周日/一/三/五；RU时间窗共用red_dragon行和服务器墙钟。
 Add("血之使者卡杜姆", "卡杜姆", Times({1,3,5,7},30,{{2,0},{10,30},{20,0}}), "kadum", { microName="卡杜姆" })
--- Titan Attack is a seasonal event, not a permanent weekly schedule.
--- Official 2026 run: 2026-05-27 through 2026-06-23. Keep both Titan rows
--- unavailable outside that window instead of showing a countdown for an event
--- that does not currently exist.
+-- Titan Attack 是季节活动；官方 2026 年开放期为 2026-05-27 至 2026-06-23。两个 Titan 行在此区间外必须不可用，不能为不存在的活动显示倒计时。
 Add("小泰坦", "小泰坦", Times({3,6},15,{{4,0},{7,0},{10,0},{13,0},{16,0},{19,0},{22,0}}), nil, { activeFrom="2026-05-27", activeUntil="2026-06-23", microName="小泰" })
 Add("大泰坦", "大泰坦", Times({4,7},15,{{14,0},{21,0}}), nil, { activeFrom="2026-05-27", activeUntil="2026-06-23", microName="大泰" })
 Add(O.ABYSSAL or "深渊之袭", "深渊", Times({3,5,7},30,{{12,0},{22,30}}), "abyssal", { microName="深渊" })
--- 维护（activity-time-audit）：原表把每天的 Hasla 限为周日到周三且提前11分钟，周五会显示“两天后”。
+-- 原表把每天的 Hasla 限为周日到周三且提前11分钟，周五会显示“两天后”。
 -- RU Wiki 任务9000068文本明确每天21:00；19:00仅用户提供的 TimeUntil(1) 有记录，必须标参考。
 -- 两场共用原活动 key/任务；15分钟仍只是计划窗口，不宣称怪物必定存在或精确结束。
 -- https://wiki.archerage.to/ru-en/db/quests/9000068 （2026-09-18核对）。不把 NA 日程套给 RU。
 Add("翡翠谷征兆", "翡翠征兆", Times(ALL,15,{{19,0}}), "hasla_shadow", { microName="翡翠", scheduleConfidence="reference", scheduleEvidence="用户 TimeUntil(1)；19:00场待 RU 实机确认" })
 Add("翡翠谷征兆", "翡翠征兆", Times(ALL,15,{{21,0}}), "hasla_shadow", { microName="翡翠", scheduleConfidence="quest_text", scheduleEvidence="RU Wiki quest 9000068: Every day at 9pm；15分钟为计划窗口" })
--- Akasch Invasion / Ipnya Defense. Version 9.0 removed Monday, leaving
--- Friday/Saturday. The maintained RU timer has a dedicated 2025 fix that
--- keeps Saturday's third start at 21:30 and shifts Friday's third start to
--- 22:00. Keep its current 20-minute activity presentation window; the older
--- 7.5 patch described a 40-minute limit, but no current first-party static
--- schedule exposes a newer duration clearly enough to override live RU data.
+-- Akasch Invasion / Ipnya Defense 当前仅周五、周六开放。RU 维护日程的 2025 年校核明确：周六第三场 21:30，周五第三场 22:00。
+-- 保留当前 20 分钟活动展示窗口；旧 7.5 补丁提到 40 分钟，但没有足够明确的当前官方静态时长证据可以覆盖实机 RU 数据。
 Add("守山", "守山", Times({7},20,{{15,0},{18,30},{21,30}}), "akasch_guard", { microName="守山" })
 Add("守山", "守山", Times({6},20,{{15,0},{18,30},{22,0}}), "akasch_guard", { microName="守山" })
--- Great Prairie Guardian Scramble. Do not use the 2024 original 9.0
--- schedule as the final RU Authority: that patch page explicitly excludes
--- ArcheRage custom changes. The maintained RU schedule split (2026) keeps
--- Friday/Saturday starts at 09:00 and 22:00 with a 20-minute presentation
--- window; preserve both current RU slots unless a newer RU first-party
--- schedule explicitly supersedes them.
+-- Great Prairie Guardian Scramble 禁止直接以 2024 年原版 9.0 日程作为最终 RU 权威，该补丁页明确排除 ArcheRage 自定义变更。
+-- 2026 年维护的 RU 日程在周五/周六均为 09:00、22:00，展示窗口 20 分钟；只有更新 RU 官方日程明确替代后才能修改。
 Add("大草原守护者争夺战", "大草原", Times({6,7},20,{{9,0},{22,0}}), "guardian_scramble", { microName="草原" })
 
--- Wonderland boss "Waking Nightmare" / RU "Кошмар наяву". Captain Moris
--- and the boss appear daily at 11:00 and 19:00. If the boss is not killed,
--- the official Wonderland guide states it leaves after 30 minutes, so the
--- activity window is 30 minutes (not Timeuntil's presentation-only 5 min).
--- Quest 9000333 is bound through the curated daily group below.
+-- Wonderland 首领 Waking Nightmare（RU：Кошмар наяву）与 Captain Moris 每日 11:00、19:00 出现；官方指南明确未击杀首领 30 分钟后离开。
+-- 活动窗口因此为 30 分钟，不能使用 Timeuntil 仅用于展示的 5 分钟；任务 9000333 由下方整理的日常组绑定。
 Add("梦境", "梦境", Times(ALL,30,{{11,0},{19,0}}), "wonderland_nightmare", { microName="梦境" })
 
--- Dragon Festival / Imperial Dragon ("吸龙").
--- Current official 2026 festival window is 2026-07-29 through 2026-08-18.
--- Quest "龙之力" (9000170) states the Imperial Warrior Dragon appears at
--- 00:00 / 07:00 / 14:00 / 19:00 server time. The supplied working timeUntil
--- keeps a 5-minute active window, which we retain only for presentation.
+-- Dragon Festival/Imperial Dragon（吸龙）官方2026开放窗口为2026-07-29至2026-08-18；龙之力9000170描述服务器00:00/07:00/14:00/19:00出现。
+-- 参考timeUntil的5分钟窗口仅为表现保留，不能作为存活事实。
 Add("吸龙", "吸龙", Times(ALL,5,{{0,0},{7,0},{14,0},{19,0}}), "dragon_power", { activeFrom="2026-07-29", activeUntil="2026-08-18", microName="吸龙" })
 
 S.Data.RuEvents = E
 
 
 
--- Live conflict-cycle status. Keep the established full Chinese zone names;
--- every watched zone is rendered as a first-class activity row with task progress.
+-- 实时地区冲突周期。保留既有完整中文地区名；每个监控地区都是独立活动行，展示任务进度。
 S.Data.ZoneStateWatch = {
-    -- Short names are used only when the responsive layout becomes narrow.
+    -- 短名称仅在响应式布局变窄时使用。
     { zoneId = 20,  name = O.CINDERSTONE or "十字星平原", fullName = O.CINDERSTONE or "十字星平原", stripName = "十字星", sourceName = "Cinderstone Moor", questScope = "event", questKey = "cinderstone_purify" },
     { zoneId = 17,  name = O.YNYSTERE or "伊尼斯泰尔", fullName = O.YNYSTERE or "伊尼斯泰尔", stripName = "伊尼斯", sourceName = "Ynystere", questScope = "event", questKey = "ynystere_purify" },
-    -- 中文维护注释：鲸鱼歌湾与海之烛台补齐 questScope/questKey 显式绑定，与下文 DynamicEventZones 保持一致；
+    -- 鲸鱼歌湾与海之烛台补齐 questScope/questKey 显式绑定，与下文 DynamicEventZones 保持一致；
     -- 确保 BuildZoneRows 生成的实时行能正确经 AttachProgress 挂接阶段任务进度，并在用户点击时调起 3 阶段任务详情悬浮窗。
     { zoneId = 103, name = O.WHALESONG or "鲸鱼歌湾", fullName = O.WHALESONG or "鲸鱼歌湾", stripName = "鲸鱼", sourceName = "Whalesong Harbor", questScope = "event", questKey = "whalesong" },
-    -- Aegis is the same live-region class as Whalesong. Keep it visible in
-    -- every phase; only its extra task countdown/status changes with the phase.
+    -- 神盾岛与鲸歌港属于同类实时地区，所有阶段保持可见；只有额外任务倒计时和状态随阶段变化。
     { zoneId = 102, name = O.AEGIS or "海之烛台", fullName = O.AEGIS or "海之烛台", stripName = "烛台", sourceName = "Aegis Island", questScope = "event", questKey = "aegis" },
 }
 S.Data.ZoneStateWatchById = {}
@@ -157,41 +119,28 @@ for _, definition in ipairs(S.Data.ZoneStateWatch) do
     S.Data.ZoneStateWatchById[definition.zoneId] = definition
 end
 
--- Live event annotations. The allowed GetZoneStateInfoByZoneId() return value
--- exposes remainTime on this RU client; the user's working timeUntil addon uses
--- that field directly for Conflict / War / Peace.  Therefore the Suite no longer
--- manufactures 15-minute clocks from the moment the addon happens to observe a
--- phase transition.
+-- RU 客户端允许的 GetZoneStateInfoByZoneId() 返回值提供 remainTime；timeUntil 也直接用它表示 Conflict / War / Peace。
+-- 阶段计时必须消费该字段，不能从插件碰巧观察到阶段切换的时刻编造 15 分钟时钟。
 S.Data.DynamicEventZones = {
-    -- Garden of the Gods is zone 133 on the ArcheRage client/database.
-    -- Ordinary Garden raid bosses are tied to the live War phase, while
-    -- Garden Anthalon keeps its separate fixed weekly schedule above.
-    -- 中文维护注释（2026-09-19，Garden phase migration）：同一个庭院事实按阶段互斥投影。
-    -- WAR 前作为 timeline 倒计时提醒玩家提前去四 Boss；Native 确认进入 WAR 后只在 live section 显示战争剩余时间。
-    -- 不在 Presentation 层复制这套判断，也不把 1h50m 写成本地计时；WAR 剩余时间继续直接消费 X2Map.remainTime。
+    -- 神之庭院在客户端/数据库为zone133；普通团本首领关联实时War阶段，庭院Anthalon保留上方独立周常固定日程。
+-- 同一庭院事实按阶段互斥投影：WAR前timeline提醒四首领，Native确认WAR后仅live section显示战争剩余。Presentation禁止复制判定，不能本地计时1h50m，继续直接消费X2Map.remainTime。
     [133] = {
         name = "庭院Boss", fullName = "庭院Boss", shortName = "庭院", microName = "庭院",
         sourceName = "Garden of the Gods",
-        -- 中文维护注释（2026-09-22，Garden Fairy Request）：庭院战争/Boss 时间事实仍由 zone 133
+        -- 庭院战争/Boss 时间事实仍由 zone 133
         -- 的 Native 状态独占；但玩家在同一庭院活动期间实际追踪的刷分任务是“精灵的委托”(10056)。
         -- 因此这里只建立 Presentation 关联：点击庭院活动时打开 garden_fairy 任务详情，并在活动行显示
         -- 该任务的未接/进行中/可交付/已完成状态。禁止把 Quest 状态反向当成战争/Boss 存活 Authority。
         -- QuestProgressV3 会在详情中读取原生 Journal Objective；未验证结构化分数前不解析本地积分阈值。
         questScope = "event", questKey = "garden_fairy",
-        -- Current RU rules retain a 10-minute Conflict immediately before War.
-        -- During Peace we can therefore derive the next boss window from the
-        -- authoritative remaining Peace time plus this Conflict lead.
+        -- 当前 RU 规则在 War 前保留 10 分钟 Conflict；Peace 期间可用权威 Peace 剩余时间加这段提前量推导下次首领窗口。
         conflictLeadMinutes = 10,
     },
     [102] = {
         name = O.AEGIS or "海之烛台", fullName = O.AEGIS or "海之烛台",
         questScope = "event", questKey = "aegis", sourceName = "Aegis",
         inlineOnly = true,
-        -- Aegis tasks are useful only at the opening of War.  The live regional
-        -- War clock starts at 90 minutes; keep the explicit "进行中" marker for
-        -- the first 20 minutes only (remain > 70m).  After that, the row stays
-        -- visible as ordinary War phase information without claiming the event
-        -- itself is still running.
+        -- 神盾岛任务仅在战争开场有意义，实时War初始90分钟；只在前20分钟remain>70m显示进行中。其后行仍展示普通War阶段信息，不能宣称活动仍在运行。
         warTotalMinutes = 90,
         activeWarMinutes = 20,
     },
@@ -199,7 +148,7 @@ S.Data.DynamicEventZones = {
         name = O.WHALESONG or "鲸鱼歌湾", fullName = O.WHALESONG or "鲸鱼歌湾",
         questScope = "event", questKey = "whalesong", sourceName = "Whalesong",
         inlineOnly = true,
-        -- 中文维护注释（2026-09-19，Whalesong live calibration）：RU 实机再次观测证明旧 76m
+        -- RU 实机再次观测证明旧 76m
         -- 触发点晚约 1 分钟；继续把 X2Map.remainTime 作为唯一 Authority，只校正数据阈值，
         -- 不从本地观察时刻制造 Boss 时间。Boss 刷新点改为战争剩余 1h17m。
         -- 兼容边界：这不是 Store/用户配置，不迁移旧存档；后续若服务器规则再次变化，

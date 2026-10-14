@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Execute the production Bonds row-sort comparator in a tiny Lua host.
+# ---------------------------------------------------------------------
+# Replicated Suite · 债券生产排序器提取运行测试
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+"""在最小 Lua 宿主中执行生产 Bonds 的行排序比较器。
 
-This is extraction-based: it reads the comparator body from the production
-bundle instead of duplicating the algorithm in a fixture. It guards strict
-ordering plus all three user-visible sort modes.
-"""
+从生产打包文件提取比较器函数体，不能在测试数据中复制排序算法。
+覆盖严格排序关系及三种玩家可见排序模式。"""
 from pathlib import Path
 import re
 import shutil

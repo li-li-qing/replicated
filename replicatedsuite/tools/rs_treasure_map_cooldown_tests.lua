@@ -1,4 +1,10 @@
--- 中文维护：真实寻宝 Command、Capability cooldown、Scheduler；仅 Native 地图与存档是宿主替身。
+------------------------------------------------------------------------
+-- Replicated Suite · 宝藏地图冷却测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 真实寻宝 Command、Capability cooldown、Scheduler；仅 Native 地图与存档是宿主替身。
+------------------------------------------------------------------------
 local NewHost=dofile('tools/rs_gear_page_test_host.lua')
 local TASK='v3_life_treasure_map_request'
 local passed=0
@@ -72,7 +78,7 @@ Test('render interval changes the existing compass task and leaves bag observati
 end)
 Test('historical iv4 treasure save survives optional refresh preference addition',function()
     local h,s,f=Boot();local p=s.Persistence;local st=p:GetStore(f.storeId);local current=st.migrate
-    -- 中文维护：旧 canonical 的字段集来自上版；用真实编码盖章后重新经过当前 canonical 读取，不跳过完整性检查。
+    -- 旧 canonical 的字段集来自上版；用真实编码盖章后重新经过当前 canonical 读取，不跳过完整性检查。
     st.migrate=function(v)return {selectedKey=v.selectedKey,widgetVisible=v.widgetVisible==true,widgetWindow=v.widgetWindow and h.Copy(v.widgetWindow)or nil}end
     f.State.selectedKey='saved_map';assert(p:SaveStore(f.storeId,{consumeDirty=true,verifyAfterSave=true}))
     st.migrate=current;f.storeLoaded=false

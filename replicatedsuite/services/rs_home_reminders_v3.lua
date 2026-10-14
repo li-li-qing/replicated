@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 家园提醒
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 今日总览提醒事实（2026-10-04）：只读自身时装/内衣与 Achievement 每日、公会任务。
 -- Native 返回形状和 1..7 板位来自用户已工作的 1.2 Character service；不猜装备槽号、
 -- 期限或任务状态。成功读取且具备物品身份、没有倒计时的装备按 1.2 契约显示永久；
@@ -163,7 +167,7 @@ function C:_Stop()
 end
 function C:_Start()
     if not S.Scheduler then return false, 'reminder_scheduler_unavailable' end
-    -- 中文维护：不能假设其他模块/插件已经导入 X2Achievement 或装备常量。
+    -- 不能假设其他模块/插件已经导入 X2Achievement 或装备常量。
     -- 本服务在 0->1 Demand 边界通过唯一 NativeImports 领取两个可选依赖；逐项记录失败，
     -- 成就失败只使每日/公会提醒待确认，不阻断装备提醒或今日账本。
     self.dependencies = {}

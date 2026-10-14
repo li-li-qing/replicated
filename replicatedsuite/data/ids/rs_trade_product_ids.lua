@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - ArcheRage Trade Product Item IDs
+-- Replicated Suite · 贸易产物身份注册
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- productItemId is an item namespace and MUST NOT be confused with craftId.
--- Only directly verified ArcheRage DB identities are registered.
+-- productItemId 属于物品命名空间，禁止与 craftId 混淆；这里只注册直接核实的 ArcheRage 数据库身份。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -45,7 +46,7 @@ local function RegisterProduct(itemId, legacyName, sourceOverride)
     return row
 end
 
--- Mainland trade-pack ItemIDs verified one-to-one from current Trademaster achievement item lists.
+-- 大陆货包 ItemID 已按当前 Trademaster 成就物品清单逐项核实。
 RegisterProduct(41990, "Ahnimar Preserved Gilda Specialty")
 RegisterProduct(41992, "Ahnimar Preserved Local Specialty")
 RegisterProduct(41991, "Ahnimar Preserved Specialty")
@@ -131,8 +132,7 @@ RegisterProduct(31852, "Ynystere Commercial Gilda Specialty")
 RegisterProduct(31915, "Ynystere Commercial Local Specialty")
 RegisterProduct(31875, "Ynystere Commercial Specialty")
 
--- R4: remaining identities verified one-to-one from ArcheRage item pages and
--- Crafting Folio product links. These values were NOT inferred from ID ranges.
+-- 其余身份已按 ArcheRage 物品页面和 Crafting Folio 产物链接逐项核实，禁止根据 ID 区间推算。
 RegisterProduct(26485, "Silent Forest Aged Garlic", SOURCE_CRAFT_RESULT)
 RegisterProduct(31849, "Windscour Preserved Gilda Specialty", SOURCE_CRAFT_RESULT)
 RegisterProduct(31872, "Windscour Preserved Specialty", SOURCE_CRAFT_RESULT)

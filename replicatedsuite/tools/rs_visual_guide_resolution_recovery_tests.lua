@@ -1,13 +1,11 @@
--- Replicated Suite - visual-guide resolution/style recovery regression host.
--- Maintenance intent:
--- This test deliberately uses production rs_theme.lua and rs_v3_combat_visual_guides.lua while
--- providing only the smallest UI/runtime host necessary. It exists because the legacy workspace
--- theme/unit-line hosts are not currently self-contained in the distribution. The contract under
--- test is the user-visible failure mode: a native UI environment reset (resolution/quality/UI-scale)
--- may reset LABEL TextStyle font size without changing feature settings; range-assist and unit-line
--- point glyphs must recover their configured diameter automatically and Theme typography refresh
--- must not clamp them back to ordinary text sizes.
-
+------------------------------------------------------------------------
+-- Replicated Suite · 视觉引导分辨率恢复测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 视觉引导分辨率和样式恢复测试使用生产 rs_theme.lua、rs_v3_combat_visual_guides.lua，仅提供必要的最小 UI 和运行时宿主，因为旧工作区主题及单位连线宿主在发行包中不具备自包含条件。
+-- 原生 UI 环境因分辨率、画质或缩放重置时，可能在功能设置不变的情况下重置 LABEL TextStyle 字号；距离辅助和单位连线的点形字符必须自动恢复配置直径，Theme 排版刷新不能把它们限制回普通文字尺寸。
+------------------------------------------------------------------------
 local SCRIPT = debug.getinfo(1, "S").source
 local SCRIPT_PATH = SCRIPT:sub(1, 1) == "@" and SCRIPT:sub(2) or SCRIPT
 local ROOT = SCRIPT_PATH:match("^(.*)/tools/[^/]+$") or (SCRIPT_PATH:match("^tools/[^/]+$") and ".")
@@ -278,8 +276,7 @@ expect("visual guide presenter version 15+", (P.version or 0) >= 15)
 expect("visual guide UI-environment recovery contract exists", P.UiEnvironmentStyleRecoveryContractVersion == 1)
 expect("visual guide manual typography contract exists", P.ManualPointTypographyContractVersion == 1)
 
--- Prove the underlying failure mechanism on an ordinary label: a 40px manual write gets
--- re-resolved from its 15px base and clamped back to normal typography on RefreshTypography.
+-- 验证底层故障机制：普通标签手动设为 40px 后，RefreshTypography 会按其 15px 基准重新求解并限制回普通文字尺寸。
 local ordinaryParent = S.UI:CreateOverlayWindow("ordinary_parent", "test")
 local ordinary = S.UI:CreateLabel(ordinaryParent, "ordinary_probe", ".", 0, 0, 20, 20, 15, "strong", "CENTER", false)
 S.UI:SetFontSize(ordinary, 40)
@@ -287,7 +284,7 @@ local beforeOrdinaryRefresh = ordinary.nativeFontSize
 S.Theme:RefreshTypography()
 expect("ordinary label demonstrates theme reset mechanism", beforeOrdinaryRefresh == 40 and ordinary.nativeFontSize ~= 40, ordinary.nativeFontSize)
 
--- Unit line point: configured point size 10 maps to a 40px glyph in production.
+-- 单位连线的点尺寸配置为 10 时，生产逻辑对应 40px 字符。
 P.unitHeld = true
 P:EnsureHost("unit")
 P:RenderUnit("test_initial")
@@ -301,8 +298,7 @@ local unitFontBeforeTheme = unitDot and unitDot.root.nativeFontSize
 S.Theme:RefreshTypography()
 expect("theme refresh does not shrink unit-line point", unitDot and unitDot.root.nativeFontSize == unitFontBeforeTheme, unitDot and unitDot.root.nativeFontSize)
 
--- Simulate the game/native UI recreating TextStyle during a resolution/quality change while
--- leaving our Lua-side render diff cache stale. This was the production bug.
+-- 模拟游戏在分辨率或画质变化时重建 TextStyle，而 Lua 渲染差异缓存仍保留旧值的故障。
 unitDot.root.nativeFontSize = 15
 S.UI:PrimeNativeState(unitDot.root, { fontSize = 15 })
 local invalidBeforeUnitRecovery = invalidations
@@ -319,7 +315,7 @@ P:RenderUnit("test_same_revision")
 expect("same UI revision does not repeatedly invalidate unit dots", invalidations == invalidStableUnit, invalidations)
 expect("same UI revision preserves diff-render font writes", fontWrites == fontStableUnit, fontWrites - fontStableUnit)
 
--- Range-assist shares the same style-recovery fence and manual typography ownership.
+-- 距离辅助共用相同的样式恢复边界和手动排版所有权。
 P.rangeHeld = true
 P:EnsureHost("range")
 P:RenderRange("test_range_initial")

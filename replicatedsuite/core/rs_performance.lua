@@ -1,10 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Low-overhead performance telemetry
+-- Replicated Suite · 性能采样与遥测
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- This module never persists data and never uses the Suite's simulated
--- OnUpdate clock as an execution timer.  Frame samples are always available;
--- callback timing is opt-in and only enabled when a monotonic local timer is
--- actually available in the client Lua environment.
+-- 低开销性能遥测不持久化数据，不用 Suite 模拟 OnUpdate 时钟充当执行计时器。帧采样始终可用；回调计时由用户选
+-- 择，且仅当客户端 Lua 环境确实具有单调本地计时器时启用。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -15,7 +15,7 @@ local MAX_FRAME_LABELS = 12
 local MAX_LABELS = 128
 local JANK_MS = 50
 local CLOCK_GAP_TOLERANCE_MS = 25
--- 中文维护（continuous-performance-1）：持续采集属于现有 Monitor；内存历史固定 30 个分钟窗口，
+-- 持续采集属于现有 Monitor；内存历史固定 30 个分钟窗口，
 -- 会话累计只保留有界标签/模块统计。无新 Tick、无后台写盘、无业务开关或刷新参数改动。
 local WINDOW_MS, WINDOW_LIMIT = 60000, 30
 
@@ -45,9 +45,8 @@ S.PerformanceMonitor = {
     labels = {}, current = { labels = {}, seen = {}, modules = {}, moduleSeen = {}, executed = 0, pending = 0, measuredMs = 0, completed = false },
     previous = { labels = {}, modules = {}, executed = 0, pending = 0, measuredMs = 0, valid = false },
     outside = { labels = {}, seen = {}, modules = {}, moduleSeen = {}, executed = 0, measuredMs = 0 }, frameActive = false,
-    -- lastFrameMs remains the client-provided OnUpdate delta for compatibility.
-    -- os.clock is deliberately reported as a *script-clock gap*, not wall time:
-    -- different RU clients may account suspended/render time differently.
+    -- lastFrameMs 为兼容保留客户端 OnUpdate delta。os.clock 只报告脚本时钟间隔而非墙上时间，不同 RU 客户端
+    -- 对暂停或渲染时间的计入可能不同。
     lastFrameMs = 0, maxFrameMs = 0, lastClockGapMs = nil, maxClockGapMs = 0,
     lastUnattributedMs = 0, maxUnattributedMs = 0, unattributedStalls = 0,
     lastFrameClockMs = nil, jankThresholdMs = JANK_MS,
@@ -102,14 +101,13 @@ function P:_Stats(label, detailed)
     label = NormalizeLabel(label)
     local container = detailed and self.capture and self.capture.labels or self.labels
     if container == nil then return nil, label end
-    -- Do not use `a and b or fallback` here: an absent detailed entry is nil
-    -- on its first call and would incorrectly select the always-on aggregate
-    -- table, leaving the finished capture empty despite valid timing samples.
+    -- 此处不能使用 a and b or fallback；详细项首次调用尚为 nil，会错误选择常驻聚合表，使已有有效采样的完成
+    -- 捕获仍为空。
     local stats = container[label]
     if stats ~= nil then return stats, label end
     local count = 0
     for _ in pairs(container) do count = count + 1 end
-    -- 中文维护：预留 other 桶，防止达到 128 后再插入第 129 个标签；新增来源只合并计数。
+    -- 预留 other 桶，防止达到 128 后再插入第 129 个标签；新增来源只合并计数。
     if count >= MAX_LABELS - 1 then label = "other"; stats = container[label]; if stats ~= nil then return stats, label end end
     stats = { calls = 0, timedCalls = 0, totalMs = 0, selfMs = 0, maxMs = 0, jankHits = 0 }
     container[label] = stats
@@ -157,7 +155,7 @@ function P:_ModuleStats(moduleId)
     return stats, moduleId
 end
 
--- 中文维护：一分钟桶复用累计已归一的有界 key，避免每次计时再建立临时数组/元组增加 GC 负担。
+-- 一分钟桶复用累计已归一的有界 key，避免每次计时再建立临时数组/元组增加 GC 负担。
 local function WindowStats(container,key)
     local row=container[key]
     if not row then row={calls=0,timedCalls=0,totalMs=0,selfMs=0,maxMs=0,jankHits=0};container[key]=row end
@@ -177,10 +175,8 @@ function P:_CopyCompletedFrame()
     if previous.valid ~= true then return end
     for index, label in ipairs(current.labels) do previous.labels[index] = label end
     for index, moduleId in ipairs(current.modules) do previous.modules[index] = moduleId end
-    -- Native hosts that ran after the scheduler's previous EndFrame belong to
-    -- the interval that ends now. Merge them before evaluating this OnUpdate
-    -- delta; deferring them one more scheduler frame would create a false
-    -- causal offset in the diagnostic output.
+    -- 上次 Scheduler EndFrame 后执行的原生宿主属于当前结束的区间；须在评估本次 OnUpdate delta 前合入，再延
+    -- 后一帧会使诊断产生假的因果时间偏移。
     for _, label in ipairs(outside.labels) do AppendUnique(previous.labels, label) end
     for _, moduleId in ipairs(outside.modules) do AppendUnique(previous.modules, moduleId) end
     for key in pairs(outside.seen) do outside.seen[key] = nil end
@@ -191,9 +187,7 @@ function P:_CopyCompletedFrame()
 end
 
 function P:BeginFrame(dtMs, pending)
-    -- A native OnUpdate delta describes the interval that ended just before
-    -- this callback.  Preserve the completed previous-frame labels so a long
-    -- interval is never attributed to callbacks that have not run yet.
+    -- 原生 OnUpdate delta 描述回调前刚结束的区间。保留完成的上一帧标签，不能把长区间归给尚未运行的回调。
     self:_CopyCompletedFrame()
     local current = self.current
     for key in pairs(current.seen) do current.seen[key] = nil end
@@ -241,7 +235,7 @@ function P:Begin(label, moduleId)
     local moduleStats, normalizedModule = self:_ModuleStats(moduleId)
     if moduleStats ~= nil then moduleStats.calls = moduleStats.calls + 1 end
     local started = self.timer and self.timer() or nil
-    -- 中文维护：token 绑定采集对象，Stop/重新开始不能让旧回调串入新记录。嵌套计时用父 token
+    -- token 绑定采集对象，Stop/重新开始不能让旧回调串入新记录。嵌套计时用父 token
     -- 扣除子调用时间；包含耗时仍保留，但帧内实测总量与排名使用 selfMs，禁止重复加父子耗时。
     local token = { label = detailLabel, moduleId = normalizedModule, started = started,
         capture = capture, parent = self.activeToken, childMs = 0 }
@@ -304,9 +298,7 @@ function P:EndFrame(dtMs, backlog)
     frame.measuredMs = self.previous.measuredMs or 0
 
     local observed = math.max(elapsed, tonumber(self.current.clockGapMs) or 0)
-    -- A clock gap larger than the native delta is useful evidence of a stall,
-    -- but not proof of a particular external source.  Do not accuse the Suite
-    -- callbacks that happen to run after that gap.
+    -- 脚本时钟间隔大于原生 delta 是停顿证据，但不能证明特定外部来源；不能归咎于恰好在间隔后执行的 Suite 回调。
     local clockDominant = self.current.clockGapMs ~= nil
         and (self.current.unattributedMs or 0) >= CLOCK_GAP_TOLERANCE_MS
         and observed >= self.jankThresholdMs
@@ -314,7 +306,7 @@ function P:EndFrame(dtMs, backlog)
     local measured = tonumber(source.measuredMs) or 0
     local intervalUnmeasured = self.timer ~= nil and elapsed >= self.jankThresholdMs
         and math.max(0, elapsed - measured) or 0
-    -- 中文维护：未开启详细计时/客户端没有可用时钟时，只能记录帧卡顿，不能暗示某模块是根因。
+    -- 未开启详细计时/客户端没有可用时钟时，只能记录帧卡顿，不能暗示某模块是根因。
     local timingCovered = self.capture ~= nil and self.capture.finished ~= true and self.timer ~= nil
     local suppressAssociation = not timingCovered or clockDominant or intervalUnmeasured >= self.jankThresholdMs
     local kind = clockDominant and "脚本时钟间隔异常（未归因）"
@@ -335,15 +327,11 @@ function P:EndFrame(dtMs, backlog)
             jank.modules = table.concat(source.modules, ", ")
         end
         if self.worstJank == nil or observed > (tonumber(self.worstJank.dtMs) or 0) then
-            -- Keep the all-session maximum separately: the 40-entry recent
-            -- ring can be overwritten by ordinary stutters after a rare long
-            -- freeze, precisely the incident this monitor must preserve.
+            -- 全会话最大值单独保存；40 项近期环可能被普通抖动覆盖，罕见长冻结证据仍须保留。
             self.worstJank = { dtMs = observed, nativeDtMs = elapsed, clockGapMs = self.current.clockGapMs,
                 measuredMs = measured, kind = kind, labels = jank.labels, modules = jank.modules, pending = frame.pending }
         end
-        -- A finished capture is immutable. Continuing to associate later
-        -- frames with its old labels made jankHits exceed calls, producing an
-        -- impossible and misleading hotspot signal in exported diagnostics.
+        -- 已完成捕获不可变；不能继续把后续帧关联旧标签，否则 jankHits 会超过 calls，生成不可能且误导的热点证据。
         if suppressAssociation ~= true and self.capture ~= nil and self.capture.finished ~= true then
             for _, label in ipairs(source.labels) do
                 local detail = self:_Stats(label, true)
@@ -357,7 +345,7 @@ function P:EndFrame(dtMs, backlog)
     end
     local capture = self.capture
     if capture and capture.continuous and not capture.finished then
-        -- 中文维护：帧统计只属于手动开始后的本次记录；全会话旧卡顿不能污染本次累计。
+        -- 帧统计只属于手动开始后的本次记录；全会话旧卡顿不能污染本次累计。
         capture.frames,capture.totalFrameMs=capture.frames+1,capture.totalFrameMs+elapsed
         capture.maxFrameMs=math.max(capture.maxFrameMs,elapsed)
         local window=capture.window
@@ -379,7 +367,7 @@ function P:EndFrame(dtMs, backlog)
 end
 
 function P:ResetRecordingFrames()
-    -- 中文维护：新记录边界隔离帧关联缓存；旧回调即使发生在同一加载代，也不得污染新记录。
+    -- 新记录边界隔离帧关联缓存；旧回调即使发生在同一加载代，也不得污染新记录。
     -- 不清全加载的帧卡顿历史/任务事实，只清用于回调归因的 current/previous/outside 临时数据。
     self.activeToken=nil
     for _,record in ipairs({self.current,self.previous,self.outside}) do
@@ -404,17 +392,17 @@ function P:StopCapture()
     if self.capture.continuous then self:_FinishWindow(S.NowMs and S.NowMs() or 0,true) end
     self.capture.finished = true
     self.capture.endsAt = S.NowMs and S.NowMs() or 0
-    self.activeToken = nil -- 中文维护：停止时冻结记录；尚未结束的 token 只能丢弃，不能写入完成快照。
+    self.activeToken = nil -- 停止时冻结记录；尚未结束的 token 只能丢弃，不能写入完成快照。
     return true, "详细捕获已停止"
 end
 
 function P:ClearCapture()
-    if self.capture and not self.capture.finished then return false, "请先停止诊断再清空" end -- 中文维护：用户不能误清仍在记录的证据。
+    if self.capture and not self.capture.finished then return false, "请先停止诊断再清空" end -- 用户不能误清仍在记录的证据。
     self.capture = nil
     return true
 end
 
--- 中文维护：排名/窗口摘要统一消费有界统计；selfMs 为剔除嵌套的实测时间，totalMs 为包含子调用的
+-- 排名/窗口摘要统一消费有界统计；selfMs 为剔除嵌套的实测时间，totalMs 为包含子调用的
 -- 回调完整耗时。计时失败时 averageMs 缺失而不是假造 0ms；调用次数仍有意义。
 local function RankedStats(container,key,limit)
     local rows = {}
@@ -444,7 +432,7 @@ end
 function P:StartContinuous()
     if self.capture and not self.capture.finished then return false,"诊断已在记录，先停止后再开始新记录" end
     local now=S.NowMs and S.NowMs() or 0
-    -- 中文维护：只有显式按钮开始；重载得到新的 Monitor 对象且默认关闭。内存记录不进入业务 Store。
+    -- 只有显式按钮开始；重载得到新的 Monitor 对象且默认关闭。内存记录不进入业务 Store。
     self.capture={continuous=true,startedAt=now,labels={},modules={},finished=false,frames=0,totalFrameMs=0,
         maxFrameMs=0,jankCount=0,unattributedStalls=0,scriptSelfMs=0,history={},windowsEvicted=0,recentJanks={},window=NewWindow(now)}
     self:ResetRecordingFrames()
@@ -464,7 +452,7 @@ function P:_FinishWindow(now,flush)
     end
     capture.window=NewWindow(now)
 end
--- 中文维护：快照递归复制有限统计，不向 UI/导出泄漏可写的历史表；只在明确查看/导出的冷路径调用。
+-- 快照递归复制有限统计，不向 UI/导出泄漏可写的历史表；只在明确查看/导出的冷路径调用。
 local function Detached(value)
     if type(value)~="table" then return value end
     local out={};for key,item in pairs(value)do out[key]=Detached(item)end;return out
@@ -494,9 +482,7 @@ function P:Snapshot()
         lastClockGapMs = self.lastClockGapMs, maxClockGapMs = self.maxClockGapMs,
         lastUnattributedMs = self.lastUnattributedMs, maxUnattributedMs = self.maxUnattributedMs,
         unattributedStalls = self.unattributedStalls,
-        -- jankCount is the all-session count; the bounded ring only retains
-        -- the latest samples for association, never silently caps the number
-        -- shown to the user at 40.
+        -- jankCount 是全会话次数；有界环只保存用于关联的最新样本，不能把用户所见总数静默截为 40。
         jankCount = self.jankTotal, jankSamples = self.jankCount, jankThresholdMs = self.jankThresholdMs,
         latestJank = jank and { dtMs = jank.dtMs, nativeDtMs = jank.nativeDtMs, clockGapMs = jank.clockGapMs,
             kind = jank.kind, labels = jank.labels, pending = jank.pending } or nil,
@@ -505,7 +491,7 @@ function P:Snapshot()
             continuous=capture.continuous==true,startedAt=capture.startedAt,
             secondsRemaining = not capture.continuous and math.max(0, math.ceil(((capture.endsAt or 0) - (S.NowMs and S.NowMs() or 0)) / 1000)) or nil,
             durationSeconds = capture.durationSeconds } or nil,
-        monitoring=self:GetMonitoringSnapshot(), -- 中文维护：系统完整报告沿用 Snapshot 即可携带同一份持续记录。
+        monitoring=self:GetMonitoringSnapshot(), -- 系统完整报告沿用 Snapshot 即可携带同一份持续记录。
         top = self:GetTop(6), topModules = self:GetTopModules(6), worstJank = self:GetWorstJank(3), startup = self:GetStartup(),
     }
 end
@@ -528,7 +514,7 @@ function P:BuildSummary()
 end
 
 function P:BuildReport()
-    -- 中文维护：专用性能导出每次读取新快照，不能复用诊断页之前冻结的自检原文；不运行 Gate、
+    -- 专用性能导出每次读取新快照，不能复用诊断页之前冻结的自检原文；不运行 Gate、
     -- 不查询世界、不启停采样、不 Apply Store。序列化/传输继续使用既有 DiagnosticDetail/Persistence。
     if not self.capture then return nil,"请先开始持续诊断并复现卡顿" end
     if not S.DiagnosticDetail or type(S.DiagnosticDetail.New)~="function" then return nil,"性能报告格式器不可用" end

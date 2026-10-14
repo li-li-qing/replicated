@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-# 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 6 处未解决的 Git 合并冲突。
-# 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
-# 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
-# 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+# ---------------------------------------------------------------------
+# Replicated Suite · 状态重构测试运行器
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+# 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+# 数据归属、调用链和存档协议由原实现管理，
+# 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+# 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 """开发期离线回归；不进入 toc.g，不模拟已通过 RU 实机验收。
 优先使用系统 Lua 5.1；无 CLI 时仅以 liblua5.4 + 兼容垫片运行纯逻辑测试。
 """
@@ -49,13 +54,13 @@ FEATURE_SPLIT_TESTS = [
 CORE_FEATURE_DECOUPLING_TESTS = [
     "tools/rs_core_feature_decoupling_tests.lua",
     "tools/rs_refactor_live_gate_tests.lua",
-    # 2026-09-30: real dormant/active feature states and catalog data revisions.
+    # 覆盖真实功能的休眠、激活状态及目录数据版本。
     "tools/rs_live_contract_state_tests.lua",
 ]
 
 
-# 2026-09-30: same-viewport reload recovery, genuine scale/viewport migration,
-# and independent profile buttons must be in the default gate, not optional-only.
+# 视口不变时的重载恢复、实际缩放和视口迁移，
+# 以及独立预设按钮都必须进入默认门禁，不能仅作为可选检查。
 WINDOW_POSITION_TESTS = [
     "tools/rs_window_viewport_tests.lua",
     "tools/rs_window_reload_position_tests.lua",
@@ -63,8 +68,8 @@ WINDOW_POSITION_TESTS = [
 ]
 
 
-# 2026-09-30: actual shared auction services + Trade activity projection; required in full gate.
-# Cross-continent Native readiness / actual persistence roundtrip regressions.
+# 真实共享拍卖服务和 Trade 活动投影属于完整门禁的必需项。
+# 覆盖跨大陆原生就绪状态及真实持久化往返回归。
 BONDS_CROSS_CONTINENT_TESTS = ["tools/rs_bonds_cross_continent_tests.lua"]
 
 AUCTION_USER_PRIORITY_TESTS = [
@@ -76,7 +81,7 @@ AUCTION_USER_PRIORITY_TESTS = [
 ]
 
 
-# 2026-09-30: real quest-title readiness + original alias/candidate/detail boundaries.
+# 覆盖真实任务称号就绪状态及原有别名、候选和详情边界。
 DAILY_AUCTION_TESTS = [
     "tools/rs_daily_auction_title_readiness_tests.lua",
     "tools/rs_daily_auction_multi_quest_tests.lua",
@@ -85,8 +90,8 @@ DAILY_AUCTION_TESTS = [
 ]
 
 
-# 2026-09-30: keep the dedicated copy buffer and economics evidence in the
-# default gate. These use real controllers/projections, with Native-only boundaries.
+# 独立复制缓冲区和收益证据必须进入默认门禁，
+# 使用真实控制器及投影，仅原生边界由替身提供。
 TRADE_COPY_EVIDENCE_TESTS = [
     "tools/rs_diagnostic_copy_box_tests.lua",
     "tools/rs_module_diagnostics_window_tests.lua",
@@ -117,8 +122,8 @@ RANGE_CONTINUITY_TESTS = [
 ]
 
 
-# 2026-09-30: cold Trade imports, quote recovery/unit-price authority and best-effort Gear transactions.
-# Native-only boundary models; these gates do not substitute RU game acceptance.
+# 覆盖未预导入的 Trade、报价恢复和单位价归属，以及允许部分失败的 Gear 事务。
+# 仅模拟原生边界，这些门禁不能替代 RU 游戏验收。
 TRADE_GEAR_RELIABILITY_TESTS = [
     "tools/rs_trade_quote_isolation_price_safety_tests.lua",
     "tools/rs_trade_cost_retry_tests.lua",
@@ -132,8 +137,8 @@ TRADE_GEAR_RELIABILITY_TESTS = [
 ]
 
 
-# 2026-10-01: legacy shared queue and the cache-first Trade path both remain required.
-# Production service tests cover bounded native counts, cache ages and cancellation ownership.
+# 旧共享队列和缓存优先 Trade 路径都仍是必需检查。
+# 生产服务测试覆盖有界原生调用次数、缓存年龄和取消归属。
 TRADE_REQUOTE_TESTS = [
     "tools/rs_trade_single_query_transport_tests.lua",
     "tools/rs_trade_material_quote_service_tests.lua",
@@ -141,9 +146,9 @@ TRADE_REQUOTE_TESTS = [
     "tools/rs_trade_requote_e2e_tests.lua",
 ]
 
-# 2026-10-07 release gate: recent user-visible behavior and migration safety
-# must remain mandatory, not silently disappear behind a passing legacy group.
-# Native boundaries are models; this gate does not certify live RU behavior.
+# 近期玩家可见行为和迁移安全必须继续属于强制门禁，
+# 不能被通过的旧测试组掩盖而悄然消失。
+# 原生边界是模型，本门禁不认证 RU 实机行为。
 RELEASE_READINESS_TESTS = [
     "tools/rs_auction_paging_tests.lua", # 中文维护：真实分页/Native 行复用及删除询价选择边界。
     "tools/rs_list_refresh_regressions_tests.lua", # 中文维护：治疗同数量编辑与债券行激活契约。
@@ -192,9 +197,9 @@ def require_test_files(paths: list[str]) -> bool:
 
 
 def require_transitive_test_dependencies(paths: list[str]) -> bool:
-    # Phase 0 baseline gate: top-level existence is insufficient when historical suites
-    # still dofile nested hosts/fixtures. Audit literal repository-relative dependencies
-    # before running anything so one early failure cannot hide the remaining blockers.
+    # 历史套件还会 dofile 嵌套宿主或固定数据，仅检查顶层文件存在不足以保证可运行；
+    # 运行前递归审查仓库相对路径的字面依赖，
+    # 避免一次早期失败掩盖其它缺失依赖。
     try:
         from rs_test_dependency_audit import audit
     except ImportError:
@@ -275,8 +280,8 @@ def main() -> int:
     prelude = 'unpack=unpack or table.unpack; loadstring=loadstring or load; table.getn=table.getn or function(t) return #t end;\n'
     isolated_after: list[str] = []
     if "--native-dependency" in sys.argv:
-        # Phase 0 FND-016: implementation/Registry Native ownership parity + shared-service inventory.
-        # A return code of 2 means the audit ran but a verified NativeContract namespace is still missing.
+        # 核对实现与 Registry 的原生依赖归属一致性，并盘点共享服务。
+        # 返回码 2 表示审查已执行，但仍缺少经过验证的 NativeContract 命名空间。
         try:
             from rs_native_dependency_audit import main as native_dependency_main
         except ImportError:
@@ -394,14 +399,14 @@ def main() -> int:
         # 今日收益：真实账本 + fail-closed CHAT_MESSAGE 结构化适配器。Native 载荷为模型，不等同 RU 实机字段证明。
         source = prelude + 'dofile("tools/rs_daily_ledger_tests.lua"); dofile("tools/rs_daily_income_source_tests.lua"); dofile("tools/rs_home_overview_tests.lua")'
     elif "--overview-v2" in sys.argv:
-        # Workbench layout, task read model, official journal capability and ledger projection.
-        # Native hosts are test doubles, not an in-client performance certification.
+        # 覆盖工作台布局、任务读取模型、原生任务日志能力和账本投影。
+        # 原生宿主为测试替身，不能作为客户端性能认证。
         source = prelude + 'dofile("tools/rs_overview_v2_tests.lua"); dofile("tools/rs_quest_journal_detail_tests.lua"); dofile("tools/rs_ledger_projection_v2_tests.lua")'
     elif "--overview" in sys.argv:
-        # Real Feature/Service/RSUI, controlled Native sources; earnings providers are test-only.
+        # 使用真实 Feature、Service 和 RSUI，原生来源受控；收益提供器仅供测试。
         source = prelude + 'dofile("tools/rs_overview_quote_tests.lua"); dofile("tools/rs_compact_tracker_tests.lua"); dofile("tools/rs_daily_ledger_tests.lua"); dofile("tools/rs_daily_income_source_tests.lua"); dofile("tools/rs_home_overview_tests.lua")'
     elif "--report-failures" in sys.argv:
-        # Real strict text-cache + Store/EventBus with explicit native truncation models.
+        # 使用真实严格文本缓存、Store 和 EventBus，显式模拟原生截断。
         required = ["tools/rs_report_failure_regression_tests.lua"]
         if not require_test_files(required): return 2
         source = prelude + lua_dofiles(required)
@@ -409,13 +414,13 @@ def main() -> int:
         # 维护：真实RSUI布局/表单/虚拟表格/EventBus/ActionRunner/Gear存档；Native为模拟。
         source = prelude + 'dofile("tools/rs_gear_page_regression_tests.lua")'
     elif "--cooldown" in sys.argv:
-        # CooldownObservationV3 V4: Skill-ID-only, event-independent Native cooldown authority with bounded READY probe and full demand release; Native transport is a model.
+        # CooldownObservationV3 V4 仅以 Skill ID 为键，冷却来自独立于事件的原生事实；覆盖有界 READY 探测和全部需求释放，原生传输为模型。
         source = prelude + 'dofile("tools/rs_cooldown_observation_tests.lua")'
     elif "--library-runtime" in sys.argv:
         # 维护：真实EventBus owner-first / Scheduler / Api / Store与Button逻辑；Native仍为模拟。
         source = prelude + 'dofile("tools/rs_library_runtime_contract_tests.lua")'
     elif "--capture-library" in sys.argv:
-        # Real status Feature/Store/UI bindings and bounded metadata/retention; no RU-client claim.
+        # 使用真实状态 Feature、Store、UI 绑定和有界元数据及留存策略，不能视为 RU 实机验证。
         source = prelude + 'dofile("tools/rs_tracking_scope_tests.lua"); dofile("tools/rs_tracking_scope_ui_tests.lua"); dofile("tools/rs_status_capture_library_tests.lua")'
     elif "--unit-lines" in sys.argv:
         # 维护：真实Service/Feature/Presenter回归；Native、坐标和调度驱动为模拟，不代表RU实机。
@@ -424,10 +429,10 @@ def main() -> int:
         # 维护：共享 ColorField V2 的布局/事务/Popup 坐标契约；Native 顶层 Window 行为仍需 RU 实机确认。
         source = prelude + 'dofile("tools/rs_colorfield_v2_tests.lua"); dofile("tools/rs_colorfield_popup_positioning_tests.lua")'
     elif "--paged" in sys.argv:
-        # Explicit UI navigation + immutable report; no implicit print-to-next behavior.
+        # 显式 UI 导航和不可变报告不能隐式推进到下一条输出。
         source = prelude + 'dofile("tools/rs_report_paging_tests.lua")'
     elif "--udf-numeric" in sys.argv:
-        # UDF-derived projection mechanisms, synthetic PII-free fixtures; not native acceptance.
+        # 验证从 UDF 归纳的投影机制，使用不含个人标识的构造数据，不能作为原生验收。
         source = prelude + 'dofile("tools/rs_udf_numeric_regression_tests.lua")'
     elif "--f2-page" in sys.argv:
         # 维护：真实Core/Store/PageHost的构建前隔离；不是F2实际旧档已恢复的证明。

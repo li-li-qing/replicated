@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 贸易材料报价
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 跑商材料报价 V3：每次操作只查缺失身份一次；缓存/SWR 与前台有界任务分离。
 -- 不拥有配方数量、售价或毛利算法；不直接调用 Native；不新增周期 Scheduler lane。
 ------------------------------------------------------------------------
@@ -15,7 +19,7 @@ local function Copy(v)
     local out = {}; for k, x in pairs(v) do out[k] = Copy(x) end; return out
 end
 local function Identity(m)
-    -- 中文维护：普通材料品质 0 是有效身份；未知/NaN 不能默认成 1 或进入共享价格缓存。
+    -- 普通材料品质 0 是有效身份；未知/NaN 不能默认成 1 或进入共享价格缓存。
     local id, grade = tonumber(m.itemType), tonumber(m.itemGrade)
     if not id or id ~= id or id == math.huge or id < 1 or id ~= math.floor(id)
         or not grade or grade ~= grade or grade < 0 or grade > 20 or grade ~= math.floor(grade) then return nil end
@@ -25,7 +29,7 @@ local function Snapshot(op)
     return { requester = op.requester, active = op.active, total = #op.materials,
         known = op.known, unknown = op.unknown, complete = not op.active and op.unknown == 0,
         state = op.active and 'quoting' or (op.unknown == 0 and 'ready' or (op.known > 0 and 'partial' or 'failed')),
-        -- 中文维护：TXT 要能区分材料尚在等待与发包后的超时，保留当前阶段的预算来源。
+        -- TXT 要能区分材料尚在等待与发包后的超时，保留当前阶段的预算来源。
         createdAt = op.createdAt, completedAt = op.completedAt, results = Copy(op.results),
         deadlineAt=op.deadlineAt, stageStartedAt=op.stageStartedAt, stageBudgetMs=op.stageBudgetMs,
         queueDepthAtStage=op.queueDepthAtStage, currentQuoteKey=op.currentQuoteKey }
@@ -33,7 +37,7 @@ end
 local function Notify(op)
     if type(op.callback) == 'function' then pcall(op.callback, Snapshot(op)) end
 end
--- 中文维护（2026-10-02）：TXT 须能解释“再次点击为何没有再发包”。只读现有操作与
+-- （2026-10-02）TXT 须能解释“再次点击为何没有再发包”。只读现有操作与
 -- 失败缓存的身份/时间/结果，不清过期项、不延长 TTL、不触发重试，也不暴露 callback。
 function T:DescribeDiagnostics()
     local operations = {}
@@ -44,7 +48,7 @@ function T:DescribeDiagnostics()
         operations[requester] = snapshot
     end
     return { version=self.version, timeoutMs=self.timeoutMs, failureTtlMs=self.failureTtlMs,
-        -- 中文维护：使新 TXT 能明确证明分阶段计时补丁已加载，无须改变整个 Addon 版本号。
+        -- TXT 通过局部契约标识证明已加载分阶段计时，无须更改全局 Addon 版本号。
         deadlinePolicy='per_material_bounded_queue_then_5s_response',
         maxFailures=self.maxFailures, maxOperations=self.maxOperations, capturedAt=Now(),
         operations=operations, failures=Copy(self.failures), ownerEpochs=Copy(self.ownerEpochs),
@@ -52,7 +56,7 @@ function T:DescribeDiagnostics()
 end
 local function RememberFailure(key, result)
     -- 交互阻断不是无货；玩家关闭拍卖行后的新操作必须重新核对可见性，不能回放过期阻断。
-    -- 中文维护（215703）：排队/响应超时不是无货证据，不把它缓存三十秒阻止用户重新显式操作。
+    -- 排队/响应超时不是无货证据，不把它缓存三十秒阻止用户重新显式操作。
     if result.status == 'blocked' or result.status == 'timeout' then return end
     local count, oldest, at = 0, nil, math.huge
     for k, value in pairs(T.failures) do count=count+1;if value.at < at then oldest,at=k,value.at end end
@@ -130,7 +134,7 @@ local function NextMissing(op)
     if failure and Now() >= failure.at and Now()-failure.at < T.failureTtlMs then
         AddResult(op,material,failure.result);Notify(op);return NextMissing(op)
     end
-    -- 中文维护（215703）：整张配方不能从点击时共享五秒总预算，否则相邻货物排队就耗尽期限。
+    -- 整张配方不能从点击时共享五秒总预算，否则相邻货物排队就耗尽期限。
     -- 每个有限材料阶段独立有界：前方最多 Queue.maxQueue 个槽，每槽按原 Query 隔离上限加 lane
     -- 间隔预算，外加本材料五秒响应期。不加查询/重试、不缩短原生隔离，也不扫描 Native。
     local queue=S.Services.PriceQuoteQueueV3

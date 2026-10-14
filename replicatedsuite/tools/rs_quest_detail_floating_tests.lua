@@ -1,5 +1,10 @@
--- Replicated Suite V3 - Quest Detail Floating lifecycle regression
+------------------------------------------------------------------------
+-- Replicated Suite · 任务详情浮窗测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 开发期离线测试；不进入 toc.g。验证 Presentation Consumer/事件边界，不冒充 RU Native 实机验收。
+------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -85,7 +90,7 @@ local function Boot()
     end
     S.Services.QuestProgressV3 = service
 
-    local activityTracking = {} -- nil bucket means implicit all main objectives selected.
+    local activityTracking = {} -- 选择记录为 nil 时，隐式选中全部主目标。
     local Activities = { Commands = {}, detailLoadOk = true }
     S.Features.Activities = Activities
     function Activities:EnsureDetailTrackingLoaded()
@@ -145,7 +150,7 @@ local function Boot()
         eventKey, token = tostring(eventKey or ""), tostring(token or "")
         if Activities.detailLoadOk ~= true then return false, "detail_tracking_fenced" end
         local raw = service:GetGroupDetail("event", eventKey, { journal = false })
-        service.detailReads = service.detailReads - 1 -- command uses cached fact contract in production; keep harness accounting equivalent.
+        service.detailReads = service.detailReads - 1 -- 生产命令读取缓存事实，测试宿主的调用计数也须遵守相同契约。
         if type(raw) ~= "table" then return false, "missing activity" end
         local tokens, known = MainTokens(raw), {}
         for _, candidate in ipairs(tokens) do known[candidate] = true end
@@ -336,7 +341,7 @@ Test("crimson row toggles directly change personal denominator without native re
     assert(M.table.items[5].trackingText == "—", "related row must not be selectable")
     local reads = service.detailReads
 
-    -- Remove completed stage 1: denominator becomes 2, numerator becomes 0.
+    -- 移除已完成的第 1 阶段后，分母为 2，分子为 0。
     assert(M.table:ClickKey("main:1") == true, "main row click failed")
     assert(type(tracking.crimson) == "table" and tracking.crimson["main:101,102"] ~= true, "explicit subset not stored")
     assert(tracking.crimson["main:201"] == true and tracking.crimson["main:301"] == true, "wrong subset stored")
@@ -348,12 +353,12 @@ Test("crimson row toggles directly change personal denominator without native re
     assert(M.progressToggleAttempts == 1 and M.progressToggleSuccesses == 1 and M.progressToggleFailures == 0, "toggle diagnostics mismatch")
     assert(service.detailReads == reads, "selection change reread Native quest detail")
 
-    -- Related rows remain reference-only even when activated.
+    -- 相关目标即使被激活，也只能作为参考行。
     assert(M.table:ClickKey("related:1") == true, "related row click should be harmless")
     assert(M.progressChip.text == "个人进度 0/2" and M.trackingChip.text == "追踪 2/3", "related row changed denominator")
     assert(service.detailReads == reads, "related click reread Native quest detail")
 
-    -- Keep only stage 3, then reject removing the final task (never render 0/0).
+    -- 仅保留第 3 阶段后，拒绝删除最后一个任务，避免出现 0/0。
     assert(M.table:ClickKey("main:2") == true, "second main deselection failed")
     assert(M.progressChip.text == "个人进度 0/1" and M.trackingChip.text == "追踪 1/3", "single-task denominator mismatch")
     M.table:ClickKey("main:3")
@@ -361,7 +366,7 @@ Test("crimson row toggles directly change personal denominator without native re
     assert(M.progressChip.text == "个人进度 0/1" and M.trackingChip.text == "追踪 1/3", "rejected removal changed projection")
     assert(M.table.selectedKey == nil, "rejected toggle left sticky selection")
 
-    -- Re-add the completed stage. Numerator and denominator both respond immediately.
+    -- 重新加入已完成阶段时，分子和分母都应立即更新。
     assert(M.table:ClickKey("main:1") == true, "main reselect failed")
     assert(M.progressChip.text == "个人进度 1/2", "reselect did not restore completed numerator")
     assert(M.trackingChip.text == "追踪 2/3", "reselect summary mismatch")

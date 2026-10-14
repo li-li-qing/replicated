@@ -1,7 +1,10 @@
 ------------------------------------------------------------------------
--- 2026-09-30 gear-partial-continuation-1: real GearV3 transaction tests.
--- Only Native gear/bag/title, time and scheduler are boundary substitutes.
--- No loadout is saved and no game equipment is touched by this offline suite.
+-- Replicated Suite · 装备部分继续执行测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 运行真实 GearV3 事务，只有原生装备、背包、称号、时间和调度边界为替身。
+-- 离线测试不保存配装方案，也不修改游戏装备。
 ------------------------------------------------------------------------
 unpack = unpack or table.unpack
 local passed, total = 0, 0
@@ -182,7 +185,7 @@ Test('legacy saved loadout without ItemID still uses its exact name grade finger
     local h=Boot();for _,saved in ipairs(h.payload.items)do saved.itemType=nil end
     h:start():run();Eq(h.G:GetRuntimeSnapshot().outcome,'complete');Eq(#h.calls,3)
 end)
--- 中文维护：主手切换后才进入背包的目标副手，必须由真实事务在副手动作前重新确认，不能被预检永久排除。
+-- 主手切换后才进入背包的目标副手，必须由真实事务在副手动作前重新确认，不能被预检永久排除。
 Test('offhand released by queued mainhand is resolved after the mainhand swap',function()
     local h=Boot();h.payload.items={};h.bag={};h.equipped={};h.payload.title.apply=false
     h:add(16,1,'new mainhand')

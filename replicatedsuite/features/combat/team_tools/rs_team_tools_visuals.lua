@@ -1,26 +1,19 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Team Tools visual/marker extension (.18.122)
+-- Replicated Suite · 团队牺牲之舞与标记
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 中文维护（2026-10-02）：牺牲之舞独立于职责 Feature；沿用旧视觉 Store 身份与 schema，
--- 不复制 Aura/团队事实，不让职责开关继续控制视觉消费者。The permanent sub-store contains only user
--- choices and stable marker identities; roster/aura/native window facts remain
--- transient.
---
--- Performance contract:
--- * Sacrifice-Dance candidate discovery: roster edges + 10s safety scan.
--- * Aura reads: shared AuraObservationV3, only for Spelldance candidates.
--- * No Tick / no per-frame Native reads in Domain.
--- * Screen projection belongs to Presentation (rs_v3_team_sac_overlay.lua).
--- * Marker restore is a bounded 1.1s serial queue to respect the official
---   X2Unit:SetOverHeadMarker 1000ms cooldown; every write is verified before
---   the next queued write.
+-- 牺牲之舞独立于职责Feature，保留原视觉Store身份/schema，不复制Aura/团队事实，职责开关不能控制视觉消费者。
+-- 永久子Store仅含用户选择与稳定标记身份，名单/Aura/Native窗口事实临时。
+-- 候选发现靠名单边沿与10s安全扫描，仅Spelldance候选读共享AuraObservationV3；Domain无Tick/逐帧Native。屏幕投影归rs_v3_team_sac_overlay.lua。
+-- 标记恢复为有界1.1s串行队列，遵守X2Unit:SetOverHeadMarker官方1000ms冷却，每次写后验证再下一次。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence
 local factory = S.FeatureSliceFactory
 if type(factory) ~= "table" or type(P) ~= "table" then return end
--- 中文维护：独立总开关由 FeatureRuntime 拥有；持久视觉配置仍在原 STORE_ID，
+-- 独立总开关由 FeatureRuntime 拥有；持久视觉配置仍在原 STORE_ID，
 -- 通用空状态 Store 只满足 Feature 生命周期装配，不另存 sacEnabled/savedMarks。
 local Feature = factory.NewFeature("combat_sac_highlight", {
     state = {}, default = {},
@@ -29,8 +22,8 @@ local Feature = factory.NewFeature("combat_sac_highlight", {
 })
 
 local STORE_ID = "v3.combat.team_tools.visuals"
-local STORE_SCHEMA = 2 -- 中文维护注释：schema2 只表达“新安装默认开启牺牲之舞”的默认语义变化；物理 key/owner/savedMarks 形状不变，旧 schema1 用户选择必须迁移保留。
-local LEGACY_SCHEMA = 1 -- 中文维护注释：schema1 历史默认是 sacEnabled=false；即使 Framework2 曾把 false 省略，迁移也必须恢复为 false，不能被 schema2 默认 true 覆盖。
+local STORE_SCHEMA = 2 -- schema2 只表达“新安装默认开启牺牲之舞”的默认语义变化；物理 key/owner/savedMarks 形状不变，旧 schema1 用户选择必须迁移保留。
+local LEGACY_SCHEMA = 1 -- schema1 历史默认是 sacEnabled=false；即使 Framework2 曾把 false 省略，迁移也必须恢复为 false，不能被 schema2 默认 true 覆盖。
 local ROSTER_TOKEN = "combat_team_tools:sac_roster"
 local AURA_TOKEN = "combat_team_tools:sac_aura"
 local CANDIDATE_TASK = "v3_team_tools_sac_candidates"
@@ -45,8 +38,7 @@ local MAX_SAVED_MARKS = 16
 local ACTIVE_STALE_MS = 2500
 local MARKER_FALLBACK_MAX = 8
 
--- Exact RU/legacy evidence from the user-provided reference project.  These
--- are identifiers only; AuraObservationV3 remains the single read Authority.
+-- ID 来自用户参考项目的精确 RU/旧版证据；仅提供身份，AuraObservationV3 仍是唯一读取权威。
 local SAC_BUFF_IDS = {
     [30098] = true,
     [30137] = true,
@@ -55,8 +47,8 @@ local SAC_BUFF_IDS = {
 }
 
 local V = {
-    version = 2, -- 中文维护注释：Domain 运行语义不变，仅 Store 默认/迁移契约升代；候选扫描、Aura/Marker Authority 与任务频率保持原实现。
-    state = { sacEnabled = true, savedMarks = {} }, -- 中文维护注释：新安装/真正空 Store 默认开启；旧 schema1 明确关闭或历史缺失 false 会在迁移边界保留关闭。
+    version = 2, -- Domain 运行语义不变，仅 Store 默认/迁移契约升代；候选扫描、Aura/Marker Authority 与任务频率保持原实现。
+    state = { sacEnabled = true, savedMarks = {} }, -- 新安装/真正空 Store 默认开启；旧 schema1 明确关闭或历史缺失 false 会在迁移边界保留关闭。
     loaded = false,
     running = false,
     rosterHeld = false,
@@ -122,54 +114,54 @@ local function NormalizeSavedMarks(source)
     return out
 end
 
-local function NormalizeState(value, missingSacDefault) -- 中文维护注释：Store canonical/default 的唯一业务归一入口；第二参数只在 schema migration 边界表达历史默认差异，不读取 Runtime/UI。
+local function NormalizeState(value, missingSacDefault) -- Store canonical/default 的唯一业务归一入口；第二参数只在 schema migration 边界表达历史默认差异，不读取 Runtime/UI。
     value = type(value) == "table" and value or {}
     local sacEnabled
     if value.sacEnabled == nil then
-        sacEnabled = missingSacDefault == true -- 中文维护注释：schema2/空 Store 缺失值=新默认 true；schema1 历史缺失值=false，避免升级强行打开用户原关闭状态。
+        sacEnabled = missingSacDefault == true -- schema2/空 Store 缺失值=新默认 true；schema1 历史缺失值=false，避免升级强行打开用户原关闭状态。
     else
-        sacEnabled = value.sacEnabled == true -- 中文维护注释：显式 true/false 永远优先，Transport 会负责跨 SaveData 保留 false；Domain 不接受 0/1 猜测布尔。
+        sacEnabled = value.sacEnabled == true -- 显式 true/false 永远优先，Transport 会负责跨 SaveData 保留 false；Domain 不接受 0/1 猜测布尔。
     end
     return {
         sacEnabled = sacEnabled,
-        -- 中文维护：缺字段保持nil，历史schema1/2指纹不被新默认值改写；getter才回退原50ms。
+        -- 缺字段保持nil，历史schema1/2指纹不被新默认值改写；getter才回退原50ms。
         sacRefreshMs = tonumber(value.sacRefreshMs) and math.max(1,math.min(60000,math.floor(tonumber(value.sacRefreshMs)))) or nil,
         savedMarks = NormalizeSavedMarks(value.savedMarks),
     }
 end
 
-local function NormalizeHistoricalSchema1(value) -- 中文维护注释：只供 schema1 integrity/migration 复原；历史默认 false 是兼容 Authority，不允许未来维护为了“统一默认”删除。
+local function NormalizeHistoricalSchema1(value) -- 只供 schema1 integrity/migration 复原；历史默认 false 是兼容 Authority，不允许未来维护为了“统一默认”删除。
     return NormalizeState(value, false)
 end
 
-local function NormalizeCurrentState(value) -- 中文维护注释：schema2 当前 canonical 与新用户默认统一为 true；已有显式 false 仍保持 false。
+local function NormalizeCurrentState(value) -- schema2 当前 canonical 与新用户默认统一为 true；已有显式 false 仍保持 false。
     return NormalizeState(value, true)
 end
 
 if P:GetStore(STORE_ID) == nil then
     local store, err = P:RegisterV3Store({
         id = STORE_ID,
-        owner = "v3.combat_team_tools.visuals", -- 中文维护注释：保持 schema1 已发布 owner 字符串不变；owner 属于 Persistence metadata 身份，随意改名会让旧用户同 key 存档触发 metadata mismatch/Fence。schema2 只升级默认语义，不迁移 owner。
+        owner = "v3.combat_team_tools.visuals", -- 保持 schema1 已发布 owner 字符串不变；owner 属于 Persistence metadata 身份，随意改名会让旧用户同 key 存档触发 metadata mismatch/Fence。schema2 只升级默认语义，不迁移 owner。
         scope = P.Scope.Account,
         lifetime = P.Lifetime.Permanent,
-        schemaVersion = STORE_SCHEMA, -- 中文维护注释：schema2 不换 key；仅让 Persistence 能区分“旧默认 false”与“新默认 true”，避免升级兼容歧义。
-        legacySchemaVersion = LEGACY_SCHEMA, -- 中文维护注释：直接上一代 schema1 可迁移；更旧无此 Store 的用户会走 empty/default true，不伪造历史数据。
+        schemaVersion = STORE_SCHEMA, -- schema2 不换 key；仅让 Persistence 能区分“旧默认 false”与“新默认 true”，避免升级兼容歧义。
+        legacySchemaVersion = LEGACY_SCHEMA, -- 直接上一代 schema1 可迁移；更旧无此 Store 的用户会走 empty/default true，不伪造历史数据。
         key = P.V3KeyPrefix .. "combat_team_tools_visuals",
         budget = { maxDepth = 4, maxNodes = 160, maxStringBytes = 2048, maxEntriesPerTable = 48 },
-        default = function() return NormalizeCurrentState(nil) end, -- 中文维护注释：只有物理 Store 真正为空时才获得新默认 true；已有用户绝不经过这个默认覆盖旧选择。
-        get = function() return NormalizeCurrentState(V.state) end, -- 中文维护注释：Feature State 是业务 Authority，Persistence 只取 detached canonical 快照；候选/Aura Runtime 状态不落盘。
-        apply = function(value) V.state = NormalizeCurrentState(value) end, -- 中文维护注释：Apply 只更新持久偏好，Start/StopSacObservation 仍由 Feature 生命周期拥有，Load 本身不偷偷启动 Consumer。
+        default = function() return NormalizeCurrentState(nil) end, -- 只有物理 Store 真正为空时才获得新默认 true；已有用户绝不经过这个默认覆盖旧选择。
+        get = function() return NormalizeCurrentState(V.state) end, -- Feature State 是业务 Authority，Persistence 只取 detached canonical 快照；候选/Aura Runtime 状态不落盘。
+        apply = function(value) V.state = NormalizeCurrentState(value) end, -- Apply 只更新持久偏好，Start/StopSacObservation 仍由 Feature 生命周期拥有，Load 本身不偷偷启动 Consumer。
         migrate = function(value, storedSchema)
-            if tonumber(storedSchema) ~= nil and tonumber(storedSchema) < STORE_SCHEMA then return NormalizeHistoricalSchema1(value) end -- 中文维护注释：schema1 升级时缺失 sacEnabled 必须按历史 false；显式 true 继续 true。
-            return NormalizeCurrentState(value) -- 中文维护注释：当前 canonical/get 调用不带 storedSchema，显式值稳定；真正空 Store 不走 migrate。
+            if tonumber(storedSchema) ~= nil and tonumber(storedSchema) < STORE_SCHEMA then return NormalizeHistoricalSchema1(value) end -- schema1 升级时缺失 sacEnabled 必须按历史 false；显式 true 继续 true。
+            return NormalizeCurrentState(value) -- 当前 canonical/get 调用不带 storedSchema，显式值稳定；真正空 Store 不走 migrate。
         end,
         rebuildCanonicalForIntegrity = function(decoded, _stampedFingerprint, _currentCanonical, raw)
-            local meta = type(raw) == "table" and raw.__rsmeta or nil -- 中文维护注释：schema1 的历史 default 与 schema2 不同，Integrity v4 必须能先精确重建旧 canonical 再迁移，不能先用新默认制造假 mismatch。
-            if type(meta) ~= "table" or tonumber(meta.schema) ~= LEGACY_SCHEMA then return nil end -- 中文维护注释：仅 schema1 有资格使用历史 default=false；schema2/future mismatch 继续 fail-closed。
-            local historical = NormalizeHistoricalSchema1(decoded) -- 中文维护注释：候选没有信任权，Core 会用原 stamped fingerprint 精确比对；这里不按“看起来像旧档”直接放行。
-            return historical, historical -- 中文维护注释：第二返回值让 Core/迁移继续基于已认证的旧逻辑值，防止 missing=false 被 schema2 default=true 改写。
+            local meta = type(raw) == "table" and raw.__rsmeta or nil -- schema1 的历史 default 与 schema2 不同，Integrity v4 必须能先精确重建旧 canonical 再迁移，不能先用新默认制造假 mismatch。
+            if type(meta) ~= "table" or tonumber(meta.schema) ~= LEGACY_SCHEMA then return nil end -- 仅 schema1 有资格使用历史 default=false；schema2/future mismatch 继续 fail-closed。
+            local historical = NormalizeHistoricalSchema1(decoded) -- 候选没有信任权，Core 会用原 stamped fingerprint 精确比对；这里不按“看起来像旧档”直接放行。
+            return historical, historical -- 第二返回值让 Core/迁移继续基于已认证的旧逻辑值，防止 missing=false 被 schema2 default=true 改写。
         end,
-        allowIntegrityUpgrade = true, -- 中文维护注释：只允许上面的 exact historical candidate 通过 Core 旧指纹证明后重盖；未知损坏仍保持 write fence。
+        allowIntegrityUpgrade = true, -- 只允许上面的 exact historical candidate 通过 Core 旧指纹证明后重盖；未知损坏仍保持 write fence。
     })
     if store == nil then error(err or "team tools visuals store register failed") end
 end
@@ -209,7 +201,7 @@ local function HasSpelldance(unitToken)
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return false, "api_unavailable" end
     local ok, templates, err = S.Api:CallCapability("X2Unit:GetTargetAbilityTemplates", rawget(_G, "X2Unit"), "GetTargetAbilityTemplates", unitToken)
     if ok ~= true or type(templates) ~= "table" then return false, tostring(err or "ability_templates_unavailable"), templates end
-    -- 中文维护（sac-observation-evidence）：冷启动/不可查看的职业常返回空表；它不是“无舞蹈天赋”的证据。
+    -- 冷启动/不可查看的职业常返回空表；它不是“无舞蹈天赋”的证据。
     -- 三槽必须完整才判定职业，原生返回只冻结在本模块有界诊断中，不加入永久配置。
     local matched = false
     for index = 1, 3 do
@@ -238,7 +230,7 @@ local function EnsureAuraTask()
         S.Scheduler:RemoveTask(AURA_TASK)
         return true
     end
-    -- 中文维护：稳定候选更新不得替换周期任务，否则反复名单边沿重置 elapsed/pending，Buff 安全扫描可能一直推迟。
+    -- 稳定候选更新不得替换周期任务，否则反复名单边沿重置 elapsed/pending，Buff 安全扫描可能一直推迟。
     -- 已存在任务保留调度器自己的手动暂停/熔断状态；停止模块时仍由 Quiesce 回收。
     if S.Scheduler.tasks and S.Scheduler.tasks[AURA_TASK] ~= nil then return true end
     local ok = S.Scheduler:AddTask(AURA_TASK, 1200, function()
@@ -263,7 +255,7 @@ function Feature:ScanSacCandidates(reason)
         local name = Trim(type(member) == "table" and member.name or nil)
         if token ~= "" then
             local matched, err, templates = HasSpelldance(token)
-            evidence.members[#evidence.members+1] = {unitToken=token,name=name,matched=matched,error=err,templates=DeepCopy(templates)} -- 中文维护：最多100人，每次替换快照；保留原始三天赋便于区分读不到和确实不匹配。
+            evidence.members[#evidence.members+1] = {unitToken=token,name=name,matched=matched,error=err,templates=DeepCopy(templates)} -- 最多100人，每次替换快照；保留原始三天赋便于区分读不到和确实不匹配。
             if matched == true then
                 count = count + 1
                 nextCandidates[token] = { unitToken = token, name = name ~= "" and name or token }
@@ -273,15 +265,15 @@ function Feature:ScanSacCandidates(reason)
     local changed = not SameIdentitySet(V.candidates, nextCandidates)
     local previousError = V.lastError
     for token, row in pairs(V.lastMatched or {}) do
-        if nextCandidates[token] == nil or nextCandidates[token].name ~= row.name then V.lastMatched[token]=nil end -- 中文维护：候选离团/换人即去掉旧命中，历史表不随队伍更换无限增长。
+        if nextCandidates[token] == nil or nextCandidates[token].name ~= row.name then V.lastMatched[token]=nil end -- 候选离团/换人即去掉旧命中，历史表不随队伍更换无限增长。
     end
     V.candidates, V.candidateCount = nextCandidates, count
     V.rosterRevision = tonumber(type(snapshot) == "table" and snapshot.revision) or 0
     V.scanFailures = failures
-    V.candidateScan = evidence -- 中文维护：只在既有扫描写入，不为生成报告再请求职业/团队 Native。
+    V.candidateScan = evidence -- 只在既有扫描写入，不为生成报告再请求职业/团队 Native。
     V.lastError = failures > 0 and ("职业读取失败 " .. tostring(failures) .. " 人；其余成员继续使用") or nil
 
-    -- Drop active rows that are no longer valid candidates immediately.
+    -- 不再是有效候选的活动行立即移除。
     local activeChanged = false
     for token in pairs(V.active) do
         if nextCandidates[token] == nil then V.active[token] = nil; activeChanged = true end
@@ -291,7 +283,7 @@ function Feature:ScanSacCandidates(reason)
     V.activeCount = activeCount
     local taskOk, taskErr = EnsureAuraTask()
     if taskOk ~= true then V.lastError = taskErr end
-    if changed or activeChanged or previousError ~= V.lastError then Publish(reason or "candidate_scan") end -- 中文维护：候选仍为0时也必须把“职业读取失败”推送页面，不能让错误停留在后台。
+    if changed or activeChanged or previousError ~= V.lastError then Publish(reason or "candidate_scan") end -- 候选仍为0时也必须把“职业读取失败”推送页面，不能让错误停留在后台。
     if count > 0 then self:ScanSacAuras("candidate_scan") end
     return true
 end
@@ -318,12 +310,12 @@ function Feature:ScanSacAuras(reason)
         local snapshot = aura:GetSnapshot(token, { buff = true, debuff = false, hidden = false, buffLimit = MAX_AURAS, ttlMs = 100 })
         if type(snapshot) == "table" then
             local map, meta = aura:GetStatusMap(snapshot, { buff = true, debuff = false, hidden = false })
-            evidence.members[token] = {snapshot=snapshot,statusMap=map,meta=meta,matched=StatusMapHasSac(map)} -- 中文维护：共享服务已返回 detached 快照，每次替换最多16候选×96 Buff；不在扫描热路径再深拷贝同一批事实。
+            evidence.members[token] = {snapshot=snapshot,statusMap=map,meta=meta,matched=StatusMapHasSac(map)} -- 共享服务已返回 detached 快照，每次替换最多16候选×96 Buff；不在扫描热路径再深拷贝同一批事实。
             if type(meta) == "table" and meta.available == true then
                 if StatusMapHasSac(map) then
                     nextActive[token] = { unitToken = token, name = candidate.name, verifiedAt = now }
                     V.lastMatched = V.lastMatched or {}
-                    V.lastMatched[token] = {name=candidate.name,at=now} -- 中文维护：技能结束后保留最近命中事实；候选变动时移除旧身份，最大16条，不是第二份活跃 Authority。
+                    V.lastMatched[token] = {name=candidate.name,at=now} -- 技能结束后保留最近命中事实；候选变动时移除旧身份，最大16条，不是第二份活跃 Authority。
                 end
             else
                 failures = failures + 1
@@ -353,7 +345,7 @@ function Feature:ScanSacAuras(reason)
     return true
 end
 
--- 中文维护：完整 TXT 投影只能读缓存，不 Acquire/Initialize/改职责/强制采样；报表包含整条链路而非仅 Runtime.enabled。
+-- 完整 TXT 投影只能读缓存，不 Acquire/Initialize/改职责/强制采样；报表包含整条链路而非仅 Runtime.enabled。
 function Feature:DescribeDiagnosticDetail()
     local roster, aura = TeamRoster(), Aura()
     local scheduler = S.Scheduler
@@ -370,13 +362,13 @@ end
 function Feature:GetHealth()
     return {running=V.running==true,candidates=V.candidateCount,active=V.activeCount,error=V.lastError,
         rosterHeld=V.rosterHeld,auraHeld=V.auraHeld,lastCandidateScan=V.candidateScan and V.candidateScan.at,
-        lastAuraScan=V.auraScan and V.auraScan.at} -- 中文维护：摘要直出真实观察状态，不把模块 enabled 当作技能已经识别/显示。
+        lastAuraScan=V.auraScan and V.auraScan.at} -- 摘要直出真实观察状态，不把模块 enabled 当作技能已经识别/显示。
 end
 
 function Feature:RegisterDiagnosticProviders()
     local hub = S.ModuleDiagnosticsHub
     if type(hub) ~= "table" then return false end
-    hub:RegisterStoreOwner(self.Id, STORE_ID) -- 中文维护：分离后旧物理视觉 Store 必须归牺牲之舞；不修改物理 key/schema/指纹。
+    hub:RegisterStoreOwner(self.Id, STORE_ID) -- 分离后旧物理视觉 Store 必须归牺牲之舞；不修改物理 key/schema/指纹。
     hub:RegisterStoreOwner(self.Id, self.storeId)
     return hub:RegisterProvider(self.Id,"team_sac_evidence",function() return Feature:DescribeDiagnosticDetail() end,30,{detailOnly=true})
 end
@@ -384,7 +376,7 @@ Feature:RegisterDiagnosticProviders()
 
 local function ScheduleAuraEdge()
     if V.running ~= true or V.candidateCount <= 0 or S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return true end
-    if S.Scheduler.tasks and S.Scheduler.tasks[AURA_EDGE_TASK] ~= nil then return true end -- 中文维护：Buff 高频边沿合并到第一次到达后的120ms，不能反复重置延迟导致任务永远等不到执行。
+    if S.Scheduler.tasks and S.Scheduler.tasks[AURA_EDGE_TASK] ~= nil then return true end -- Buff 高频边沿合并到第一次到达后的120ms，不能反复重置延迟导致任务永远等不到执行。
     local ok = S.Scheduler:AddOneShot(AURA_EDGE_TASK, 120, function()
         if V.running == true then Feature:ScanSacAuras("buff_update") end
     end, Feature, "P2", 1)
@@ -416,8 +408,7 @@ function Feature:StartSacObservation(reason)
         S.Events:SubscribeInternal("v3.team_roster.updated", V.eventOwner, function() Feature:ScanSacCandidates("roster_updated") end)
     end
     if S.Events ~= nil and type(S.Events.SubscribeOptional) == "function" then
-        -- BUFF_UPDATE is an acceleration edge only.  The 1.2s bounded safety
-        -- scan remains authoritative when this optional event is absent.
+        -- BUFF_UPDATE 仅加速刷新；可选事件缺失时，1.2s 有界安全扫描仍为权威。
         S.Events:SubscribeOptional("BUFF_UPDATE", V.eventOwner, function() ScheduleAuraEdge() end)
     end
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then
@@ -459,9 +450,7 @@ function Feature:StopSacObservation(reason)
         return QuiesceSacObservation(reason or "sac_already_stopped")
     end
 
-    -- Demand::Release is transactional: a failed reconcile restores the held
-    -- consumer.  Release Aura first; if the roster release then fails, reacquire
-    -- Aura before returning so an enabled Feature is never left half-observing.
+    -- Demand::Release 为事务，协调失败恢复消费端；先释放 Aura，若名单随后释放失败，返回前重新获取 Aura，禁止启用功能只剩半套观察。
     local auraReleased = false
     if V.auraHeld == true then
         local aura = Aura()
@@ -602,9 +591,7 @@ function Feature:RestoreSavedRaidMarkers()
         local row = V.restoreQueue and V.restoreQueue[nextIndex] or nil
         if row == nil then StopMarkerRestore("complete", nil); return end
 
-        -- Never perform a marker write when the current state cannot be read.
-        -- Already-correct rows count as applied without consuming a native
-        -- write/cooldown slot; changed rows still require post-write readback.
+        -- 当前状态不可读时禁止标记写入。已经正确的行计作 applied，不占 Native 写入/冷却；发生改变的行仍需写后读回。
         local currentOk, currentMarker = S.Api:CallCapability("X2Unit:GetOverHeadMarker", rawget(_G, "X2Unit"), "GetOverHeadMarker", row.unitToken)
         if currentOk ~= true then StopMarkerRestore("failed", "标记写入前读取失败：" .. tostring(row.name)); return end
         if tonumber(currentMarker) == tonumber(row.markerIndex) then
@@ -636,9 +623,7 @@ function Feature:ClearSavedRaidMarkers()
     return true
 end
 
--- Wrap the existing Feature lifecycle.  This extension is loaded after the
--- business bridge but before FeatureRuntime initialization, so both stores are
--- loaded transactionally before the first enable decision.
+-- 包装现有 Feature 生命周期；扩展在业务桥后、FeatureRuntime 初始化前加载，首次启用决定前两个 Store 均事务性加载。
 local BaseInitialize, BaseEnable, BaseDisable, BaseGetProjection = Feature.Initialize, Feature.Enable, Feature.Disable, Feature.GetProjection
 function Feature:Initialize()
     local ok, err = BaseInitialize(self)
@@ -646,7 +631,7 @@ function Feature:Initialize()
     if V.loaded == true then return true end
     local status, _, loadErr = P:LoadStore(STORE_ID)
     if status ~= true and status ~= "empty" then return false, loadErr or tostring(status or "team visuals store load failed") end
-    if status == "empty" then V.state = NormalizeCurrentState(nil) end -- 中文维护注释：仅物理空 Store 使用 schema2 新默认 true；旧 schema1 已由 Core 迁移并不会进入 empty。
+    if status == "empty" then V.state = NormalizeCurrentState(nil) end -- 仅物理空 Store 使用 schema2 新默认 true；旧 schema1 已由 Core 迁移并不会进入 empty。
     V.loaded = true
     return true
 end
@@ -696,9 +681,7 @@ Feature.Commands.SetSacHighlightEnabled = function(_, enabled)
     if target == previous then return true end
     local runtimeEnabled = S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled(Feature.Id) == true
 
-    -- Runtime lease and persistent intent commit as one user-visible action.
-    -- Enable acquires first, disable releases first; persistence failure rolls
-    -- the runtime side back so UI/Store/Service demand cannot silently diverge.
+    -- 运行租约与持久意图共同提交为一个用户动作；启用先获取、禁用先释放，持久化失败回滚运行侧，防止 UI/Store/Service Demand 分叉。
     if runtimeEnabled == true and target == true then
         local started, startErr = Feature:StartSacObservation("setting_enabled")
         if started ~= true then return false, startErr end
@@ -724,7 +707,7 @@ Feature.Commands.SetSacHighlightEnabled = function(_, enabled)
     Publish("sac_setting")
     return true
 end
--- 中文维护：只保存视觉间隔并发布原投影事件；Aura1200ms和头标恢复1100ms保持原冷却/观察职责。
+-- 只保存视觉间隔并发布原投影事件；Aura1200ms和头标恢复1100ms保持原冷却/观察职责。
 Feature.Commands.SetSacRefreshMs = function(_,value)
     value=tonumber(value)
     if not value or value~=value or value<1 or value>60000 or value~=math.floor(value) then return false,"绘制间隔必须为1～60000毫秒整数" end
@@ -736,24 +719,23 @@ Feature.Commands.SaveRaidMarkers = function() return Feature:SaveCurrentRaidMark
 Feature.Commands.RestoreRaidMarkers = function() return Feature:RestoreSavedRaidMarkers() end
 Feature.Commands.ClearSavedRaidMarkers = function() return Feature:ClearSavedRaidMarkers() end
 
--- Append extension dependencies for diagnostics/gates without duplicating the
--- Runtime implementation or creating a second lifecycle toggle.
+-- 追加扩展依赖用于诊断/门禁，禁止复制 Runtime 实现或建立第二生命周期开关。
 local seen = {}
 for _, value in ipairs(type(Feature.ApiDependencies) == "table" and Feature.ApiDependencies or {}) do seen[value] = true end
 for _, value in ipairs({ "X2Unit:GetTargetAbilityTemplates", "X2Unit:GetOverHeadMarker", "X2Unit:SetOverHeadMarker" }) do
     if seen[value] ~= true then Feature.ApiDependencies[#Feature.ApiDependencies + 1] = value; seen[value] = true end
 end
 
-Feature.TeamVisualContractVersion = 2 -- 中文维护注释：v2 公开默认开启 + schema1 兼容迁移契约；不表示扩大 Native 权限或扫描范围。
+Feature.TeamVisualContractVersion = 2 -- v2 公开默认开启 + schema1 兼容迁移契约；不表示扩大 Native 权限或扫描范围。
 Feature.TeamMarkerSnapshotContractVersion = 1
-Feature.TeamSacContractVersion = 2 -- 中文维护：Consumer 只随独立 combat_sac_highlight 生命周期释放，职责关闭不再影响高亮。
--- 中文维护：旧团队中心显式开且 sacEnabled 开，证明历史视觉启动意图；复用 Runtime 的
+Feature.TeamSacContractVersion = 2 -- Consumer 只随独立 combat_sac_highlight 生命周期释放，职责关闭不再影响高亮。
+-- 旧团队中心显式开且 sacEnabled 开，证明历史视觉启动意图；复用 Runtime 的
 -- 一次启动链接事务。新功能已有显式关闭时绝不重开，不改变旧 Store canonical/指纹。
 function Feature:GetStartupEnableIntent(_, explicit)
     if explicit == true then return false end
     local runtime = S.FeatureRuntime
     local previous = runtime and runtime:GetPreferredEnabled("combat_team_tools") == true
-    if not previous then return false end -- 中文维护：没有旧团队启用意图就不冷读视觉 Store，关闭功能的历史数据问题不拖累启动。
+    if not previous then return false end -- 没有旧团队启用意图就不冷读视觉 Store，关闭功能的历史数据问题不拖累启动。
     local initialized, err = self:Initialize()
     if initialized ~= true then error(err or "牺牲之舞配置读取失败") end
     return previous and V.state.sacEnabled == true, "team_visual_split"

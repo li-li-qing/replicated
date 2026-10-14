@@ -1,25 +1,14 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Editor Command Bar v2
+-- Replicated Suite · 布局编辑命令条
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared command projection for layout-editor actions.
---
--- Authority boundary:
---   * Undo/Redo availability comes only from LayoutEditHistoryModel snapshots.
---   * Revert/Reset/Apply availability comes only from an optional Session
---     Authority snapshot. This component does not define those semantics and
---     never persists Feature state by itself.
---   * Authority changes are observed through Subscribe/Unsubscribe; there is no
---     Tick, OnUpdate or polling loop and pages never own canUndo/canRedo/dirty.
---
--- Session projection contract:
---   GetCommandSnapshot() -> {
---       revision, busy, blocked, dirty, canRevert, canReset, canApply, statusText
---   }
---   ExecuteCommand("revert"|"reset"|"apply", context)
---   Subscribe(token, listener) / Unsubscribe(token)
---
--- Revert/Reset/Apply semantics are owned by LayoutEditSessionModel. This bar
--- remains a projection/dispatch surface and never writes Feature state itself.
+-- 布局编辑操作的共享命令投影。
+-- Undo/Redo 可用性只来自 LayoutEditHistoryModel 快照；Revert/Reset/Apply 只来自可选 Session 快照。组件不定义这些语义，也不自行持久化 Feature；
+-- 通过 Subscribe/Unsubscribe 观察变化，无 Tick/OnUpdate/轮询，页面不持有 canUndo/canRedo/dirty。
+-- Session 投影契约：GetCommandSnapshot() -> { revision, busy, blocked, dirty, canRevert, canReset, canApply, statusText }；
+-- ExecuteCommand("revert"|"reset"|"apply", context)；Subscribe(token, listener)/Unsubscribe(token)。
+-- Revert/Reset/Apply 语义归 LayoutEditSessionModel；命令条仅投影/派发，不自行写 Feature。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

@@ -1,17 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Metadata Service
+-- Replicated Suite · Buff 元数据
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared, lazy buff-id -> (name/icon) resolver. Runtime combat callbacks must
--- not spam it: lookups are cached (success AND miss) and gated by the
--- capability registry, so one unknown id costs at most a few native reads per
--- session. This is the single Authority for effect metadata; consumers
--- (AuraObservationV3, future plates/healer rebuilds) must not keep private
--- copies of the same chain.
---
--- Native source: X2Ability:GetBuffTooltip(buffType, itemLevel) — the RU-enabled
--- probe chain proven by the mature Plates module. Some RU builds return tooltip
--- TEXT (a string) instead of a table; the first line of a buff tooltip is the
--- buff name, so that shape is accepted too.
+-- 共享惰性 Buff ID->名称/图标解析是效果元数据唯一权威；成功及未命中均缓存并通过能力门禁，战斗回调不得刷调用
+-- ，未知 ID 每会话仅有少量原生读取。AuraObservationV3/plates/healer 不私建同一链。原生来源为已获 RU 放行、
+-- 成熟 Plates 已验证的 X2Ability:GetBuffTooltip(buffType,itemLevel)；部分 RU 返回 tooltip 字符串而非表，可
+-- 接受第一行为 Buff 名。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -43,7 +38,7 @@ local function NormalizeId(value)
     if id == nil or id <= 0 then return nil end
     return math.floor(id + 0.5)
 end
--- 维护（library-eventbus-2）：只观察既有能力门，检查可用性不调用tooltip。
+-- 只观察既有能力门，检查可用性不调用tooltip。
 -- 模块加载初期API缺失不同于“该ID确实无图标”；后者可负缓存，前者必须在能力恢复后可重试。
 -- 不在行绑定中查Native，也不增加定时重试；再次绑定/显式GetInfo才进入原有受限队列。
 local function CanQuery()
@@ -55,7 +50,7 @@ local function CanQuery()
     return true
 end
 
--- 维护：图标仍只接受服务已支持的Native资源字段，禁止用技能图标冒充Buff图标。
+-- 图标仍只接受服务已支持的Native资源字段，禁止用技能图标冒充Buff图标。
 -- 额外返回/未知字段只记录类型以便实机核对，不在没有依据时猜嵌套结构或构造dds路径。
 -- 最近8个ID、每条至多12个顶层字段，诊断只保留基本值，不持有原tooltip表或正文。
 local function ReturnShape(value)
@@ -94,7 +89,7 @@ local function NameFromInfo(info)
     return nil
 end
 
--- 维护（目录按需图标）：旧负缓存不进淘汰队列会无限增长；稀疏表取#也不可靠。
+-- 旧负缓存不进淘汰队列会无限增长；稀疏表取#也不可靠。
 -- 用明确首尾指针的512槽环形FIFO，正/负结果共享上限，替换已有值不重复计数。
 -- 每次查找/新增/淘汰O(1)，不会在Aura调用路径搬移512个条目或遍历静态目录。
 M.orderTail=1
@@ -124,9 +119,7 @@ function M:HasCached(id,requireIcon)
     return row~=nil and (requireIcon~=true or row==false or row.__iconProbeComplete==true or (type(row.iconPath)=="string" and row.iconPath~=""))
 end
 
--- Peek: cached result only. Never issues native reads, never caches a miss.
--- Scan paths use this to decide whether a (more expensive) tooltip row fetch is
--- still worthwhile for an id.
+-- Peek 只读缓存，不读取 Native，也不缓存未命中；扫描路径据此决定是否值得读取较昂贵 tooltip 行。
 function M:GetCached(id)
     local cached = self.cache[tostring(id)]
     if cached == nil then return nil end
@@ -135,9 +128,7 @@ function M:GetCached(id)
     return { name = cached.name, iconPath = cached.iconPath }
 end
 
--- Remember a POSITIVE resolution learned outside this service (e.g. a name
--- read straight off a UnitBuffTooltip row). Upgrades an earlier miss (false)
--- but never overwrites a different positive entry.
+-- Remember 接收服务外得到的有效解析（如 UnitBuffTooltip 行名）；可升级此前 false 未命中，不能覆盖不同有效项。
 function M:Remember(id, name, iconPath)
     local numeric = NormalizeId(id)
     if numeric == nil then return false end

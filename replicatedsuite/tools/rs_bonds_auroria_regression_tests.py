@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Static regression guard for Bonds/Auroria ResidentBoard slice.
+# ---------------------------------------------------------------------
+# Replicated Suite · 债券原大陆回归测试
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+"""债券和原大陆 ResidentBoard 分片的静态回归保护。
 
-This intentionally complements rs_bonds_tests.lua: it can run in a plain build
-workspace where the historical Lua UI test host is not packaged. It validates
-source-level architecture/contract invariants only; it does not pretend to
-replace RU-client Native integration testing.
-"""
+补充 rs_bonds_tests.lua，在未打包旧 Lua UI 测试宿主的普通构建工作区也可运行。
+仅验证源码架构和契约不变量，不能替代 RU 客户端原生集成测试。"""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,8 +56,8 @@ require('reason == "presentation" and type(self.resourceTotals) == "table"' in b
         and 'self.resourceReads = (tonumber(self.resourceReads) or 0) + 1' in bonds
         and 'resourceReads = tonumber(BA.resourceReads) or 0' in bonds,
         "presentation-only dropdown refresh reuses cached resource totals")
-# 2026-09-30: 3/4 and 5/6 were sufficient examples, not exclusive requirements.
-# Behavior (partial input, mixed families, stale faction, retries) runs in the default Lua suite.
+# 公告板组合 3/4 和 5/6 只是充分示例，不能视为唯一允许组合。
+# 部分输入、混合族、旧阵营和重试行为由默认 Lua 套件验证。
 require('for index = 1, 4 do mainlandReady' in bonds and 'for index = 5, 7 do auroriaReady' in bonds
         and 'mixed_board_families' in bonds and 'location_faction_conflict' in bonds,
         "partial board families require unambiguous continent evidence")

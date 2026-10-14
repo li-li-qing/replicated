@@ -1,6 +1,12 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 持久化门禁当前健康测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 中文维护注释（persistence-current-health-1）：Foundation 的发布阻断必须描述“当前仍失败”状态，
 -- 不能把已经恢复的 durable/readback 历史 incident 永久当 blocker。历史计数仍由 incidents warning
 -- 保留，绝不在这里清零。此测试不触发 SaveData，只验证 Gate 对 Persistence 只读摘要的解释。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = pcall(fn)

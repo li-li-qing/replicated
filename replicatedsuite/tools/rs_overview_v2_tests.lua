@@ -1,5 +1,10 @@
--- Maintenance: actual RSUI layout/Feature/Service code, only Native data and
--- parent widget are substitutes. These are not RU client visual acceptance.
+------------------------------------------------------------------------
+-- Replicated Suite · 总览测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用实际 RSUI 布局、Feature 和 Service，仅原生数据与父控件为替身；不能作为 RU 客户端视觉验收。
+------------------------------------------------------------------------
 local pass,fail=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)
@@ -35,8 +40,7 @@ Test('task tracking toggles invalidate only its projection and survive store rel
     assert(S.Persistence:Flush(F.StoreId));local st=S.Persistence:GetStore(F.StoreId);st.loaded=false;F.storeLoaded=false
     assert(F:EnsureStoreLoaded());assert(not F:IsTracked('daily','d1'))
 end)
--- Old workspace-tab/draft controls moved to the shared personal workbench in .247.
--- These tests retain their lifecycle, layout, source and explicit-detail acceptance.
+-- 工作区页签和草稿控件已迁入共享个人工作台；继续覆盖生命周期、布局、数据来源及显式详情契约。
 local HomeBoot=dofile('tools/rs_workspace_home_test_host.lua')
 local function Show(S,p,keys)
  local chosen={};for _,k in ipairs(keys)do chosen[k]=true end

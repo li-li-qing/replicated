@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Raid Readiness Authority
+-- Replicated Suite · 团队准备检查业务权威
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Explicit, sliced raid inspection. There is no Tick and no permanent Aura
--- scan. TeamRoster owns roster identity; AuraObservation owns Buff facts; this
--- Authority only combines those shared facts with low-frequency read-only
--- role/gear/distance observations into a bounded session projection.
+-- 显式切片团队检查，不使用 Tick 或常驻 Aura 扫描。TeamRoster 拥有名单身份，AuraObservation 拥有 Buff 事实；本权威仅将共享事实与低频只读职责/装备/距离观察组合成有界会话投影。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -52,9 +51,7 @@ local function RoleLabel(value, member)
     if TMROLE_RANGED_DEALER ~= nil and value == tonumber(TMROLE_RANGED_DEALER) then return "远程输出" end
     if TMROLE_NONE ~= nil and value == tonumber(TMROLE_NONE) then return "未标记" end
 
-    -- Some RU builds expose the numeric role but not the TMROLE_* globals.
-    -- These values are already used by the existing team utility service; keep
-    -- the fallback presentation-only so native authority remains X2Team:GetRole.
+    -- 部分 RU 版本提供数值职责但缺 TMROLE_* 全局；这些值沿用团队工具服务，仅作展示回退，Native 权威仍为 X2Team:GetRole。
     return ROLE_FALLBACK[value] or ("职责 " .. tostring(value))
 end
 
@@ -72,8 +69,8 @@ local function ReadRole(member)
 end
 
 local function ReadGear(member)
-    -- 中文维护注释（UnitGearScore comma 参数修复，2026-09-11）：
-    -- 问题原因：第二参数是“是否格式化千分位”，旧代码误传 true；RU 更新后可能得到
+    --
+    -- 第二参数是“是否格式化千分位”，旧代码误传 true；RU 更新后可能得到
     -- "12,345"，旧 Number/tonumber 直接失败。Authority 仍是 X2Unit，团队战备只读取成员
     -- unitToken，不允许用名字/角色类型推断装分。
     -- 数据流：X2Unit -> shared S.Utils.ParseGearScore -> readiness row；与 BuffDisplay 使用同一
@@ -289,9 +286,7 @@ function A:StartScan(reason)
     self.scan.active = true
     self.scan.cursor, self.scan.total, self.scan.completed = 1, #members, 0
     self.scan.reason = tostring(reason or "manual")
-    -- Aura inspection can require dozens of native reads per member. Process
-    -- exactly one member per slice when Aura rules are active so a 50-player
-    -- raid cannot turn one scheduler callback into a visible frame spike.
+    -- Aura 检查每成员可能需数十次 Native 读取；规则开启时每切片恰好处理一人，防止50人团队把单 Scheduler 回调变成帧峰值。
     local batchSize = auraNeeded and 1 or 8
     self:_Publish("scan_started")
     local scheduled, scheduleErr = self:_ScheduleSlice(generation, Copy(members), settings, batchSize)

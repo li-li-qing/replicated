@@ -1,18 +1,11 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 4 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Pure Projection
--- No Native/API access. Converts AuraObservationV3 StatusMap facts and
--- Feature runtime-lane data into bounded detached rows for Page/Widget
--- consumers.
+-- Replicated Suite · 状态显示只读投影
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Classification contract (schema 6):
---   * category is "buff" | "debuff" | "unknown"; Auto is a tracking bucket
---   * hidden / special_rule are detection sources resolved by the shared
---     StatusClassificationV3 service, never user-facing categories
---   * tracked lookups use a prebuilt O(1) index when provided
+-- 无Native/API访问，将AuraObservationV3 StatusMap和Feature通道数据转为有界独立页面/Widget行。
+-- 分类契约：category为buff/debuff/unknown，Auto是追踪桶；hidden/special_rule为共享StatusClassificationV3检测来源，不能作用户分类；传入预建索引时追踪查询为O(1)。
+-- 合并后须核对冲突标记、toc.g完整性和Lua语法，再验收；禁止清配置、跳加载或恢复Legacy绕过原Authority/存档协议。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -24,13 +17,12 @@ local function Classification()
     return S.Services and S.Services.StatusClassificationV3 or nil
 end
 
--- O(1) tracked index: { buff = {[id]=true}, debuff = {[id]=true} }.
--- Falls back to building from settings.tracked when callers pass nothing.
+-- O(1) 追踪索引：{ buff = {[id]=true}, debuff = {[id]=true} }；调用方未传入时从 settings.tracked 构建。
 local function BuildTrackedIndex(settings)
     local index = { player={buff={},debuff={},auto={}}, target={buff={},debuff={},auto={}}, buff={},debuff={},auto={} }
     settings = type(settings) == "table" and settings or {}
     local tracked = type(settings.tracked) == "table" and settings.tracked or {}
-    -- 维护（合并残留修复）：索引 Authority 是 schema8 player/target 六通道；兼容平面数据只走 scoped 分支。
+    -- 索引 Authority 是 schema8 player/target 六通道；兼容平面数据只走 scoped 分支。
     -- 不能在循环后再次追加旧 tracked.auto，否则混入第二套平面选择；这里仍为按设置变化重建，不加采样。
     local nested = type(tracked.player)=="table" or type(tracked.target)=="table"
     for _,scope in ipairs({"player","target"}) do
@@ -44,14 +36,11 @@ local function BuildTrackedIndex(settings)
     end
     return index
 end
--- Compact time display for head-plate icons and table rows.
---   >= 60s  → M.SS.cc  (e.g. 1.20.10 = 1 min 20 sec 10 cs)
---   <  60s  → S.c      (e.g. 10.0 = 10 sec 0 cs)
---   nil     → "--"
--- Input: timeLeft in milliseconds.
+-- 头顶图标与表格行的紧凑时间格式，输入 timeLeft 为毫秒。
+-- ≥60s 显示 M.SS.cc，例如 1.20.10 表示1分20秒10厘秒；<60s 显示 S.c，例如 10.0 表示10秒0厘秒；nil 显示 --。
 local function FormatCompactTime(ms)
     if ms == nil then return "--" end
-    local totalCs = math.max(0, math.floor(ms / 10))  -- centiseconds
+    local totalCs = math.max(0, math.floor(ms / 10))  -- 厘秒。
     local sec = math.floor(totalCs / 100)
     local cs = totalCs % 100
     if sec >= 60 then
@@ -70,8 +59,7 @@ local function SortRows(a, b)
     return (tonumber(a.id) or 0) < (tonumber(b.id) or 0)
 end
 
--- Convert a StatusMap (AuraObservationV3 facts) into detached display rows.
--- signature: (statusMap, meta, settings, scope, limit, trackedIndex)
+-- 将 AuraObservationV3 的 StatusMap 事实转为独立展示行；签名为 (statusMap, meta, settings, scope, limit, trackedIndex)。
 function F.ProjectStatusMap(statusMap, meta, settings, scope, limit, trackedIndex)
     statusMap, settings = type(statusMap) == "table" and statusMap or {}, type(settings) == "table" and settings or {}
     trackedIndex = type(trackedIndex) == "table" and trackedIndex or BuildTrackedIndex(settings)
@@ -79,14 +67,11 @@ function F.ProjectStatusMap(statusMap, meta, settings, scope, limit, trackedInde
     local rows, seen = {}, {}
     for id, entry in pairs(statusMap) do
         local kind = classification ~= nil and classification:ClassifyEntry(entry, settings.classification)
-            -- 中文维护注释：混合版本/分类服务缺席也必须 fail-closed，不能通过旧 fallback 把 Hidden 变成 Buff。
+            -- 混合版本/分类服务缺席也必须 fail-closed，不能通过旧 fallback 把 Hidden 变成 Buff。
             or { category = "unknown",
                  detectionSource = entry.sources and entry.sources.hidden == true and "hidden" or "normal" }
         local category = kind.category or "unknown"
-        -- Hidden-sourced statuses are an independent fact source: they must never
-        -- be suppressed by the buff/debuff category toggles (the page's 只看隐藏
-        -- filter owns them), otherwise a hidden effect the player wants to inspect
-        -- silently vanishes the moment one category is toggled off.
+        -- Hidden为独立事实来源，禁止被Buff/Debuff分类开关压掉；仅页面只看隐藏筛选拥有这组行，用户关闭一个分类时不能让隐藏效果消失。
         local hiddenSource = kind.detectionSource == "hidden"
         local allowed = category == "unknown" or hiddenSource == true
             or (category == "buff" and settings.showBuffs ~= false)
@@ -95,7 +80,7 @@ function F.ProjectStatusMap(statusMap, meta, settings, scope, limit, trackedInde
             seen[id] = true
             local timeLeft = tonumber(entry.timeLeft)
             local idNum = math.floor(tonumber(id) or 0)
-            -- 中文维护（schema8 scoped tracking）：实时列表的“已追踪”标志必须读取当前单位 scope，
+            -- 实时列表的“已追踪”标志必须读取当前单位 scope，
             -- 不能读取 player/target 的兼容 union。否则“仅目标 Buff”会在自身实时列表也显示已追踪，
             -- 虽然 HUD 白名单正确但管理语义错误。兼容旧纯函数调用：没有嵌套 scope 时回退旧平面索引。
             local scopedTracked = (scope == "player" or scope == "target") and trackedIndex[scope] or nil
@@ -128,25 +113,14 @@ function F.ProjectStatusMap(statusMap, meta, settings, scope, limit, trackedInde
     }
 end
 
-------------------------------------------------------------------------
--- Head-plate projection. `laneData` is produced by the Feature runtime lanes:
---   { buffRows, debuffRows, distance, class, gearScore,
---     mainHand={icon,gradeIconPath,name}, offHand, ranged, wings,
---     cast={casting, spellName, currMs, totalMs} }
--- Returns only enabled components; tracked rows are bounded per component.
---
--- show-all semantics: headShowAll is an explicit opt-in. It can show ordinary
--- untracked Buff/Debuff rows, but a Hidden-sourced status NEVER bypasses the
--- explicit tracked whitelist. This keeps "observed Hidden" separate from
--- "displayed Hidden" even when the user enables show-all mode.
-------------------------------------------------------------------------
+-- 头顶投影的 laneData 来自 Feature 通道：{ buffRows, debuffRows, distance, class, gearScore, mainHand={icon,gradeIconPath,name}, offHand, ranged, wings, cast={casting,spellName,currMs,totalMs} }。
+-- 只返回启用组件，各组件追踪行有上界。headShowAll 是显式选项，可展示普通未追踪 Buff/Debuff，但 Hidden 来源始终不能绕过显式追踪白名单；观察 Hidden 与展示 Hidden 必须分开。
 local function BoundedTracked(rows, settings, category, trackedIndex, scope)
     rows = type(rows) == "table" and rows or {}
     trackedIndex = type(trackedIndex) == "table" and trackedIndex or BuildTrackedIndex(settings)
     local component = type(settings.components) == "table" and settings.components[category == "debuff" and "debuffs" or "buffs"] or nil
     component = type(component) == "table" and component or {}
-    -- Canonical capacity = the visible component's row geometry. No parallel
-    -- headMaxIcons authority: renderer and projection now consume the same data.
+    -- 标准容量来自可见组件的行几何，禁止另建 headMaxIcons 权威；渲染器和投影共用同一数据。
     local perRow = math.max(1, math.min(16, math.floor(tonumber(component.maxPerRow) or 8)))
     local maxRows = math.max(1, math.min(4, math.floor(tonumber(component.maxRows) or 2)))
     local maxIcons = math.min(64, perRow * maxRows)
@@ -154,7 +128,7 @@ local function BoundedTracked(rows, settings, category, trackedIndex, scope)
     local showAll = settings.headShowAll == true
     for _, row in ipairs(rows) do
         local idNum = math.floor(tonumber(row.id) or 0)
-        -- 中文维护注释：HUD 白名单同时接受 Auto；lane 分流仍由真实分类决定，不能把 unknown 塞入 Buff。
+        -- HUD 白名单同时接受 Auto；lane 分流仍由真实分类决定，不能把 unknown 塞入 Buff。
         local scoped = (scope=="player" or scope=="target") and trackedIndex[scope] or nil
         scoped = type(scoped)=="table" and scoped or trackedIndex
         local isTracked = (scoped[category] ~= nil and scoped[category][idNum] == true)
@@ -170,9 +144,7 @@ local function BoundedTracked(rows, settings, category, trackedIndex, scope)
     return out
 end
 
--- Components are copied so the projection never exposes the live store table;
--- presentation reads a detached snapshot (boundary rule: consumers never own or
--- mutate Authority-owned state through a projection).
+-- 复制组件，禁止投影暴露实时 Store 表；Presentation 只读独立快照，不能通过投影持有或修改权威状态。
 local function CopyComponents(components)
     local out = {}
     for key, component in pairs(type(components) == "table" and components or {}) do
@@ -187,7 +159,7 @@ local function CopyComponents(components)
     return out
 end
 
--- 中文维护（2026-09-13，enemy-loadout-1）：目标装备 API 可能实际返回自己装备，不能用于敌人。
+-- 目标装备 API 可能实际返回自己装备，不能用于敌人。
 -- 这里的 Authority 仅是本次 Aura 实时事实 -> 中央 ID 类型关系；不读 API、不读留存/追踪列表。
 -- 两类各六个固定候选 O(1)；同类兼容 ID 可合并，不同类型同时存在则拒绝推断并保留冲突标志。
 -- 图标只用实际 Buff 元数据；缺图标保留类型名，不伪造具体装备/品阶。缓存/存档由上层拥有。
@@ -220,7 +192,7 @@ function F.ProjectTargetLoadout(statusMap)
     return { weapon = weapon, armor = armor, weaponConflict = weaponConflict, armorConflict = armorConflict }
 end
 
--- 中文维护（dynamic-hud-1）：距离/施法的格式化共用同一纯投影；局部读取不复制Buff、
+-- 距离/施法的格式化共用同一纯投影；局部读取不复制Buff、
 -- 装备、追踪配置，不读取Native。返回新的小表，不暴露lane facts给Renderer反向修改。
 function F.ProjectDynamicPlates(laneData)
     laneData=type(laneData)=="table" and laneData or {}
@@ -246,7 +218,7 @@ end
 function F.ProjectPlates(laneData, settings, trackedIndex, scope)
     laneData, settings = type(laneData) == "table" and laneData or {}, type(settings) == "table" and settings or {}
     local components = CopyComponents(settings.components)
-    -- 中文维护注释（高频 HUD 投影）：Feature 已维护 O(1) trackedIndex 时直接复用，
+    -- Feature 已维护 O(1) trackedIndex 时直接复用，
     -- 避免 50ms HUD 刷新反复复制/遍历最多 2048 个追踪 ID；纯函数调用仍可省略第三参
     -- 并从 settings.tracked 构建，保持旧 acceptance/调用方兼容。
     trackedIndex = type(trackedIndex) == "table" and trackedIndex or BuildTrackedIndex(settings)
@@ -255,7 +227,7 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
     out.distance,out.cast=dynamic.distance,dynamic.cast
     out.buffs = BoundedTracked(laneData.buffRows, settings, "buff", trackedIndex, scope)
     out.debuffs = BoundedTracked(laneData.debuffRows, settings, "debuff", trackedIndex, scope)
-    -- 中文维护注释（2026-09-19，本机 CD HUD 投影）：cooldownRows 已由 CooldownObservationV3
+    -- cooldownRows 已由 CooldownObservationV3
     -- 过滤成“当前真正处于 CD”的本机 Native 事实。这里只做有界 detached copy，不查询 API、
     -- 不把静态 expectedSec 当 Authority，也绝不把 player CD 复制到 target scope。
     if scope == "player" and type(laneData.cooldownRows) == "table" then
@@ -273,14 +245,14 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
 
     if laneData.class ~= nil then
         local class = type(laneData.class) == "table" and laneData.class or { name = laneData.class }
-        -- 中文维护：职业中文名和职业类别图标来自同一个 Metadata 快照；未知类别只显示文字。
+        -- 职业中文名和职业类别图标来自同一个 Metadata 快照；未知类别只显示文字。
         out.class = { value = tostring(class.name or ""), icon = class.icon, key = class.key }
     end
     if laneData.gearScore ~= nil then out.gearScore = { value = tostring(math.floor(tonumber(laneData.gearScore) or 0)) } end
-    -- 中文维护注释（target-alias-1）：别名已在 TARGET_CHANGED/用户操作边由 Store O(1) 解析；
+    -- 别名已在 TARGET_CHANGED/用户操作边由 Store O(1) 解析；
     -- Projection 仅复制字符串，严禁在 HUD 热路径读取 UnitName 或遍历持久化备注表。
     if scope == "target" and type(laneData.targetAlias) == "string" and laneData.targetAlias ~= "" then
-        -- 中文维护注释（target-alias-hud-2）：别名几何随 scope settings 的小快照进入 Projection；
+        -- 别名几何随 scope settings 的小快照进入 Projection；
         -- Renderer 只消费 detached 值，不直接访问 Persistence。enabled=false 时 Resolve 已让 alias 为空，
         -- 这里仍携带 hud 只是为了校准/兼容调用保持同一数据结构，不增加 Native 查询。
         local hud = type(settings.targetAlias) == "table" and settings.targetAlias or {}
@@ -298,7 +270,7 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
     end
     for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
         local item = type(laneData[key]) == "table" and laneData[key] or nil
-        -- 中文维护：复用已有目标主/副手的布局开关与位置，避免升级重排用户校准/修改存档规范化。
+        -- 复用已有目标主/副手的布局开关与位置，避免升级重排用户校准/修改存档规范化。
         -- targetLoadout 只在 target lane 创建；分别呈现武器类型/防具类型，自己仍呈现实际物品。
         if type(laneData.targetLoadout) == "table" then
             item = key == "mainHand" and laneData.targetLoadout.weapon or nil

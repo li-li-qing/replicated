@@ -1,5 +1,11 @@
--- Main bag settings: real Feature/Store/Demand/PageHost/RSUI, Native inventory and RAM disk only.
--- Offline interaction/geometry contract, not RU acceptance; never loaded by toc.g.
+------------------------------------------------------------------------
+-- Replicated Suite · 背包设置页面测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 背包设置页使用真实 Feature、Store、Demand、PageHost 和 RSUI，仅原生背包及内存磁盘为替身。
+-- 这是离线交互和几何契约验证，不代表 RU 实机验收，且不进入 toc.g。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function T(name,fn)local ok,e=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS bag-page '..name)else failed=failed+1;print('FAIL bag-page '..name..': '..tostring(e))end end
 local Boot=dofile('tools/rs_bag_action_test_host.lua')

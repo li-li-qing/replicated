@@ -1,5 +1,11 @@
--- Real Persistence + production stores. Frozen envelopes were made by pre-change production code.
--- Synthetic in-memory disk only; no player files. Keep old fingerprint intact during the migration test.
+------------------------------------------------------------------------
+-- Replicated Suite · 战斗历史完整性测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用真实 Persistence 和生产 Store；固定封装由改动前的生产代码生成。
+-- 仅使用构造的内存磁盘，不读写玩家文件；迁移测试必须保留旧指纹。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)
@@ -43,7 +49,7 @@ end)
 Test('changed old payload cannot pass the historical integrity hook',function()
     local h=Boot();local raw=dofile('tools/fixtures/combat_history_schema1_20261007.lua')
     raw.payload.totals.kills=99
-    -- Valid transport seal but WRONG business fingerprint: the historical hook must still reject.
+    -- 传输封装有效但业务指纹错误时，历史恢复钩子仍必须拒绝该数据。
     raw.__rsmeta.envelopeFingerprint=assert(h.P:FingerprintEnvelopeIntegrity(raw))
     h.disk[h.key]=raw
     local ok=h.H:EnsureLoaded();assert(ok~=true and h.store.writeFenced,'corrupt history accepted')

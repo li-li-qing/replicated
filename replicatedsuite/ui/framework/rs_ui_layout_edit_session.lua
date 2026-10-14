@@ -1,40 +1,18 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Layout Edit Session v1
+-- Replicated Suite · 布局编辑会话
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared session Authority for Reset / Revert / Apply semantics.
---
--- Four-state contract (all snapshots are bounded data copies):
---
---   Persisted       last snapshot confirmed durable by the caller
---       ↕ Apply only
---   SessionBaseline snapshot accepted when this editor session began, or the
---                   last snapshot promoted by a successful Apply
---       ↕ Revert
---   Working         live Domain/layout state edited by PreviewAdapter + History
---       ↕ Reset (stage only; NEVER persists)
---   Defaults        frozen default snapshot for the current session
---
--- Semantics:
---   * Revert: Working <- SessionBaseline. No SaveData / Store write.
---   * Reset : Working <- Defaults. No SaveData / Store clear/write.
---   * Apply : persist current Working explicitly; only after the caller reports
---             durable success do Persisted and SessionBaseline advance.
---
--- Persistence boundary:
---   this model never calls S.Persistence/S.Api directly. The owning Feature or
---   future Workspace adapter supplies persistSnapshot(snapshot, context), and it
---   MUST return true only after the durable write is confirmed. A debounced
---   MarkDirty alone is not sufficient for Apply success.
---
--- History boundary:
---   an optional LayoutEditHistoryModel is observed so successful Record/Undo/
---   Redo refresh Working without polling. Revert/Reset/Apply are history
---   barriers and clear history on success; this prevents Undo from crossing a
---   semantic baseline that no longer matches the live Working state.
---
--- Performance:
---   no Tick / OnUpdate / Scheduler. Snapshot copy/equality is bounded and runs
---   only on session creation, explicit commands, rebase, or History events.
+-- Reset/Revert/Apply 语义的共享 Session 权威层。
+-- 四状态契约，全部快照为有界数据拷贝：
+-- Persisted：调用方确认耐久的最后快照，仅 Apply 更新；SessionBaseline：会话开始接受或成功 Apply 提升的快照，Revert 目标；
+-- Working：PreviewAdapter/History 编辑的实时 Domain/布局；Defaults：当前会话冻结默认快照，Reset 仅暂存而不持久化。
+-- Revert：Working <- SessionBaseline，不写 SaveData/Store；Reset：Working <- Defaults，不清/写 Store；
+-- Apply：明确持久化当前 Working，仅调用方确认耐久成功后推进 Persisted/SessionBaseline。
+-- 模型不直接调用 S.Persistence/S.Api；
+-- 所属 Feature 或 Workspace 适配器提供 persistSnapshot(snapshot, context)，只有耐久写确认后才返回 true，仅防抖 MarkDirty 不算 Apply 成功。
+-- 可选 LayoutEditHistoryModel 事件驱动更新 Working，无轮询；Revert/Reset/Apply 成功即清历史形成屏障，避免 Undo 穿过与实时 Working 不符的语义基线。
+-- 无 Tick/OnUpdate/Scheduler；有界快照拷贝/比较仅会话创建、明确命令、rebase、History 事件执行。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -446,9 +424,7 @@ function Model:ExecuteCommand(command, context)
 
     local historyOk, historyClearErr = self:_ClearHistory(command)
     if historyOk ~= true then
-        -- Durable persistence already succeeded. Never lie by rolling the
-        -- baseline backwards. Fail closed instead so stale History cannot cross
-        -- the new durable boundary; Rebase() is the explicit recovery path.
+        -- 耐久持久化已成功，不能倒退基线；应拒绝并阻止旧 History 跨新耐久边界，Rebase() 为明确恢复路径。
         return self:_Block(tostring(historyClearErr or "layout_edit_session_history_barrier_failed")
             .. "|command=apply|persisted=true")
     end

@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Buff/Debuff ID Registry Adapter
+-- Replicated Suite · 增益与减益身份注册
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- rs_skill_effects.lua remains the authoritative scraped effect source. This
--- adapter provides O(1) shared ID/name/tag/family lookup for every known buff.
+-- rs_skill_effects.lua 是抓取效果数据的唯一来源；本适配层为所有已知 Buff 提供共享的 O(1) ID、名称、标签和家族查询。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -32,7 +33,7 @@ for buffId, buff in pairs(Library.buffs) do
             verifiedAt = "2026-08-25",
             notes = kind == "unknown" and "Buff/Debuff polarity not yet verified in-game" or nil,
         })
-        -- 中文维护注释（资源身份与极性分离）：Registry.kind="buff" 是资源命名空间，
+        -- Registry.kind="buff" 是资源命名空间，
         -- 不是正面效果证明。Adapter 拥有独立元数据视图，保留 Registry identity 兼容旧消费者；
         -- effectCategory 只来自 SkillEffects 明示 kind。禁止把 unknown 用资源 kind 覆盖。
         local entry = {}

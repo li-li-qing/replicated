@@ -1,3 +1,8 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 诊断默认焦点测试
+-- 作者：Replicated
+-- QQ群：1104129461
+------------------------------------------------------------------------
 local path='presentation/v3/pages/rs_v3_foundation_pages.lua'
 local f=assert(io.open(path,'rb'))
 local text=f:read('*a')

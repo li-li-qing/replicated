@@ -1,13 +1,12 @@
- ------------------------------------------------------------------------
- -- Replicated Suite V3 - Bag Quick Take/Put Overlay
- --
- -- Presentation-only companion for tools_bag. A freely movable bar is shown
- -- only while a verified bank/coffer window is open. Inventory scans/moves stay
- -- inside the Feature and run only after an explicit click.
- --
- -- 取 / 放 / 全放 / 设置；搬运按钮沿用再点停止及方向切换契约。
- -- 位置由独立 Presentation Store 保存；不再跟随原生背包移动。
- ------------------------------------------------------------------------
+------------------------------------------------------------------------
+-- Replicated Suite · 背包快捷操作工具条
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- tools_bag 的表现侧栏；仅已验证 bank/coffer 窗口打开时显示可自由移动的工具条。背包扫描/移动留在 Feature 内，只在明确点击后执行。
+-- 取 / 放 / 全放 / 设置；搬运按钮沿用再点停止及方向切换契约。
+-- 位置由独立 Presentation Store 保存；不再跟随原生背包移动。
+------------------------------------------------------------------------
  if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
  local S = ReplicatedSuite
  local feature = S.Features and S.Features.tools_bag or nil
@@ -16,15 +15,10 @@
  local P = {
      version=10, ReloadVisibilityContractVersion=2, NativeTransientHostContractVersion=2,
      VisibleRetryContractVersion=2, TooltipLayerContractVersion=1, TwoButtonContractVersion=1, ReleasedRootRecoveryContractVersion=1,
-     -- Quiet bar: the label is empty by default and only
-     -- carries a transient message (run in progress / why a click refused), then
-     -- clears itself and the bar shrinks back. An always-on "银行 · 可快捷取放"
-     -- sentence is noise on a game overlay (user report: 简单方便最重要).
+     -- 工具条默认标签为空，仅短暂显示执行状态或拒绝原因，消息清除后恢复紧凑宽度。
+    -- 常驻“银行 · 可快捷取放”会给游戏覆盖层增加无用信息，应保持简单方便。
      QuietByDefaultContractVersion=1,
-     -- v7: the 350 ms heartbeat used to rewrite geometry/text and Raise the bar
-     -- on every beat. Raising a periodic surface over a transient hint buries the
-     -- hint within a second (RU report) and breaks the diff-rendering rule, so
-     -- writes are now diffed and the keep-on-top raise yields to an open hint.
+     -- 350 ms 心跳中的几何/文本写入必须按差异提交；保顶 Raise 应让位于已打开提示，避免周期性窗口在一秒内把用户提示压住，并保持差异渲染契约。
      DiffRenderContractVersion=1, HintYieldContractVersion=1,
      FourButtonContractVersion=1,
      FreePlacementContractVersion=1, DurablePlacementContractVersion=1,
@@ -34,8 +28,7 @@
      appliedGeometry=nil, appliedStatus=nil,
  }
  S.UIV3.BagQuickOverlay = P
- -- A dedicated grip leaves action clicks independent from native drag capture.
- -- Quiet mode uses only COMPACT_WIDTH and retains all four controls.
+ -- 独立拖动把手使操作点击不受原生拖动捕获影响；安静模式仅使用 COMPACT_WIDTH，保留四个控件。
  local TAKE_X, TAKE_W = 32, 40
  local PUT_X, PUT_W = 76, 40
  local ALL_X, ALL_W = 120, 48
@@ -43,9 +36,7 @@
  local STATUS_X = 236
  local COMPACT_WIDTH = 232
  local MIN_WIDTH, MAX_WIDTH = 388, 508
- -- A refusal/stop message stays readable long enough to be read once, then the
- -- bar returns to its quiet form.  Expiry is evaluated on the beats the existing
- -- 100 ms read-only window observer already publishes: no new task, no Tick.
+ -- 拒绝/停止信息保留足够阅读时间后恢复安静形态；到期判断使用已有 100 ms 只读窗口观察节拍，不添加任务或 Tick。
  local MESSAGE_TTL_MS = 6000
 
 local STORE_ID = "v3.presentation.bag_quick_overlay"
@@ -126,21 +117,13 @@ function P:ResetPosition()
     return ok,saveErr
 end
 
--- A failed host build during a visible transition must not wait for the next
--- 100 ms storage heartbeat to retry: RU can reject the first transient-window
--- creation while the native bank/coffer window is still animating open, and if
--- the user closes it again before the next heartbeat the overlay never appears
--- for that session. Retry on the frame-cadence lane instead (bounded one-shot,
--- auto-removed before the callback runs, so no permanent Tick is introduced).
+-- 可见转换时宿主构建失败应在帧节拍有界重试，不等待下一次 100 ms 仓库心跳；RU 可能在仓库开启动画中拒绝首次临时窗口创建，用户若提前关闭会错过整个会话。
+-- one-shot 在回调前自动移除，不引入永久 Tick。
 local CREATE_RETRY_TASK = "v3_bag_quick_overlay_create_retry"
--- Campaign state lives on P, NOT as a closure local: the in-callback re-arm
--- calls this same method. The counter may only reset when a NEW campaign is
--- armed from outside; a re-arm must preserve it, or the cap never triggers and
--- the retry loops forever (caught by the Lua simulator, not static fences --
--- exactly why control-flow tests exist).
+-- 重试周期状态保存在 P，不能作为闭包局部变量；回调再次调用此方法时须保留计数，仅外部启动新周期才重置，否则上限不会触发而无限重试。此控制流边界需由 Lua 模拟验证。
 function P:ScheduleCreateRetry(freshCampaign)
     if S.Scheduler == nil or type(S.Scheduler.AddHighFrequencyOneShot) ~= "function" then return false end
-    -- One in-flight retry at a time; the running task already covers this request.
+    -- 同一时刻只允许一个在途重试；运行中的任务已覆盖此次请求。
     if self.retryScheduled == true then return true end
     if freshCampaign ~= false then self.retryCount = 0 end
     local added = S.Scheduler:AddHighFrequencyOneShot(CREATE_RETRY_TASK, 64, function()
@@ -149,8 +132,7 @@ function P:ScheduleCreateRetry(freshCampaign)
         local ok, err = P:EnsureCreated()
         if ok == true then return P:Refresh() end
         P.lastError = tostring(err or "bag_quick_overlay_retry_create_failed")
-        -- Still failing: re-arm once more, but cap consecutive retries so a
-        -- permanently unavailable native contract cannot loop forever.
+        -- 仍失败时再次安排重试，但限制连续次数，避免原生契约永久不可用时无限循环。
         P.retryCount = (tonumber(P.retryCount) or 0) + 1
         if P.retryCount < 8 then return P:ScheduleCreateRetry(false) end
         return false
@@ -161,9 +143,7 @@ function P:ScheduleCreateRetry(freshCampaign)
     return added == true
 end
 
--- A hint the user is currently reading outranks our keep-on-top raise. When the
--- tooltip service cannot answer, we do not raise at all: stealing z-order from
--- something we cannot see is worse than losing one beat of re-assertion.
+-- 用户正在阅读的提示优先于保顶 Raise；提示服务无法判断时不抬升，避免抢走无法观测窗口的层级。
 local function HintIsShowing()
     local tooltip = S.RSUI and S.RSUI.Tooltip or nil
     if type(tooltip) ~= "table" or type(tooltip.IsShowing) ~= "function" then return true end
@@ -172,13 +152,11 @@ local function HintIsShowing()
     return showing == true
 end
 
--- "" means say nothing.  The idle sentence ("银行 · 可快捷取放") carried no
--- information, and the storage kind is already obvious from the window the user
--- just opened -- a game overlay must not wear a permanent label.
+-- 空字符串表示不显示文字；仓库类型可从刚打开的窗口识别，工具条不应常驻说明标签。
 local function OverlayStatusText(overlay, now)
     if overlay.running == true then
-        -- Progress is the affordance that replaces 停: the user can see that a
-        -- run is live, and that clicking the same button again is what ends it.
+        -- 进度取代“停”按钮作为操作反馈，使用户看见
+        -- 操作正在执行，再次点击同一按钮即可结束。
         return tostring(overlay.status or "正在处理") .. " " .. tostring(tonumber(overlay.moved) or 0)
             .. "/" .. tostring(tonumber(overlay.queued) or 0)
     end
@@ -194,9 +172,7 @@ local function OverlayStatusText(overlay, now)
 end
 
 function P:EnsureCreated()
-    -- UI:ReleaseOwner marks native widgets as released but an owner-side Lua
-    -- reference can survive a hot reload / host teardown. Treat that reference
-    -- as dead and rebuild instead of claiming the presenter is already created.
+    -- UI:ReleaseOwner 标记原生控件已释放，但 Lua 引用可能在热重载/宿主拆除后存留；该引用应视为无效并重建，不能宣称 presenter 已创建。
     if self.root ~= nil and self.root.rsUiReleased == true then
         if Windowing then Windowing:Detach(WINDOW_ID) end
         if S.Layout then S.Layout:UnregisterFloating(WINDOW_ID) end
@@ -207,12 +183,8 @@ function P:EnsureCreated()
     end
     if self.root ~= nil then return true end
     self.createAttempts=(tonumber(self.createAttempts) or 0)+1
-    -- Top-level emptywidgets are not a reliable RU system-layer host. The UI
-    -- primitive contract already records the same failure class that once made
-    -- Unit Lines have valid projection but zero visible dots. Quick actions are
-    -- interactive screen presentation, so use a transient WINDOW. IMPORTANT:
-    -- this bar is NOT a component popup. Windowing owns the UIParent geometry
-    -- and the native drag lease; the Feature owns only visibility/actions.
+    -- RU 顶层 emptywidget 不能可靠作为 system 层宿主，可能投影有效却完全不可见。快捷操作属于交互式屏幕表现，须用临时 WINDOW；
+    -- 该条不是组件弹层，Windowing 负责 UIParent 几何与原生拖动租约，Feature 仅负责可见性/操作。
     local root,err=S.UI:CreatePanel(UIParent,"v3_bag_quick_overlay_root",0,0,MIN_WIDTH,32,"soft",{
         transientWindow=true, visible=false, pickable=false, gradient=false,
         accentStrip=false, owner=self.owner,
@@ -236,9 +208,7 @@ function P:EnsureCreated()
         self.lastError="bag_quick_overlay_interaction_failed:"..tostring(pickErr or enabledErr or "unknown")
         return false,self.lastError
     end
-    -- 停 was reported as useless: a stop is now the same
-    -- button pressed again, and the decision lives in tools_bag (the business
-    -- Authority), not in the presentation layer.
+    -- 再次点击正在执行的同一按钮即可停止；此决定归 tools_bag 业务权威层，不归表现层。
     local take=S.UI:CreateButton(root,"v3_bag_quick_take","取",TAKE_X,4,TAKE_W,24,10,true,true,self.owner)
     local put=S.UI:CreateButton(root,"v3_bag_quick_put","放",PUT_X,4,PUT_W,24,10,true,true,self.owner)
     local allPut=S.UI:CreateButton(root,"v3_bag_quick_all_put","全放",ALL_X,4,ALL_W,24,10,true,true,self.owner)
@@ -260,10 +230,7 @@ function P:EnsureCreated()
             local ok,actionErr=fn(feature.Commands)
             if ok~=true then self.actionError=name=="settings" and "设置失败" or "操作失败";self.actionErrorAt=type(S.NowMs)=="function" and S.NowMs() or 0;self.lastError=tostring(actionErr or "未执行")
             else self.actionError=nil end
-            -- One writer per label: the Feature publishes a short status plus the
-            -- long reason for every click, so the presenter refreshes from that
-            -- projection instead of painting the label itself.  The direct write
-            -- below is only the fallback for a refresh that could not display.
+            -- 标签只允许一个写入者：Feature 为每次点击发布简短状态与完整原因，presenter 从投影刷新；下方直接写仅在刷新无法显示时兜底。
             P:Refresh()
             if ok~=true and self.shown~=true then
                 S.UI:SetText(status,tostring(actionErr or "失败"),P.owner)
@@ -281,12 +248,8 @@ function P:EnsureCreated()
     end)
     local tooltip=S.RSUI and S.RSUI.Tooltip or nil
     if type(tooltip)=="table" and type(tooltip.Bind)=="function" then
-        -- The stop rule has to be discoverable somewhere now that 停 is gone, and
-        -- the button hover is where the user looks before clicking. Keep it to two
-        -- short lines: the pooled hint box is measured against a native label, and
-        -- a long sentence is exactly what the user screenshotted as clipped. The
-        -- switch rule and the full "same-kind only" explanation live in the page
-        -- hint line, which is a real wrapped Text with room to breathe.
+        -- “停”按钮移除后，停止规则须在其它位置清楚说明；
+        -- 用户点击前会查看按钮悬浮提示；仅保留两条短行，提示池按原生标签测量，长句会裁切。切换规则和“仅同类”的完整说明放在能自动换行的页面提示 Text 中。
         tooltip:Bind(take,{ text="取：取出与背包同类的物品（只移两边都有的）。再点一次＝停止。", allowRaw=true, cursorFollow=true, maxWidth=320 })
         tooltip:Bind(put,{ text="放：存入与仓库同类的物品（仓库满时仍会堆叠）。再点一次＝停止。", allowRaw=true, cursorFollow=true, maxWidth=320 })
         tooltip:Bind(allPut,{ text="全放：尝试存入所有非黑名单物品，不能存的会跳过。再点一次＝停止。", allowRaw=true, cursorFollow=true, maxWidth=360 })
@@ -349,8 +312,7 @@ function P:Refresh(forceGeometry)
     local ok,err=self:EnsureCreated()
     if ok~=true then
         self.lastError=tostring(err or "bag_quick_overlay_create_failed")
-        -- The storage is open right now; a failed host build must self-heal on
-        -- frame cadence instead of waiting for the next observer heartbeat.
+        -- 仓库当前打开；宿主构建失败应在帧节拍自愈，不等待观察器下次心跳。
         self:ScheduleCreateRetry()
         return false,err
     end
@@ -360,8 +322,7 @@ function P:Refresh(forceGeometry)
     local now=type(S.NowMs)=="function" and tonumber(S.NowMs()) or 0
     local statusText=OverlayStatusText(overlay,now)
     if self.actionError~=nil and now-(tonumber(self.actionErrorAt) or 0)<=MESSAGE_TTL_MS then statusText=self.actionError end
-    -- Nothing to say -> buttons only.  Something to say -> grow the bar, but
-    -- never below the width that fits the message.
+    -- 无消息时仅显示按钮；有消息时扩大工具条，宽度不能小于消息所需宽度。
     local width=statusText=="" and COMPACT_WIDTH
         or math.max(MIN_WIDTH,math.min(MAX_WIDTH,tonumber(overlay.width) or MIN_WIDTH))
     local viewport=S.Layout and type(S.Layout.GetContext)=="function" and S.Layout:GetContext() or {}
@@ -387,7 +348,7 @@ function P:Refresh(forceGeometry)
         ..":"..tostring(viewport.uiScale)..":"..tostring(viewport.logicalWidth)..":"..tostring(viewport.logicalHeight)
     local firstShow=self.shown~=true
     local geometryChanged=self.appliedGeometry~=geometryKey
-    -- 中文维护（2026-10-04）：仅 Windowing 提交/校验自由位置，永不引用原生背包锚点。
+    -- 约束（2026-10-04）：仅 Windowing 提交/校验自由位置，永不引用原生背包锚点。
     self.anchorChecks=(tonumber(self.anchorChecks) or 0)+1
     local anchored,anchorErr=Windowing:ApplyGeometry(self.root,self.owner,x,y,width,32,forceGeometry==true or firstShow)
     if anchored~=true then
@@ -400,8 +361,7 @@ function P:Refresh(forceGeometry)
         S.UI:SetExtent(self.status,math.max(44,width-STATUS_X-4),24,self.owner)
         self.appliedGeometry=geometryKey
     end
-    -- Only rewrite the label when the sentence actually changed; a native text
-    -- write every 350ms is churn, and RU re-asserts window state on some writes.
+    -- 仅句子实际变化时重写标签；每 350ms 重写原生文字会造成额外工作，部分 RU 写入还会重新声明窗口状态。
     if self.appliedStatus~=statusText then
         S.UI:SetText(self.status,statusText,self.owner)
         S.UI:SetVisible(self.status,statusText~="" and true or false,self.owner)
@@ -423,8 +383,7 @@ function P:Refresh(forceGeometry)
         if type(self.root.Raise)=="function" then pcall(function() self.root:Raise() end) end
         return true
     end
-    -- Steady beat: keep the bar above the native bag window, but never over a
-    -- hint the user is reading (that was the "it sinks in under a second" bug).
+    -- 稳定节拍保持工具条在原生背包上方，但不能覆盖用户正在阅读的提示。
     if HintIsShowing()~=true and type(self.root.Raise)=="function" then
         pcall(function() self.root:Raise() end)
     end
@@ -462,8 +421,6 @@ if S.Events ~= nil and type(S.Events.SubscribeInternal)=="function" then
         if tostring(featureId or "")=="tools_bag" then return P:Refresh() end
     end)
 end
--- Build the hidden transient host during module admission. This removes the old
--- first-open race: if the first visible event arrives during a transient native
--- creation failure, later visible heartbeats still retry through Refresh().
+-- 模块准入时构建隐藏临时宿主；首次可见事件若遇原生创建暂时失败，后续可见心跳仍可通过 Refresh() 重试，消除首次打开竞态。
 P:EnsureCreated()
 P:Refresh()

@@ -1,12 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - World Observation Service
--- Shared lightweight reads/cache/subscriptions only; never owns Domain truth.
+-- Replicated Suite · 世界观察与短期缓存
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- ReadField is deliberately a very short TTL read-through cache. It removes
--- duplicate Name/ID/Health/Distance calls made by enabled modules in the same
--- observation window without freezing target changes or turning cached facts
--- into business conclusions. Expensive Buff/Tooltip queries remain explicitly
--- requested by the owning module and use argument-qualified cache keys.
+-- 世界观察服务只共享轻量读取、缓存和订阅，不拥有领域真相。ReadField 使用极短 TTL 的穿透缓存，去除同观察窗口
+-- 内已启用模块重复的 Name/ID/Health/Distance 调用，不冻结目标切换，也不把缓存事实升级为业务结论。昂贵
+-- Buff/Tooltip 查询仍须由所属模块显式请求，缓存键包含参数。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -39,8 +38,7 @@ end
 local function EffectiveTtl(actorKey, ttlMs)
     local ttl = math.max(0, tonumber(ttlMs) or 75)
     local lower = tostring(actorKey or ""):lower()
-    -- target/targettarget are volatile aliases. Only share reads that happen in
-    -- the exact same timestamp; never retain them across target switches.
+    -- target/targettarget 是易变别名，只共享完全相同时间戳的读取，绝不跨目标切换保留。
     if lower == "target" or lower == "targettarget" or lower == "mouseover" then return 0 end
     return ttl
 end
@@ -88,8 +86,7 @@ function O:Prune(maxAgeMs)
     for key, row in pairs(self.cache) do
         if now - (tonumber(row.lastSeenAt) or 0) > maxAgeMs then self.cache[key] = nil end
     end
-    -- Read-through facts are intentionally much shorter lived. Prune stale
-    -- entries in bounded background maintenance, never from a combat callback.
+    -- 穿透读取事实的寿命刻意更短；在有界后台维护中清理过期项，不在战斗回调中清理。
     for key, row in pairs(self.readCache) do
         if now - (tonumber(row.at) or 0) > 5000 then self.readCache[key] = nil end
     end

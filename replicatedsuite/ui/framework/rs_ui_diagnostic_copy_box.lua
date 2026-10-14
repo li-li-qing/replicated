@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite RSUI - Diagnostic Copy Box
+-- Replicated Suite · 诊断报告复制框
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 中文维护注释（2026-09-18，diagnostic-copy-box-1）：
+-- 约束（diagnostic-copy-box-1）：
 -- 原因：通用 EditBox/DraftSession 必须在 LostFocus 时释放键盘，而 RU 的多行只读框会偶发
 -- 迟到/伪 OnLostFocus；旧诊断框复用通用 BindDeferredInputActivation 后，用户选中文字等待片刻
 -- 再 Ctrl+C 会得到空内容。历史上直接改通用输入生命周期又破坏了 Gear/数值框的删除与输入。
@@ -75,7 +77,7 @@ function UI:CreateDiagnosticCopyBox(spec)
         math.max(1024, tonumber(spec.maxLength) or 32768))
     if edit == nil then return nil, "diagnostic multiline editor unavailable" end
 
-    -- 中文维护注释（2026-09-18，diagnostic-copy-box-2）：
+    -- 约束（2026-09-18，diagnostic-copy-box-2）：
     -- RU 实机证明多行 EditBox 在 SetReadOnly(true) 后虽然 SetFocus/EnableKeyboard 均返回成功，
     -- 但 Ctrl+A/C 仍可能没有可复制选区。报告 Authority 本来就不在 Native EditBox，而在
     -- ModuleDiagnosticsHub 的冻结 snapshot；因此“防止用户改报告”不应靠 Native read-only。
@@ -175,7 +177,7 @@ function UI:CreateDiagnosticCopyBox(spec)
     end
 
     function box:Deactivate(reason)
-        -- 中文维护注释：这是诊断 CopyBox 唯一主动撤销 Keyboard 的正常生命周期边界。
+        -- 这是诊断 CopyBox 唯一主动撤销 Keyboard 的正常生命周期边界。
         -- LostFocus 不能在这里偷跑，否则 RU 迟到通知又会复现“等待后复制为空”。
         AcceptedCall(self.edit, "EnableKeyboard", false)
         self.edit.rsUiKeyboardArmed = false
@@ -259,7 +261,7 @@ function UI:CreateDiagnosticCopyBox(spec)
         return true
     end
 
-    -- 中文维护注释：只绑定两个事件。OnClick 是用户显式取得复制键盘 Authority；OnLostFocus
+    -- 只绑定两个事件。OnClick 是用户显式取得复制键盘 Authority；OnLostFocus
     -- 故意只计数，不做任何 Native 写操作，也不调度“一帧后复核”。这是与普通输入框最重要的
     -- 隔离点。窗口关闭/模块切换会显式 Deactivate，所以不会永久持有键盘。
     if type(self.SafeHandler) ~= "function" then return nil, "diagnostic handler contract unavailable" end

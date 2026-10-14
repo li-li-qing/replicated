@@ -1,17 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native Auction Surface Observation Service
+-- Replicated Suite · 拍卖原生窗口观察
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Read-only Service for the native Auction House window.  This service owns
--- exactly one bounded native-window observation while tools_auction is enabled
--- and publishes geometry/visibility facts to Presentation.  It never reads
--- favorites, never issues auction searches, and never owns a UI object.
---
--- RU compatibility note:
--- Some client builds return only x/y/width/height from
--- ADDON:GetContentMainScriptPosVis(UIC_AUCTION) and omit the final visibility
--- boolean.  The previous production implementation proved that behavior.  V2
--- therefore combines MainScript geometry with the native content/parent
--- IsVisible chain instead of requiring the fifth return value unconditionally.
+-- 拍卖原生窗只读观察服务在 tools_auction 启用期间拥有唯一有界观察，并向 Presentation 发布几何/可见事实；不
+-- 读收藏、不发搜索、不拥有 UI 对象。部分 RU GetContentMainScriptPosVis(UIC_AUCTION) 只返回 x/y/width/height
+-- 而省略 visibility，已有生产证据；因此结合 MainScript 几何与原生 content/parent IsVisible 链，不能无条件要
+-- 求第五返回值。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -21,7 +16,7 @@ local V = {
     version = 3,
     CalibratedOuterGeometryContractVersion = 1,
     VisibilityContractVersion = 2,
-    InteractionVisibilityContractVersion = 1, -- 2026-09-30: stopped observer != native window closed.
+    InteractionVisibilityContractVersion = 1, -- 观察器停止不等于原生窗口关闭。
     topic = "v3.auction_surface.updated",
     taskId = "v3_auction_surface_observer",
     started = false,
@@ -87,18 +82,17 @@ end
 local function ReadWidgetVisible(widget)
     if widget == nil or type(widget.IsVisible) ~= "function" then return false, false end
     local ok, visible = pcall(function() return widget:IsVisible() end)
-    -- 维护（auction-user-priority-1）：nil/数字/字符串不构成“已关闭”证据，未知形状保持 unknown。
+    -- nil/数字/字符串不构成“已关闭”证据，未知形状保持 unknown。
     if ok ~= true or type(visible) ~= "boolean" then return false, false end
     return true, visible == true
 end
 
--- The ADDON content object can be a child proxy.  Visibility is considered
--- positive if any node in its short parent chain is visible.  If at least one
--- node exposes IsVisible and none are visible, the chain is known hidden.
+-- ADDON content 可为子代理；短父链任一节点可见即视为可见。若至少一节点提供 IsVisible 且全部不可见，则可确定
+-- 链隐藏。
 local function ReadContentChainVisible(content)
     local node, anyKnown = content, false
     for _ = 0, 8 do
-        -- 维护（auction-user-priority-1）：UIParent 永远可见，不能把桌面本身当成拍卖窗口打开的证据。
+        -- UIParent 永远可见，不能把桌面本身当成拍卖窗口打开的证据。
         if node == nil or node == rawget(_G, "UIParent") then break end
         local known, visible = ReadWidgetVisible(node)
         if known == true then
@@ -114,7 +108,7 @@ local function ReadContentChainVisible(content)
 end
 
 local function ReadAuctionContent(addon, contentId)
-    -- 中文维护注释（2026-10-02，auction-closed-content-1）：第二返回值只证明受能力门保护的
+    -- （2026-10-02，auction-closed-content-1）第二返回值只证明受能力门保护的
     -- Native 调用确实成功，不能把“不允许/缺方法/调用失败”折叠成与“内容不存在”相同的 nil。
     -- 第一返回值保留旧内容对象接口；调用方只有同时持有成功证据才能使用空对象作关闭证据。
     if addon == nil or contentId == nil or S.Api == nil or type(S.Api.IsCapabilityAllowed) ~= "function"
@@ -126,10 +120,9 @@ local function ReadAuctionContent(addon, contentId)
 end
 
 local function ContentAbsent(mainOk, x, y, width, height, visible, contentReadOk, content)
-    -- 中文维护注释（2026-10-02）：MD1.3.life_trade 的 RU 实机形态是拍卖窗关闭/尚未创建时，
-    -- MainScript 五字段全 nil 且 GetContent 成功返回 nil；旧代码误当不可读，所有材料被 admission 拦住。
-    -- 两个 getter 都成功且同一次采样无内容、无任何几何/可见性字段，才证明窗口不存在。
-    -- 不能推广为“任意 nil/零矩形=关闭”，也不记住旧关闭状态；每次询价边界仍重新读取原生事实。
+    -- RU 实机证据：2026-10-02，MD1.3.life_trade 的拍卖窗关闭或尚未创建时，MainScript 五字段全 nil，
+    -- GetContent 成功返回 nil。只有同次采样两 getter 均成功且无内容、几何、可见字段，才证明窗口不存在。不能
+    -- 推广为任意 nil/零矩形即关闭，也不缓存旧关闭状态；每次询价边界重新读取。
     return mainOk == true and contentReadOk == true and content == nil
         and x == nil and y == nil and width == nil and height == nil and visible == nil
 end
@@ -140,7 +133,7 @@ local function ResolveContentRect(content, logicalWidth, logicalHeight)
     for depth = 0, 8 do
         if node == nil or node == rawget(_G, "UIParent") then break end
         if S.Layout ~= nil and (type(S.Layout.ResolveViewportLogicalRect) == "function" or type(S.Layout.GetLogicalRect) == "function") then
-            -- 维护（2026-09-22，external-surface-geometry-1）：外部原生内容坐标最终用于 UIParent 侧栏锚定，
+            -- （2026-09-22，external-surface-geometry-1）外部原生内容坐标最终用于 UIParent 侧栏锚定，
             -- 必须优先走已校准的 viewport-logical-v1；旧 GetLogicalRect 会在部分 RU UI Scale 语义下
             -- 重复除缩放。兼容测试/旧引导环境时才退回 legacy helper，不改变 Native ADDON Authority。
             local ok, x, y, width, height, info = pcall(function()
@@ -163,15 +156,15 @@ local function ResolveContentRect(content, logicalWidth, logicalHeight)
     return nil
 end
 
--- 维护（2026-09-30，auction-user-priority-1）：后台名称搜索会替换原生拍卖结果，不能把
+-- （2026-09-30，auction-user-priority-1）后台名称搜索会替换原生拍卖结果，不能把
 -- 侧栏关闭后的 idle/stopped 缓存视为玩家没在用拍卖行。此入口只按需读取可见性，不启动观察任务、
 -- 不 Publish、不更新几何快照；显式 boolean 优先于几何，兼容四返回值时才读短父链。
 -- 可见性不可证实时返回 known=false；两个 getter 成功返回的“内容不存在”形态由共享空内容判定证明关闭。
--- 中文维护：社交与拍卖共用受能力门保护的可见性读取；服务不持有外部窗口对象、不覆盖原生处理器。
+-- 社交与拍卖共用受能力门保护的可见性读取；服务不持有外部窗口对象、不覆盖原生处理器。
 -- content-absent 关闭证明仅有拍卖实机契约，社交全 nil 必须返回 unknown，不能抹掉有效名单回包。
 function V:ReadNativeVisibility(contentId, allowAbsent)
     local addon = rawget(_G, "ADDON")
-    -- 维护（trade-requote-2）：只在既有按需采样中附带字段形状，不在生成诊断时重读 Native。
+    -- 只在既有按需采样中附带字段形状，不在生成诊断时重读 Native。
     -- 不记录原生对象/全文错误、不持有 UI；unknown 的因果证据有界，权限/可见性决策不放宽。
     local probe = { contractVersion = 1, patch = "auction-closed-content-1", contentId = Number(contentId), contentIdType = type(contentId),
         addonPresent = addon ~= nil, mainMethod = addon ~= nil and type(addon.GetContentMainScriptPosVis) == "function" }
@@ -188,7 +181,7 @@ function V:ReadNativeVisibility(contentId, allowAbsent)
     probe.mainReturnTypes = table.concat({type(x), type(y), type(width), type(height), type(visible)}, ",")
     if ok == true and type(visible) == "boolean" then return true, visible, "main-script", probe end
     local contentOk, content, contentReadOk = pcall(ReadAuctionContent, addon, contentId)
-    -- 中文维护注释：contentCallOk 区分 Lua 包装未抛错，contentReadOk 才代表实际 Native 成功；
+    -- contentCallOk 区分 Lua 包装未抛错，contentReadOk 才代表实际 Native 成功；
     -- 诊断附带 contentAbsent，导出的 txt 能直接辨别正常关闭与 API 失败，不持有原生对象。
     probe.contentCallOk, probe.contentType = contentOk == true, type(content)
     probe.contentReadOk = contentOk == true and contentReadOk == true
@@ -225,15 +218,13 @@ function V:_Read()
     end
 
     local logicalWidth, logicalHeight = LayoutBounds()
-    -- 中文维护注释（2026-10-02）：侧栏几何观察与询价准入共享“正常无内容”的关闭证明；
+    -- （2026-10-02）侧栏几何观察与询价准入共享“正常无内容”的关闭证明；
     -- 保护内容读取/父链异常，不能让一个原生 getter 抛错终止观察任务。
     local contentCallOk, content, contentReadOk = pcall(ReadAuctionContent, addon, contentId)
     local chainOk, contentKnown, contentVisible = pcall(ReadContentChainVisible, content)
     if chainOk ~= true then contentKnown, contentVisible = false, false end
 
-    -- Five-value native getter.  It is intentionally called directly behind the
-    -- capability gate because the generic API wrapper historically carries a
-    -- bounded return tuple and old RU builds may omit the final boolean.
+    -- 五返回值原生 getter 在能力门禁后直接调用，因为通用包装返回元组有界，而旧 RU 可省略最后 boolean。
     local ok, x, y, width, height, visible = pcall(function()
         return addon:GetContentMainScriptPosVis(contentId)
     end)
@@ -245,14 +236,11 @@ function V:_Read()
     if type(visible) == "boolean" then
         resolvedVisible = visible == true
     elseif contentKnown == true then
-        -- Prefer actual widget visibility over stale geometry when the native
-        -- proxy exposes it.
+        -- 原生代理提供可见性时，优先采用真实 Widget 可见事实而非陈旧几何。
         resolvedVisible = contentVisible == true
     elseif mainRect == true then
-        -- Historical RU contract: some builds omit only the boolean while still
-        -- clearing geometry when Auction House closes.  Numeric plausible
-        -- geometry is therefore accepted as an open signal only when no stronger
-        -- content visibility fact exists.
+        -- 部分历史 RU 只省略 boolean，但拍卖行关闭时仍清空几何；只有无更强 content 可见性事实时，合理数字几
+        -- 何才可作为打开信号。
         resolvedVisible = true
     else
         resolvedVisible = false
@@ -273,15 +261,12 @@ function V:_Read()
         }
     end
 
-    -- 中文维护注释：先在原始返回值上判定全空，再交几何归一；避免非法字符串/NaN 被 Number
+    -- 先在原始返回值上判定全空，再交几何归一；避免非法字符串/NaN 被 Number
     -- 变成 nil 后误获关闭证明。关闭状态无位置可用，侧栏只收起，不生成猜测坐标。
     if contentAbsent then return { status = "ready", visible = false, source = "content-absent", reason = nil } end
 
-    -- MainScript can be a content proxy with unusable geometry.  If the native
-    -- content tree proves a window is visible, walk to the nearest plausible
-    -- outer window rectangle. Hidden content without a rectangle remains a clean
-    -- closed state; unknown visible geometry fails closed rather than floating
-    -- a detached panel at a guessed coordinate.
+    -- MainScript 可是几何不可用的 content 代理；原生树证明可见时寻找最近合理外窗矩形。隐藏且无矩形是明确关
+    -- 闭；可见但几何未知须失败封闭，不能把独立面板放到猜测坐标。
     if px ~= nil then
         local geometryVisible=contentKnown==true and contentVisible==true
         if type(visible)=="boolean" then geometryVisible=visible end

@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Bootstrap Recovery Entry Installer
--- Loaded immediately after the Native Foundation so later TOC failures still
--- leave minimal in-game recovery controls owned by Replicated Suite itself.
+-- Replicated Suite · 引导恢复入口
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 引导恢复入口在 Native Foundation 后立即安装，使后续 TOC 故障仍保留 Suite 自有最小游戏内恢复控件。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite
@@ -18,9 +20,7 @@ if type(S.InstallBootstrapRecoveryEntry) == "function" then
     end
 end
 
--- Recovery Command Bar is intentionally installed independently from the R
--- launcher. If button input is broken but EditBox input remains healthy, the
--- user still has an in-game reload path and does not need to restart the client.
+-- 恢复命令栏独立于 R 启动器安装；按钮输入失效而 EditBox 仍健康时，用户仍可在游戏内重载，无需重启客户端。
 if type(S.InstallRecoveryCommandBar) == "function" then
     local callOk, installed, installErr = pcall(function() return S.InstallRecoveryCommandBar() end)
     if callOk ~= true or installed ~= true then

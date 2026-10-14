@@ -1,11 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - DPS Page
+-- Replicated Suite · 伤害统计页面
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Rich live projection for combat statistics. Presentation consumes only DPS
--- Feature Projection/Commands; no native combat/target API is read here.
-------------------------------------------------------------------------
--- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 战斗统计的完整实时投影。表现层仅消费 DPS Feature 投影与命令，不读取原生战斗或目标 API。
+-- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
 -- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -176,9 +177,7 @@ local function Build(parent, route)
         slot = { size = "auto", hAlign = "fill" } })
     local enableBtn = D:ModuleToggleButton({ id = "v3_dps_enable", parent = top, text = "启用伤害统计", compact = true,
         slot = { hAlign = "fill",vAlign="fill" } })
-    -- FloatingSurface already owns logical id `v3_dps_widget`.  Page controls
-    -- must never alias a floating root because V3 component IDs are ownership
-    -- identities, not labels.
+    -- FloatingSurface 已持有逻辑 id `v3_dps_widget`；页面控件不能与悬浮根节点共用身份，V3 组件 ID 表示所有权而非标签。
     local showWidget = RSUI:Button({ id = "v3_dps_widget_toggle", parent = top, text = "显示悬浮窗", compact = true,
         slot = { hAlign="fill",vAlign="fill" } })
     clear = RSUI:Button({ id = "v3_dps_clear", parent = top, text = "清空统计", compact = true,
@@ -234,7 +233,7 @@ local function Build(parent, route)
     overviewPanel.table:SetSortState("damage","desc",false)
 
     function root:UpdateRankingLayout(selfOnly)
-        -- 中文维护（2026-10-07）：短正文先保住一个玩家行，再给可滚动明细留空间；不改表格列/采集。
+        -- 约束（2026-10-07）：短正文先保住一个玩家行，再给可滚动明细留空间；不改表格列/采集。
         local rankingHeight=116
         if selfOnly and self.detailExpanded and tonumber(self.lastBodyHeight) then
             rankingHeight=math.max(80,math.min(116,self.lastBodyHeight-102))
@@ -251,7 +250,7 @@ local function Build(parent, route)
 
     local detailPanel = RSUI:Border({ id = "v3_dps_detail_panel", parent = body, padding = 5, variant = "card",
         slot = { size = "fill", fill = 0.85, hAlign = "fill", vAlign = "fill" } })
-    -- 中文维护：明细头部和表格在高度不足时逐项滚动，不能把固定控件压进 1px 的表格中。
+    -- 明细头部和表格在高度不足时逐项滚动，不能把固定控件压进 1px 的表格中。
     local detailStack = RSUI:ScrollBox({ id = "v3_dps_detail_stack", parent = detailPanel, gap = 3,
         scrollStep=1,scrollbar=true,scrollbarWidth=14,scrollbarGap=4 })
     local detailSummary = RSUI:Text({ id = "v3_dps_detail_summary", parent = detailStack,
@@ -347,11 +346,8 @@ local function Build(parent, route)
     function root:ApplyRankingSort(columnId, direction, view)
         columnId = tostring(columnId or "")
         direction = tostring(direction or "none")
-        -- Ranking headers use a two-state sort. Generic TableView cycles
-        -- asc -> desc -> none; on the third state it reports columnId=nil. A
-        -- ranking cannot have a meaningful unsorted state, so interpret that
-        -- transition as ascending on the previous column. The next click then
-        -- becomes descending again: desc <-> asc with visible feedback.
+        -- 排行表头采用两态排序。通用 TableView 在 asc -> desc -> none 间循环，第三态报告 columnId=nil；
+        -- 排行不能没有排序，因此该转换沿用上一列并解释为升序，下次点击再降序，形成有可见反馈的 desc <-> asc。
         if direction == "none" then
             local previous = self.rankingSort.columnId
             columnId = tostring(previous or Settings().metric or "damage")

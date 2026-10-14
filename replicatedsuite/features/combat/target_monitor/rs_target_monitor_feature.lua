@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - combat_target_monitor Feature Authority
+-- Replicated Suite · 目标监控功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 1 Batch C（2026-09-28）：从 features/rs_business_bridge.lua 机械搬迁。
--- 只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、UpdateTopic、Demand owner、
--- Commands、Projection shape、ApiDependencies、Scheduler task name（v3_business_target_monitor_distance）、
+-- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
 -- event（TARGET_CHANGED）与 reconcileDemand 语义全部与被搬迁前逐字一致。
---
 -- Authority 边界：目标身份来自 X2Unit 只读事实，本文件不缓存跨帧目标、不做全单位枚举。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end

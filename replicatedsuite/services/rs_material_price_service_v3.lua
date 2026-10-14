@@ -1,26 +1,14 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Material Price Service V3
+-- Replicated Suite · 材料参考价格
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Long-lived material unit-price Authority used by Trade and any future
--- economy feature. PriceQuoteQueueV3 owns Native auction serialization; this
--- service owns durable unit-price observations, age/freshness semantics,
--- bounded anomaly protection and stale-while-revalidate admission.
---
--- Data flow:
---   Trade/Craft/etc. -> GetPrice()                    (local read only)
---   Trade visible rows -> QueueRevalidate()           (bounded background intent)
---   PriceQuoteQueueV3 -> RecordReferencePrice()       (confirmed unit quote)
---                        -> ObserveConfirmedPrice()    (this service)
---   this service -> v3.material_price.changed         (read-model invalidation)
---
--- Important boundaries:
---   * NEVER issues X2Auction calls directly.
---   * NEVER scans on Tick/OnUpdate. Background work is only explicit admission
---     into the existing single PriceQuoteQueueV3 lane.
---   * Persistent timestamps use server wall-clock minute stamps, not NowMs().
---     NowMs resets on reload and therefore cannot represent multi-day age.
---   * Old data remains usable. "stale" means "show now, refresh quietly", not
---     "invalidate and block profit".
+-- 长期材料单位价格权威供 Trade 和其他经济功能使用；PriceQuoteQueueV3 拥有 Native 拍卖串行，本服务拥有耐久观
+-- 察、年龄/新鲜度、有界异常防护和 SWR 准入。Trade/Craft -> GetPrice() 本地只读，可见行 -> QueueRevalidate()
+-- 有界后台意图，PriceQuoteQueueV3 -> RecordReferencePrice() -> ObserveConfirmedPrice() 确认单价，本服务发布
+-- v3.material_price.changed 使读模型失效。不直接调用 X2Auction，不 Tick/OnUpdate 扫描；后台只显式加入既有队
+-- 列通道。持久时间使用服务器分钟 stamp，重载归零的 NowMs 不能表示多日年龄。旧价仍可使用，stale 表示立即显示
+-- 并安静刷新，不清价阻断利润。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -37,7 +25,7 @@ local M = {
     CorruptCacheRecoveryContractVersion = 1,
     Topic = "v3.material_price.changed",
     StoreId = "v3.market.material_prices",
-    -- 维护（2026-09-25，service-boundary-declaration-1）：Foundation Gate 的
+    -- （2026-09-25，service-boundary-declaration-1）Foundation Gate 的
     -- service_presentation_boundary 会枚举 S.Services.* 的每一张表，要求显式声明
     -- presentationBoundary ∈ {service_only, event_host_only}；缺失即 blocker。
     -- 本服务只拥有持久价格事实/新鲜度/有界后台 admission，不创建任何 Native 控件、
@@ -48,7 +36,7 @@ local M = {
     revision = 0,
     storeLoaded = false,
     legacyImported = false,
-    -- 维护（2026-09-27，material-price-store-backoff-1）：材料价 Store 属于冷路径持久化 Authority。
+    -- （2026-09-27，material-price-store-backoff-1）材料价 Store 属于冷路径持久化 Authority。
     -- 若一次 LoadStore 因完整性/传输/初始化边界失败，普通路线一行可能包含多种材料，旧实现每次 GetPrice
     -- 都会再次尝试 LoadStore；实机诊断出现 567 次 miss / 0 write，导致“货率已回调”之后仍被材料价子系统
     -- 反复拖住。失败只在固定边沿重试，绝不在行循环里重打持久化读取；显式报价仍可回退 QuoteQueue 的会话缓存。
@@ -59,7 +47,7 @@ local M = {
     lastStoreLoadAt = 0,
     lastStoreLoadError = nil,
     nextStoreLoadRetryAt = 0,
-    -- 维护（2026-09-27，material-price-cache-recovery-1）：本 Store 保存的是可由拍卖询价重新生成的
+    -- （2026-09-27，material-price-cache-recovery-1）本 Store 保存的是可由拍卖询价重新生成的
     -- 派生缓存，不是用户配置/收藏/路线 Authority。若 Persistence 已经通过 Envelope/预算/Schema
     -- 检查并明确把该 Store Fence 为 current-schema fingerprint mismatch，继续保留写保护只会让
     -- MaterialPriceService 永久不可用。这里允许一次“空缓存完整替换 + durable readback 验证”；
@@ -70,7 +58,7 @@ local M = {
     lastCacheRecoveryAt = 0,
     lastCacheRecoveryError = nil,
     lastCacheRecoveryReason = nil,
-    -- Freshness policy requested for Trade SWR. Old prices remain readable.
+    -- Trade SWR 使用的新鲜度策略，旧价格仍可读取。
     freshMinutes = 6 * 60,
     warmMinutes = 24 * 60,
     staleMinutes = 7 * 24 * 60,
@@ -78,7 +66,7 @@ local M = {
     maxSamples = 6,
     maxBackgroundPerAdmission = 12,
     backgroundRetryMs = 60000,
-    -- 维护（2026-09-28，material-price-anomaly-jump-1）：本条阈值原来是 8，只防“数量级错误”
+    -- （2026-09-28，material-price-anomaly-jump-1）本条阈值原来是 8，只防“数量级错误”
     -- （例如拍卖把整组总价当单价，×100）。实机取证（`USER<id>/udf` 的 v3.market.material_prices，
     -- 38 次写入 + 22 条材料）发现真正的故障模式是另一种：**拍卖行临时缺货、只剩一个高价挂单**，
     -- 于是最低一口价单价一次性跳 2~3 倍并被直接落库。实例：「捣碎的香料」(30901) 前 34 次写入
@@ -91,15 +79,14 @@ local M = {
     anomalyRatio = 2.5,
     anomalyConfirmTolerance = 0.15,
     refreshPending = {},
-    -- 维护（2026-10-01，auction-full-lane-safety-1）：后台请求必须有生命周期 owner。
+    -- （2026-10-01，auction-full-lane-safety-1）后台请求必须有生命周期 owner。
     -- 价格仍共享，只在最后一个 owner 离开时解绑 bg watcher；不误取消其它 Feature/显式货物任务。
     refreshRequests = {},
     backgroundBlockReason = nil,
     backgroundInteractionPatch = "auction-full-lane-safety-1",
     lastRefreshAttemptMs = {},
-    -- Session-only acceptance clock. Server wall time can be briefly unavailable immediately after UI reload;
-    -- a quote confirmed in this generation must still be treated as fresh instead of being re-enqueued every rebuild.
-    -- This table is deliberately not persisted: multi-day age always comes from observedMinute.
+    -- 会话接受时钟：UI 重载后服务器时间可暂不可用，本代际已确认报价仍视为新鲜，避免每次重建重新排队。此表不
+    -- 持久化，多日年龄始终来自 observedMinute。
     sessionObservedAtMs = {},
     stats = {
         reads = 0, hits = 0, misses = 0, writes = 0, imported = 0,
@@ -153,8 +140,7 @@ local function ServerMinuteStamp()
     hour = math.max(0, math.min(23, math.floor(hour or 0)))
     minute = math.max(0, math.min(59, math.floor(minute or 0)))
     year, month, day = math.floor(year), math.floor(month), math.floor(day)
-    -- Gregorian serial day. Formula is stable across addon reloads and does not
-    -- depend on os.time (not guaranteed in the ArcheAge Lua sandbox).
+    -- 公历序数日公式跨插件重载稳定，不依赖 ArcheAge Lua 沙盒未保证的 os.time。
     local y = year - 1
     local days = 365 * y + math.floor(y / 4) - math.floor(y / 100) + math.floor(y / 400)
         + MONTH_OFFSETS[month] + day - 1
@@ -226,7 +212,7 @@ function M:_EnsureStoreRegistered()
         legacySchemaVersion = 0,
         key = (P.V3KeyPrefix or "") .. "market_material_prices",
         budget = { maxDepth = 6, maxNodes = 12000, maxStringBytes = 24000, maxEntriesPerTable = 512 },
-        -- 维护（material-price-cache-recovery-1）：仅此派生缓存允许“损坏后全量替换”。
+        -- 仅此派生缓存允许“损坏后全量替换”。
         -- Persistence 仍要求 replaceCorrupt + durable readback，普通 Save/MarkDirty 不能借此绕过 Fence。
         recoverableReplacement = true,
         default = function() return { entries = {}, contractVersion = M.StoreContractVersion } end,
@@ -269,8 +255,7 @@ function M:_ImportLegacyReferencePrices()
                 local newKey = Key(itemType, itemGrade)
                 self.entries[newKey] = {
                     itemType = itemType, itemGrade = itemGrade, price = math.floor(price),
-                    -- Legacy updatedAt used NowMs and cannot survive reload; keep the
-                    -- price but deliberately mark age unknown so SWR refreshes it.
+                    -- 旧 updatedAt 使用 NowMs，无法跨重载；保留价格但年龄明确未知，由 SWR 刷新。
                     observedMinute = nil,
                     source = "legacy:" .. tostring(legacy.source or "reference"),
                     samples = NormalizeSamples(legacy.samples, self.maxSamples),
@@ -360,11 +345,9 @@ function M:EnsureStoreLoaded(force)
     local status, _, err = P:LoadStore(self.StoreId)
     if status ~= true and status ~= "empty" then
         local loadErr = tostring(err or status or "store_load_failed")
-        -- 维护（material-price-cache-recovery-1）：当前实机证据为
-        -- integrity_failed:fingerprint_mismatch:4EE70972>3697A407。货率 Fast Path 已正常，真正
-        -- 剩余故障是派生材料价缓存被永久 Fence。该缓存可重建，因此只在 Persistence 已明确
-        -- 给出 current-schema fingerprint mismatch 时尝试一次 durable verified replacement；
-        -- transient LoadData/未来 schema/metadata/envelope 等错误仍进入 Fail + backoff，不覆盖磁盘。
+        -- 派生材料价格缓存可重新构建；仅 Persistence 明确确认 current-schema fingerprint mismatch 时尝试一
+        -- 次耐久读回验证的完整替换。transient LoadData、未来 schema、metadata/envelope 等错误仍
+        -- Fail+backoff，不覆盖磁盘。
         local recovered, recoverErr = self:_RecoverCorruptDerivedCache(loadErr)
         if recovered == true then return true end
         if IsRecoverableCacheIntegrityFailure(loadErr) == true and recoverErr ~= "not_recoverable_cache_failure" then
@@ -390,7 +373,7 @@ function M:_Freshness(entry, key)
     local nowMinute = ServerMinuteStamp()
     local observed = tonumber(entry.observedMinute)
     if nowMinute == nil or observed == nil or nowMinute < observed then
-        -- 维护（2026-09-25，material-price-session-freshness-1）：服务器日历在 UI reload 初期可能暂不可读。
+        -- （2026-09-25，material-price-session-freshness-1）服务器日历在 UI reload 初期可能暂不可读。
         -- 刚刚由本 generation 成功确认的报价不能因此立刻变成 unknown 并在每次路线重建时重复入队。
         -- sessionObservedAtMs 只解决当前加载期短窗口；持久化跨天年龄仍只相信 server wall-clock minute stamp。
         local acceptedAt = key ~= nil and tonumber(self.sessionObservedAtMs[key]) or nil
@@ -436,14 +419,14 @@ function M:GetPrice(itemType, itemGrade)
     }
 end
 
--- 维护（trade-single-quote-1）：跑商缓存有效窗为七天；不改变共享 Store/schema 或其它消费者政策。
+-- 跑商缓存有效窗为七天；不改变共享 Store/schema 或其它消费者政策。
 -- Store 故障时只回退本 generation 的真实 session 观察，不能复活无年龄的旧 reference。
 local function SortDependentSource(source)
     return tostring(source or ""):gsub("^legacy:", "") == "name_search_direct_unit"
 end
 function M:GetTradePrice(itemType, itemGrade)
     local price, meta = self:GetPrice(itemType, itemGrade)
-    -- 维护（2026-10-07）：旧来源无法区分“首条高价”与完整最低价，不再进入跑商成本。
+    -- （2026-10-07）旧来源无法区分“首条高价”与完整最低价，不再进入跑商成本。
     -- 仅改变读取政策，保留历史 payload/canonical；用户重新询价后由可信新观察替换该条。
     if meta and SortDependentSource(meta.source) then
         meta.sortUnverified, meta.needsRefresh, meta.freshness = true, true, "sort_unverified"
@@ -507,7 +490,7 @@ function M:ObserveConfirmedPrice(itemType, itemGrade, price, source)
         local previous = tonumber(entry.price)
         local ratio = math.max(previous, rounded) / math.max(1, math.min(previous, rounded))
         if ratio >= self.anomalyRatio then
-            -- 维护（2026-09-28，material-price-anomaly-jump-1）：跳变方向必须区分。若新价其实是回到了
+            -- （2026-09-28，material-price-anomaly-jump-1）跳变方向必须区分。若新价其实是回到了
             -- **已知历史样本区间**内，那它是“回归正常”，不是“新的市场常态”，必须立即采纳 —— 否则一旦
             -- 被“缺货一次性高价”污染（本例 559→1499），之后修正价又会因为 2.68 倍同样越限而被反复挡在
             -- 候选区，玩家要询价两次才看到正确毛利。只有“越限且与所有已知样本都不相似”才是真正的候选。
@@ -524,7 +507,7 @@ function M:ObserveConfirmedPrice(itemType, itemGrade, price, source)
             elseif entry.candidatePrice ~= nil and SimilarPrice(entry.candidatePrice, rounded, self.anomalyConfirmTolerance) then
                 entry.candidateCount = (tonumber(entry.candidateCount) or 1) + 1
                 self.stats.anomalyConfirmed = (tonumber(self.stats.anomalyConfirmed) or 0) + 1
-                -- second consistent observation confirms the market regime change
+                -- 第二次一致观察确认市场行情变化。
             else
                 entry.candidatePrice = rounded
                 entry.candidateCount = 1
@@ -565,7 +548,7 @@ function M:ObserveConfirmedPrice(itemType, itemGrade, price, source)
     return true
 end
 
--- 维护（auction-full-lane-safety-1）：unknown 到达明确 blocked 后，不允许下一次货率刷新
+-- unknown 到达明确 blocked 后，不允许下一次货率刷新
 -- 每60秒复活同一批后台任务。仅现有调用边沿检查恢复证据，不新建 Tick，不清价格、不伪造失败价。
 function M:_CanResumeBlockedRevalidation()
     if self.backgroundBlockReason == nil then return true end
@@ -661,7 +644,7 @@ end
 function M:QueueRevalidate(materials, options)
     materials = type(materials) == "table" and materials or {}
     options = type(options) == "table" and options or {}
-    -- 维护（material-price-store-backoff-1）：自动 SWR 只有在自己的持久价格 Authority 可用时才有意义。
+    -- 自动 SWR 只有在自己的持久价格 Authority 可用时才有意义。
     -- Store 不可用时继续向共享拍卖队列灌 background 请求，结果也无法落进本服务，会在每次路线重建后重复制造
     -- pending/miss。这里 fail-soft：停止自动后台 admission；用户双击的显式 QuoteRowMaterials 仍走 QuoteQueue，
     -- Trade 投影也会回退它的会话报价，因此不会牺牲手动查询能力。
@@ -717,7 +700,7 @@ function M:QueueRevalidate(materials, options)
 end
 
 function M:Describe()
-    -- 维护（trade-requote-2）：诊断不能发起首次存档加载/迁移；只报告最近已经采样的事实。
+    -- 诊断不能发起首次存档加载/迁移；只报告最近已经采样的事实。
     local freshness = { fresh = 0, warm = 0, stale = 0, old = 0, unknown = 0 }
     local count, pending, sortUnverified = 0, 0, 0
     -- 缺价材料尚无 entries，但仍可能占着 pending；不能只遍历 entries 得出0。

@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Modal Host v4
+-- Replicated Suite · 模态窗口宿主
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- One application-level modal stack. It owns the full-shell scrim and topmost
--- modal visibility so feature pages never invent their own Z-order/blocking
--- rules. Keyboard Escape is deliberately NOT invented: the current RU client
--- contract has no validated generic key handler, so dismissal is explicit.
+-- 统一应用级模态堆栈负责完整 Shell 遮罩与最上层可见性，功能页不能另建层级/阻塞规则。当前 RU 未验证通用键盘处理器，因此关闭必须显式操作，不自行补造 Escape 行为。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -83,8 +82,7 @@ function M:Attach(root)
             slot = { hAlign = "fill", vAlign = "fill" },
         })
         if self.scrim == nil or self.contentRoot == nil then error("modal host component create failed") end
-        -- Border click action contract v1: bind via the composite's public
-        -- SetOnClick action, never via a raw RequireOn on its native root.
+        -- Border 点击契约：通过组合控件公开 SetOnClick 绑定，不能在原生根节点直接 RequireOn。
         if type(self.scrim.SetOnClick) ~= "function" then error("modal scrim click action contract unavailable") end
         local backdropBound, backdropErr = self.scrim:SetOnClick(function()
             local top = M:GetTop()

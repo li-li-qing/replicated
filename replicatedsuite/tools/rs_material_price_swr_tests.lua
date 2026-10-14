@@ -1,5 +1,10 @@
--- Replicated Suite .18.317 MaterialPriceServiceV3 runtime regression.
--- Pure Lua: no ArcheRage Native API. It validates persistence/freshness/anomaly/background-admission semantics.
+------------------------------------------------------------------------
+-- Replicated Suite · 材料价格后台刷新测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- MaterialPriceServiceV3 纯 Lua 回归，不调用 ArcheRage 原生 API；验证持久化、时效、异常价格和后台任务准入语义。
+------------------------------------------------------------------------
 local root = (... and tostring(...)) or "."
 
 local server = { year = 2026, month = 9, day = 25, hour = 15, minute = 0 }
@@ -68,7 +73,7 @@ local function Eq(actual, expected, label)
     assert(actual == expected, label .. ": expected=" .. tostring(expected) .. " actual=" .. tostring(actual))
 end
 
--- Initial confirmed unit quote is immediately readable and persisted.
+-- 初次确认的单位报价必须立即可读并持久化。
 local M = Boot(nil)
 assert(M:EnsureStoreLoaded() == true)
 local ok = M:ObserveConfirmedPrice(30902, 1, 386, "name_search_direct_unit")
@@ -79,7 +84,7 @@ Eq(meta.freshness, "fresh", "initial freshness")
 assert(savedValue ~= nil and savedValue.entries["30902:1"].price == 386, "confirmed quote persisted")
 assert(#published >= 1 and published[#published].topic == "v3.material_price.changed", "price change published")
 
--- Reload simulation: persisted server-wall-clock timestamp survives generation-local NowMs reset.
+-- 模拟重载：持久化的服务器时间戳应跨越 Generation 内 NowMs 的重置。
 local persisted = DeepCopy(savedValue)
 nowMs = 5
 server = { year = 2026, month = 9, day = 25, hour = 20, minute = 0 }
@@ -101,7 +106,7 @@ Eq(price, 386, "old cache still readable")
 Eq(meta.freshness, "old", "nine-day cache old")
 assert(meta.needsRefresh == true, "old cache requests refresh without invalidating price")
 
--- Background admission remains one queue request with low priority/force refresh.
+-- 后台准入仅产生一个低优先级、强制刷新队列请求。
 queued = {}
 local qok, summary = M:QueueRevalidate({ { itemType = 30902, itemGrade = 1, name = "谷物细粉" } }, { maxItems = 12 })
 assert(qok == true and summary.submitted == 1, "old cache admitted for background refresh")
@@ -109,7 +114,7 @@ Eq(#queued, 1, "one background queue request")
 Eq(queued[1].options.priority, "background", "background priority")
 assert(queued[1].options.force == true, "background bypasses session quote TTL but not queue serialization")
 
--- Large single-sample jump is held; stable price remains available. A second similar sample confirms.
+-- 单次价格大幅跳变时先保留待确认样本，旧稳定价格继续可用；第二次相近样本才确认新价格。
 server = { year = 2026, month = 10, day = 4, hour = 15, minute = 1 }
 local accepted, reason = M:ObserveConfirmedPrice(30902, 1, 62573, "name_search_direct_unit")
 assert(accepted == false and reason == "anomaly_candidate_held", "single 8x+ jump held")
@@ -145,7 +150,7 @@ accepted, reason = M:ObserveConfirmedPrice(30901, 1, 559, "name_search_direct_un
 assert(accepted == true, "reverting to a known historic sample is accepted immediately: " .. tostring(reason))
 Eq(M:GetPrice(30901, 1), 559, "reverted price is live again in one observation")
 
--- If server calendar is unavailable immediately after a confirmed quote, session acceptance time prevents requeue storms.
+-- 确认报价后服务器日历暂不可用时，用会话接收时间避免反复入队。
 server = nil
 nowMs = nowMs + 1000
 accepted = M:ObserveConfirmedPrice(3603, 1, 120, "name_search_direct_unit")

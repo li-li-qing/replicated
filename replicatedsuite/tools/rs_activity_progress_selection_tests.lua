@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Activity Personal Progress Projection Tests
+-- Replicated Suite · 活动进度选择测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Development-only offline suite. Reproduces the Crimson Rift requirement:
--- default six selected => 0/6; keep stages 4-6 => 0/3; complete stage 4 => 1/3.
+-- 开发期离线测试，覆盖红龙裂隙进度选择：默认六个目标为 0/6，仅保留第 4..6 阶段为 0/3，完成第 4 阶段后为 1/3。
 ------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
@@ -14,7 +15,7 @@ local function Eq(actual, expected, message)
     if actual ~= expected then error((message or "mismatch") .. ": expected=" .. tostring(expected) .. " actual=" .. tostring(actual), 2) end
 end
 
-local selection = nil -- nil means implicit all, exactly like production Store.
+local selection = nil -- nil 表示隐式全选，与生产 Store 的语义一致。
 local snapshot = {
     key = "crimson", kind = "quest", available = true, completed = 0, total = 6,
     activeCount = 0, readyCount = 0, relatedActiveCount = 0, relatedReadyCount = 0,
@@ -149,7 +150,7 @@ Test("detail uses identical denominator and related rows never count", function(
     selection = { ["main:4"] = true, ["main:5"] = true, ["main:6"] = true }
     snapshot.objectiveStates[4].completed = true; snapshot.objectiveStates[4].state = "COMPLETED"
     local detail = RawDetail()
-    -- Mirror current quest fact into detail row 4.
+    -- 把当前任务事实同步到第 4 个详情行，供进度投影核对。
     local mainIndex = 0
     for _, row in ipairs(detail.children) do
         if row.counted == true and row.related ~= true then

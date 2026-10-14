@@ -1,22 +1,18 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Single monotonic OnUpdate scheduler v3
--- Author: Replicated
+-- Replicated Suite · 单一调度器
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- One private driver owns elapsed time for the whole Suite. Services may add
--- low-frequency jobs, but they never attach their own OnUpdate handlers.
---
--- Runtime priorities are intentionally compatible with the old AddTask call:
--- callers that omit priority remain P3. Under pressure we defer lower-priority
--- refresh work instead of dropping critical facts. Professional DPS keeps its
--- proven event pipeline; this scheduler governs Suite-owned periodic work.
+-- 单一私有 OnUpdate 驱动拥有全 Suite 已逝时间；Service 可增加低频任务，不能安装自身 OnUpdate。省略 priority
+-- 的旧 AddTask 调用仍为 P3；压力下延后低优先级刷新，不丢关键事实。专业 DPS 保持已有事件流水线，此 Scheduler
+-- 只管理 Suite 周期工作。
 ------------------------------------------------------------------------
-
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.Scheduler = {
     version = 3,
-    -- 维护（foundation-lifecycle-1）：调度器独占执行 Authority，Epoch 隔离同 Generation 重启。
+    -- 调度器独占执行 Authority，Epoch 隔离同 Generation 重启。
     -- Owner 手动暂停与异常熔断必须分离；不改变业务 Store、Native API 或现有任务调用签名。
     runEpoch = 0, lifecycleContractVersion = 1,
     driver = nil, running = false, tasks = {}, taskModules = {}, transientTaskModules = {}, dueScratch = {},
@@ -28,10 +24,8 @@ local PRIORITY = { P0=0, P1=1, P2=2, P3=3, P4=4, P5=5 }
 local FALLBACK_HEALTH_BUDGET = { Normal=10, Delayed=8, ["Heavy Backlog"]=6, Critical=4 }
 local BACKGROUND_MIN_INTERVAL_MS = 50
 local INTERACTIVE_MIN_INTERVAL_MS = 16
--- Frame-cadence lane: intervals below the 16 ms interactive floor are allowed
--- (down to 1 ms). A 1 ms request is intentionally never clamped upward; the
--- single OnUpdate driver simply runs the task on every rendered frame. Callers
--- MUST remove these tasks when the surface they feed is hidden.
+-- 帧节奏通道允许低于 16ms 交互下限，最小 1ms；1ms 请求不向上夹紧，单一 OnUpdate 每个渲染帧运行任务。表面隐
+-- 藏时调用者必须移除相应任务。
 local HIGHFREQUENCY_MIN_INTERVAL_MS = 1
 
 local function ReadDeltaMs(dt)
@@ -42,13 +36,12 @@ local function ReadDeltaMs(dt)
 end
 
 local function NormalizeDelta(dt)
-    -- Scheduler work remains capped after a client freeze: a large catch-up
-    -- burst would turn one hitch into several more. Performance telemetry uses
-    -- ReadDeltaMs separately and therefore never hides the actual stall.
+    -- 客户端冻结后 Scheduler 仍限制单帧工作量，避免追赶突发把一次卡顿扩成多次。Performance 独立使用
+    -- ReadDeltaMs，不隐藏真实停顿。
     return math.min(ReadDeltaMs(dt), 1000)
 end
 
--- 维护：非法数值不得进入排序/计时/预算；与 FrameBudget 的有限数规则一致。
+-- 非法数值不得进入排序/计时/预算；与 FrameBudget 的有限数规则一致。
 -- 正常有限值仍按旧上下限处理；NaN/Inf 回到安全默认，不让一个调用者污染整帧。
 local function Finite(value, fallback)
     value = tonumber(value)
@@ -81,11 +74,11 @@ local function ClassifyBacklog(pending, maxLateRatio)
     return "Normal"
 end
 
--- 维护：排序固定的任务实例而不是可被回调替换的 name；同名新任务必须等下一帧。
+-- 排序固定的任务实例而不是可被回调替换的 name；同名新任务必须等下一帧。
 -- Scratch 数组只保存实例引用且每帧清空，不创建每帧表/比较闭包，也不延长 Owner 生命周期。
 local function CompareDueTasks(a, b)
     local pa, pb = a.priority, b.priority
-    -- 中文维护（2026-10-03）：P0/P1 先行，普通任务保持原优先级；只有 Broker 认定已饥饿的
+    -- （2026-10-03）P0/P1 先行，普通任务保持原优先级；只有 Broker 认定已饥饿的
     -- P2..P5 按本次等待起点轮转，否则高频 P2 会每帧独占逃生名额，实际候选/视觉任务数十秒不执行。
     if pa<=1 or pb<=1 then
         if pa~=pb then return pa<pb end
@@ -93,7 +86,7 @@ local function CompareDueTasks(a, b)
     elseif a.starvationDue~=true and pa~=pb then return pa<pb end
     local da, db = tonumber(a.dueSinceMs) or 0, tonumber(b.dueSinceMs) or 0
     if da ~= db then return da < db end
-    if pa~=pb then return pa<pb end -- 中文维护：同一等待时刻仍以优先级打破平局；没有随机排序或额外执行配额。
+    if pa~=pb then return pa<pb end -- 同一等待时刻仍以优先级打破平局；没有随机排序或额外执行配额。
     return a.name < b.name
 end
 
@@ -106,7 +99,7 @@ local function AddTaskInternal(self, name, intervalMs, callback, runImmediately,
         lane == "interactive" and INTERACTIVE_MIN_INTERVAL_MS or (lane == "highfrequency" and HIGHFREQUENCY_MIN_INTERVAL_MS or 1000)))
     local moduleId = self.taskModules[tostring(name)] or "suite"
     self.tasks[name] = {
-        -- 维护：name 仅作索引，table 身份才是本次注册的执行凭证；Owner 的暂停不由熔断器接管。
+        -- name 仅作索引，table 身份才是本次注册的执行凭证；Owner 的暂停不由熔断器接管。
         name = name, intervalMs = interval, callback = callback, lane = lane,
         elapsedMs = runImmediately == true and interval or 0, enabled = true, manuallyDisabled = false,
         owner = owner, failureCount = 0, failureTotal = 0, runCount = 0, priority = NormalizePriority(priority),
@@ -122,28 +115,22 @@ function Scheduler:AddTask(name, intervalMs, callback, runImmediately, owner, pr
     return AddTaskInternal(self, name, intervalMs, callback, runImmediately, owner, priority, costUnits, "background")
 end
 
--- High-frequency input sampling is explicitly separated from ordinary periodic
--- work.  Only bounded user interactions (drag/resize/scroll) should use this
--- lane; tasks must be removed when the gesture ends.  This keeps the Suite on
--- one OnUpdate authority without silently turning every service into a 16 ms job.
+-- 高频输入采样与普通周期任务分开；仅拖动、缩放、滚动等有界用户交互使用此通道，手势结束必须移除任务。维持单
+-- 一 OnUpdate，不能让每个 Service 静默变成 16ms 任务。
 function Scheduler:AddInteractiveTask(name, intervalMs, callback, runImmediately, owner, priority, costUnits)
     return AddTaskInternal(self, name, intervalMs, callback, runImmediately, owner, priority or "P0", costUnits or 1, "interactive")
 end
 
--- Frame-cadence visual lane (unit lines / head markers / cast bars). Accepts
--- intervals down to 1 ms and never silently raises them; the frame loop still
--- decides actual execution cadence. Tasks here are excluded from backlog-health
--- classification because a 1 ms task is by construction "late" every frame and
--- must not poison the shared health telemetry of the other lanes.
+-- 帧节奏视觉通道用于单位连线、头顶标记、施法条，接收最低 1ms 且不静默抬高，实际节奏仍由帧循环决定。任务不参
+-- 与 backlog 健康分类，因为 1ms 任务每帧必然迟到，不能污染其他通道共享遥测。
 function Scheduler:AddHighFrequencyTask(name, intervalMs, callback, runImmediately, owner, priority, costUnits)
     return AddTaskInternal(self, name, intervalMs, callback, runImmediately, owner, priority or "P1", costUnits or 1, "highfrequency")
 end
 
--- Bounded one-shot work on the frame-cadence lane (delay floor 1 ms). Used when
--- a visual reaction must not wait the 50 ms background one-shot floor.
+-- 帧节奏通道上的有界一次任务最小延迟 1ms，用于不能等待后台 50ms 下限的视觉反应。
 function Scheduler:AddHighFrequencyOneShot(name, delayMs, callback, owner, priority, costUnits)
     if type(name) ~= "string" or name == "" or type(callback) ~= "function" then return false end
-    -- 维护：旧 one-shot 闭包无权删除后来同名任务；先验证注册实例，再移除，再调业务。
+    -- 旧 one-shot 闭包无权删除后来同名任务；先验证注册实例，再移除，再调业务。
     -- 允许业务回调安全地重新注册同名任务；返回值/Owner/优先级兼容原接口。
     local scheduler, registeredTask = self, nil
     local added = self:AddHighFrequencyTask(name, math.max(HIGHFREQUENCY_MIN_INTERVAL_MS, Finite(delayMs, HIGHFREQUENCY_MIN_INTERVAL_MS)), function()
@@ -162,7 +149,7 @@ local function TaskInterval(task)
     return math.max(minimum, Finite(task and task.intervalMs, 1000))
 end
 
--- 中文维护：显式设置只调整现有任务的间隔/视觉通道，保留实例、回调、模块与断路器状态；不重建任务或新增 OnUpdate。
+-- 显式设置只调整现有任务的间隔/视觉通道，保留实例、回调、模块与断路器状态；不重建任务或新增 OnUpdate。
 -- 高频选项只能由绘制设置入口使用；业务扫描、原生写操作及其冷却不得通过本接口提速。
 function Scheduler:SetTaskInterval(name, intervalMs, highFrequency)
     local task=self.tasks[name]
@@ -174,13 +161,11 @@ function Scheduler:SetTaskInterval(name, intervalMs, highFrequency)
     return true
 end
 
--- Bounded one-shot work shares the same single scheduler driver. The task is
--- removed BEFORE user code runs so callback failure/re-entry can never leave a
--- zombie timer behind. This is intended for UI notifications, delayed commits
--- and other finite work; Feature periodic jobs should keep using AddTask.
+-- 有界一次任务共用同一 Scheduler，用户回调执行前先删除任务，防止异常或重入遗留僵尸计时器。用于 UI 通知、延
+-- 迟提交等有限工作；Feature 周期任务继续 AddTask。
 function Scheduler:AddOneShot(name, delayMs, callback, owner, priority, costUnits)
     if type(name) ~= "string" or name == "" or type(callback) ~= "function" then return false end
-    -- 维护：与高频 one-shot 共用实例所有权规则，旧闭包不能撤销同名后继任务。
+    -- 与高频 one-shot 共用实例所有权规则，旧闭包不能撤销同名后继任务。
     local scheduler, registeredTask = self, nil
     local added = self:AddTask(name, math.max(50, Finite(delayMs, 50)), function()
         if registeredTask == nil or scheduler.tasks[name] ~= registeredTask then return false end
@@ -194,9 +179,8 @@ end
 function Scheduler:RemoveTask(name)
     name = tostring(name or "")
     self.tasks[name] = nil
-    -- Static task->module mappings are registered once and intentionally survive
-    -- ordinary stop/start cycles. Dynamic callers opt into transient ownership so
-    -- unique one-shot names cannot leak metadata for the whole client session.
+    -- 静态 task->module 映射登记一次并跨普通 stop/start 保留；动态调用者须选择瞬态所有权，避免唯一一次任务
+    -- 名称泄漏整会话元数据。
     if self.transientTaskModules[name] == true then
         self.transientTaskModules[name] = nil
         self.taskModules[name] = nil
@@ -234,7 +218,7 @@ end
 function Scheduler:SetEnabled(name, enabled)
     local task = self.tasks[name]
     if task ~= nil then
-        -- 维护：Owner 显式暂停优先于后台异常恢复；保留 fault 信息供只读诊断。
+        -- Owner 显式暂停优先于后台异常恢复；保留 fault 信息供只读诊断。
         -- 显式恢复只清本次熔断窗口，不清累计 failureTotal/resumeCount，避免掩盖历史故障。
         task.manuallyDisabled = enabled ~= true
         task.enabled = enabled == true
@@ -271,12 +255,8 @@ function Scheduler:RunTask(name)
     task.lastError = tostring(err or "unknown")
     S.LastSchedulerError = { task = tostring(name), error = task.lastError, failures = task.failureCount }
     if task.failureCount >= 3 then
-        -- Trip the breaker but keep a bounded automatic recovery path. A
-        -- permanently disabled task is invisible to its owners: a transient
-        -- native error once froze visual tasks for the rest of the session
-        -- with no signal beyond a single chat warning. Backoff resumes at 2s
-        -- and doubles to a 60s cap, so a persistently broken task costs at
-        -- most one attempt per minute while any transient cause self-heals.
+        -- 触发熔断仍保留有界自动恢复；暂时原生错误不能让视觉任务永久冻结而仅有一条聊天警告。退避从 2s 倍增
+        -- 至 60s，上限使持续故障每分钟最多尝试一次，暂时原因可自愈。
         task.enabled = false
         task.pending = false
         task.dueSinceMs = nil
@@ -288,7 +268,7 @@ function Scheduler:RunTask(name)
 end
 
 local function FaultResumeDelayMs(resumeCount)
-    -- First recovery window opens at 2s, then doubles (4s/8s/16s/32s) to a 60s cap.
+    -- 恢复窗口从 2s 开始，按 4s/8s/16s/32s 倍增，上限 60s。
     local shift = math.max(0, math.min((tonumber(resumeCount) or 1) - 1, 5))
     return math.min(60000, 2000 * (2 ^ shift))
 end
@@ -296,7 +276,7 @@ end
 function Scheduler:RecoverFaultedTasks(now)
     local recovered = 0
     for _, task in pairs(self.tasks) do
-        -- 维护：只有熔断器暂停的任务可自动恢复；手动暂停即使保留 fault 证据也不得重启。
+        -- 只有熔断器暂停的任务可自动恢复；手动暂停即使保留 fault 证据也不得重启。
         if task.enabled ~= true and task.manuallyDisabled ~= true and task.faultedAtMs ~= nil
             and (tonumber(now) or 0) - task.faultedAtMs >= FaultResumeDelayMs(task.resumeCount) then
             task.enabled = true
@@ -312,19 +292,18 @@ function Scheduler:RecoverFaultedTasks(now)
     return recovered
 end
 
--- Public, read-only per-task telemetry. Diagnostics must not reach into the
--- callback/owner fields of the scheduler task table: this snapshot exposes
--- only lifecycle/performance facts and keeps the execution authority private.
+-- 公开任务遥测只读；Diagnostics 不得访问任务表 callback/owner。快照仅暴露生命周期与性能事实，执行权威保持私有。
 function Scheduler:GetTaskState(name)
     name = tostring(name or "")
     local task = self.tasks[name]
     if task == nil then return { name=name, registered=false } end
     return {
-        -- 维护：只读区分手动暂停与熔断暂停，不暴露 callback/Owner 或触发恢复。
+        -- 只读区分手动暂停与熔断暂停，不暴露 callback/Owner 或触发恢复。
         name=name, registered=true, enabled=task.enabled == true, manuallyDisabled=task.manuallyDisabled == true, lane=tostring(task.lane or "background"),
         intervalMs=tonumber(task.intervalMs) or 0, priority=tonumber(task.priority) or 3,
         pending=task.pending == true, runCount=tonumber(task.runCount) or 0,
-        elapsedMs=tonumber(task.elapsedMs) or 0,dueSinceMs=task.dueSinceMs,deferCount=tonumber(task.deferCount) or 0,starvationDue=task.pending==true and task.starvationDue==true, -- 中文维护：只读等待证据，让 TXT 能区分未到期、连续被预算延期和已满足公平执行阈值；已执行任务不能保留“仍在等待”的标志。
+        elapsedMs=tonumber(task.elapsedMs) or 0,dueSinceMs=task.dueSinceMs,deferCount=tonumber(task.deferCount) or 0,starvationDue=task.pending==true and task.starvationDue==true, -- 只读等待证据，让 TXT 能区分未到期、连续被预算延期和已满足公
+                                                                                                                                                                                    -- 平执行阈值；已执行任务不能保留“仍在等待”的标志。
         failureCount=tonumber(task.failureCount) or 0, failureTotal=tonumber(task.failureTotal) or 0,
         faultedAtMs=tonumber(task.faultedAtMs), resumeCount=tonumber(task.resumeCount) or 0,
         lastRunAtMs=tonumber(task.lastRunAtMs), lastSuccessAtMs=tonumber(task.lastSuccessAtMs),
@@ -373,7 +352,7 @@ function Scheduler:Start()
     if driver.Show ~= nil then driver:Show(true) end
     self.driver = driver
     self.running = true
-    -- 维护：不能只比较 Generation；同代重启后，无法解绑的旧 Native driver 仍可能回调。
+    -- 不能只比较 Generation；同代重启后，无法解绑的旧 Native driver 仍可能回调。
     self.runEpoch = self.runEpoch + 1
     local epoch = self.runEpoch
     local generation = S.Generation
@@ -395,10 +374,8 @@ function Scheduler:Start()
         if S.AdvanceClock ~= nil then S.AdvanceClock(elapsed) end
         local now = S.NowMs and S.NowMs() or 0
 
-        -- First only update timing state. A callback may remove/add tasks, so
-        -- never execute while iterating the authoritative table. Reuse the
-        -- scratch array: this handler runs every frame and must not create a
-        -- fresh table/comparator closure when no task is due.
+        -- 先只更新时间状态；回调可添加或移除任务，不能在遍历权威表时执行。复用 scratch 数组，逐帧处理器在没
+        -- 有到期任务时不新建表或比较器闭包。
         local dueTasks = Scheduler.dueScratch
         for index = #dueTasks, 1, -1 do dueTasks[index] = nil end
         Scheduler:RecoverFaultedTasks(now)
@@ -416,10 +393,8 @@ function Scheduler:Start()
                     dueTasks[#dueTasks + 1] = task
                     local budget=S.FrameBudget
                     task.starvationDue=budget~=nil and type(budget.IsStarving)=="function"
-                        and budget:IsStarving(task.priority,task.deferCount,math.max(0,task.elapsedMs-interval)/interval)==true -- 中文维护：在同一 due 集合内缓存排序键，判定仍归 Broker；不在比较器中修改统计或读取时钟。
-                    -- High-frequency tasks are due every frame by construction;
-                    -- counting their lateness would permanently poison the
-                    -- shared backlog health classification.
+                        and budget:IsStarving(task.priority,task.deferCount,math.max(0,task.elapsedMs-interval)/interval)==true -- 同一 due 集合内缓存排序键，判定仍归 Broker。
+                    -- 比较器不修改统计或读取时钟；高频任务每帧必然到期，不计迟到，避免污染共享 backlog 健康分类。
                     if task.lane ~= "highfrequency" then
                         pendingCount = pendingCount + 1
                         local lateMs = math.max(0, task.elapsedMs - interval)
@@ -442,7 +417,7 @@ function Scheduler:Start()
         local fallbackBudget = FALLBACK_HEALTH_BUDGET[health] or 8
         local executed, deferredByBudget = 0, 0
         for index = 1, dueCount do
-            -- 维护：回调可 Stop/Start/RemoveOwner；旧帧不得读取新代 scratch 或提交旧遥测。
+            -- 回调可 Stop/Start/RemoveOwner；旧帧不得读取新代 scratch 或提交旧遥测。
             if S.Generation ~= generation or Scheduler.runEpoch ~= epoch or Scheduler.driver ~= driver or Scheduler.running ~= true then break end
             local task = dueTasks[index]
             local name = task and task.name
@@ -455,8 +430,7 @@ function Scheduler:Start()
                     allowed = frameBudget:Request(task.budgetOwner or tostring(name), task.priority, task.costUnits, task.deferCount, lateRatio, task.lane) == true
                 end
                 if allowed then
-                    -- Consume one periodic occurrence. We intentionally do not run
-                    -- multiple catch-up callbacks in one frame after a hitch.
+                    -- 消费一次周期发生；卡顿后同帧不执行多次追赶回调。
                     task.elapsedMs = math.max(0, (tonumber(task.elapsedMs) or interval) - interval)
                     task.pending = false
                     task.dueSinceMs = nil
@@ -469,14 +443,14 @@ function Scheduler:Start()
                 end
             end
         end
-        -- 维护：中途重载也必须结束旧帧；仅清理仍属本 Epoch 的 scratch，不碰重启后的工作集。
+        -- 中途重载也必须结束旧帧；仅清理仍属本 Epoch 的 scratch，不碰重启后的工作集。
         if S.Generation ~= generation or Scheduler.runEpoch ~= epoch or Scheduler.driver ~= driver or Scheduler.running ~= true then
             if Scheduler.runEpoch == epoch then
                 for index = 1, dueCount do dueTasks[index] = nil end
             end
             return
         end
-        -- 维护：HF 执行不能减掉普通任务积压；回调取消/替换的任务也不再算 pending。
+        -- HF 执行不能减掉普通任务积压；回调取消/替换的任务也不再算 pending。
         -- 仅二次检查本帧 due 快照，边统计边清引用；不重新全扫描 tasks，不保留已释放 Owner。
         local pendingAfter = 0
         for index = 1, dueCount do
@@ -507,7 +481,7 @@ function Scheduler:Start()
 end
 
 function Scheduler:Stop()
-    -- 维护：先撤销旧帧/旧 Native 闭包权限；即使当前业务回调同步重启也不能续跑旧快照。
+    -- 先撤销旧帧/旧 Native 闭包权限；即使当前业务回调同步重启也不能续跑旧快照。
     self.runEpoch = self.runEpoch + 1
     self.running = false
     self.tasks = {}

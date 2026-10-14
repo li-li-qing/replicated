@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Instance Browser Acceptance
+-- Replicated Suite · 副本浏览契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 副本浏览契约验收。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

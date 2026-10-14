@@ -1,8 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Task Tracker Page
-------------------------------------------------------------------------
--- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- Replicated Suite · 任务页面
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
 -- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -45,8 +48,7 @@ local function BuildTaskPage(parent, route)
     local tableView = nil
 
     local row1 = RSUI:HorizontalBox({ id = "v3_tasks_actions_scope", parent = root, gap = 7, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-    -- Primary lifecycle actions stay first, matching the other V3 feature pages.
-    -- Scope/filter actions follow them so users never have to hunt for Enable.
+    -- 主要生命周期操作放在最前，与其它 V3 功能页一致；范围/筛选操作随后，便于找到启用入口。
     local featureButton = D:ModuleToggleButton({ id = "v3_tasks_feature_toggle", parent = row1, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
     local widgetButton = RSUI:Button({ id = "v3_tasks_widget_toggle", parent = row1, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 116 } })
     local dailyButton = RSUI:Button({ id = "v3_tasks_daily", parent = row1, text = "日常", compact = true, slot = { size = "fixed", width = 76 } })
@@ -68,7 +70,7 @@ local function BuildTaskPage(parent, route)
         local row = selectedId and Feature:GetRow(selectedId) or nil
         if type(row) ~= "table" then return nil end
         if row.parent == true then return row end
-        -- 中文维护注释：如果选中的是展开后的子任务行，向上定位其所属的父任务组，
+        -- 如果选中的是展开后的子任务行，向上定位其所属的父任务组，
         -- 使得“追踪/取消”与“查看详情”对子任务选中态也能无缝生效，避免误报不可用。
         if row.child == true and row.groupKey ~= nil and row.scope ~= nil then
             local parent = Feature:GetRow(row.scope .. ":" .. row.groupKey)
@@ -93,7 +95,7 @@ local function BuildTaskPage(parent, route)
         getKey = function(item) return item and item.id or nil end,
         onItemActivated = function(item)
             if type(item) ~= "table" then return false end
-            -- 中文维护注释：仅在父任务有子阶段（objectiveCount > 0）时执行折叠/展开；
+            -- 仅在父任务有子阶段（objectiveCount > 0）时执行折叠/展开；
             -- 无子阶段任务或直接点击子阶段时，直接调起通用任务详情浮窗。
             if item.parent == true and (tonumber(item.objectiveCount) or 0) > 0 then
                 return Feature.Commands:ToggleExpanded(item.scope, item.groupKey)
@@ -252,9 +254,7 @@ local function BuildTaskPage(parent, route)
     end
 
     function root:RefreshData(dirty)
-        -- FeatureRuntime/QuestProgress owns gameplay refresh. PageHost only re-renders
-        -- the latest projection here so opening/refocusing the page cannot double-scan
-        -- QUEST state in the same refresh transaction.
+        -- FeatureRuntime/QuestProgress 负责业务刷新；PageHost 仅重绘最新投影，避免打开或重新聚焦页面时在同一刷新事务中再次扫描 QUEST 状态。
         return self:Refresh()
     end
 

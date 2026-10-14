@@ -1,4 +1,10 @@
--- Phase 0 recovered regression coverage for explicit failed-store evidence export.
+------------------------------------------------------------------------
+-- Replicated Suite · 持久化证据测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 覆盖存档失败时显式导出证据的回归路径。
+------------------------------------------------------------------------
 return function(ctx)
     local S,Test,Copy,Equal=ctx.S,ctx.Test,ctx.Copy,ctx.Equal;local P,store,disk=S.Persistence,ctx.store,ctx.disk
     local fields={'writeFenced','writeFenceReason','lastError','needsBarrierVerify','lastVerifyOk','lastBarrierVerifyOk','consecutiveSaveFailures'}

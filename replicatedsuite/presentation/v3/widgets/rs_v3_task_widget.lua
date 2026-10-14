@@ -1,6 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Task Tracker Floating Widget
--- Presentation content only. Shared HUD state is bound by RSUI FloatingSurface.
+-- Replicated Suite · 任务悬浮组件
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 仅负责表现内容，共享 HUD 状态由 RSUI FloatingSurface 绑定。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -46,10 +49,7 @@ local function CreateTaskWidget()
         minimizeMode = "compact",
         boundaryMode = "free",
         defaultPlacement = "center",
-        -- Preserve the existing Task Widget size semantics. Its v1 Store saved
-        -- native/logical window extents directly; converting those historical
-        -- values to addonScale-relative design units here would resize existing
-        -- user layouts on upgrade. A future schema migration may opt in explicitly.
+        -- 保留 Task Widget 尺寸语义；v1 Store 直接保存原生/逻辑窗口 extent，将旧值改作 addonScale 相对设计单位会在升级时改变用户布局，仅未来显式 schema 迁移可采用。
         scaleWithAddon = false,
         statePolicy = SurfacePolicy(),
         getState = function() return Feature:GetWidgetWindowState() end,
@@ -147,14 +147,9 @@ local function CreateTaskWidget()
         return true
     end
 
-    -- FeatureRuntime:Disable clears the whole Demand lease before the hide
-    -- reaction runs, so the widget token is already gone by then. Treat
-    -- "feature no longer enabled" as "nothing left to release"; failing here
-    -- used to leave the floating window stuck on screen after a disable.
+    -- FeatureRuntime:Disable 在隐藏响应前已清空 Demand，组件 token 已不存在；停用应视为无需释放，不能因隐藏失败让悬浮窗口滞留。
     local function ReleaseWidgetConsumer()
-        -- Capture the concrete instance; using an undefined `self` here makes
-        -- native X-close cleanup fail before the persistent visibility bit is
-        -- cleared, which can make the lifecycle bridge reopen the widget.
+        -- 捕获具体实例；未定义 `self` 会在持久可见位清除前令原生 X 关闭清理失败，生命周期桥可能重开窗口。
         if instance.visible ~= true then return true end
         if not (S.FeatureRuntime and S.FeatureRuntime:IsEnabled("life_tasks") == true) then return true end
         return Feature:ReleaseConsumer("widget:tasks")
@@ -245,8 +240,7 @@ local ok, registerErr = Host:Register(WIDGET_ID, {
 if ok ~= true then error(registerErr) end
 
 ------------------------------------------------------------------------
--- Presentation-owned lifecycle reaction (mirrors the Activity widget).
--- Domain publishes facts; the widget performs the show/hide.
+-- 生命周期响应归表现层，与 Activity 组件一致；Domain 发布事实，组件执行显隐。
 ------------------------------------------------------------------------
 if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
     Host:BindFeatureLifecycle(WIDGET_ID, {

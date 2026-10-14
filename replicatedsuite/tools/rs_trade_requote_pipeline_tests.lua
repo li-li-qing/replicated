@@ -1,7 +1,11 @@
-
--- Tests assert actual Native call/result/state behavior, not a made-up quote implementation.
--- 594/8800 copper are USER-SUPPLIED prices. Old 1500/8950 are a constructed counterexample,
--- deliberately yielding the earlier screenshot -3g40s; not recovered player cache evidence.
+------------------------------------------------------------------------
+-- Replicated Suite · 交易重新询价链路测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 断言真实原生调用、结果和状态行为，不能另造报价实现。
+-- 594/8800 铜是用户提供的价格；1500/8950 为构造的反例，有意得到旧截图的 -3 金 40 银，不能视为恢复的玩家缓存证据。
+------------------------------------------------------------------------
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')
 local passed,total=0,0
 local function Eq(a,b,m) assert(a==b,(m or 'value')..': expected='..tostring(b)..' actual='..tostring(a)) end

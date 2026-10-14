@@ -1,4 +1,10 @@
--- 中文维护：真实 Persistence / Factory 的备注事务回归，Native 团队和目标为边界替身，不写用户文件。
+------------------------------------------------------------------------
+-- Replicated Suite · 人员备注测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 真实 Persistence / Factory 的备注事务回归，Native 团队和目标为边界替身，不写用户文件。
+------------------------------------------------------------------------
 local H=dofile('tools/rs_udf_numeric_test_host.lua')
 local S,P=H.Boot();S.SafeTraceback=debug.traceback
 S.FeatureRuntime={RegisterImplementation=function()return true end}
@@ -34,7 +40,7 @@ local original=P.MutateStore;P.MutateStore=function()return false,'拒写' end
 assert(F.Commands:SaveNote('同名@乙','覆盖')==false);assert(F:GetNote('同名@乙')=='敌对');P.MutateStore=original
 print('PLAYER_NOTES: persistence, exact identities, validation, detached rows, leases and write rejection passed')
 
--- 中文维护：实际 PageHost/RSUI/Feature 保存与草稿测试，Native 绘制仍是宿主模型。
+-- 实际 PageHost/RSUI/Feature 保存与草稿测试，Native 绘制仍是宿主模型。
 local NewHost=dofile('tools/rs_workspace_home_test_host.lua')
 local U,_,_,_,_,uiHost=NewHost({enabled={tools_player_notes=true},skipLayout=true})
 dofile('features/shared/rs_feature_slice_factory.lua')

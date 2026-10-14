@@ -1,6 +1,10 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 每日收益账本
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 今日收支：独立角色账本。Authority在本Feature，UI只读投影，变更只经Persistence。
--- 维护（overview-ledger-6）：禁止的余额 Getter 仍不调用；金币/荣誉/生活点优先接收
+-- 禁止的余额 Getter 仍不调用；金币/荣誉/生活点优先接收
 -- PLAYER_* 的直接变化量。不能把聊天正文、跑商预计售价或其它推算值当实际收入。
 -- 旧 overview-ledger-5 曾把 PLAYER_* 错当绝对余额并持久化 ch.balance；新 direct-delta
 -- source 首次命中时会一次性清空对应旧余额模式的当日污染，然后从真实变化量重新累计。
@@ -54,8 +58,7 @@ function F:EnsureStoreLoaded()
     if ok==true or ok=="empty" then self.loaded=true;return true end
     self.lastError=tostring(err or ok);return false,self.lastError
 end
--- Clock ownership stays in the 5-second lifecycle task and Observe, never in a
--- UI getter. A failed read must not become a date string or relabel yesterday.
+-- 时钟只由5s生命周期任务和 Observe 拥有，禁止 UI getter 读取；失败不能变成日期字符串或给昨日重新标日。
 function F:CheckDay()
     local function Fail(reason)
         local changed=self.clockAvailable~=false or self.lastError~=reason
@@ -71,22 +74,13 @@ function F:CheckDay()
     local rolled=self.State.day~=day
     if rolled then
         local ok,saveErr=P:MutateStore(self.StoreId,function()
-            -- Only this ledger rotates; midnight has no guaranteed balance
-            -- sample, so a later first balance rebaselines, never counts gaps.
+            -- 午夜仅切换本账本，无保证余额采样；后续首次余额重新建立基线，禁止把间隙计入变化。
             local previous=self.State
             self.State=Default();self.State.day=day
             for _,key in ipairs(KEYS)do
                 local old=previous.channels[key]
-                -- Maintenance (overview-ledger-5): absolute-balance sources can safely carry the
-                -- last observed balance across the server-day boundary. Net/gain/spent still reset
-                -- to zero, but the next authoritative balance event can measure the first change of
-                -- the new day instead of swallowing it as a fresh baseline. Invalidated continuity
-                -- (pause/user-disable) is never revived by rollover.
-                -- Carry an absolute balance through midnight only while this same runtime
-                -- was already observing the character. A cold start on a later server day
-                -- has an unbounded offline gap, so yesterday's persisted balance must not
-                -- become today's predecessor. Same-day file reload remains continuous because
-                -- no day roll occurs at all.
+                -- 连续观察的绝对余额来源可跨服务器午夜携带最后余额，net/gain/spent 归零，下一权威事件衡量新日首次变化。
+                -- 暂停/用户禁用已作废连续性不能因跨日恢复。仅同一运行持续观察角色时可携带余额；后一天冷启动存在无界离线间隙，昨日存储余额不能当今日前值。同日文件重载没有跨日，仍可保持连续。
                 if wasLoaded and old.balance~=nil then
                     self.State.channels[key].balance=old.balance
                     self.State.channels[key].coverageGap=old.coverageGap==true
@@ -112,7 +106,7 @@ function F:RegisterSource(key,spec)
     if key=="experience" and spec.mode=="balance" then return false,"xp_bar_is_not_total" end
     if self.sources[key] then return false,"source_already_registered" end
     -- 只保留经过验证的源描述，不复制适配器对象/函数/循环引用，也不接管它的生命周期。
-    -- 维护（overview-income-source-1）：来源“代码契约已验证”和“RU 运行时载荷已验证”分开。
+    -- 来源“代码契约已验证”和“RU 运行时载荷已验证”分开。
     -- CHAT_MESSAGE 适配器在真正观察到精确 CMF + 显式 delta 字段前只能处于 probing，
     -- 不允许 UI 把它算作已接入，更不能显示伪造的 0。已有真实样本的同源账本在重载后可继续信任。
     local channel=self.State.channels[key]
@@ -148,20 +142,12 @@ function F:Observe(key,value,sourceId,sequence)
     if session and sequence<=session.sequence then return false,"stale_receipt" end
     local success,why=P:MutateStore(self.StoreId,function()
         local ch=self.State.channels[key];local delta=0
-        -- Maintenance (overview-ledger-6): balance-mode remains available for other verified
-        -- absolute-balance sources. PLAYER_MONEY/HONOR/LIVING themselves are now registered as
-        -- direct delta sources by overview-income-source-8 and therefore skip this predecessor path.
-        -- For a future balance source that opts into continuousBalance, the durable last balance is
-        -- safe only across a same-day file reload; deliberate observation gaps invalidate it below.
+        -- balance 模式仅为其他已核实绝对余额来源保留；PLAYER_MONEY/HONOR/LIVING 是直接增量来源，跳过前值路径。未来 continuousBalance 来源只可跨同日文件重载沿用持久末余额；显式观察间隙必须作废。
         local previous=nil
         if session then previous=session.value
         elseif source.mode=="balance" and source.continuousBalance==true and ch.balance~=nil then previous=ch.balance end
         if source.mode=="delta" then
-            -- Maintenance (overview-ledger-6): source-8 fixes the earlier PLAYER_* semantic bug.
-            -- A persisted `balance` proves this channel was produced by the old incorrect balance
-            -- adapter. Its same-day net/gain/spent are therefore contaminated and must be discarded
-            -- exactly once before accepting the first authoritative direct delta. No other delta
-            -- source opts into this fence, so legitimate historical delta totals are untouched.
+            -- PLAYER_* 来源存储的 balance 证明旧适配器误按余额计算；同日 net/gain/spent 已受污染，在接受首个权威直接增量前只清除一次。其他增量来源不启用此保护，真实历史总量保持不变。
             if source.resetLegacyBalanceOnFirstDelta==true and ch.balance~=nil then
                 ch.net,ch.gain,ch.spent,ch.samples=0,0,0,0
                 ch.balance=nil
@@ -184,7 +170,7 @@ function F:Observe(key,value,sourceId,sequence)
         return true
     end,{delayMs=1000,reason="daily_ledger_observation"})
     if not success then self.lastError=tostring(why);return false,why end
-    -- 维护：序号只在变更被Core接收后前进，保存拒绝不能吞掉重试收据；无后台重放原生事件。
+    -- 序号只在变更被Core接收后前进，保存拒绝不能吞掉重试收据；无后台重放原生事件。
     self.sessions[key]={sequence=sequence,value=value}
     if source.runtimeVerified~=true then source.runtimeVerified=true end
     Publish();return true
@@ -200,11 +186,7 @@ function F:InvalidateContinuousBalances(reason)
         for key,source in pairs(self.sources or {})do
             if type(source)=="table" and source.mode=="balance" and source.continuousBalance==true then
                 local ch=self.State.channels[key]
-                -- Maintenance (overview-ledger-5): `balance` itself is the durable validity
-                -- marker. The field already existed in schema v1, so clearing it on an
-                -- intentional observation gap avoids adding a new persisted shape/version
-                -- solely for continuity bookkeeping. Zero remains a valid balance because
-                -- only nil means "no trusted predecessor".
+                -- balance 本身就是持久有效标志，schema1已存在；显式观察中断清空它，不为连续性记录新增持久形态/版本。0为有效余额，只有nil表示没有可信前值。
                 if ch then ch.balance=nil;ch.coverageGap=true end
             end
         end
@@ -228,7 +210,7 @@ local function StartCollection()
     if not S.Scheduler or type(S.Scheduler.AddTask)~="function" then return false,"scheduler_unavailable" end
     local ok=S.Scheduler:AddTask(TASK,5000,function()if F.enabled and F.paused~=true then F:CheckDay()end;return true end,false,F,"P4",1)
     if not ok then return false,"clock_task_failed" end
-    -- Adapter failure only degrades one data source; it must not disable the whole homepage ledger.
+    -- 适配器失败仅降级一个来源，不能禁用整个首页账本。
     for id,adapter in pairs(F.adapters)do
         local started,why=adapter:Start()
         if started~=true then F.adapterErrors[id]=tostring(why or "start_failed") else F.adapterErrors[id]=nil end
@@ -243,18 +225,13 @@ function F:Enable()
     Publish();return true
 end
 function F:Disable(reason)
-    -- Runtime shutdown/reload preserves continuity so the next same-day balance event can
-    -- bridge the file-reload gap. Explicit user/preference disables invalidate it.
+    -- 运行关闭/重载保留连续性，让下次同日余额事件跨越文件重载间隙；用户/偏好显式禁用则作废连续性。
     local why=tostring(reason or "user")
     if why~="shutdown" and why~="startup_failure" then self:InvalidateContinuousBalances("daily_ledger_disable:"..why) end
     self.enabled=false;self.paused=false
     StopCollection();Publish();return true
 end
--- Maintenance (overview-ledger-4): the homepage control is a session collection
--- pause, not a persistent Feature preference mutation. A preference write can be fenced
--- for unrelated persistence reasons and made the old “暂停统计” button appear dead.
--- Pausing now has its own bounded lifecycle: adapters + clock stop, today's committed
--- totals remain, and resume re-checks the server day before accepting new receipts.
+-- 首页暂停是会话采集控制，不修改持久Feature偏好；无关存档写保护不能让暂停按钮失效。暂停停止适配器与时钟，保留今日已提交总量；恢复先复核服务器日期再接收新记录。
 function F:SetPaused(paused,reason)
     if not self.enabled then return false,"stats_disabled" end
     local target=paused==true
@@ -269,9 +246,7 @@ function F:SetPaused(paused,reason)
     if ok~=true then self.paused=true;StopCollection();Publish();return false,why end
     Publish();return true
 end
--- Read-only presentation. Retained totals are genuine saved observations,
--- not a new balance; show the saved day and a paused/gap badge until rebaselined.
--- Never fabricate a zero for a missing source or a failed store load.
+-- 只读表现：保留总量是真实已保存观察，不是新余额；重新建立基线前显示保存日期与暂停/中断标识。缺来源或 Store 加载失败不能编造0。
 function F:GetProjection()
     local rows,verified={},0
     for _,key in ipairs(KEYS)do

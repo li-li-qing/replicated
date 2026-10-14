@@ -1,9 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Quest / Activity Detail Modal
+-- Replicated Suite · 任务与活动详情弹窗
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation only. Detail data is projected by QuestProgressService V3;
--- this modal never calls X2Quest/X2BattleField directly and never revives the
--- legacy QuestService / QuestDetailWindow.
+-- 仅负责表现。详情数据由 QuestProgressService V3 投影；
+-- 本弹窗不直接调用 X2Quest/X2BattleField，也不恢复旧 QuestService/QuestDetailWindow。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -113,16 +114,14 @@ function M:Open(scope, key, sourceRow)
     end
     local hostOk, hostErr = modalHost:EnsureApplicationVisible()
     if hostOk ~= true then return false, hostErr end
-    -- Wake the application before reporting an unavailable detail as well.
-    -- Otherwise ToastHost is attached to a hidden shell and the floating-row
-    -- click appears to do nothing.
+    -- 报告详情不可用之前也要唤醒应用；否则 ToastHost 会附着在隐藏的 Shell 上，悬浮行点击看起来没有反应。
     if key == "" then return NotifyUnavailable("该活动没有已核验的任务 / 副本关联。") end
     local service = S.Services and S.Services.QuestProgressV3 or nil
     if type(service) ~= "table" or type(service.GetGroupDetail) ~= "function" then
         return NotifyUnavailable("新版任务进度服务不可用。")
     end
     -- 维护：仅显式打开详情读取日志目标，平时活动/任务表格刷新不会触发。
-    -- Service 验证 active index 与 questId，目标不计入主任务分母。
+    -- Service 验证 活跃下标 与 questId，目标不计入主任务分母。
     local detail = service:GetGroupDetail(scope, key, { journal = true })
     if type(detail) ~= "table" then
         return NotifyUnavailable("没有找到 " .. tostring(sourceRow and sourceRow.name or key) .. " 的任务详情。")

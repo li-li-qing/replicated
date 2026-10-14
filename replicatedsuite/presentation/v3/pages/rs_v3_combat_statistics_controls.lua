@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 战斗统计共享控件
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 同一统计工作区的页内导航与采集范围；只消费 Feature Commands/Projection。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end

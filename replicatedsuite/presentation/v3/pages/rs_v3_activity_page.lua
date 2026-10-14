@@ -1,8 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Activity Page
-------------------------------------------------------------------------
--- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- Replicated Suite · 活动页面
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
 -- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -14,9 +17,7 @@ local ROUTE = "life.activities"
 
 local function OpenActivityDetail(row)
     if type(row) ~= "table" then return false, "活动行数据不可用" end
-    -- Main page and floating activity/task widgets share one independent detail
-    -- surface. This keeps task details reusable after the application shell is
-    -- closed and prevents a second modal-only presentation authority.
+    -- 主页面与活动/任务悬浮组件共用独立详情窗口，保证应用 Shell 关闭后仍可查看详情，避免再建立仅供弹窗使用的表现权威层。
     local detail = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
     if type(detail) ~= "table" or type(detail.Open) ~= "function" then
         return false, "QuestDetailFloatingV3 未加载"
@@ -36,7 +37,7 @@ local function BuildActivityPage(parent, route)
         end
         return execute()
     end
-    -- 中文维护：时间说明面对玩家；计划结束只是日程估计，实时区域的剩余时间属于当前阶段，两者不能混作首领存活时间。
+    -- 时间说明面对玩家；计划结束只是日程估计，实时区域的剩余时间属于当前阶段，两者不能混作首领存活时间。
     D:PageHeader(root, "v3_activity_header", "活动", "“后开始”表示距离开场的时间；“后结束”是计划结束估计。右侧显示计划时段，任务进度单独显示；下方实时区域显示当前阶段。", "刷新", function()
         return RunAction("refresh", nil, function()
             if S.FeatureRuntime == nil or S.FeatureRuntime:IsEnabled("life_activities") ~= true then return false end
@@ -146,8 +147,7 @@ local function BuildActivityPage(parent, route)
         -- 三个入口统一应用个人顺序，但不改共享 Authority 数组；双视口内分别排序。
         local workspace=S.UIV3.Workspace
         if workspace then rows=workspace:ProjectRows("activities",rows);revision=tostring(revision)..":"..workspace.revision end
-        -- SetItems owns the visible-pool reconcile; do not immediately force a
-        -- second row bind for the same revision.
+        -- 可见行池的协调由 SetItems 负责；同一 revision 不应紧接着强制再次绑定行。
         tableView:SetItems(rows, revision)
         if not enabled then
             tableView:SetViewState("unavailable", { title = "活动功能已关闭", detail = "启用功能后才会读取活动、区域阶段和任务参与进度。" })
@@ -159,14 +159,14 @@ local function BuildActivityPage(parent, route)
         local summary = Feature:GetSummary()
         local timing = Feature:GetTimingDiagnostics()
         summaryCard:SetData({
-            -- 中文维护注释（2026-09-18，Timeline v2 Presentation）：Summary 不再用 active 混合“计划活动”和“区域战争”。
+            -- 约束（2026-09-18，Timeline v2 Presentation）：Summary 不再用 active 混合“计划活动”和“区域战争”。
             -- timelineActive 是可比较时间线中的当前活动；liveZones 是独立实时状态段。兼容字段 summary.active 仍保留给旧诊断，
             -- 但新 UI 禁止再次用它把两种语义合成一个数字。
             value = enabled and ("时间线 " .. tostring(summary.timelineTotal or 0)) or "功能已关闭",
             detail = "当前活动 " .. tostring(summary.timelineActive or 0) .. " · 2小时内 " .. tostring(summary.withinTwoHours or 0)
                 .. " · 实时区域 " .. tostring(summary.liveZones or 0) .. " · 已隐藏 " .. tostring(summary.hidden or 0)
                 .. "\n服务器样本 " .. tostring(timing.serverSample) .. (timing.fresh and "" or "（已过期/未知）")
-                -- 中文维护注释（2026-09-19）：普通活动页不暴露“参考”这类内部来源标签；
+                -- 约束（2026-09-19）：普通活动页不暴露“参考”这类内部来源标签；
                 -- 来源可信度仍保存在 Authority/诊断中。这里仅保留玩家真正需要的时间误差说明。
                 .. " · 时间按活动日程估算，实际结束时间可能有偏差",
         })

@@ -1,34 +1,16 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Cooldown Observation Domain
+-- Replicated Suite · 技能冷却观察
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Cooldown Authority is deliberately independent from Aura/Buff tracking.
--- A Buff/Effect id proves only that a status exists; X2Skill cooldown APIs
--- require the actual Skill id.  This service therefore consumes explicit
--- manually tracked Skill ids and verified self cast-success Skill ids only;
--- COMBAT_MSG Aura/Effect ids never become cooldown ids.
---
--- Runtime contract:
---   * manual tracking needs no CombatEventBus / AuraObservation;
---   * optional automatic discovery leases only SELF cast-success transport;
---   * discovered ids are ephemeral; both paths use Native cooldown getters only;
---   * ordinary / glider / wing skills use X2Skill:GetCooldown;
---   * ride / battle-pet skills use X2Skill:GetMateCooldown and mateType is
---     cached only after a positive Native cooldown observation;
---   * READY tracked ids use a bounded 250 ms round-robin probe;
---   * only ACTIVE ids use the 100 ms high-accuracy lane;
---   * transient Native read failure ages only the last proven Native snapshot;
---     static expectedSec values are never used as runtime timers;
---   * releasing the last consumer removes both scheduler tasks and ephemeral
---     caches while the user's trackedCooldowns configuration remains intact.
---
--- ID boundary:
---   Effect/Buff id != Skill id.  ValidateSkillId() explicitly detects known
---   status ids so UI/commands can reject the common mistake before persisting.
---
--- Authority boundary:
---   LocalNative = X2Skill cooldown APIs on this client only. Remote/P2P
---   cooldowns, if added later, must remain a separate Proxy projection and may
---   never overwrite LocalNative rows.
+-- 冷却权威独立于 Aura/Buff；效果 ID 只能证明状态存在，X2Skill 冷却需要真实 Skill ID。仅消费手动跟踪 Skill
+-- ID 和已验证自身施法成功 Skill ID，COMBAT_MSG Aura/Effect ID 不能变成 CD ID。手动跟踪不需
+-- CombatEventBus/AuraObservation；可选自动发现只租 SELF cast-success，发现 ID 短暂保存，两条路径均只用
+-- Native 冷却。普通/滑翔翼/翅膀用 GetCooldown，坐骑/战宠用 GetMateCooldown，仅正值原生观察后缓存 mateType。
+-- READY ID 用有界 250ms 轮转，ACTIVE 才用 100ms 高精度通道；暂时读取失败只让最后已证明快照随时间老化，不用
+-- 静态 expectedSec 伪造计时。最后消费者释放后移除两任务和瞬态缓存，保留用户 trackedCooldowns。
+-- ValidateSkillId() 显式检查已知状态 ID，在 UI/命令持久化前拒绝混淆。LocalNative 仅为本客户端 X2Skill 事实
+-- ；未来远端/P2P 冷却须独立 Proxy 投影，不能覆盖本地行。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -75,7 +57,7 @@ local C = {
     probeHits = 0,
     nativeReads = 0,
     nativeFailures = 0,
-    -- 中文维护注释（2026-09-28，native-dependency-ownership-4）：X2Skill 是 lazy 子能力。
+    -- （2026-09-28，native-dependency-ownership-4）X2Skill 是 lazy 子能力。
     -- 没有 consumer 时本服务不 Import 该 namespace；第一个 consumer 进入时由服务自己取得 owner，
     -- 失败保持 fail-soft（冷却读数降级为 unavailable），绝不因为能力缺失让无关 HUD 初始化失败。
     nativeOwnerId = "service.cooldown_observation_v3",
@@ -134,8 +116,7 @@ local function FormatTime(ms)
     return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
 end
 
--- RU return shapes have changed across client generations. Unknown shapes fail
--- closed; this parser never falls back to database/theoretical cooldowns.
+-- RU 返回形状随代际变化；未知形状失败封闭，解析器绝不退回数据库或理论冷却。
 local REMAIN_KEYS = { "remaining", "remainTime", "remain_time", "remainingTime", "timeLeft", "left", "cooldown", "cooldownTime", "time" }
 local TOTAL_KEYS = { "duration", "total", "totalTime", "total_time", "cooldownDuration", "cooldownTotal", "max" }
 local function FiniteNumber(value)
@@ -230,9 +211,8 @@ function C:_QueryMate(skillId)
                 if mateType == RideType() then self.mateRideResolved = self.mateRideResolved + 1
                 elseif mateType == BattleType() then self.mateBattleResolved = self.mateBattleResolved + 1 end
             end
-            -- A positive read proves the mate type. A cached type returning zero
-            -- proves Ready. During initial discovery zero alone cannot distinguish
-            -- ride from battle, therefore both types are checked.
+            -- 正值读取证明 mate 类型；已缓存类型返回零证明 Ready。初次发现仅零值不能区分 ride/battle，因此
+            -- 须查两种类型。
             if remaining > 0 or cached ~= nil then return remaining, total, "mate", mateType, err end
         elseif firstError == nil then
             firstError = err
@@ -242,7 +222,7 @@ function C:_QueryMate(skillId)
     return nil, nil, "mate", cached, firstError or "mate_cooldown_unavailable"
 end
 
--- 中文维护（统一本机 CD）：界面只选技能 ID，不要求玩家猜自身/坐骑来源。
+-- 界面只选技能 ID，不要求玩家猜自身/坐骑来源。
 -- 未确认时只在既有 Native 预算内查两个已验证 Getter；正读数才确认来源，Ready/未知绝不启动计时。
 -- 只缓存本次 Runtime 的来源，不迁移保存桶、不读目标 CD；确认后 active lane 只读该来源。
 function C:_QueryLocal(skillId)
@@ -316,9 +296,8 @@ function C:_ResolveMetadata(kind, skillId, fallbackName)
     return cached
 end
 
--- Explicit Skill-id validation for command/UI boundaries. Known Effect ids are
--- rejected unless the same numeric id is also independently known/resolved as a
--- skill. This is the main guard against confusing Buff tracking with CD tracking.
+-- 命令/UI 边界显式验证 Skill ID；已知 Effect ID 被拒绝，除非同一数字也独立证明或解析为技能，防止 Buff/CD 跟
+-- 踪混淆。
 function C:ValidateSkillId(skillId, kind)
     local id = NormalizeId(skillId)
     if id == nil then return false, "技能 ID 无效" end
@@ -415,8 +394,7 @@ function C:_RebuildProbeOrder()
     else self.probeCursor = math.max(1, math.min(tonumber(self.probeCursor) or 1, #order)) end
 end
 
--- Event-independent READY discovery. The budget is measured in Native calls;
--- unclassified mate ids may cost two calls (ride+battle).
+-- 不依赖事件的 READY 发现按 Native 调用次数计预算；未分类 mate ID 可能消耗 ride+battle 两次读取。
 function C:_ProbeTrackedReady(kind,id)
     self.probeQueries=self.probeQueries+1
     local remaining,totalMs,source,mateType=self:_Query(kind,id)
@@ -541,7 +519,7 @@ function C:_ApplyTracked(skillSet, mateSet)
     if changed then self:_PublishUpdate("tracked_set") end
 end
 
--- 中文维护（2026-10-07，self-cooldown-discovery-1）：空手动列表开启 CD 过去永远无数据。
+-- （2026-10-07，self-cooldown-discovery-1）空手动列表开启 CD 过去永远无数据。
 -- 自身施放成功事件只证明 Skill ID，不提供倒计时；实际 CD 仍由既有 Native probe/active lane 确认。
 -- 不扫描技能库/他人、不在事件回调查询 Native、不把发现集合写回用户 Store。最多64个本会话技能，
 -- 新技能只淘汰最久未使用且非活动项；已知活动项保持到原生结束。手动选择不受自动集合回收影响。
@@ -672,7 +650,7 @@ function C:_Reconcile(before, after)
     return true
 end
 
--- 中文维护注释（2026-09-28，native-dependency-ownership-4，FND-016 收口）：
+-- （2026-09-28，native-dependency-ownership-4，FND-016 收口）
 -- X2Skill 的 ADDON:ImportAPI numeric id 已由客户端 API_TYPE 枚举副本确认为 35（native/rs_native_contract.lua
 -- 的 SKILL 行记录了完整证据链）。该 namespace 只在“用户真的启用冷却追踪”时才需要，因此这里提供 lazy
 -- 取得入口，由本服务自己持有 owner，而不是要求 BuffDisplay/DPS 等消费者代为 Import。
@@ -698,7 +676,7 @@ end
 
 function C:AcquireConsumer(token, options)
     if self.Demand == nil then return false, "cooldown demand unavailable" end
-    -- 维护：在这里（而不是模块加载期）取得 Native 子能力 owner，符合“消费需求才导入”的
+    -- 在这里（而不是模块加载期）取得 Native 子能力 owner，符合“消费需求才导入”的
     -- dependency ownership；失败不回滚消费需求，因为冷却不可用只是功能降级，不是 Feature 故障。
     self:EnsureNativeSkillLease()
     local ok,err=self.Demand:Acquire(token, options, "cooldown_consumer")
@@ -777,7 +755,7 @@ function C:GetNativeEvidence(limit, manualFirst)
             tracked=self.manualTracked[row.kind] and self.manualTracked[row.kind][row.id]==true,
             iconPath=metadata and metadata.iconPath or nil}
     end
-    -- 中文维护（CD 显示链诊断）：显式诊断优先保留已保存技能，避免低 ID 自动候选挤掉高 ID 追踪项。
+    -- 显式诊断优先保留已保存技能，避免低 ID 自动候选挤掉高 ID 追踪项。
     -- 这里只复制 Native/元数据缓存，绝不借 GetTrackedRows 触发元数据解析或额外 Native 查询。
     table.sort(rows,function(a,b)
         if manualFirst==true and a.tracked~=b.tracked then return a.tracked==true end
@@ -812,7 +790,7 @@ function C:GetHealth()
         probeCycles=self.probeCycles,probeQueries=self.probeQueries,probeHits=self.probeHits,
         metadataCache=CountSet(self.metadata),mateTypeCache=CountSet(self.mateTypeById),
         nativeReads=self.nativeReads,nativeFailures=self.nativeFailures,parseFailures=self.parseFailures,
-        -- 中文维护注释：暴露 lazy Native ownership 事实（未取得/已取得/失败原因），供模块诊断区分
+        -- 暴露 lazy Native ownership 事实（未取得/已取得/失败原因），供模块诊断区分
         -- “没有消费者所以没导入”与“导入失败”，不触发任何新的 Native 读取。
         nativeSkillLease=self.nativeSkillLease==true,nativeSkillLeaseState=self.nativeSkillLeaseState,
         nativeSkillLeaseError=self.nativeSkillLeaseError,nativeSkillOwner=self.nativeOwnerId,

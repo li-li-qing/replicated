@@ -1,5 +1,11 @@
+------------------------------------------------------------------------
+-- Replicated Suite · HUD信息拆分测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 中文维护注释（hud-info-split-1）：不加载 Native；校准入口必须把职业名称、装备分数、距离
 -- 暴露为独立文字几何控制，同时职业图标继续保持独立组件。Store schema 不应因纯表现拆分升级。
+------------------------------------------------------------------------
 local function Read(path)
     local f=assert(io.open(path,'rb'));local s=f:read('*a');f:close();return s
 end

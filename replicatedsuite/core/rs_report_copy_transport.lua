@@ -1,12 +1,14 @@
 ------------------------------------------------------------------------
--- Replicated Suite - local, lossless report copy transport (not SaveData)
--- 维护（2026-09-12）：实机完整报告 108833 字节且 Clipboard unavailable；原页面把整份
--- 正文塞进 Native 输入框，截断后清空，聊天却先报“正文在文本框”。本模块仅压缩复制文本，
--- 不删除证据、不改原报告、不参与业务存档指纹/恢复，不访问 Native/磁盘/剪贴板。
--- Authority：Diagnostics 拥有报告；本模块是纯编码器，Presentation 仍须 Set/GetText 回读。
--- 兼容：旧 RS-SELF-CHECK-1 原文保留；新增 RS-REPORT-COPY-1 由 tools 解码为逐字节原文。
--- LZB1 固定 65536 字节窗口/65536 哈希槽，每位置一个候选，最长259字节；仅显式打印时调用。
--- Adler32 仅检查复制损坏，不是安全认证或加密；所有敏感字段仍在编码中，不得公开发布。
+-- Replicated Suite · 无损报告复制编码
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 本地无损报告复制传输，不属于 SaveData。实机证据：2026-09-12 完整报告 108833 字节且 Clipboard unavailable
+-- ；原生输入框可能截断后清空，因此这里只压缩复制文本，不删证据、不改原报告，不参与业务指纹或恢复，不访问
+-- Native/磁盘/剪贴板。报告权威归 Diagnostics，纯编码器之后 Presentation 仍须 Set/GetText 回读。保留旧
+-- RS-SELF-CHECK-1 原文，新增 RS-REPORT-COPY-1 由 tools 逐字节解码。LZB1 使用 65536 字节窗口/65536 哈希槽，
+-- 每位置一个候选，最长 259 字节，仅显式打印时调用。Adler32 只检查复制损坏，不是认证或加密；敏感字段仍在编码
+-- 中，不得公开发布。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -19,7 +21,7 @@ local function Checksum(text)
     for i=1,#text do a=(a+byte(text,i))%65521;b=(b+a)%65521 end
     return string.format('%08X',b*65536+a)
 end
--- 维护：复用同一个Adler32实现验证单次故障摘录的复制边界；不是存档FP/安全认证。
+-- 复用同一个Adler32实现验证单次故障摘录的复制边界；不是存档FP/安全认证。
 -- 仅点击冷路径处理有界文本，不访问Native，不引入第二套业务序列化算法。
 function T:CopyChecksum(text)
     if type(text)~='string' or #text>self.MaxInputBytes then return nil,'copy_checksum_input_limit' end
@@ -31,7 +33,7 @@ local function Hash(text,index)
     return (((a*33+b)*33+c)*33+d)%65536
 end
 local function Compress(text)
-    -- 维护：flags 每组8 token，bit=1: [距离-1 big-endian u16][长度-4 u8]；bit=0: 原字节。
+    -- flags 每组8 token，bit=1: [距离-1 big-endian u16][长度-4 u8]；bit=0: 原字节。
     -- 解码允许自重叠（如AAAA），距离1..65536、长度4..259；尾组未用flag必须为0。
     -- 哈希只留最新位置，不建无界字典/匹配链；每个消费位置最多比较一个有界候选。
     local positions,groups={},{}
@@ -89,7 +91,7 @@ function T:Encode(text)
 end
 
 ------------------------------------------------------------------------
--- 维护（2026-09-12，RU报告框容量）：真实接收端回报9215，而上一版测试只覆盖32KiB
+-- （2026-09-12，RU报告框容量）真实接收端回报9215，而上一版测试只覆盖32KiB
 -- 或极易压缩正文，导致38011字节复制包直接被TEXT_LIMIT挡住。压缩不保证任意输入变短；
 -- 因此保持原LZB1/RAW64不变，在交付层提供有界分段，而非删证据/增大未经验证的Native容量。
 -- Authority：本模块只持有本次复制包和分段描述；页面拥有当前段/键盘/生命周期，Diagnostics
@@ -118,7 +120,7 @@ function T:BuildDelivery(text, reportId, capacity)
     session.payload,session.kind=payload,'packed'
     if #payload<=capacity then return session end
     if capacity<512 then return nil,'copy_native_capacity_too_small:'..capacity end
-    -- 维护：分段正文为ASCII复制包，切任何字节均不拆中文；预留头尾+CRLF换行余量，
+    -- 分段正文为ASCII复制包，切任何字节均不拆中文；预留头尾+CRLF换行余量，
     -- 不将报告本体逐字段截断。只缓存一份payload，按需要生成当前段，避免常驻N份副本。
     session.chunkBytes=capacity-384-floor(capacity/80)
     session.parts=math.ceil(#payload/session.chunkBytes)
@@ -135,7 +137,7 @@ function T:GetDeliveryPart(session,index)
     if not WholeNumber(session.chunkBytes,1,self.MaxEditorBytes) then return nil,'copy_part_size_invalid' end
     local offset=(index-1)*session.chunkBytes
     local data=session.payload:sub(offset+1,offset+session.chunkBytes)
-    -- 维护（TEXT_READBACK）：flat2只转义已编码的ASCII复制包，绝不改原始报告/存档。
+    -- flat2只转义已编码的ASCII复制包，绝不改原始报告/存档。
     -- ~是唯一LF转义符，Encode的固定头和Base64字母表本来不含~或分号；单行框架不
     -- 依赖Native保留硬换行。接收工具只对flat2忽略传输层空白，并核验原长度和全部校验。
     if session.wire=='flat2' then
@@ -157,7 +159,7 @@ end
 
 
 ------------------------------------------------------------------------
--- 维护（2026-09-12 TEXT_READBACK）：MaxTextLength不构成SetText/GetText往返承诺；
+-- （2026-09-12 TEXT_READBACK）MaxTextLength不构成SetText/GetText往返承诺；
 -- 原实现只试一次就清空，且没有输出长度/首差异/调用结果，导致无法区分截断与换行变化。
 -- 此处只提供无损重分帧和比较；Presentation仍是Native读写、段号提交和生命周期Authority。
 -- 只在首段尚未交付时协商预算，已交付段不重编号；失败不允许改变reportId/正文或重读Store。
@@ -222,7 +224,7 @@ function T:FormatReadback(trace)
 end
 
 ------------------------------------------------------------------------
--- 维护（2026-09-12，明确分页工作流）：用户已选择逐页复制完整错误字符串，不再以3500
+-- （2026-09-12，明确分页工作流）用户已选择逐页复制完整错误字符串，不再以3500
 -- 字节摘要预算删除原档，也不把“打印”复用成下一页。这里仅划分不可变文本，编辑框
 -- 实际写入/回读和页码由Presentation拥有；翻页零Native存档调用，零重新采集。
 -- \n/\r/反斜杠转义是可逆纯文本，不压缩；规避RU多行框吞换行，中文仍可阅读。分页按

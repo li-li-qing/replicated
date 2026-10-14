@@ -1,23 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Inventory Snapshot Service
+-- Replicated Suite · 背包与容器快照
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared, read-only inventory/container Authority used by Feature modules that
--- need a bounded snapshot before an explicit action.  This service deliberately
--- owns only observation and normalization; business rules (blacklists, move
--- direction, user limits, UI state) remain in the consuming Feature.
---
--- Architecture / performance contract:
---   * Never polls on Tick / OnUpdate.
---   * A full scan happens only when a Feature explicitly asks for a snapshot.
---   * Bag physical-slot authority follows the verified GearV3 rule: bagId=1 is
---     preferred, bagId=0 is a bounded fallback only when the preferred view has
---     no readable items.  This prevents each Feature from guessing a bagId.
---   * Native item tables are normalized immediately into detached primitives;
---     callers never retain native return tables between scheduler steps.
---   * One snapshot builds identity/category indexes in the same pass so callers
---     do not rescan the same container merely to answer "does this item exist?".
---   * Slot numbers are locators only.  Stable identity is itemType first, with a
---     conservative name+grade+category fallback when RU omits itemType.
+-- 共享只读背包/容器快照只拥有观察和归一化；黑名单、移动方向、用户上限和 UI 状态归消费 Feature。没有
+-- Tick/OnUpdate 轮询，仅显式请求全扫描。物理槽沿用已验证 GearV3：优先 bagId=1，仅无可读物品时有界兜底 0。原
+-- 生表立即拆为分离基础值，调度步骤间不保留原生返回表。单次扫描同时建立身份/类别索引，避免重复检查物品存在。
+-- 槽号只定位，稳定身份优先 itemType，RU 省略时保守使用 name+grade+category。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -182,9 +171,8 @@ function I:ReadSlot(scope, slot, bagId)
     return Call(readCapability, object, readMethod, slot)
 end
 
--- Single-slot helper for explicit UI actions.  Prefer the physical bag view used
--- by GearV3, but if that exact locator is unreadable/empty, probe the bounded
--- compatibility view once.  This is not a scan and never runs on a timer.
+-- 单槽辅助仅供显式 UI 操作；优先 GearV3 物理背包视图，精确槽不可读或空时只探测一次有界兼容视图。不全扫描，
+-- 不定时执行。
 function I:ReadPhysicalBagSlot(slot, bagIdHint)
     local preferredId = math.floor(tonumber(bagIdHint) or self.PreferredBagId)
     local ok, info, err = self:ReadSlot("bag", slot, preferredId)
@@ -258,7 +246,7 @@ function I:BuildSnapshot(scope, options)
 
     local preferredId = math.floor(tonumber(options.bagId) or self.PreferredBagId)
     local preferred, preferredErr = self:_BuildScopeWithBagId("bag", preferredId, requestedMax)
-    -- 中文维护（2026-10-09）：消费者已在本次会话确认物理背包时，可以显式锁定视图。
+    -- （2026-10-09）消费者已在本次会话确认物理背包时，可以显式锁定视图。
     -- 成功的空结果也是事实，不能切到 bagId=0 缓存把消耗的物品复活；默认策略仍为首次探测提供兼容回退。
     if options.allowBagFallback == false then
         if preferred ~= nil then preferred.fallbackUsed = preferredId ~= self.PreferredBagId end
@@ -291,10 +279,8 @@ function I:BuildSnapshot(scope, options)
     return preferred or fallback, preferredErr or fallbackErr
 end
 
--- Live resolver used by serialized write workflows. `startSlot` is only a scan
--- hint, never identity: we check it first, then wrap once through the bounded
--- physical container. This makes the common post-compaction case O(1) while
--- preserving correctness when the client sorted or compacted elsewhere.
+-- 串行写工作流实时解析器的 startSlot 仅扫描提示，不是身份；先查该槽，再对有界物理容器环绕一次。压缩后常见情
+-- 形 O(1)，客户端别处排序或压缩也保持正确。
 function I:FindLiveRow(scope, matcher, options)
     if type(matcher) ~= "function" then return nil, nil, "匹配器不可用" end
     options = type(options) == "table" and options or {}
@@ -312,7 +298,7 @@ function I:FindLiveRow(scope, matcher, options)
     end
 
     local readErrors = 0
-    -- 维护（2026-10-04）：队列下一组的旧槽提示可能因上一项移动而整体偏移。
+    -- （2026-10-04）队列下一组的旧槽提示可能因上一项移动而整体偏移。
     -- 先核对刚腾出的实际槽，再按原提示有界查找；提示只优化读取，matcher
     -- 仍负责身份/黑名单，不能把旧槽号当作身份或无条件移动。
     local alternateSlot = tonumber(options.alternateSlot)
@@ -338,9 +324,7 @@ function I:FindLiveRow(scope, matcher, options)
     return nil, nil, "没有剩余可移动的匹配物品"
 end
 
--- Count only when a post-write slot remains ambiguous. `stopAt` allows the
--- no-progress case to short-circuit as soon as the previous population has been
--- observed, avoiding an unconditional full rescan after every move.
+-- 仅写后槽仍有歧义时计数；stopAt 在已观察到旧数量时提前终止无进展情况，避免每次移动后无条件全扫描。
 function I:CountLive(scope, matcher, options)
     if type(matcher) ~= "function" then return nil, "匹配器不可用" end
     options = type(options) == "table" and options or {}

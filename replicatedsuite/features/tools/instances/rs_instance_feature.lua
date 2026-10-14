@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Instance Browser Feature
+-- Replicated Suite · 副本浏览功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Page-scoped feature. X2BattleField is imported only when this feature is
--- initialized; InstanceCatalogV3 runs only while a consumer is visible.
+-- 页面范围功能，仅初始化时导入X2BattleField；InstanceCatalogV3仅可见消费端存在时运行。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -137,8 +138,7 @@ function F:Refresh(reason, fullDiscovery)
     return self.Authority:Refresh(reason or "feature_refresh")
 end
 
--- Public Projection boundary for Active V3. Pages consume these snapshots
--- instead of retaining the Instance Authority object.
+-- 公共投影边界，页面只消费快照，禁止持有Instance Authority对象。
 function F:GetRows()
     return self.Authority:GetRows()
 end

@@ -1,20 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Advanced Layout Templates v1
+-- Replicated Suite · 组合布局模板
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Composite layout templates built ON TOP of the existing UMG-like primitives
--- (HorizontalBox / VerticalBox / Border / SizeBox / Overlay). They do NOT invent
--- a second layout authority; every template reuses RSUI.LayoutUtil Measure /
--- Align / Arrange / Slot semantics and the existing component tree.
---
--- Design rules (see RSUI_ARCHITECTURE.md §7 / §8):
---   * Pure policy functions live beside each type so tiny-window and sequence
---     tests can exercise the math with zero Native side effects (SplitViewPolicy
---     precedent).
---   * Layout/event driven only: no Tick, no OnUpdate, no polling.
---   * Measure never writes Native layout; Layout writes only through the
---     existing Diff/Anchor authority.
---   * Narrow-window degradation is explicit (label shrink / ellipsis / column
---     collapse) and reported through RSUI.metrics, never hidden behind a clamp.
+-- 模板建在现有 HorizontalBox/VerticalBox/Border/SizeBox/Overlay 上，复用 RSUI.LayoutUtil Measure/Align/Arrange/Slot 与组件树，不新增布局权威。
+-- 设计规则见 RSUI_ARCHITECTURE.md §7/§8：纯策略与类型相邻，零 Native 副作用验证小窗口/序列；仅布局/事件驱动，无 Tick/OnUpdate/轮询；
+-- Measure 不写 Native，Layout 仅通过 Diff/Anchor；窄窗标签收缩/省略/列折叠须明确并计入 RSUI.metrics，不隐藏钳制。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -47,12 +38,9 @@ local function SetViewport(child, visible)
 end
 
 ------------------------------------------------------------------------
--- FormRow
+-- FormRow 表单行。
 --
--- label | control | (hint/feedback)  in a single logical row. The label has a
--- declared share of the row; on narrow rows it shrinks down to labelMinWidth
--- before the control is compressed, so a compact HUD never collapses the label
--- into the control.
+-- 单行 label | control | hint/feedback；标签占声明份额，窄行先收缩到 labelMinWidth 再压控件，不能让紧凑 HUD 标签与控件重叠。
 ------------------------------------------------------------------------
 RSUI.FormRowPolicy = RSUI.FormRowPolicy or { version = 1 }
 RSUI.FormRowPolicy.version = 2
@@ -70,8 +58,7 @@ function RSUI.FormRowPolicy:Resolve(innerWidth, gap, labelShare, labelMinWidth, 
     if labelW < labelMinWidth then labelW = math.min(labelMinWidth, innerWidth) end
 
     local controlW = math.max(0, innerWidth - labelW - hintWidth - (hintWidth > 0 and gap * 2 or gap))
-    -- If even the minimums cannot fit, drop the hint first, then let the label
-    -- give up room to the control rather than producing negative extents.
+    -- 最小值也放不下时先丢提示，再让标签为控件让空间，避免负 extent。
     if controlW < controlMinWidth and hintWidth > 0 then
         hintWidth = 0
         controlW = math.max(0, innerWidth - labelW - gap)
@@ -205,10 +192,9 @@ RSUI:RegisterType("FormRow", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- KeyValueRow
+-- KeyValueRow 键值行。
 --
--- label ................ value (right aligned). The value is measured first and
--- owns its fixed width; the label fills the remainder with ellipsis.
+-- 标签在左、值右对齐；先测值并保留固定宽，标签填余量且省略。
 ------------------------------------------------------------------------
 RSUI.KeyValueRowPolicy = RSUI.KeyValueRowPolicy or { version = 1 }
 function RSUI.KeyValueRowPolicy:Resolve(innerWidth, gap, valueMinWidth, valueMaxShare)
@@ -272,12 +258,9 @@ RSUI:RegisterType("KeyValueRow", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- Toolbar
+-- Toolbar 工具条。
 --
--- [left group] ..... [right group]. Children are divided by a `group` slot:
---   slot.group == "left"  (default) are packed from the left,
---   slot.group == "right" are packed from the right,
---   slot.group == "spacer" expands to fill the middle.
+-- 子节点按 slot.group 分组：left 默认从左紧排，right 从右紧排，spacer 扩展填中间。
 ------------------------------------------------------------------------
 RSUI.ToolbarPolicy = RSUI.ToolbarPolicy or { version = 1 }
 function RSUI.ToolbarPolicy:Partition(entries)
@@ -319,16 +302,14 @@ RSUI:RegisterType("Toolbar", function(spec)
         local p = Pad(self.spec.padding)
         local iw, ih = math.max(0, width - p.left - p.right), math.max(0, height - p.top - p.bottom)
         local left, right, spacers = RSUI.ToolbarPolicy:Partition(VisibleEntries(self))
-        -- Right group first (fixed), then left group, spacer fills the rest.
+        -- 先固定右组，再左组，spacer 填剩余。
         local rightUsed = 0
         for _, entry in ipairs(right) do
             local dw = Measure(entry.child, iw, ih)
             rightUsed = rightUsed + dw + self.gap
         end
         if #right > 0 then rightUsed = rightUsed - self.gap end
-        -- Toolbar items are auto-sized along the primary axis: each child owns
-        -- exactly its measured width (a fill slot would otherwise stretch every
-        -- button across the whole bar). Cross-axis height still honors vAlign.
+        -- 工具条主轴自动尺寸，每子节点只占测量宽；fill 会让每按钮撑满整条。交叉轴高度仍遵循 vAlign。
         local rightCursor = p.left + iw - rightUsed
         for _, entry in ipairs(right) do
             local dw, dh = Measure(entry.child, iw, ih)
@@ -361,10 +342,9 @@ RSUI:RegisterType("Toolbar", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- HeaderBodyFooter
+-- HeaderBodyFooter 表头/正文/页脚。
 --
--- Canonical app-page stack: header (auto), body (fill), footer (auto). The
--- body is always the second child; header/footer are the first/third.
+-- 标准页面堆栈 header(auto)、body(fill)、footer(auto)；正文固定第二子节点，首/三为表头/页脚。
 ------------------------------------------------------------------------
 RSUI.HeaderBodyFooterPolicy = RSUI.HeaderBodyFooterPolicy or { version = 1 }
 function RSUI.HeaderBodyFooterPolicy:Resolve(innerHeight, headerH, footerH, gap, bodyMinHeight)
@@ -392,10 +372,8 @@ RSUI:RegisterType("HeaderBodyFooter", function(spec)
     function c:Measure(availableW, availableH)
         local p = Pad(self.spec.padding)
         local header, body, footer = self:GetZones()
-        -- Explicit two-value form on purpose: `local hw, hh = header and
-        -- Measure(...) or 0, 0` parses as `hw = (header and Measure(...) or 0),
-        -- hh = 0` (comma binds looser than `or`), which silently zeroes the
-        -- zone height. Same trap as the CollapsibleGroup:Measure bug.
+        -- 须显式双值赋值；
+        -- `local hw, hh = header and Measure(...) or 0, 0` 解析为 hw=(header and Measure(...) or 0)、hh=0，逗号优先级低于 or，静默丢高度，与 CollapsibleGroup:Measure 同陷阱。
         local hw, hh, bw, bh, fw, fh = 0, 0, 0, 0, 0, 0
         if header ~= nil then hw, hh = Measure(header.child, availableW, availableH) end
         if body ~= nil then bw, bh = Measure(body.child, availableW, availableH) end
@@ -440,11 +418,9 @@ RSUI:RegisterType("HeaderBodyFooter", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- GroupBox
+-- GroupBox 分组框。
 --
--- A titled box: header (title strip) + content + optional footer, all inside a
--- single Border surface. Unlike Section (legacy composite), this is composed
--- from Border + HeaderBodyFooter so it inherits the full Measure/Arrange path.
+-- 单一 Border 内组合标题条、内容、可选页脚；基于 Border/HeaderBodyFooter 继承完整 Measure/Arrange，区别于旧 Section。
 ------------------------------------------------------------------------
 RSUI:RegisterType("GroupBox", function(spec)
     local border = UI:CreatePanel(spec.parent, spec.id, N(spec.x, 0), N(spec.y, 0), math.max(1, N(spec.width, 1)), math.max(1, N(spec.height, 1)), spec.variant or "card", { gradient = spec.gradient, accentStrip = spec.accentStrip })
@@ -461,7 +437,7 @@ RSUI:RegisterType("GroupBox", function(spec)
         if title ~= nil then title.rsUiOwner = c.owner end
     end
     c.title = title
-    c.appearanceWidgets = title and { title } or {} -- 中文维护（2026-10-09）：原生标题显式继承组件外观通道。
+    c.appearanceWidgets = title and { title } or {} -- 约束（2026-10-09）：原生标题显式继承组件外观通道。
 
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)
@@ -507,14 +483,9 @@ RSUI:RegisterType("GroupBox", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- CollapsibleGroup
+-- CollapsibleGroup 可折叠分组。
 --
--- A GroupBox whose header is clickable to collapse/expand the content. It is
--- composed from the existing GroupBox surface (Border + title strip) plus a
--- small chevron indicator, so it inherits the full Measure/Arrange path while
--- adding exactly one new fact: an expanded flag (Presentation state, not
--- business truth). Collapsed content contributes zero height and is hidden, so
--- the group never leaves a ghost gap.
+-- 可点标题展开/折叠的 GroupBox，复用 Border/标题条加小箭头，保留完整 Measure/Arrange；仅增加表现 expanded 标志，不持业务事实。折叠内容隐藏且零高，不留空隙。
 ------------------------------------------------------------------------
 RSUI.CollapsibleGroupPolicy = RSUI.CollapsibleGroupPolicy or { version = 1 }
 RSUI.CollapsibleGroupInteractionContractVersion = 2
@@ -524,8 +495,7 @@ function RSUI.CollapsibleGroupPolicy:Resolve(innerHeight, headerH, gap, expanded
     gap = math.max(0, tonumber(gap) or 0)
     local fixed = headerH
     if expanded ~= false then fixed = fixed + gap end
-    -- Expanded: content fills the remainder (>= 0). Collapsed: zero content and
-    -- no gap, so the group is exactly the header.
+    -- 展开内容填剩余（>=0）；折叠内容零高且无间距，整个组恰为标题高。
     local contentH = expanded ~= false and math.max(0, innerHeight - fixed) or 0
     return math.max(0, headerH), contentH
 end
@@ -540,15 +510,8 @@ RSUI:RegisterType("CollapsibleGroup", function(spec)
     c.expanded = spec.expanded ~= false
     c.content = nil
 
-    -- Clickable header: the whole title strip is a native Button surface. RU
-    -- input dispatches OnClick reliably to Button widgets, while EmptyWidget
-    -- surfaces never fire OnClick on this client (see rs_ui_data_views.lua), so
-    -- an empty-widget + SetOnClick hit target would leave collapse clicks
-    -- silently dead. The Button is created under the title/chevron labels
-    -- (labels are not pickable, so clicks fall through to it) and its themed
-    -- backdrop is removed so the card keeps the GroupBox look; the chevron glyph
-    -- carries the click affordance. It is a native child of the border, not a
-    -- component, so it does not participate in Measure (laid out in Layout).
+    -- 整标题条须为 Native Button 命中面，RU Button 可靠 OnClick，EmptyWidget 不派发点击。按钮位于不可拾取标题/箭头标签下，去主题背景保留 GroupBox 外观；
+    -- 箭头表示可操作。按钮是 Border 原生子节点，不参与 Measure，仅 Layout 定位。
     local headerHit = UI:CreateButton(border, spec.id .. "_header_hit", "", 0, 0, math.max(1, N(spec.width, 1)), math.max(1, c.headerHeight), N(spec.titleFontSize, Token("font.section", 13)), false, false)
     if headerHit == nil or headerHit.rsUiDegraded == true then
         if type(RSUI.metrics) == "table" then RSUI.metrics.collapsibleHeaderUnavailable = (tonumber(RSUI.metrics.collapsibleHeaderUnavailable) or 0) + 1 end
@@ -557,15 +520,11 @@ RSUI:RegisterType("CollapsibleGroup", function(spec)
         return c, c.rsUiDegradedReason
     end
     headerHit.rsUiOwner = c.owner
-    -- Drop the themed button background (all four state drawables) so the
-    -- strip stays visually identical to a GroupBox header.
+    -- 去掉按钮四态主题背景，使标题条保持 GroupBox 外观。
     if type(S.Theme) == "table" and type(S.Theme.SetBackgroundOpacity) == "function" then
         pcall(function() S.Theme:SetBackgroundOpacity(headerHit, 0) end)
     end
-    -- The header is the defining interaction of a CollapsibleGroup. Returning a
-    -- rendered but inert group recreates the same "green diagnostics / dead UI"
-    -- failure class as the old EditBox bug, so binding is now required and the
-    -- normal component post-factory fence rejects the whole composite on failure.
+    -- 标题点击是 CollapsibleGroup 核心交互，绑定必须成功；失败由组件工厂后边界拒绝整组，不能报告诊断通过却显示死 UI。
     local bound, bindErr = c:RequireOn(headerHit, "OnClick", function()
         if c.released then return nil end
         return c:SetExpanded(not c.expanded, true)
@@ -585,11 +544,11 @@ RSUI:RegisterType("CollapsibleGroup", function(spec)
     end
     c.title = title
 
-    -- Chevron indicator: a small text glyph ("▾" expanded / "▸" collapsed).
+    -- 箭头字形："▾" 表示展开，"▸" 表示折叠。
     local chevron = UI:CreateLabel(border, spec.id .. "_chevron", c.expanded and "\226\150\190" or "\226\150\184", c.padding.left, 2, 12, c.headerHeight - 4, N(spec.chevronFontSize, Token("font.small", 10)), spec.tone or "muted", ALIGN_CENTER, true)
     if chevron ~= nil then chevron.rsUiOwner = c.owner end
     c.chevron = chevron
-    c.appearanceWidgets = {} -- 中文维护：原生文字不参与 Measure children，但必须跟随同一透明表面策略。
+    c.appearanceWidgets = {} -- 原生文字不参与 Measure children，但必须跟随同一透明表面策略。
     if title ~= nil then c.appearanceWidgets[#c.appearanceWidgets + 1] = title end
     if chevron ~= nil then c.appearanceWidgets[#c.appearanceWidgets + 1] = chevron end
 
@@ -604,16 +563,14 @@ RSUI:RegisterType("CollapsibleGroup", function(spec)
         return true
     end
     function c:SetExpanded(expanded, notify)
-        -- `nextState`, not `next`: shadowing the global next() iterator would
-        -- break any table walk running in this scope.
+        -- 变量用 nextState，不能用 next 遮蔽全局 next()，否则此作用域表遍历会失败。
         local nextState = expanded ~= false
         if nextState == self.expanded then return false end
         self.expanded = nextState
         if self.chevron ~= nil then
             UI:SetText(self.chevron, nextState and "\226\150\190" or "\226\150\184", self.owner)
         end
-        -- Collapsed content is hidden (viewport) so it contributes no layout and
-        -- leaves no ghost gap; expanded re-shows it.
+        -- 折叠内容通过 viewport 隐藏，不占布局或留空隙；展开重新显示。
         if self.content ~= nil then SetViewport(self.content, nextState) end
         self:InvalidateMeasure("collapsed_state")
         self:InvalidateLayout("collapsed_state")
@@ -626,10 +583,8 @@ RSUI:RegisterType("CollapsibleGroup", function(spec)
         local headerH = (self.title ~= nil or self.chevron ~= nil) and self.headerHeight or 0
         local dw, dh = 0, 0
         if self.expanded and self.content ~= nil and self.content.visible ~= false then
-            -- Explicit two-value assignment. `local dw, dh = cond and Measure(...)
-            -- or 0, 0` parses as `dw = (cond and Measure(...) or 0), dh = 0`: the
-            -- comma has lower precedence than `or`, silently pinning dh to zero
-            -- and dropping the content height from every expanded measurement.
+            -- 显式双值赋值；
+            -- `local dw, dh = cond and Measure(...) or 0, 0` 等价 dw=(cond and Measure(...) or 0)、dh=0，逗号低优先级会让展开测量永久丢内容高。
             local contentW = availableW and (availableW - self.padding.left - self.padding.right)
             local contentH = availableH and math.max(0, availableH - self.padding.top - self.padding.bottom - headerH - self.gap)
             dw, dh = Measure(self.content, contentW, contentH)
@@ -671,12 +626,9 @@ RSUI:RegisterType("CollapsibleGroup", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- DetailRow
+-- DetailRow 详情行。
 --
--- A multi-column key/value row: a leading label followed by 1..N value columns,
--- each right-aligned within its own column. The policy divides the available
--- width so every column gets an equal share of the remainder after the label,
--- and the label keeps a declared share. Narrow windows shrink the label first.
+-- 前导标签加 1..N 个值列，各值在自身列右对齐；标签保留声明份额，其余宽均分，窄窗先缩标签。
 ------------------------------------------------------------------------
 RSUI.DetailRowPolicy = RSUI.DetailRowPolicy or { version = 1 }
 function RSUI.DetailRowPolicy:Resolve(innerWidth, gap, labelShare, labelMinWidth, columnCount, columnMinWidth)
@@ -692,8 +644,7 @@ function RSUI.DetailRowPolicy:Resolve(innerWidth, gap, labelShare, labelMinWidth
     local remainder = math.max(0, innerWidth - labelW - gapsTotal)
     local columnW = math.max(0, math.floor(remainder / columnCount))
     if columnW < columnMinWidth then
-        -- Columns must hold their minimum; shrink the label to make room (never
-        -- below zero) rather than produce negative/overlapping extents.
+        -- 各列保持最小值，缩标签让位且不低于零，不能产生负/重叠 extent。
         local need = columnMinWidth - columnW
         local give = math.min(labelW - labelMinWidth, need)
         labelW = labelW - give
@@ -745,7 +696,7 @@ RSUI:RegisterType("DetailRow", function(spec)
         local label = entries[1]
         local valueCount = math.max(0, #entries - 1)
         if valueCount == 0 then
-            -- Only a label: fill the whole row.
+            -- 仅有标签时填满整行。
             local dw, dh = Measure(label.child, iw, ih)
             local lx, lw2 = Align(p.left, iw, dw, label.slot.hAlign)
             local ly, lh = Align(p.top, ih, dh, label.slot.vAlign)
@@ -753,12 +704,12 @@ RSUI:RegisterType("DetailRow", function(spec)
             return height
         end
         local labelW, columnW = RSUI.DetailRowPolicy:Resolve(iw, self.gap, self.labelShare, self.labelMinWidth, valueCount, self.columnMinWidth)
-        -- Label fills its zone (left-aligned content via slot.hAlign).
+        -- 标签填满自身区域，内容经 slot.hAlign 左对齐。
         local dw, dh = Measure(label.child, labelW, ih)
         local lx, lw2 = Align(p.left, labelW, dw, label.slot.hAlign)
         local ly, lh = Align(p.top, ih, dh, label.slot.vAlign)
         Arrange(label.child, lx, ly, math.max(1, lw2), math.max(1, lh))
-        -- Each value column is right-aligned within its equal-width column.
+        -- 值在各自等宽列中右对齐。
         local cursor = p.left + labelW + self.gap
         for i = 2, #entries do
             local entry = entries[i]
@@ -774,19 +725,12 @@ RSUI:RegisterType("DetailRow", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- Steps
+-- Steps 步骤指示。
 --
--- A horizontal step indicator (e.g. a wizard / multi-phase progress). Each step
--- owns an equal cell; the policy returns per-step geometry and a state enum
--- (done / active / pending) so the visual layer only needs to render three
--- tones. Pure math, no Native side effects.
+-- 横向步骤指示用于向导/多阶段进度，各步骤均分单元格；纯策略返回几何与 done/active/pending 状态，表现只渲染三色，无 Native 副作用。
 --
--- State delivery: the template is a geometry container, it does not paint. A
--- step child opts into the semantic state by exposing
--- `SetStepState(state, index)`; Layout calls it (diffed: only when the state
--- actually changed) with "done" / "active" / "pending". Children without that
--- method are arranged by geometry alone and never touched, so a plain
--- label-only step stays a zero-coupling consumer.
+-- 模板仅几何、不绘制；步骤子节点显式提供 SetStepState(state,index) 接受 done/active/pending，Layout 仅状态变化时调用。
+-- 无方法的子节点仅排列，普通标签保持零耦合。
 ------------------------------------------------------------------------
 RSUI.StepsPolicy = RSUI.StepsPolicy or { version = 1 }
 function RSUI.StepsPolicy:Resolve(innerWidth, gap, count, current)
@@ -800,8 +744,7 @@ function RSUI.StepsPolicy:Resolve(innerWidth, gap, count, current)
     local cursor = 0
     for i = 1, count do
         local state = (i - 1 < current) and "done" or (i - 1 == current and "active" or "pending")
-        -- Last cell absorbs any sub-pixel remainder so the cells tile the whole
-        -- width with no trailing gap.
+        -- 最后一格吸收亚像素余量，整宽连续无尾部空隙。
         local width = (i == count) and math.max(0, innerWidth - cursor) or math.floor(cellW)
         steps[#steps + 1] = { x = cursor, width = width, state = state }
         cursor = cursor + width + gap
@@ -830,7 +773,7 @@ RSUI:RegisterType("Steps", function(spec)
         local p = Pad(self.spec.padding)
         local w = math.max(0, N(spec.width, 0)) or 0
         if w <= 0 then
-            -- Content-driven minimum: count cells each at least stepHeight wide.
+            -- 内容最小值：每格至少 stepHeight 宽。
             w = self.count * self.stepHeight + self.gap * math.max(0, self.count - 1)
         end
         w = w + p.left + p.right
@@ -855,11 +798,7 @@ RSUI:RegisterType("Steps", function(spec)
                 local sx, sw = Align(p.left + step.x, step.width, dw, entry.slot.hAlign)
                 local sy, sh = Align(p.top, ih, dh, entry.slot.vAlign)
                 Arrange(entry.child, sx, sy, math.max(1, sw), math.max(1, sh))
-                -- Hand the semantic state to the child if it opts in. Diffed
-                -- against the last delivered state so repeated layout passes
-                -- (scroll, resize, invalidation storms) do not re-enter the
-                -- consumer, and marked before the call so a throwing consumer
-                -- is not retried on every pass.
+                -- 仅选择接收的子节点获得状态；按前次状态比较，滚动/缩放/失效重复布局不重入。调用前标记，抛错 Consumer 不会每轮再试。
                 if entry.child.rsUiStepState ~= step.state and type(entry.child.SetStepState) == "function" then
                     entry.child.rsUiStepState = step.state
                     pcall(entry.child.SetStepState, entry.child, step.state, i)
@@ -872,20 +811,12 @@ RSUI:RegisterType("Steps", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- SplitToolbar
+-- SplitToolbar 分区工具条。
 --
--- A toolbar whose middle "spacer" region can host a fill component (e.g. a
--- search box) that stretches to consume the gap between the left and right
--- button groups. Reuses ToolbarPolicy:Partition for grouping, but the spacer
--- is now allocated by SplitViewPolicy-style min/fill semantics instead of a
--- fixed auto-width item.
+-- 中部 spacer 可承载搜索框等 fill 组件，填左右按钮组间隙；分组复用 ToolbarPolicy:Partition，中部用 SplitViewPolicy 风格 min/fill，不再固定自动宽。
 --
--- Degradation contract: when the window is too narrow to honour both side
--- groups and the spacer minimum, Resolve keeps the spacer minimum (fail-closed)
--- and returns clamped = true. In that state the spacer rectangle overlaps the
--- right group — the overlap is a deliberate degradation signal (better a
--- visibly broken toolbar than an invisible 0-width search box), and the caller
--- must count it in RSUI.metrics.splitToolbarSpacerClamped.
+-- 窄窗无法满足两侧与 spacer 最小时，Resolve 保留 spacer 下限并返回 clamped=true，矩形可与右组重叠；
+-- 这是明确降级信号，优于不可见零宽搜索框，调用方须计 RSUI.metrics.splitToolbarSpacerClamped。
 ------------------------------------------------------------------------
 RSUI.SplitToolbarPolicy = RSUI.SplitToolbarPolicy or { version = 1 }
 function RSUI.SplitToolbarPolicy:Resolve(innerWidth, gap, leftWidth, rightWidth, spacerMinWidth)
@@ -897,10 +828,7 @@ function RSUI.SplitToolbarPolicy:Resolve(innerWidth, gap, leftWidth, rightWidth,
     local gaps = (leftWidth > 0 and gap or 0) + (rightWidth > 0 and gap or 0)
     local spacerW = math.max(0, innerWidth - leftWidth - rightWidth - gaps)
     if spacerW < spacerMinWidth then
-        -- Fail-closed: preserve the spacer minimum and let the outer container
-        -- expose overflow rather than silently collapsing the fill region to
-        -- zero. clamped = true means the returned rectangle is wider than the
-        -- room that actually exists, i.e. it overlaps the right group.
+        -- 保留 spacer 最小值，让外容器暴露溢出，不能静默归零；clamped=true 表示矩形宽超可用空间并与右组重叠。
         spacerW = math.max(0, spacerMinWidth)
         return spacerW, true
     end
@@ -937,7 +865,7 @@ RSUI:RegisterType("SplitToolbar", function(spec)
         local p = Pad(self.spec.padding)
         local iw, ih = math.max(0, width - p.left - p.right), math.max(0, height - p.top - p.bottom)
         local left, right, spacers = RSUI.ToolbarPolicy:Partition(VisibleEntries(self))
-        -- Right group first (fixed, packed from the right).
+        -- 先固定右组并从右紧排。
         local rightUsed = 0
         for _, entry in ipairs(right) do
             local dw = Measure(entry.child, iw, ih)
@@ -952,7 +880,7 @@ RSUI:RegisterType("SplitToolbar", function(spec)
             Arrange(entry.child, rx, ry, math.max(1, rw), math.max(1, rh))
             rightCursor = rightCursor + dw + self.gap
         end
-        -- Left group packed from the left.
+        -- 左组从左紧排。
         local leftUsed = 0
         for _, entry in ipairs(left) do leftUsed = leftUsed + Measure(entry.child, iw, ih) + self.gap end
         local leftCursor = p.left
@@ -963,14 +891,12 @@ RSUI:RegisterType("SplitToolbar", function(spec)
             Arrange(entry.child, lx, ly, math.max(1, lw2), math.max(1, lh))
             leftCursor = leftCursor + dw + self.gap
         end
-        -- Spacer fills the remaining middle (>= spacerMinWidth, fail-closed).
+        -- spacer 填中间余量，严格保留 >=spacerMinWidth。
         if #spacers > 0 then
             local spacer = spacers[1]
             local spacerW, clamped = RSUI.SplitToolbarPolicy:Resolve(iw, self.gap, leftUsed > 0 and leftUsed - self.gap or 0, rightUsed, self.spacerMinWidth)
             if clamped then
-                -- Narrow window: the spacer kept its minimum, so its rectangle
-                -- overlaps the right group. That overlap is the intended
-                -- degradation, counted here instead of passing silently.
+                -- 窄窗 spacer 保最小而与右组重叠，属于有意降级，须记录而不能静默。
                 if type(RSUI.metrics) == "table" then RSUI.metrics.splitToolbarSpacerClamped = (tonumber(RSUI.metrics.splitToolbarSpacerClamped) or 0) + 1 end
             end
             local sx = p.left + (leftUsed > 0 and leftUsed or 0)

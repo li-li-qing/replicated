@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Shared Quest IDs
+-- Replicated Suite · 任务身份注册
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- This catalog centralizes reusable quest IDs that were previously scattered
--- through constants and rs_quest_data.lua.  The catalog owns identity only;
--- completion/progress policy remains in Quest/Event services and relationship
--- data remains in rs_quest_data.lua.
+-- 共享任务 ID 集中在本表。这里只拥有身份；完成和进度策略归 Quest/Event 服务，关系数据仍保存在 rs_quest_data.lua。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -24,61 +23,58 @@ local CURATED_SOURCE = "Replicated Suite curated ArcheRage RU quest mapping"
 local DATABASE_SOURCE = "ArcheRage RU quest database"
 local VERIFIED_AT = "2026-08-27"
 
--- Only IDs independently located in the current ArcheRage RU database are
--- promoted to database_verified. Everything else remains curated_pending and
--- must not silently become Authority for critical completion logic.
+-- 只有在当前 ArcheRage RU 数据库中独立定位的 ID 才能标记 database_verified；其余保持 curated_pending，不能静默成为关键完成逻辑的权威。
 local DATABASE_VERIFIED_IDS = {}
 local function MarkVerified(ids)
     for _, id in ipairs(ids) do DATABASE_VERIFIED_IDS[tonumber(id)] = true end
 end
 
 MarkVerified({
-    -- Blue Salt Bond material boards.
+    -- 蓝盐债券材料委托板。
     9044, 9147, 9148, 9046, 9152, 9153, 9047, 9137, 9138, 9049, 9142, 9143,
-    -- Auroria resident bond board.
+    -- 原大陆居民债券委托板。
     10504, 10505, 10506, 10507, 10508, 10509, 10510, 10511, 10512, 10513, 10514, 10515,
-    -- Community Center / resident daily identities listed by the RU database.
+    -- RU 数据库列出的 Community Center / 居民日常身份。
     8345, 8347, 8348, 8349, 8350, 8559, 8560, 8561, 8562, 8588, 8589, 8590, 8591, 8592, 8593,
-    -- Golden Plains / Halcyona.
+    -- 黄金平原 / Halcyona。
     9320, 9130, 9223, 9227,
-    -- Whalesong Harbor stages, Possessed Jakar branch, wrapper and guild daily.
+    -- 鲸歌港战斗阶段、Possessed Jakar 分支、汇总任务和公会日常。
     8602, 8603, 8604, 8605, 8606, 8607, 8608, 8609, 8610, 8611, 8612, 8613, 8614, 8615, 8616, 8617,
     8637, 8638, 8639, 8640, 9000220,
-    -- Aegis Island defense stages, Final Sealbreaker branch, wrapper and guild daily.
+    -- 神盾岛防御阶段、Final Sealbreaker 分支、汇总任务和公会日常。
     8618, 8619, 8620, 8621, 8623, 8624, 8625, 8626, 8627, 8628, 8629, 8630,
     8631, 8632, 8633, 8634, 8641, 8642, 8643, 8644, 9000221,
-    -- Void Corps invasion / Hiram T6 wrapper and four child quests.
+    -- Void Corps 入侵 / Hiram T6 汇总任务及四个子任务。
     11154, 11155, 11156, 11157, 11158,
-    -- Current RU DB daily rows used by existing guild/trade dashboard mappings.
+    -- 现有公会/贸易面板映射使用的当前 RU 数据库日常记录。
     9000223, 9000225, 9000226,
-    -- Cinderstone / Ynystere Industry Dynamo purification dailies.
+    -- Cinderstone / Ynystere Industry Dynamo 净化日常。
     9960, 9962, 9963, 9964, 9965, 9966,
-    -- Abyssal Attack: Lusca daily and the four faction Seaknight variants.
+    -- 深渊袭击：Lusca 日常及四个阵营的 Seaknight 变体。
     5765, 6973, 6974, 6975, 6976,
-    -- Auroria / Garden botanical research dailies.
+    -- 原大陆 / 神之庭院植物研究日常。
     10145, 10146, 10147, 10148, 10188, 10189,
-    -- Eastern Hiram current daily rows and Hiram weekly objective identities.
+    -- 东部 Hiram 当前日常记录与 Hiram 周常目标身份。
     9317, 9318, 9326, 9077, 11196, 10334, 10335,
-    -- Long-lived Auroria/Hiram guardian quest identities confirmed by current achievements.
+    -- 当前成就确认的长期原大陆/Hiram 守护者任务身份。
     9131, 9017, 9019, 9020,
-    -- Akasch Invasion quest chain / wrapper and Ipnya weekly.
+    -- Akasch 入侵任务链、汇总任务和 Ipnya 周常。
     9000449, 10699, 10700, 10701, 10702, 10703, 10704, 10705, 10708, 11200,
-    -- Great Prairie Guardian Scramble identities.
+    -- Great Prairie Guardian Scramble 任务身份。
     11096, 11098, 11099, 11116, 11131, 11132, 11133,
-    -- JMG / Prophecy chains and Hasla / Anthalon / Path of Glory related identities.
+    -- JMG / Prophecy 任务链及 Hasla / Anthalon / Path of Glory 相关身份。
     5969, 5970, 5971, 5972, 9000467, 5884, 5885, 5886, 7396, 7648, 7649, 8909, 9494,
-    -- Rookborne festival identities retained by the current database.
+    -- 当前数据库保留的 Rookborne 节庆任务身份。
     6758, 6759, 6760, 6761, 6784, 6785, 7802, 7803, 7804,
-    -- Remaining dashboard/event identities independently resolved in the current database.
+    -- 在当前数据库独立定位的其余面板/活动任务身份。
     6791, 7736, 7737, 9021, 9052, 9053, 9000170, 9000333, 9000531,
-    -- Crimson Rift database category. 9000448 is database aggregate metadata,
-    -- not a player-facing stage and is registered separately below.
+    -- 红龙之渊数据库分类。9000448 是数据库汇总元数据，不是玩家参与的阶段，需在下方独立注册。
     2941, 2942, 2943, 8998, 10729, 10730, 10734, 10735, 9000448,
     -- Grimghast Rift / 迷雾战争.
     5138, 5139, 5140, 5142, 5143, 5144, 5150, 5151, 5152, 5153, 5154, 5155, 5156, 5157, 10739, 11192,
-    -- World-boss / Garden identities explicitly resolved by quest page.
+    -- 按任务页面明确核实的世界首领 / 神之庭院身份。
     9221, 9222, 5883, 7655, 9969, 10186, 10187,
-    -- Current DB daily rows used by existing modules.
+    -- 现有模块使用的当前数据库日常记录。
     10328, 10329, 10330, 10558, 10559, 10561, 10562, 10563, 10564, 10565, 10569, 10571, 10056,
 })
 
@@ -137,7 +133,7 @@ local function RegisterId(key, id, name, tags, notes)
     return record and record.id or id
 end
 
--- Resident board / bond quests ------------------------------------------------
+-- 居民委托板 / 债券任务。
 Q.ResidentBond.MaterialByQuantity = {
     fabric = {
         [20] = RegisterId("RESIDENT_BOND_FABRIC_20", 9044, "居民债券：布料20", { "DAILY", "RESIDENT_BOND" }),
@@ -161,7 +157,7 @@ Q.ResidentBond.MaterialByQuantity = {
     },
 }
 
--- 中文维护注释（2026-09-24，原大陆居民板任务身份纠错）：当前 ArcheRage 数据库明确
+-- 当前 ArcheRage 数据库明确
 -- 10504/10505 是 Prince's Coinpurses，并非旧代码命名的 golden_bag；10512..10515 是
 -- Ancestor/Ancestral，而不是 heir。Quest ID 本身没有变化，所以用户完成状态兼容；这里只修正共享
 -- 语义 key，让 ResidentBoard 文本解析、背包 ItemType 和 QuestProgress 三条 Authority 能以同一身份汇合。
@@ -199,7 +195,7 @@ Q.ResidentBond.AuroriaByTokenQuantity.queen_box = Q.ResidentBond.AuroriaByTokenQ
 Q.ResidentBond.AuroriaByTokenQuantity.heir_bag = Q.ResidentBond.AuroriaByTokenQuantity.ancestor_purse
 Q.ResidentBond.AuroriaByTokenQuantity.heir_box = Q.ResidentBond.AuroriaByTokenQuantity.ancestor_crate
 
--- 中文维护注释（2026-09-24，注册表 key 升级兼容）：上面的 table alias 只能兼容直接消费
+-- 上面的 table alias 只能兼容直接消费
 -- AuroriaByTokenQuantity 的旧代码；历史扩展也可能通过 GameDataRegistry 的旧 semantic key 查询。
 -- 使用显式 RegisterAlias 继续保留 18.300 以前的 12 个 key，不产生 duplicate-ID warning，也不建立
 -- 第二 record Authority。新代码使用修正后的 purse/crate/ancestor key，旧 lookup 仍解析到同一 QuestId。
@@ -214,7 +210,7 @@ for _, alias in ipairs({
     Registry:RegisterAlias("quest", alias[1], alias[2])
 end
 
--- Activity quest sets ---------------------------------------------------------
+-- 活动任务集合。
 Q.Activity.halcy = {
     main = RegisterSet("ACTIVITY_HALCY_MAIN", { 9320 }, "黄金平原普通日常", { "DAILY", "ACTIVITY", "HALCY" }),
     heroSupport = RegisterSet("ACTIVITY_HALCY_HERO_SUPPORT", { 9130 }, nil, { "DAILY", "RELATED", "HALCY" }),
@@ -368,7 +364,7 @@ Q.Activity.gardenAnthalon = {
     main = RegisterSet("ACTIVITY_GARDEN_ANTHALON", { 10186 }, nil, { "DAILY", "BOSS", "ACTIVITY" }),
     minion = RegisterSet("ACTIVITY_GARDEN_ANTHALON_MINION", { 10187 }, nil, { "DAILY", "RELATED", "BOSS" }),
 }
--- 中文维护注释（2026-09-22，Garden Fairy Request）：10056 是神之庭院区域的每日刷分任务，
+-- 10056 是神之庭院区域的每日刷分任务，
 -- 数据库明确描述为通过击杀/采集/钓鱼等累计积分提升 Reward Level。它与庭院安塔伦 10186/10187
 -- 是不同业务事实：前者绑定普通庭院动态战争/刷分活动，后者继续只绑定固定周常庭院安塔伦。
 -- 这里单独注册 Activity set，避免 EventData 反向借用 Dashboard namespace；同一 QuestId 可以属于
@@ -383,7 +379,7 @@ Q.Activity.abyssal = {
     seaknight = RegisterSet("ACTIVITY_ABYSSAL_SEAKNIGHT", { 6973, 6974, 6975, 6976 }, nil, { "DAILY", "ACTIVITY", "ABYSSAL" }),
 }
 
--- Dashboard-only daily / weekly sets -----------------------------------------
+-- 仅供面板使用的日常 / 周常集合。
 local residentDaily = RegisterSet("DAILY_RESIDENT_ALL", { 8345, 8347, 8348, 8349, 8350, 8559, 8560, 8561, 8562, 8588, 8589, 8590, 8591, 8592, 8593 }, nil, { "DAILY", "RESIDENT" })
 Q.Dashboard.Daily.guild = RegisterSet("DAILY_GUILD", { 7736, 7737 }, nil, { "DAILY", "GUILD" })
 Q.Dashboard.Daily.pack20 = RegisterSet("DAILY_PACK_20", { 9000226 }, nil, { "DAILY", "TRADE_PACK" })
@@ -427,7 +423,7 @@ Q.Resident.packDelivery = {
     [8593] = RegisterId("RESIDENT_PACK_DELIVERY_8593", 8593, nil, { "DAILY", "RESIDENT", "TRADE_PACK" }),
 }
 
--- Diagnostics-only snapshot; never called from per-frame quest polling.
+-- 仅供诊断的快照，禁止从逐帧任务轮询调用。
 function Q:Describe()
     local total, verified, pending = 0, 0, 0
     for _, record in ipairs(Registry:List("quest") or {}) do

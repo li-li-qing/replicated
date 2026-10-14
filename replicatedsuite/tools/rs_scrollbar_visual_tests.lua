@@ -1,5 +1,10 @@
--- Actual RSUI ScrollBox/ListView/TableView/TileView; only native drawing and input are controlled.
--- A native gradient method may exist yet return nil. This must not erase the position indicator.
+------------------------------------------------------------------------
+-- Replicated Suite · 滚动条视觉测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用实际 RSUI ScrollBox、ListView、TableView 和 TileView，仅原生绘制和输入受控；原生渐变方法即使存在也可能返回 nil，不能因此丢失位置指示条。
+------------------------------------------------------------------------
 local passed,total=0,0
 local function Test(name,fn)
  total=total+1;local ok,err=xpcall(fn,debug.traceback)

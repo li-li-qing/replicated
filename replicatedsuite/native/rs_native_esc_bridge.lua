@@ -1,9 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native ESC Bridge
+-- Replicated Suite · 原生 ESC 注册桥
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Suite-owned generation-local Proxy for the documented ADDON content/ESC
--- integration. It owns registration transport/idempotency only; V3
--- UIHostManager remains the visibility Authority.
+-- 代际内的 Suite 自有 Proxy 对接文档规定的 ADDON content/ESC；只拥有注册传输和幂等性，V3 UIHostManager 仍是
+-- 可见性权威。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite

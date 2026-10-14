@@ -1,9 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Presentation Host Manager
+-- Replicated Suite · 表现宿主管理
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation is replaceable. Core/Services/Module adapters must not depend
--- on one concrete window/page implementation. Legacy UI and V3 UI register
--- independent hosts; Runtime and semantic navigation talk only to this layer.
+-- 表现宿主管理器隔离可替换 Presentation；Core/Services/Module 适配器不依赖具体窗口或页面。旧 UI 与 V3 UI 分
+-- 别登记宿主，Runtime 和语义导航只与本层通信。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -188,10 +189,8 @@ function H:Toggle(id)
     return self:Open(host.id)
 end
 
--- Semantic navigation Authority. Callers describe WHAT they want to open;
--- concrete hosts decide HOW that intent maps to their own pages/presenters.
--- A fallback host is never implicit: migration code must opt in explicitly so
--- V3 cannot silently leak back into Legacy presentation.
+-- 语义导航权威：调用者描述要打开什么，具体宿主决定如何映射到页面或 Presenter。兜底宿主须由迁移代码显式选择
+-- ，V3 不能静默泄回旧表现层。
 function H:Navigate(routeId, context, options)
     routeId = NormalizeRoute(routeId)
     if routeId == "" then return false, "route required" end
@@ -204,10 +203,8 @@ function H:Navigate(routeId, context, options)
         if type(host.spec.navigate) ~= "function" then return false, "host navigation unavailable" end
         local switched, switchErr = self:SetActive(host.id, options.closePrevious ~= false)
         if switched ~= true then return false, switchErr end
-        -- Route ownership includes visibility. A settings route may open a
-        -- standalone presenter without showing the host shell, while a normal
-        -- page route may open the shell first. HostManager must not guess.
-        -- Callers can still explicitly request shell opening for special flows.
+        -- 路由所有权包含可见性；设置路由可只打开独立 Presenter，普通页面路由可先显示外壳，HostManager 不猜
+        -- 测。特殊流程仍可显式请求打开外壳。
         if options.openHost == true then
             local opened, openErr = Call(host, "open")
             if opened ~= true then return false, openErr or "host open failed" end
@@ -270,7 +267,7 @@ function H:HideAll(preserveEntry)
 end
 
 function H:ApplyResponsiveLayout(fromMetricsChange)
-    -- 维护（viewport-recovery-1）：主宿主失败不能阻止独立屏幕控件几何恢复。
+    -- 主宿主失败不能阻止独立屏幕控件几何恢复。
     -- WindowShell 已由 Layout 的独立注册表先处理；这里仅桥接主窗与非 Shell Widget。
     local host=self:GetActive()
     local ok,err=true,nil

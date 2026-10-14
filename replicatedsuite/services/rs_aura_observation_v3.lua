@@ -1,10 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Aura Observation Domain (Phase 12B shared fact projection)
+-- Replicated Suite · 光环只读观察
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared read-only fact cache for Buff / Debuff / Hidden Buff lanes.
--- It owns native observation facts only.  Healer/Plates/Boss/etc. retain all
--- business interpretation.  No Tick, no background scan: consumers explicitly
--- request snapshots and a short bounded cache coalesces duplicate reads.
+-- Aura 观察领域共享 Buff/Debuff/Hidden Buff 只读事实缓存，只拥有原生观察事实；Healer/Plates/Boss 等保留业务
+-- 解释。没有 Tick 或后台扫描，消费者显式请求快照，短期有界缓存合并重复读取。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -56,10 +56,8 @@ local function CopyShallow(value)
 end
 
 local function ExtractEffectId(data, tooltip)
-    -- buff_id first: it is the ONLY field with real-machine proof
-    -- (wbdebuff/buffblackdragon.lua:46 reads UnitDeBuff(...)["buff_id"] and
-    -- matches 23474/25846). If a row carries a different-valued effectId, keying
-    -- the status map on it would make every numeric-id rule silently miss.
+    -- 优先 buff_id：唯一有实机证据的字段，wbdebuff/buffblackdragon.lua:46 用 UnitDeBuff(...)["buff_id"] 匹
+    -- 配 23474/25846。若 effectId 与其不同，不能拿来作状态 map 键，否则数字 ID 规则全部静默失配。
     local function Pick(row)
         if type(row) ~= "table" then return nil end
         return tonumber(row.buff_id or row.buffId or row.buffID or row.effectId or row.effect_id or row.id or row.buffType or row.buff_type or row.type)
@@ -93,9 +91,8 @@ local function PickString(primary, secondary, keys)
     return Pick(primary) or Pick(secondary)
 end
 
--- Buff-id -> name/icon resolution is owned by the shared BuffMetadataV3
--- service (X2Ability:GetBuffTooltip chain with bounded cache + negative
--- caching). This file keeps only thin accessors so the scan path stays cheap.
+-- Buff ID 到名称/图标解析归共享 BuffMetadataV3，通过 X2Ability:GetBuffTooltip、有界缓存及负缓存；此文件只保
+-- 留薄访问器，降低扫描成本。
 local function BuffMeta()
     return S.Services ~= nil and S.Services.BuffMetadataV3 or nil
 end
@@ -105,10 +102,8 @@ local function PeekBuffInfo(id)
     return meta:GetCached(id)
 end
 
--- Conservative name extraction from trailing native returns (A:Call surfaces
--- up to three extras). A display name is a short, non-numeric string with no
--- path separators or file extensions; anything else (ids, icon paths, tooltip
--- text blobs) is rejected rather than guessed.
+-- 保守提取原生尾部返回中的名称（A:Call 最多额外三个值）。名称须为短非数字字符串，不含路径分隔或扩展名；ID、
+-- 图标路径、整段 tooltip 文本均拒绝，不能猜。
 local function NameFromExtra(extra)
     if type(extra) ~= "table" then return nil end
     for i = 1, #extra do
@@ -209,9 +204,7 @@ function A:_ScanLane(unitId, lane, limit)
         local dataExtra, tipExtra = nil, nil
         if dataWorking then
             self.nativeReads = self.nativeReads + 1
-            -- A:Call surfaces trailing native returns at positions 4-6; some RU
-            -- builds move the display name OUT of the row table into a second
-            -- return, so capture them instead of dropping them.
+            -- A:Call 在第 4-6 位暴露原生额外返回；部分 RU 把显示名移出行表放到第二返回值，须捕获而非丢弃。
             local okData, value, _, b2, c2, d2 = S.Api:Call(X2Unit, spec.data, unitId, index)
             if okData == true then
                 data = value
@@ -221,12 +214,9 @@ function A:_ScanLane(unitId, lane, limit)
             end
         end
         local effectId = ExtractEffectId(data, nil)
-        -- RU unit rows frequently omit the name field. When the id is missing
-        -- OR the row carries no usable name and the ability-tooltip cache
-        -- cannot resolve that id yet, fetch the tooltip row — the plates-proven
-        -- co-authority (旧 rp_api 曾读 tip.name / extra.name alike, 该文件已删除). Gating on
-        -- the cache keeps steady-state scans free of extra tooltip reads: only
-        -- first-seen ids pay one tooltip read, then the ability cache answers.
+        -- RU 单位行常省略 name。ID 缺失，或行无可用 name 且 ability-tooltip 缓存尚不能解析时，才读取已有
+        -- plates 证据支持的 tooltip 行。稳态扫描通过缓存门禁免于重复读取；新 ID 首次承担一次 tooltip，随后
+        -- 由能力缓存回答。
         local rowName = PickString(data, nil, STATUS_KEYS.name) or NameFromExtra(dataExtra)
         if tipWorking and (effectId == nil or (rowName == nil and PeekBuffInfo(effectId) == nil)) then
             self.nativeReads = self.nativeReads + 1
@@ -288,7 +278,7 @@ function A:GetSnapshot(unitId, options)
     for lane, limit in pairs(requested) do
         if limit > 0 then
             local existing = entry[lane]
-            -- 维护：留存模式的Buff/DeBuff事件可能在同一时钟刻度内增删；ttl=0仍会命中旧缓存。
+            -- 留存模式的Buff/DeBuff事件可能在同一时钟刻度内增删；ttl=0仍会命中旧缓存。
             -- 仅显式forceRefresh绕过缓存，其他消费者/常规轮询继续共享TTL，不改事实分类。
             local fresh = options.forceRefresh~=true and type(existing) == "table" and now - (tonumber(existing.at) or 0) <= ttlMs
             local covered = fresh and (existing.complete == true or (tonumber(existing.limit) or 0) >= limit)
@@ -321,11 +311,8 @@ function A:GetSnapshot(unitId, options)
     }
 end
 
--- Build a normalized read-only status projection from an already captured
--- snapshot. This performs no Native reads and deliberately owns no business
--- meaning: consumers such as Healer / Plates / Raid Readiness decide what an
--- effect means. The projection mirrors the stable facts legacy consumers need
--- (id/source/stack/time/name/icon) so they no longer have to rescan X2Unit.
+-- 从已捕获快照构建归一化只读状态投影，不读取 Native，也不拥有业务含义。Healer/Plates/Raid Readiness 自行判
+-- 断效果；投影提供 id/source/stack/time/name/icon 稳定事实，消费者无需重扫 X2Unit。
 function A:GetStatusMap(snapshot, options)
     snapshot = type(snapshot) == "table" and snapshot or {}
     options = type(options) == "table" and options or {}
@@ -356,10 +343,8 @@ function A:GetStatusMap(snapshot, options)
                         local timeLeft = PickNumber(tooltip, data, STATUS_KEYS.timeLeft)
                         local name = PickString(tooltip, data, STATUS_KEYS.name) or ""
                         local iconPath = PickString(tooltip, data, STATUS_KEYS.icon) or ""
-                        -- Unit rows often carry neither name nor (rarely) icon on
-                        -- current RU; a placeholder name equal to the raw id (or a
-                        -- missing icon) triggers the cached ability-tooltip lookup.
-                        -- Trailing native returns are checked first (zero cost).
+                        -- 当前 RU 单位行常无 name，偶尔无 icon。名称只是原始 ID 占位或 icon 缺失时触发缓存
+                        -- ability-tooltip；先检查零额外读取成本的原生尾部返回。
                         if name == "" or name == tostring(id) then
                             local extraName = NameFromExtra(item.extra) or NameFromExtra(item.tooltipExtra)
                             if extraName ~= nil then name = extraName end
@@ -372,10 +357,8 @@ function A:GetStatusMap(snapshot, options)
                             end
                         end
                         if name == "" then name = tostring(id) end
-                        -- Positive unit-row/tooltip resolutions are handed back
-                        -- to the shared metadata service (Remember) so the scan
-                        -- path's PeekBuffInfo gate stops re-fetching tooltips
-                        -- for an id whose name is already known.
+                        -- 把从单位行或 tooltip 得到的有效解析通过 Remember 交回共享元数据服务，使已知名称
+                        -- ID 的 PeekBuffInfo 门禁停止重新读取 tooltip。
                         if name ~= tostring(id) then
                             local meta = BuffMeta()
                             if meta ~= nil and meta.Remember ~= nil then
@@ -408,10 +391,8 @@ function A:GetStatusMap(snapshot, options)
     return map, meta
 end
 
--- Presence evaluation is intentionally conservative. If a required ID is not
--- observed while the requested lanes are incomplete/unreliable, the result is
--- unknown (ok=nil), never a fabricated failure. This is suitable for raid
--- readiness and later Healer/Plates migrations.
+-- 存在性判断保守：所需 ID 未观察到且请求 lane 不完整或不可靠时，返回未知 ok=nil，不能伪造失败。供团队就绪及
+-- Healer/Plates 消费。
 function A:EvaluateRequiredEffects(snapshot, requiredIds, options)
     requiredIds = type(requiredIds) == "table" and requiredIds or {}
     local statusMap, meta = self:GetStatusMap(snapshot, options)

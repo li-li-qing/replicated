@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Numeric Range Preference Store v1
+-- Replicated Suite · 数值范围元数据存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation-only persistence for adaptive NumericField slider endpoints.
--- Business values remain owned by their Feature/App Store bindings. This Store
--- only remembers outward range expansion (for example 1..10 -> 1..20) so the
--- same slider affordance survives Fresh Reload without coupling every Feature
--- schema to RSUI presentation metadata.
+-- 仅持久化 NumericField 自适应滑块端点；业务值仍归 Feature/App Store 绑定。
+-- 此 Store 只记向外扩展如 1..10 -> 1..20，使 Fresh Reload 保持入口范围，不把各 Feature schema 耦合 RSUI 元数据。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -97,8 +96,7 @@ function Store:EnsureLoaded()
         self.loaded, self.sessionFallback, self.lastLoadError = true, false, nil
         return true
     end
-    -- Range metadata is non-critical. Preserve usability in-memory while never
-    -- overwriting a failed/fenced physical payload during the degraded session.
+    -- 范围元数据非关键，降级会话保留内存可用性，但不能覆盖读取失败/隔离的物理载荷。
     self.loaded, self.sessionFallback, self.lastLoadError = true, true, tostring(err or status or "load_failed")
     ApplyState(nil)
     if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Warn) == "function" then

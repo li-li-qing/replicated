@@ -1,6 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Analytics Feature
--- Lifecycle / settings / projection boundary. No native combat handlers here.
+-- Replicated Suite · 战斗分析功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 生命周期、设置与投影边界；这里不处理 Native 战斗事件。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
@@ -130,7 +133,7 @@ end
 function F:GetHealth()
     local a=Analytics();return {ok=self.enabled==true,analyticsHeld=self.analyticsHeld==true,enabledMetrics=#self:GetEnabledMetricIds(),analytics=type(a)=="table" and a:GetHealth() or nil}
 end
--- 中文维护（2026-10-06）：合并后的伤害统计诊断必须包含击杀/死亡与个人历史。
+-- 合并后的伤害统计诊断必须包含击杀/死亡与个人历史。
 -- 这里只读已加载状态，不调用 EnsureLoaded、GetProjection、Record 或任何战斗回调。
 function F:DescribeDiagnosticDetail()
     local a=Analytics()
@@ -141,7 +144,7 @@ function F:DescribeDiagnosticDetail()
     local hub=S.ModuleDiagnosticsHub
     return {available=true,scope=a and a:GetCollectionScope(),enabled=self.enabled==true,
         analytics=a and a:GetHealth(),
-        -- 中文维护（2026-10-08）：只读连接 Bus 原生入口→Analytics 过滤→kills 结算；生成报告不能补计或启动采集。
+        -- 只读连接 Bus 原生入口→Analytics 过滤→kills 结算；生成报告不能补计或启动采集。
         ingress=a and type(a.GetDeathIngressDiagnostics)=="function" and a:GetDeathIngressDiagnostics() or {available=false},
         kills=kills and type(kills.GetDiagnosticDetail)=="function" and kills:GetDiagnosticDetail() or {available=false},
         bus=bus and type(bus.GetDiagnosticDetail)=="function" and bus:GetDiagnosticDetail()

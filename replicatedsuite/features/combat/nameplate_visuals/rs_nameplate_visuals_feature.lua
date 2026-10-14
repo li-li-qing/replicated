@@ -1,7 +1,8 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native nameplate / HP bar visual feature
+-- Replicated Suite · 原生头标与血条外观功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 维护（2026-09-20，nameplate-mark-ratio-3）：
 -- Feature 只拥有生命周期、设置事务与 ENTERED_WORLD 重新应用；Native 读写属于 Authority，
 -- 持久化属于 Store，Presentation 只能走 Commands。该功能没有 Scheduler/Tick，关闭后仅保留
 -- Durable 设置，不保留事件监听、Native baseline 或其它运行时资源。
@@ -65,7 +66,7 @@ function F:Enable(reason)
         return FailLifecycle("enable_apply_failed", applyErr)
     end
 
-    -- 维护：GitHub 上 RU 社区 reloadcfg 明确选择 ENTERED_WORLD 重读 system.cfg；本功能按同一
+    -- GitHub 上 RU 社区 reloadcfg 明确选择 ENTERED_WORLD 重读 system.cfg；本功能按同一
     -- 生命周期边沿重新声明自己的 CVar，而不是用轮询对抗其它设置。事件订阅失败时先恢复启用前值
     -- 再拒绝 Enable，保持事务性；是否在所有 RU 场景都需要重写仍留给实机验收。
     S.Events:BindOwner(self, self.Id)
@@ -97,7 +98,7 @@ function F:Disable(reason)
         return true
     end
     self.lastLifecycleStage = "disable_restore_baseline"
-    -- 维护：先恢复再撤事件。若恢复失败，FeatureRuntime 必须看到 Disable=false 并保持 enabled，
+    -- 先恢复再撤事件。若恢复失败，FeatureRuntime 必须看到 Disable=false 并保持 enabled，
     -- ENTERED_WORLD listener 也继续存在；不能出现“Native 仍是插件值但 Runtime 声称已关闭”。
     local restored, restoreErr = self.Authority:RestoreBaseline(reason or "feature_disable")
     if restored ~= true then
@@ -140,7 +141,7 @@ function F:GetProjection()
     }
 end
 
--- 中文维护注释（nameplate-mark-ratio-3）：Store schema1 不新增 markerScale 字段；页面与诊断
+-- Store schema1 不新增 markerScale 字段；页面与诊断
 -- 统一从历史 markerWidth 推导百分比，避免 schema/canonical 变化。46 是 console_vars dump 中旧基准宽度，
 -- 只作为持久兼容编码，不再写 over_head_marker_width。
 function F:GetMarkerPercent()
@@ -217,7 +218,7 @@ end
 function F.Commands:SetMarkerPreset(percent)
     percent = tonumber(percent)
     if percent == nil or percent < 50 or percent > 300 then return false, "标记比例需为50%-300%" end
-    -- 维护：继续写 schema1 的 width/height 作为百分比编码，Authority 只消费 width/46 -> ratio。
+    -- 继续写 schema1 的 width/height 作为百分比编码，Authority 只消费 width/46 -> ratio。
     -- height 同步保留是为了让 18.270-18.272 旧 UI/存档仍保持一致，offset 不再参与 Native。
     local width = math.floor((F.Defaults.markerWidth * percent / 100) + 0.5)
     local height = math.floor((F.Defaults.markerHeight * percent / 100) + 0.5)
@@ -247,11 +248,11 @@ function F.Commands:Reapply()
     return ok, err
 end
 
--- 中文维护注释（2026-09-20，nameplate-startup-evidence-1）：Provider 只读取现有 Lua/Store/API
+-- Provider 只读取现有 Lua/Store/API
 -- 对象状态，不触发 Initialize、LoadStore 或 Native CVar。即使启动按钮在 FeatureRuntime 前置检查阶段
 -- 被拒绝，模块诊断也能区分“按钮没进 Feature”与“Feature 已开始但 Native 阶段失败”。
 if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
-    -- 中文维护（2026-10-07）：用户希望可行时将飘字大小放在本页；先取原生句柄证据，不增加无效设置。
+    -- 用户希望可行时将飘字大小放在本页；先取原生句柄证据，不增加无效设置。
     S.ModuleDiagnosticsHub:RegisterProvider(F.Id, "native_combat_text_access", function()
         return F.Authority:InspectCombatTextAccess()
     end, 36)

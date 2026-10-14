@@ -1,14 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Floating Surface Foundation v8
+-- Replicated Suite · 悬浮窗口状态绑定
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Thin state/persistence binding layer above WindowShellV3 + Windowing.
--- It does NOT create a second window authority. WindowShell owns chrome and
--- Windowing owns native drag/resize transactions; FloatingSurface only maps
--- shared HUD presentation state (placement/size/minimize/lock/opacity/font scale) to the
--- feature-owned persistent table.
---
--- No permanent Tick/OnUpdate. Screen snapping is optional and only evaluated
--- when a native drag transaction commits.
+-- WindowShellV3/Windowing 上的轻量状态与持久化绑定，不新增窗口权威。WindowShell 负责外框，Windowing 负责原生拖动/缩放；
+-- FloatingSurface 仅映射位置、大小、最小化、锁定、透明度、字体倍率到 Feature 持久表。
+-- 无永久 Tick/OnUpdate；屏幕吸附可选，仅原生拖动提交时判断。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -307,7 +304,7 @@ function F:Create(spec)
     local policy = ReadPolicy(spec.statePolicy or spec.sizePolicy)
     local state = type(spec.getState) == "function" and spec.getState() or spec.state
     if type(state) ~= "table" then return nil, "floating surface state unavailable" end
-    -- 中文维护：明确为会话状态的设置窗复用 Chrome 偏好保存小锁；不覆盖 Feature/AuxWindow 的持久锁 Authority。
+    -- 明确为会话状态的设置窗复用 Chrome 偏好保存小锁；不覆盖 Feature/AuxWindow 的持久锁 Authority。
     local sessionLockPreferences
     if spec.persistSessionLock == true then
         sessionLockPreferences = RSUI.WindowPreferences
@@ -360,7 +357,7 @@ function F:Create(spec)
         if persist ~= false then
             local ok, err = PersistSpec(spec, reason)
             if ok == true and sessionLockPreferences and (reason == "lock" or reason == "locked") then
-                ok, err = sessionLockPreferences:SetLocked(id, nextState.locked, true) -- 中文维护：一次锁动作只提交一份 Chrome 偏好，拒绝时沿用 Surface/Shell 回滚。
+                ok, err = sessionLockPreferences:SetLocked(id, nextState.locked, true) -- 一次锁动作只提交一份 Chrome 偏好，拒绝时沿用 Surface/Shell 回滚。
             end
             if ok ~= true then
                 if type(spec.setState) == "function" then
@@ -394,14 +391,10 @@ function F:Create(spec)
         movable = spec.movable ~= false,
         footer = spec.footer ~= false,
         closeButton = spec.closeButton ~= false,
-        -- Shared HUD chrome owns the appearance editor. Every FloatingSurface
-        -- gets the same title-bar entry unless a rare surface explicitly opts
-        -- out; feature widgets must not re-invent opacity/font controls.
+        -- 共享 HUD 外框持有外观编辑器；除明确退出的特殊窗口外，各 FloatingSurface 使用同一标题入口，功能组件不能另造透明度/字体控件。
         appearanceControls = spec.appearanceControls ~= false,
         appearancePanelWidth = tonumber(spec.appearancePanelWidth),
-        -- Floating HUD surfaces use the compact chrome profile. Normal state is
-        -- intentionally shorter than application dialogs; compact minimization
-        -- collapses the whole chrome into a draggable square restore button.
+        -- 悬浮 HUD 使用紧凑外框，普通状态比应用对话框低；紧凑最小化把全部外框折成可拖动方形恢复按钮。
         compactChrome = true,
         minimizedSize = tonumber(spec.minimizedSize) or 30,
         titleHeight = tonumber(spec.titleHeight) or 24,
@@ -425,7 +418,7 @@ function F:Create(spec)
         scaleWithAddon = spec.scaleWithAddon ~= false,
         initialRect = { x = x, y = y, width = width, height = height },
         allowCloseVeto = spec.allowCloseVeto == true,
-        -- 中文维护：原生 Escape 关闭由 WindowShell 收口，并沿既有 onClosed 同步 Surface/Host 与租约。
+        -- 原生 Escape 关闭由 WindowShell 收口，并沿既有 onClosed 同步 Surface/Host 与租约。
         closeOnEscape = spec.closeOnEscape == true,
         onAppearanceReset = function() return surface:ResetLayout(true) end,
         onClose = function(_, reason)
@@ -433,10 +426,7 @@ function F:Create(spec)
             return true
         end,
         onClosed = function(_, reason)
-            -- The native chrome already hid the window before this runs. Keep
-            -- the Surface's own logical visibility in step with the native
-            -- window, otherwise `ResetLayout`/responsive reflow would believe
-            -- a closed window is still on screen.
+            -- 原生外框在此之前已隐藏；Surface 逻辑可见性须同步，避免 ResetLayout/响应重排误认为关闭窗口仍在屏幕。
             surface.visible = false
             F.metrics.closedCallbacks = (tonumber(F.metrics.closedCallbacks) or 0) + 1
             if type(spec.onClosed) == "function" then return spec.onClosed(surface, tostring(reason or "close")) end
@@ -497,7 +487,7 @@ function F:Create(spec)
                 if type(S.Layout.StorePlacementRect) == "function" then
                     S.Layout:StorePlacementRect(target, placementX, placementY, placementW, placementH, { mode = tostring(spec.boundaryMode or "free") })
                 elseif type(S.Layout.StorePlacement) == "function" then
-                    -- Compatibility only for a partially-upgraded development tree; release toc always loads StorePlacementRect.
+                    -- 仅兼容部分升级的开发树；发布 toc 始终加载 StorePlacementRect。
                     S.Layout:StorePlacement(target, surface.shell.window, { mode = tostring(spec.boundaryMode or "free") })
                 end
                 target.userMoved = true
@@ -540,10 +530,7 @@ function F:Create(spec)
     end
 
     function surface:GetState() return CurrentState() end
-    -- Floating feature content is RSUI presentation, not raw Native UI. Return
-    -- the logical shell body so all descendants participate in the shared
-    -- Measure/Arrange/Release tree. Keep an explicit Native accessor only for
-    -- rare adapter-level use that genuinely needs the engine widget.
+    -- 悬浮功能内容属于 RSUI 表现，返回逻辑 Shell body，让后代参与共享 Measure/Arrange/Release；显式 Native 访问器仅用于确需引擎控件的适配器。
     function surface:GetContentRoot()
         if type(self.shell.GetContentComponent) == "function" then return self.shell:GetContentComponent() end
         return self.shell:GetContentRoot()
@@ -763,9 +750,7 @@ function F:Create(spec)
         return true
     end
 
-    -- Public close entry. Goes through the WindowShell close contract so the
-    -- X button and any programmatic close share one chain:
-    --   shell:Close -> onClose (veto only when opted in) -> hide -> onClosed.
+    -- 公开关闭经 WindowShell 契约，与 X 按钮共用 shell:Close -> onClose（仅选择启用时可否决）-> hide -> onClosed。
     function surface:Close(reason)
         F.metrics.closeRequests = (tonumber(F.metrics.closeRequests) or 0) + 1
         local closed, closeErr = self.shell:Close(tostring(reason or "close"))
@@ -774,9 +759,7 @@ function F:Create(spec)
                 F.metrics.closeVetoes = (tonumber(F.metrics.closeVetoes) or 0) + 1
                 return false, closeErr or "floating window close vetoed"
             end
-            -- fail-open: a veto-less window must never become undismissable
-            -- because a business callback failed. Force the visual close and
-            -- still run the closed cleanup chain.
+            -- 无否决窗口默认允许关闭；业务回调失败不能阻止关闭，强制视觉隐藏并继续关闭清理链。
             self.visible = false
             self.shell:Show(false)
             if type(spec.onClosed) == "function" then

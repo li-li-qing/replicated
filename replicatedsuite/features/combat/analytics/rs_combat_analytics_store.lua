@@ -1,5 +1,8 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Analytics Store
+-- Replicated Suite · 战斗分析设置存储
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 永久指标偏好与统一采集范围；个人战绩归独立 Character Store，实时排行仍为会话数据。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end

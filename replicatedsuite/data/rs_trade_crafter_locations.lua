@@ -1,12 +1,11 @@
------------------------------------------------------------------------
--- Replicated Suite - Specialty workbench locations
--- Source: user-provided packratio PackCrafterLocations.txt reference.
+------------------------------------------------------------------------
+-- Replicated Suite · 特产制作台位置
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- This is trigger metadata only. It is NOT used to infer recipes, prices,
--- inventory identity, or server route validity. Trade/recipe Authority stays
--- with X2Store/X2Craft. Coordinates are consulted only after an interaction
--- event, so there is no permanent proximity polling loop.
------------------------------------------------------------------------
+-- 来源：用户提供的 packratio PackCrafterLocations.txt。本表仅为交互触发元数据，不能推断配方、价格、背包身份或服务器路线有效性；贸易/配方权威仍归 X2Store/X2Craft。
+-- 坐标只在交互事件后读取，不建立常驻距离轮询。
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}

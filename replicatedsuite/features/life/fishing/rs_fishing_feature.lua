@@ -1,13 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - life_fishing Feature Authority
+-- Replicated Suite · 钓鱼助手功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 2 Step 2（2026-09-28，§24.1 固定顺序第二步）：从 features/life/rs_life_m16_bundle.lua
--- 机械搬迁。只改变源码边界，不改业务行为：Feature ID、Store ID/Schema（v3.life.fishing）、
--- UpdateTopic、Demand owner、Commands、Projection shape、ApiDependencies、
--- 拆分时 Patch=fishing-auto-r-transaction-1 与 Auto-R 事务/恢复契约全部逐字一致。
---
--- §24.3 红线：Fishing Auto-R 的 hotkey transaction/recovery 契约冻结；
--- 共享装配 helper 来自 features/life/shared/rs_life_slice_factory.lua（toc.g 已保证先加载）。
+-- 独立源码单元保留Feature ID、v3.life.fishing Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection与ApiDependencies契约。
+-- Auto-R热键事务和恢复契约必须保持；共享装配来自features/life/shared/rs_life_slice_factory.lua，由toc.g保证先加载。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -21,38 +18,36 @@ local Number, Text = LF.Number, LF.Text
 local InstallLifeWidgetContract, PublishFeatureUpdate = LF.InstallLifeWidgetContract, LF.PublishFeatureUpdate
 local RegisterStore, LoadStore = LF.RegisterStore, LF.LoadStore
 
-------------------------------------------------------------------------
--- Fishing (Demand-scoped observation + reversible Auto-R hotkey transaction)
-------------------------------------------------------------------------
-local Fishing = { Id = "life_fishing", storeId = "v3.life.fishing", enabled = false, storeLoaded = false, autoArmed = false, autoLeaseHeld = false, recoveryNativeRestored = false } -- 中文维护：Fishing Feature 继续拥有业务生命周期；Auto-R 会话状态只在本模块存活，持久恢复证据进入 v3.life.fishing Store。
-S.Features.Fishing = Fishing -- 中文维护：保持现有 FeatureRuntime/Presentation Authority 名称，用户升级无需迁移导航或 Consumer token。
-Fishing.Patch = "fishing-auto-r-target-recheck-1" -- 中文维护（2026-10-07）：诊断区分多鱼切换同槽复核与旧版缓存直接跳过；持久恢复/战斗保护契约不变。
-Fishing.UpdateTopic = "v3.life.fishing.updated" -- 中文维护：页面与悬浮窗继续消费同一更新主题；识别/改键不能创建第二套 UI 状态源。
-Fishing.ObservationContractVersion = 2 -- 中文维护：v2 表示 TARGET/BUFF 事件 + 100ms Demand-scoped 兜底扫描；避免 RU 漏 BUFF_UPDATE 时长期不刷新。
-Fishing.HotkeyContractVersion = 3 -- 中文维护：v3 表示恢复旧版已验证的完整 R 快照/恢复事务，并要求持久化 durability barrier + Native readback。
-Fishing.HotkeyRuntimeBlocked = false -- 中文维护：旧版实机实现和当前 Capability 面已补足缺失证据；若运行时能力/存档不可用仍由事务 fail-closed，不再全局硬禁用。
-Fishing.State = { autoPreference = false, widgetVisible = false, widgetWindow = nil, recovery = nil } -- 中文维护：recovery 是唯一持久恢复 Authority；模块关闭仍保留直到原按键已确认恢复。
+-- 钓鱼：Demand 范围观察与可回滚 Auto-R 热键事务。
+local Fishing = { Id = "life_fishing", storeId = "v3.life.fishing", enabled = false, storeLoaded = false, autoArmed = false, autoLeaseHeld = false, recoveryNativeRestored = false } -- Fishing Feature 继续拥有业务生命周期；Auto-R 会话状态只在本模块存活，持久恢复证据进入 v3.life.fishing Store。
+S.Features.Fishing = Fishing -- 保持现有 FeatureRuntime/Presentation Authority 名称，用户升级无需迁移导航或 Consumer token。
+Fishing.Patch = "fishing-auto-r-target-recheck-1" -- 诊断区分多鱼切换同槽复核与旧版缓存直接跳过；持久恢复/战斗保护契约不变。
+Fishing.UpdateTopic = "v3.life.fishing.updated" -- 页面与悬浮窗继续消费同一更新主题；识别/改键不能创建第二套 UI 状态源。
+Fishing.ObservationContractVersion = 2 -- v2 表示 TARGET/BUFF 事件 + 100ms Demand-scoped 兜底扫描；避免 RU 漏 BUFF_UPDATE 时长期不刷新。
+Fishing.HotkeyContractVersion = 3 -- v3 表示恢复旧版已验证的完整 R 快照/恢复事务，并要求持久化 durability barrier + Native readback。
+Fishing.HotkeyRuntimeBlocked = false -- 旧版实机实现和当前 Capability 面已补足缺失证据；若运行时能力/存档不可用仍由事务 fail-closed，不再全局硬禁用。
+Fishing.State = { autoPreference = false, widgetVisible = false, widgetWindow = nil, recovery = nil } -- recovery 是唯一持久恢复 Authority；模块关闭仍保留直到原按键已确认恢复。
 InstallLifeWidgetContract(Fishing, { defaultWidth = 360, defaultHeight = 190, minWidth = 230, minHeight = 110, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
 
-local FishingHotkey = S.Services and S.Services.FishingHotkeyV3 or nil -- 中文维护：Feature 只编排事务，不直接复制 Native Hotkey 细节；服务缺失时观察仍可用、Auto-R fail-closed。
-local FISH_NORMAL_MAP = { [5264] = { slot = 4, text = "向左拉" }, [5265] = { slot = 3, text = "向右拉" }, [5267] = { slot = 5, text = "放线" }, [5266] = { slot = 6, text = "收线" }, [5508] = { slot = 7, text = "提竿" } } -- 中文维护：来源为用户提供的可用旧版 + GitHub FishBuddy/Nuzi 同组 Buff；只迁移行为语义，不搬旧生命周期。
-local FISH_MIRAGE_MAP = { [5264] = { slot = 3, text = "向左拉" }, [5265] = { slot = 2, text = "向右拉" }, [5267] = { slot = 4, text = "放线" }, [5266] = { slot = 5, text = "收线" }, [5508] = { slot = 6, text = "提竿" } } -- 中文维护：ZoneGroup 49 使用旧版已验证的幻想岛槽位偏移；不能把普通区域映射硬套过去。
-local FISHING_POLL_TASK = "v3_life_fishing_poll" -- 中文维护：100ms 兜底仅在 Consumer>0 运行；隐藏/关闭后必须释放，避免生活模块常驻扫描 Buff。
-local FISHING_EVENT_TASK = "v3_life_fishing_event_refresh" -- 中文维护：BUFF_UPDATE 可爆发，事件边沿合并为单次 50ms 扫描，和周期兜底共享同一 Authority。
-local FISHING_AUTO_CONSUMER = "auto:r" -- 中文维护：Auto-R 自身就是独立 Demand consumer；关闭主菜单不能终止已明确启用的自动钓鱼，Disarm 后必须释放。
-local FISHING_RECOVERY_TASK = "v3_life_fishing_recovery" -- 中文维护：仅“战斗中等待恢复/恢复记录清理失败”时存在；不扫描 Buff，只保障用户键位最终恢复。
-local FISHING_POLL_MS = 100 -- 中文维护：自动 R 需要比旧 500ms 更及时；任务严格 Demand-scoped，成本边界是最多每秒 10 次目标 Buff 扫描。
-local FISHING_RECOVERY_MS = 250 -- 中文维护：恢复任务只检查战斗状态/重试事务，无需高频；250ms 兼顾脱战恢复体验与开销。
+local FishingHotkey = S.Services and S.Services.FishingHotkeyV3 or nil -- Feature 只编排事务，不直接复制 Native Hotkey 细节；服务缺失时观察仍可用、Auto-R fail-closed。
+local FISH_NORMAL_MAP = { [5264] = { slot = 4, text = "向左拉" }, [5265] = { slot = 3, text = "向右拉" }, [5267] = { slot = 5, text = "放线" }, [5266] = { slot = 6, text = "收线" }, [5508] = { slot = 7, text = "提竿" } } -- 来源为用户提供的可用旧版 + GitHub FishBuddy/Nuzi 同组 Buff；只迁移行为语义，不搬旧生命周期。
+local FISH_MIRAGE_MAP = { [5264] = { slot = 3, text = "向左拉" }, [5265] = { slot = 2, text = "向右拉" }, [5267] = { slot = 4, text = "放线" }, [5266] = { slot = 5, text = "收线" }, [5508] = { slot = 6, text = "提竿" } } -- ZoneGroup 49 使用旧版已验证的幻想岛槽位偏移；不能把普通区域映射硬套过去。
+local FISHING_POLL_TASK = "v3_life_fishing_poll" -- 100ms 兜底仅在 Consumer>0 运行；隐藏/关闭后必须释放，避免生活模块常驻扫描 Buff。
+local FISHING_EVENT_TASK = "v3_life_fishing_event_refresh" -- BUFF_UPDATE 可爆发，事件边沿合并为单次 50ms 扫描，和周期兜底共享同一 Authority。
+local FISHING_AUTO_CONSUMER = "auto:r" -- Auto-R 自身就是独立 Demand consumer；关闭主菜单不能终止已明确启用的自动钓鱼，Disarm 后必须释放。
+local FISHING_RECOVERY_TASK = "v3_life_fishing_recovery" -- 仅“战斗中等待恢复/恢复记录清理失败”时存在；不扫描 Buff，只保障用户键位最终恢复。
+local FISHING_POLL_MS = 100 -- 自动 R 需要比旧 500ms 更及时；任务严格 Demand-scoped，成本边界是最多每秒 10 次目标 Buff 扫描。
+local FISHING_RECOVERY_MS = 250 -- 恢复任务只检查战斗状态/重试事务，无需高频；250ms 兼顾脱战恢复体验与开销。
 
 Fishing.Authority = {
     version = 2, revision = 0, status = "idle", message = "尚未观察目标鱼动作",
     buffId = nil, slot = nil, zoneGroup = nil, autoArmed = false, autoAvailable = false, autoBlockedReason = nil,
     lastScanCount = 0, lastObservedIds = {}, lastRefreshAt = 0, lastRefreshReason = "init",
     polls = 0, nativeEventRefreshes = 0, writeFailures = 0, lastWriteError = nil,
-} -- 中文维护：诊断保留“事件/兜底/动作/写失败”边界，后续 RU 报告可以直接区分没事件、ID 不对还是 Hotkey 事务失败。
+} -- 诊断保留“事件/兜底/动作/写失败”边界，后续 RU 报告可以直接区分没事件、ID 不对还是 Hotkey 事务失败。
 local FA = Fishing.Authority
 local FISHING_DISPLAY_FIELDS={"status","message","buffId","slot","zoneGroup","autoArmed","autoAvailable","autoBlockedReason","lastWriteError"}
--- 中文维护：实时扫描/Hotkey事务仍每次执行；只有展示状态不变的100ms兜底才合并通知，诊断计数照常更新。
+-- 实时扫描/Hotkey事务仍每次执行；只有展示状态不变的100ms兜底才合并通知，诊断计数照常更新。
 local function PublishFishingObservation(reason)
     local old=FA.lastDisplayState
     local same=type(old)=="table" and old.recoveryPending==Fishing:IsRecoveryPending()
@@ -65,7 +60,7 @@ local function PublishFishingObservation(reason)
     return true
 end
 
-local function NormalizeFishingSnapshot(snapshot) -- 中文维护：恢复快照经过持久化后不信任表形；只接受 v3 所需标量/槽位，防止旧实验记录触发 Native 写入。
+local function NormalizeFishingSnapshot(snapshot) -- 恢复快照经过持久化后不信任表形；只接受 v3 所需标量/槽位，防止旧实验记录触发 Native 写入。
     if type(snapshot) ~= "table" or (tonumber(snapshot.contractVersion) or 0) < 3 then return nil end
     local sourceSlot = Number(snapshot.sourceSlot)
     if sourceSlot == nil then return nil end
@@ -89,18 +84,18 @@ local function NormalizeFishingSnapshot(snapshot) -- 中文维护：恢复快照
     return out
 end
 
-local function NormalizeFishingRecovery(recovery) -- 中文维护：只把 pending=true + contractVersion>=3 视为可执行恢复权威；旧版/损坏形状保留给诊断但绝不自动写键。
+local function NormalizeFishingRecovery(recovery) -- 只把 pending=true + contractVersion>=3 视为可执行恢复权威；旧版/损坏形状保留给诊断但绝不自动写键。
     if type(recovery) ~= "table" then return nil end
     local snapshot = NormalizeFishingSnapshot(recovery.snapshot)
     if recovery.pending ~= true or snapshot == nil then return Copy(recovery) end
     return { pending = true, snapshot = snapshot }
 end
 
-local function HasValidFishingRecovery(value) -- 中文维护：所有自动恢复入口共用一个验证条件，避免 UI/Initialize/Disable 对同一存档形状做不同判断。
+local function HasValidFishingRecovery(value) -- 所有自动恢复入口共用一个验证条件，避免 UI/Initialize/Disable 对同一存档形状做不同判断。
     return type(value) == "table" and value.pending == true and NormalizeFishingSnapshot(value.snapshot) ~= nil
 end
 
-local function CurrentFishingMap() -- 中文维护：ZoneGroup 读取是业务事实；失败时回退普通映射而不阻断动作提示，Zone 49 只有明确读到时才启用特殊偏移。
+local function CurrentFishingMap() -- ZoneGroup 读取是业务事实；失败时回退普通映射而不阻断动作提示，Zone 49 只有明确读到时才启用特殊偏移。
     local zoneId = nil
     if S.Api ~= nil and S.Api:IsCapabilityAllowed("X2Unit:GetCurrentZoneGroup") == true then
         local okZone, value = Call("X2Unit:GetCurrentZoneGroup", UnitApi, "GetCurrentZoneGroup")
@@ -111,7 +106,7 @@ local function CurrentFishingMap() -- 中文维护：ZoneGroup 读取是业务�
     return zoneId == 49 and FISH_MIRAGE_MAP or FISH_NORMAL_MAP
 end
 
-function Fishing:PersistRecoverySnapshot(snapshot, reason) -- 中文维护：每次首次触碰新槽位前走 durable=true；SaveData+readback 未通过就拒绝 Native 改键，不允许“稍后再存”。
+function Fishing:PersistRecoverySnapshot(snapshot, reason) -- 每次首次触碰新槽位前走 durable=true；SaveData+readback 未通过就拒绝 Native 改键，不允许“稍后再存”。
     local normalized = NormalizeFishingSnapshot(snapshot)
     if normalized == nil then return false, "钓鱼恢复快照无效" end
     return P:MutateStore(self.storeId, function()
@@ -121,7 +116,7 @@ function Fishing:PersistRecoverySnapshot(snapshot, reason) -- 中文维护：每
     end, { durable = true, reason = reason or "fishing_hotkey_recovery" })
 end
 
-function Fishing:ClearRecoveryRecord(reason) -- 中文维护：必须在 Native 完整恢复成功之后才清；清理也要求持久读回，防止 Reload 又看到伪清理状态。
+function Fishing:ClearRecoveryRecord(reason) -- 必须在 Native 完整恢复成功之后才清；清理也要求持久读回，防止 Reload 又看到伪清理状态。
     return P:MutateStore(self.storeId, function()
         self.State.recovery = nil
         self.State.autoPreference = false
@@ -129,12 +124,12 @@ function Fishing:ClearRecoveryRecord(reason) -- 中文维护：必须在 Native 
     end, { durable = true, reason = reason or "fishing_hotkey_recovery_clear" })
 end
 
-function Fishing:RefreshAutoAvailability() -- 中文维护：按钮可用性来自当前 Capability/战斗/恢复状态，不把失败藏在 onClick；观察功能即使 Auto-R 不可用仍保持工作。
+function Fishing:RefreshAutoAvailability() -- 按钮可用性来自当前 Capability/战斗/恢复状态，不把失败藏在 onClick；观察功能即使 Auto-R 不可用仍保持工作。
     local supported, supportErr = false, "FishingHotkeyV3 服务不可用"
     if type(FishingHotkey) == "table" and type(FishingHotkey.IsSupported) == "function" then supported, supportErr = FishingHotkey:IsSupported() end
     local invalidRecovery = type(self.State.recovery) == "table" and not HasValidFishingRecovery(self.State.recovery)
-    -- 中文维护：Lua 的 `a and b or true` 会在 b=false 时重新落到 true；此前因此把“未战斗”也判成战斗中，Auto-R UI 永远不可用。
-    -- Authority：战斗状态只由 FishingHotkeyV3 的 capability-gated PlayerInCombat 读取；服务缺失时才 fail-closed 为 true。
+    -- Lua 的 `a and b or true` 会在 b=false 时重新落到 true；此前因此把“未战斗”也判成战斗中，Auto-R UI 永远不可用。
+    -- 权威边界：战斗状态只由 FishingHotkeyV3 的 capability-gated PlayerInCombat 读取；服务缺失时才 fail-closed 为 true。
     local inCombat = true
     if type(FishingHotkey) == "table" and type(FishingHotkey.InCombat) == "function" then
         inCombat = FishingHotkey:InCombat() == true
@@ -149,17 +144,17 @@ function Fishing:RefreshAutoAvailability() -- 中文维护：按钮可用性来�
     return FA.autoAvailable
 end
 
-function Fishing:IsRecoveryPending() -- 中文维护：持久 Store 和服务内存任一仍有恢复义务，都视为 pending；UI 关闭不能抹掉这个安全状态。
+function Fishing:IsRecoveryPending() -- 持久 Store 和服务内存任一仍有恢复义务，都视为 pending；UI 关闭不能抹掉这个安全状态。
     if self.recoveryNativeRestored == true then return true end
     if HasValidFishingRecovery(self.State.recovery) then return true end
     return type(FishingHotkey) == "table" and type(FishingHotkey.IsRecoveryPending) == "function" and FishingHotkey:IsRecoveryPending() == true or false
 end
 
-function Fishing:CancelRecoveryTask() -- 中文维护：恢复完成后主动释放低频安全任务；不会让生活功能关闭后留下永久 Scheduler 消费者。
+function Fishing:CancelRecoveryTask() -- 恢复完成后主动释放低频安全任务；不会让生活功能关闭后留下永久 Scheduler 消费者。
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(FISHING_RECOVERY_TASK) end
 end
 
-function Fishing:EnsureRecoveryTask() -- 中文维护：仅在确有恢复义务时创建；即使 Feature 被关闭也允许此安全任务继续，直到用户原键位恢复。
+function Fishing:EnsureRecoveryTask() -- 仅在确有恢复义务时创建；即使 Feature 被关闭也允许此安全任务继续，直到用户原键位恢复。
     if self:IsRecoveryPending() ~= true then self:CancelRecoveryTask(); return true end
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return false, "钓鱼按键恢复 Scheduler 不可用" end
     if S.Scheduler.tasks and S.Scheduler.tasks[FISHING_RECOVERY_TASK] ~= nil then return true end
@@ -173,7 +168,7 @@ function Fishing:EnsureRecoveryTask() -- 中文维护：仅在确有恢复义务
     return added == true, added == true and nil or "钓鱼按键恢复任务创建失败"
 end
 
-function Fishing:ProcessPendingRecovery(silent, reason) -- 中文维护：Native 恢复与持久 recovery 清理分两段；任一失败都保留 Authority，下一 tick 可重试，不会宣称已恢复。
+function Fishing:ProcessPendingRecovery(silent, reason) -- Native 恢复与持久 recovery 清理分两段；任一失败都保留 Authority，下一 tick 可重试，不会宣称已恢复。
     local recovery = HasValidFishingRecovery(self.State.recovery) and self.State.recovery or nil
     local snapshot = recovery and NormalizeFishingSnapshot(recovery.snapshot) or nil
     if snapshot == nil and type(FishingHotkey) == "table" and type(FishingHotkey.sessionSnapshot) == "table" then snapshot = NormalizeFishingSnapshot(FishingHotkey.sessionSnapshot) end
@@ -230,7 +225,7 @@ function Fishing:ProcessPendingRecovery(silent, reason) -- 中文维护：Native
     return true
 end
 
-function FA:Refresh(reason) -- 中文维护：鱼动作识别是唯一 projection Authority；事件刷新和 100ms 兜底都走这里，防止 UI 与 Auto-R 读取不同 Buff 快照。
+function FA:Refresh(reason) -- 鱼动作识别是唯一 projection Authority；事件刷新和 100ms 兜底都走这里，防止 UI 与 Auto-R 读取不同 Buff 快照。
     reason = tostring(reason or "manual")
     self.buffId, self.slot = nil, nil
     self.lastScanCount, self.lastObservedIds = 0, {}
@@ -285,7 +280,7 @@ function FA:Refresh(reason) -- 中文维护：鱼动作识别是唯一 projectio
             Fishing:ReleaseAutoLease("fishing_auto_write_failure")
             self.status, self.message = "error", "自动 R 设置失败：" .. self.lastWriteError
             Fishing:EnsureRecoveryTask()
-            -- 中文维护：写入失败后不丢恢复快照；非战斗状态立即尝试回滚，战斗状态交给独立恢复任务，绝不继续切换新槽位。
+            -- 写入失败后不丢恢复快照；非战斗状态立即尝试回滚，战斗状态交给独立恢复任务，绝不继续切换新槽位。
             if FishingHotkey:InCombat() ~= true then Fishing:ProcessPendingRecovery(true, "auto_move_failure") end
             Fishing:RefreshAutoAvailability()
             self.revision = self.revision + 1
@@ -298,7 +293,7 @@ function FA:Refresh(reason) -- 中文维护：鱼动作识别是唯一 projectio
     return PublishFishingObservation(reason)
 end
 
-function FA:GetProjection() -- 中文维护：Presentation 只读 detached projection；Hotkey 服务内部快照/真实按键内容永不暴露给 UI。
+function FA:GetProjection() -- Presentation 只读 detached projection；Hotkey 服务内部快照/真实按键内容永不暴露给 UI。
     local hotkeyDiag = type(FishingHotkey) == "table" and type(FishingHotkey.GetDiagnostics) == "function" and FishingHotkey:GetDiagnostics() or nil
     return {
         patch = Fishing.Patch, revision = self.revision, status = self.status, message = self.message, buffId = self.buffId, slot = self.slot, zoneGroup = self.zoneGroup,
@@ -309,14 +304,14 @@ function FA:GetProjection() -- 中文维护：Presentation 只读 detached proje
     }
 end
 
-function Fishing:AcquireAutoLease() -- 中文维护：Auto-R 持有自己的 Demand lease，避免用户关闭主页面后 consumer=0 导致刚启用的 R 映射立即被恢复。
+function Fishing:AcquireAutoLease() -- Auto-R 持有自己的 Demand lease，避免用户关闭主页面后 consumer=0 导致刚启用的 R 映射立即被恢复。
     if self.autoLeaseHeld == true and self.Demand:Has(FISHING_AUTO_CONSUMER) then return true end
     local ok, err = self.Demand:Acquire(FISHING_AUTO_CONSUMER, { autoR = true }, "fishing_auto_r")
     if ok == true then self.autoLeaseHeld = true end
     return ok, err
 end
 
-function Fishing:ReleaseAutoLease(reason) -- 中文维护：先清本地 held 标志再 Release，防止 1→0 reconcile 回调再次进入 Disarm 形成递归；失败时恢复标志供后续清理。
+function Fishing:ReleaseAutoLease(reason) -- 先清本地 held 标志再 Release，防止 1→0 reconcile 回调再次进入 Disarm 形成递归；失败时恢复标志供后续清理。
     if self.autoLeaseHeld ~= true and self.Demand:Has(FISHING_AUTO_CONSUMER) ~= true then return true end
     self.autoLeaseHeld = false
     local ok, err = self.Demand:Release(FISHING_AUTO_CONSUMER, reason or "fishing_auto_r_release")
@@ -324,7 +319,7 @@ function Fishing:ReleaseAutoLease(reason) -- 中文维护：先清本地 held �
     return ok, err
 end
 
-function Fishing:ArmAuto() -- 中文维护：启用流程固定为“能力/战斗检查→找到原 R→全槽快照→durable recovery→进入会话→按当前 Buff 映射”；顺序不可反转。
+function Fishing:ArmAuto() -- 启用流程固定为“能力/战斗检查→找到原 R→全槽快照→durable recovery→进入会话→按当前 Buff 映射”；顺序不可反转。
     if self.autoArmed == true then return true end
     if self.enabled ~= true or (tonumber(self.consumerCount) or 0) <= 0 then return false, "请先打开钓鱼页面或悬浮窗，再启用自动 R" end
     if type(FishingHotkey) ~= "table" then return false, "FishingHotkeyV3 服务不可用" end
@@ -349,7 +344,7 @@ function Fishing:ArmAuto() -- 中文维护：启用流程固定为“能力/战�
     if adopted ~= true then return false, adoptErr end
     local leased, leaseErr = self:AcquireAutoLease()
     if leased ~= true then
-        -- 中文维护：此时尚未执行 Native 写键；若独立 Auto-R Demand 无法建立，撤销内存会话并 durable 清除恢复记录，不能留下“其实没改键”的幽灵 recovery。
+        -- 此时尚未执行 Native 写键；若独立 Auto-R Demand 无法建立，撤销内存会话并 durable 清除恢复记录，不能留下“其实没改键”的幽灵 recovery。
         FishingHotkey:ResetSession()
         self:ClearRecoveryRecord("fishing_auto_lease_rollback")
         return false, leaseErr or "自动 R 生命周期启动失败"
@@ -366,7 +361,7 @@ function Fishing:ArmAuto() -- 中文维护：启用流程固定为“能力/战�
     return true
 end
 
-function Fishing:DisarmAuto(silent) -- 中文维护：关闭时先停止新映射并释放 Auto-R 自有 Demand，再恢复；战斗中只标记 pending，不触碰受限 Hotkey API，脱战由恢复任务处理。
+function Fishing:DisarmAuto(silent) -- 关闭时先停止新映射并释放 Auto-R 自有 Demand，再恢复；战斗中只标记 pending，不触碰受限 Hotkey API，脱战由恢复任务处理。
     self.autoArmed = false
     FA.autoArmed = false
     self:ReleaseAutoLease("fishing_auto_disarm")
@@ -386,9 +381,9 @@ function Fishing:DisarmAuto(silent) -- 中文维护：关闭时先停止新映�
     return self:ProcessPendingRecovery(silent, "disarm")
 end
 
-function Fishing:IsAutoArmed() return self.autoArmed == true end -- 中文维护：Presentation 只查询 Feature 会话状态，不直接读 Hotkey 服务内部字段。
+function Fishing:IsAutoArmed() return self.autoArmed == true end -- Presentation 只查询 Feature 会话状态，不直接读 Hotkey 服务内部字段。
 
-local function NormalizeFishingState(value) -- 中文维护：旧 Store schema 继续兼容；新增 recovery 仍在同一 schema 的可选字段，不删除窗口/用户偏好。
+local function NormalizeFishingState(value) -- 旧 Store schema 继续兼容；新增 recovery 仍在同一 schema 的可选字段，不删除窗口/用户偏好。
     value = type(value) == "table" and value or {}
     return {
         autoPreference = value.autoPreference == true,
@@ -404,9 +399,9 @@ RegisterStore(Fishing.storeId, "v3.life.fishing", function() return NormalizeFis
     Fishing.State.widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil
     Fishing.State.recovery = type(value.recovery) == "table" and Copy(value.recovery) or nil
 end, NormalizeFishingState)
-Fishing.ApiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:GetCurrentZoneGroup", "X2Hotkey:GetOptionBinding", "X2Hotkey:BindingToOption", "X2Hotkey:SetOptionBindingWithIndex", "X2Hotkey:RemoveOptionBinding", "X2Hotkey:SaveHotKey", "X2Player:PlayerInCombat" } -- 中文维护：Registry/诊断必须公开真实依赖，不能再次把 Auto-R 写能力隐藏成“只读功能”。
+Fishing.ApiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:GetCurrentZoneGroup", "X2Hotkey:GetOptionBinding", "X2Hotkey:BindingToOption", "X2Hotkey:SetOptionBindingWithIndex", "X2Hotkey:RemoveOptionBinding", "X2Hotkey:SaveHotKey", "X2Player:PlayerInCombat" } -- Registry/诊断必须公开真实依赖，不能再次把 Auto-R 写能力隐藏成“只读功能”。
 
-function Fishing:Initialize() -- 中文维护：Reload 时先加载 Store，再优先修复未完成 Hotkey 事务；不会因为 autoPreference=true 自动重新改键。
+function Fishing:Initialize() -- Reload 时先加载 Store，再优先修复未完成 Hotkey 事务；不会因为 autoPreference=true 自动重新改键。
     local ok, err = LoadStore(self)
     if ok ~= true then return ok, err end
     self.autoArmed = false
@@ -417,7 +412,7 @@ function Fishing:Initialize() -- 中文维护：Reload 时先加载 Store，再�
         local recovered = self:ProcessPendingRecovery(true, "initialize_reload")
         if recovered ~= true then self:EnsureRecoveryTask() end
     elseif type(self.State.recovery) == "table" then
-        -- 中文维护：历史实验记录不满足 v3 SnapshotContract，绝不自动解释/删除；这是最后一道防止误删真实用户按键的兼容边界。
+        -- 历史实验记录不满足 v3 SnapshotContract，绝不自动解释/删除；这是最后一道防止误删真实用户按键的兼容边界。
         FA.status = "blocked"
         FA.message = "检测到无法验证的旧版自动 R 恢复记录"
         self:RefreshAutoAvailability()
@@ -428,13 +423,13 @@ function Fishing:Initialize() -- 中文维护：Reload 时先加载 Store，再�
     return true
 end
 
-function Fishing:HandleWorldBoundary(reason) -- 中文维护：切地图/进入世界会改变动作栏上下文；先终止 Auto-R 并恢复，再重新观察，禁止携带旧槽位映射跨区域。
+function Fishing:HandleWorldBoundary(reason) -- 切地图/进入世界会改变动作栏上下文；先终止 Auto-R 并恢复，再重新观察，禁止携带旧槽位映射跨区域。
     if self.autoArmed == true or self:IsRecoveryPending() == true then self:DisarmAuto(true) end
     if self.enabled == true and (tonumber(self.consumerCount) or 0) > 0 then return FA:Refresh(reason or "world_boundary") end
     return true
 end
 
-function Fishing:ReconcileDemand(_, before, after) -- 中文维护：观察扫描严格由 Consumer 生命周期驱动；Auto-R 关闭/页面关闭时释放高频读，只有安全恢复任务可短暂独立存在。
+function Fishing:ReconcileDemand(_, before, after) -- 观察扫描严格由 Consumer 生命周期驱动；Auto-R 关闭/页面关闭时释放高频读，只有安全恢复任务可短暂独立存在。
     local beforeCount = tonumber(before and before.count) or 0
     local afterCount = tonumber(after and after.count) or 0
     if beforeCount <= 0 and afterCount > 0 then
@@ -464,7 +459,7 @@ function Fishing:ReconcileDemand(_, before, after) -- 中文维护：观察扫�
         if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(FISHING_POLL_TASK, self.Id, false); S.Scheduler:SetTaskModule(FISHING_EVENT_TASK, self.Id, false) end
         return FA:Refresh("consumer_start")
     elseif beforeCount > 0 and afterCount <= 0 then
-        -- 中文维护：Auto-R 有自己的 lease；正常页面关闭不会走到 0。真正 0-consumer 时仅在仍 armed 的异常路径执行 Disarm，避免 ReleaseAutoLease 的 1→0 转换递归。
+        -- Auto-R 有自己的 lease；正常页面关闭不会走到 0。真正 0-consumer 时仅在仍 armed 的异常路径执行 Disarm，避免 ReleaseAutoLease 的 1→0 转换递归。
         if self.autoArmed == true then self:DisarmAuto(true) end
         if S.Events ~= nil then S.Events:UnsubscribeOwner(self) end
         if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(FISHING_POLL_TASK); S.Scheduler:RemoveTask(FISHING_EVENT_TASK) end
@@ -474,8 +469,8 @@ function Fishing:ReconcileDemand(_, before, after) -- 中文维护：观察扫�
 end
 
 function Fishing:Enable() self.enabled = true; self:RefreshAutoAvailability(); return true end
-function Fishing:Disable(reason) -- 中文维护：Disable 先清 Demand/停止扫描，再恢复 R；若战斗阻止恢复，低频 recovery task 继续到成功，不能因 Feature off 丢失恢复义务。
-    self.autoLeaseHeld = false -- 中文维护：Demand:Clear 会原子删除 Auto-R token；先清本地标志，避免 reconcile 中 Disarm 再尝试 Release 已被 Clear 的 token。
+function Fishing:Disable(reason) -- Disable 先清 Demand/停止扫描，再恢复 R；若战斗阻止恢复，低频 recovery task 继续到成功，不能因 Feature off 丢失恢复义务。
+    self.autoLeaseHeld = false -- Demand:Clear 会原子删除 Auto-R token；先清本地标志，避免 reconcile 中 Disarm 再尝试 Release 已被 Clear 的 token。
     local ok, err = self.Demand:Clear(reason or "fishing_disable")
     if ok ~= true then return false, err end
     if S.Events then S.Events:UnsubscribeOwner(self) end

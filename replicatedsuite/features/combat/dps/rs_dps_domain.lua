@@ -1,15 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - DPS Domain
+-- Replicated Suite · 伤害与治疗统计业务领域
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Pure combat-statistics Domain. CombatEventBus owns native COMBAT_MSG;
--- CombatRelationV3 owns SELF/TEAM/FRIENDLY/OPPONENT facts; this Domain owns
--- per-event PVP/PVE classification, accumulation, replay and projections.
---
--- Hot-path constraints:
---   * no persistence / UI / native roster scan
---   * no Tick / OnUpdate
---   * no full pending scan from the combat callback
---   * display limits never cap accumulation
+-- 纯战斗统计 Domain：CombatEventBus 拥有 Native COMBAT_MSG，CombatRelationV3 拥有 SELF/TEAM/FRIENDLY/OPPONENT 事实；本 Domain 负责逐事件 PVP/PVE 分类、累加、重放和投影。
+-- 热路径禁止持久化、UI、Native 名单扫描、Tick/OnUpdate 和回调内全 pending 扫描；显示上限不能限制累加。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -92,9 +87,7 @@ local function ResetBuckets()
     A.modes = {}
     for _, mode in ipairs(MODES) do EnsureMode(mode) end
     A.unclassified = NewBucket()
-    -- Healing cannot be truthfully assigned to PVP/PVE from a friendly pair
-    -- alone. Keep one shared ledger and merge it into either mode projection.
-    -- This prevents PVP healing from disappearing without double-accumulating.
+    -- 单凭友方治疗两端不能真实分到 PVP/PVE；保留一个共享账本，合并到任一模式投影，保证 PVP 治疗不丢失且不重复累加。
     A.healing = { friendly = NewBucket(), enemy = NewBucket(), unknown = NewBucket() }
 end
 ResetBuckets()
@@ -102,12 +95,8 @@ ResetBuckets()
 local function NormalizeActorName(value)
     local text = string.lower(Trim(value))
     if text == "" then return nil end
-    -- Never collapse two explicit cross-world identities into the same actor.
-    -- UnitIdentityV3 may consider short Name <-> Name@World equivalent for a
-    -- lookup, but it explicitly forbids merging Name@WorldA with Name@WorldB.
-    -- A short transport name therefore remains its own conservative key until a
-    -- future verified stable-id alias layer can move it safely. Accuracy wins
-    -- over cosmetically hiding a possible short/full duplicate.
+    -- 两个明确跨服身份不能合并角色。UnitIdentityV3 查询可将短 Name 与 Name@World 视作等价，但禁止合并 Name@WorldA 和 Name@WorldB。
+    -- 短传输名保持独立保守 key，直至未来有已验证稳定 ID 别名层可安全迁移；宁可保留可能的短/全名重复，也不能牺牲准确性。
     return text
 end
 
@@ -148,10 +137,7 @@ local function TrackActorActivity(actor, at)
         actor.activeMs = math.max(1000, (tonumber(actor.activeMs) or 1000) + math.min(at - lastAt, A.segmentIdleMs))
         actor.lastAt = at
     elseif at < firstAt then
-        -- Replay can commit an older provisional fact after newer confirmed
-        -- rows already exist. Extending only the leading edge is conservative
-        -- and avoids the permanent over-count caused by mutating time before
-        -- classification was final. Mid-window insertion needs no extra span.
+        -- 重放可能在较新已确认行之后提交更早的暂定事实；仅扩展前边界，避免分类前修改时钟造成永久多计。窗口中段插入不增加时长。
         actor.activeMs = math.max(1000, (tonumber(actor.activeMs) or 1000) + math.min(firstAt - at, A.segmentIdleMs))
         actor.firstAt = at
     end
@@ -196,9 +182,7 @@ local function AddDetail(actor, mapField, countField, value, fallback, field, am
     }
 end
 
--- A verified combat skill id is the preferred identity for ability drill-down.
--- Name remains the fallback because basic melee/environmental facts do not carry
--- a real skill id on ArcheRage RU (MELEE_DAMAGE reuses rawAbilityId as amount).
+-- 技能详情优先使用已核实战斗 skill ID；基础近战/环境事实不含真实技能 ID，RU MELEE_DAMAGE 用 rawAbilityId 表示伤害量，故名称仍作回退。
 local function AddAbilityDetail(actor, abilityName, abilityId, field, amount)
     local id = tonumber(abilityId)
     if id ~= nil and id > 0 then id = math.floor(id + 0.5) else id = nil end
@@ -258,21 +242,14 @@ local function ResolveSides(sourceRel, targetRel, category)
     local isHeal = tostring(category or "") == "heal"
 
     if isHeal then
-        -- ArcheRage healing is same-faction evidence. If either endpoint already
-        -- has a side, project the other endpoint onto that same side. This is a
-        -- deliberately heal-only rule; using the same shortcut for damage would
-        -- let an OPPONENT attacking an unrelated NPC manufacture a fake friendly
-        -- target and pollute friendly taken/rankings.
+        -- ArcheRage 治疗是同阵营证据；任一端已有阵营时，另一端归同阵营。此捷径仅限治疗；用于伤害会让 OPPONENT 攻击无关 NPC 时制造虚假友方，污染承伤/排行。
         if sourceSide == nil and targetSide ~= nil then sourceSide = targetSide end
         if targetSide == nil and sourceSide ~= nil then targetSide = sourceSide end
         return sourceSide or SIDES.unknown, targetSide or SIDES.unknown
     end
 
-    -- Damage may infer an opposite side ONLY from a trusted local-team anchor.
-    -- SELF/TEAM are verified by UnitIdentity/TeamRoster. FRIENDLY/OPPONENT are
-    -- inferred combat relations and must not recursively infer a third unit.
-    -- Example: EnemyPlayer(OPPONENT) -> NeutralNpc(UNKNOWN) must remain
-    -- enemy -> unknown, never enemy -> friendly.
+    -- 伤害仅可从可信本地团队锚点推断相反阵营：SELF/TEAM 由 UnitIdentity/TeamRoster 核实，FRIENDLY/OPPONENT 为推断关系，禁止递归推断第三单位。
+    -- EnemyPlayer(OPPONENT)→NeutralNpc(UNKNOWN) 必须保持 enemy→unknown，不能变 enemy→friendly。
     if sourceSide == nil and (targetRel == "SELF" or targetRel == "TEAM") then
         sourceSide = SIDES.enemy
     end
@@ -282,8 +259,7 @@ local function ResolveSides(sourceRel, targetRel, category)
     return sourceSide or SIDES.unknown, targetSide or SIDES.unknown
 end
 
--- Returns mode, reason, provisional. Provisional means the row is displayed now
--- but retained for replay when explicit kind evidence arrives.
+-- 返回 mode、reason、provisional；provisional 行立即展示，同时保留到明确 kind 证据出现后重放。
 local function ResolveEventMode(fact, sourceRel, targetRel, sourceKind, targetKind)
     if fact.environmental == true then return "PVE", "ENVIRONMENT", false end
     local category = tostring(fact.category or "")
@@ -303,17 +279,13 @@ local function ResolveEventMode(fact, sourceRel, targetRel, sourceKind, targetKi
 
     local sourceFriendly, targetFriendly = IsFriendlyRelation(sourceRel), IsFriendlyRelation(targetRel)
     if sourceFriendly ~= targetFriendly then
-        -- Lua's `a and b or c` is not a safe ternary when b can be nil.
-        -- The old form turned SELF -> unknown target into sourceKind=PLAYER and
-        -- misclassified the first NPC hit as PVP. Keep the endpoint explicit.
+        -- b 可能为 nil 时，Lua a and b or c 不是安全三元式；必须明确使用目标端点，避免 SELF→未知目标回退 sourceKind=PLAYER，把首次 NPC 命中误判 PVP。
         local otherKind = nil
         if sourceFriendly then otherKind = targetKind else otherKind = sourceKind end
         if IsKnownNonPlayer(otherKind) then return "PVE", "RELATION_ANCHORED_NONPLAYER", false end
         if otherKind == "PLAYER" then return "PVP", "RELATION_ANCHORED_PLAYER", false end
 
-        -- Preserve the legacy immediate PVE experience for SELF/TEAM outgoing
-        -- hits, but keep the row replayable. Incoming unknown-kind traffic is not
-        -- guessed because NPC and player attackers are both common.
+        -- SELF/TEAM 输出命中保持立即暂定 PVE 体验且可重放；未知 kind 的承伤来源可能为 NPC 或玩家，禁止猜测。
         if (sourceRel == "SELF" or sourceRel == "TEAM") and targetKind == nil then
             return "PVE", "SELF_TEAM_OUTGOING_PROVISIONAL_PVE", true
         end
@@ -518,8 +490,7 @@ local function RefreshRowEvidence(row)
     return true
 end
 
--- Safe-point replay. The Feature schedules this with the unified Scheduler;
--- never call it from a native COMBAT_MSG stack.
+-- 安全点重放由 Feature 通过统一 Scheduler 调度，禁止在 Native COMBAT_MSG 调用栈执行。
 function A:ReplayPending(reason)
     local replayed, upgraded, reclassified = 0, 0, 0
     local keys = {}
@@ -588,8 +559,7 @@ function A:TouchSegment(at, category, amount)
     return self.segment
 end
 
--- Native combat callback entry. Returns metadata so the Feature can schedule a
--- replay outside the native stack when new kind evidence was learned.
+-- Native 战斗回调入口返回元数据，Feature 获得新 kind 证据时可在 Native 调用栈外安排重放。
 function A:OnCombatFact(fact)
     if F.enabled ~= true or type(fact) ~= "table" then return false end
     local category = tostring(fact.category or "")
@@ -605,11 +575,7 @@ function A:OnCombatFact(fact)
     local proxySpec = category == "heal" and type(proxyCatalog) == "table" and type(proxyCatalog.ResolveSource) == "function"
         and proxyCatalog:ResolveSource(sourceName, category) or nil
     if proxySpec ~= nil then
-        -- A placed skill object is not an Actor. The current RU API contract has
-        -- no reliable generic owner link, so accuracy wins over assigning this
-        -- heal to a guessed/latest caster. Keep the amount visible as explicitly
-        -- unattributed skill-proxy healing and do not teach CombatRelation about
-        -- the proxy entity.
+        -- 放置技能对象不是角色；当前 RU API 无可靠通用所有者关联，禁止把治疗归给猜测/最近施法者。以明确未归属的技能代理治疗保留数值，不给 CombatRelation 注入代理实体关系。
         self.events = self.events + 1
         self.healEvents = self.healEvents + 1
         self.classified.HEAL = (tonumber(self.classified.HEAL) or 0) + 1
@@ -670,12 +636,10 @@ function A:OnCombatFact(fact)
     local mode, modeReason, provisional = ResolveEventMode(fact, sourceRel, targetRel, sourceKind, targetKind)
     local row = {
         eventKey = tostring(fact.sequence or self.events) .. ":" .. tostring(at) .. ":" .. tostring(sourceKey or targetKey or "?"),
-        -- CombatFact is borrowed+immutable. Never retain it beyond this callback.
-        -- Copy only replay/detail fields owned by the DPS Domain.
+        -- CombatFact 为借用且不可变；禁止回调结束后持有，只复制 DPS Domain 拥有的重放/详情字段。
         environmental = fact.environmental == true,
         abilityName = Trim(fact.abilityName),
-        -- On RU, MELEE_DAMAGE stores the damage amount in rawAbilityId. Only
-        -- spell/heal facts may promote that field to a real skill identity.
+        -- RU MELEE_DAMAGE 的 rawAbilityId 表示伤害量；仅 spell/heal 事实可将它提升为真实技能身份。
         abilityId = ((tostring(fact.kind or "") == "spell_damage" or tostring(fact.kind or "") == "heal")
             and tonumber(fact.rawAbilityId) ~= nil and tonumber(fact.rawAbilityId) > 0)
             and math.floor(tonumber(fact.rawAbilityId) + 0.5) or nil,
@@ -726,9 +690,7 @@ function A:ClearStats(reason)
 end
 
 function A:ResetTransient(reason)
-    -- Runtime stop releases only replay/segment state. Session statistics remain
-    -- visible until the user explicitly presses Clear; Enabled and Stats are
-    -- separate authorities. Pending rows already contributed to visible totals.
+    -- 停止运行仅释放 replay/segment 状态；用户显式 Clear 前保留会话统计，Enabled 与 Stats 为独立权威。pending 行已贡献可见总量。
     for key, row in pairs(self.pendingRows) do if row ~= nil then row.pending = false end; self.pendingRows[key] = nil end
     self.pendingOrder, self.pendingHead, self.pendingCount = {}, 1, 0
     self:CloseSegment(self.lastEventAt > 0 and self.lastEventAt or NowMs(), reason or "transient_reset")

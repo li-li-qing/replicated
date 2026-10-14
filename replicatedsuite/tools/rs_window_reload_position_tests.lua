@@ -1,6 +1,11 @@
--- 2026-09-30 UI position reload regression. Development only; never in toc.g.
--- Execute the real Layout/Windowing/Shell/Surface. Native reset timing, root units,
--- disk round trips and rejected native writes are fault models, not RU certification.
+------------------------------------------------------------------------
+-- Replicated Suite · 窗口重载位置测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 窗口位置重载回归仅供开发使用，不进入 toc.g；执行真实 Layout、Windowing、Shell 和 Surface。
+-- 原生重置时序、根单位、磁盘往返及原生拒写为故障模型，不能视为 RU 认证。
+------------------------------------------------------------------------
 local Boot = dofile('tools/rs_window_viewport_test_host.lua')
 local passed, failed = 0, 0
 local function Eq(a,b,label)
@@ -105,7 +110,7 @@ Test('full-size and compact windows recover independently without changing their
     h:Fire('UI_RELOADED');Eq(a.window.x,300);Eq(a.window.w,420);Eq(b.window.x,900);Eq(b.window.w,bw);Eq(b.window.h,bh)
 end)
 
--- Fixture adapters only; production placement functions are never reimplemented here.
+-- 仅提供测试适配器，不能重新实现生产位置函数。
 local function Launcher(h)
     local S=h.S;S.UIV3={LauncherState=State(h,300,100,30,30)};local stores={}
     S.Persistence={Scope={Account='account'},Lifetime={Permanent='permanent'},V3KeyPrefix='v3.',
@@ -162,7 +167,7 @@ end)
 Test('real DiffRenderer lease cache invalidation and root string anchors remain compatible',function()
     local h=Boot();h:Viewport(1280,960,.8,1024,768);h.effective=.8
     local s=Surface(h,State(h,300,200));local UI=h.S.UI;local W=h.S.RSUI.Windowing
-    -- Keep native control creation fixture, load REAL DiffRenderer + lease functions.
+    -- 保留原生控件构建替身，加载真实 DiffRenderer 和需求租约函数。
     dofile('ui/rs_ui_framework.lua')
     assert(W:ApplyGeometry(s.window,'viewport_test',300,200,420,286,true));Start(h);Drift(s)
     h:Fire('UI_RELOADED');Eq(s.window.x,300);Eq(s.window.y,200)
@@ -211,7 +216,7 @@ Test('an externally completed retry re-primes the mirror instead of restoring th
     local native=h.S.UI.EnsureAnchor;local attempts=0
     h.S.UI.EnsureAnchor=function(self,...)attempts=attempts+1;if attempts==1 then return false,false,'one transient rejection' end;return native(self,...)end
     h:Fire('UI_RELOADED');h.S.UI.EnsureAnchor=native
-    -- Native's delayed restore completes independently before our next settle.
+    -- 原生延迟恢复在下一次稳定布局前独立完成。
     s.window.x=300;s.window.y=200;Drain(h)
     Eq(s.window.x,300);Eq(s.window.y,200);Eq(h.S.UI.NativeStateCache[s.window].anchorX,300);Eq(h.writes,0)
 end)

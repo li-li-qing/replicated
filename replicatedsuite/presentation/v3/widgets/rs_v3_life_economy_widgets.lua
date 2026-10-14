@@ -1,13 +1,12 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 3 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Life Economy Floating Widgets
+-- Replicated Suite · 生活经济悬浮组件
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Trade/Bonds/Treasure/Fishing are independent FloatingSurface consumers.  The page may be
--- closed while the HUD remains live; closing the HUD releases only its own
--- Demand token.  No polling/tick is owned by Presentation.
+-- 合并约束：先检查冲突标记、toc.g 加载清单完整性与 Lua 语法，再做运行时验收。
+-- 权威归属、调用链和存档协议由实现负责，不能通过清配置、跳过加载或恢复 Legacy 绕过错误。
+-- Trade/Bonds/Treasure/Fishing 是独立 FloatingSurface Consumer；页面关闭后 HUD 可继续运行，关闭 HUD 仅释放自身 Demand token；
+-- 表现层不持有轮询/Tick。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -35,7 +34,7 @@ local function FindZoneName(projection, id)
     return tostring(id)
 end
 
--- 中文维护注释（2026-09-24，债券悬浮窗筛选下拉）：与主页面共享同一业务 value 语义，
+-- 约束（2026-09-24，债券悬浮窗筛选下拉）：与主页面共享同一业务 value 语义，
 -- 但 Presentation 实例各自拥有 Native Dropdown；Feature/Store 是唯一状态 Authority，不 Reparent 控件。
 local BOND_ORDER_ITEMS = {
     { value = "continent:west_first", text = "按大陆 · 西→东" },
@@ -67,7 +66,7 @@ local BOND_DUPLICATE_ITEMS = {
     { value = "east", text = "重复 · 留东" },
 }
 
--- 中文维护注释（2026-09-24，债券悬浮窗单入口设置菜单）：悬浮窗必须优先给数据表留垂直空间，
+-- 约束（2026-09-24，债券悬浮窗单入口设置菜单）：悬浮窗必须优先给数据表留垂直空间，
 -- 因此不再复制主页面的 3 个常驻 Dropdown。这里只构造一个“设置”菜单，菜单项按“排序/显示范围/重复材料”
 -- 三组组织；Header 由 RSUI Dropdown 原生 selectable=false/kind=header 契约禁用。Feature/Store 仍是唯一 Authority，
 -- 菜单只分派现有 SetDisplayOrder/SetFilterMask/SetDuplicateMode 原子命令，不保存第二份设置状态。
@@ -175,7 +174,7 @@ local function ApplySettingsCommand(instance,Feature,command,...)
 end
 local function BuildTradeSettings(instance,panel,Feature)
     local controls=panel.controls
-    -- 中文维护（performance-cache-1）：本次设置窗刷新共享一个 detached 投影，
+    -- 约束（performance-cache-1）：本次设置窗刷新共享一个 detached 投影，
     -- 下拉框 get 不再反复复制全部路线/材料；动作校验仍由 Feature Commands 实时负责。
     local function Projection()return panel.controlProjection or Feature:GetProjection() or {}end
     local function RouteCommand(command,value)
@@ -193,7 +192,7 @@ local function BuildTradeSettings(instance,panel,Feature)
         get=function()return Projection().viewMode or 'all'end,
         set=function(value)return ApplySettingsCommand(instance,Feature,'SetViewMode',value)end,
         slot={size='fill',fill=1,hAlign='fill'}})
-    -- 中文维护：设置窗迁移时漏掉满货率入口；只切换既有 Authority 模式，本地重算售价/毛利，不发起服务器查询。
+    -- 设置窗迁移时漏掉满货率入口；只切换既有 Authority 模式，本地重算售价/毛利，不发起服务器查询。
     controls.ratioSelector=RSUI:SegmentedSelector({id=panel.prefix..'ratio_mode',parent=SettingsRow(panel,'ratio','售价货率'),
         items={{value='current',text='实时货率'},{value='full',text='满货率 130%'}},itemWidth=96,height=26,gap=3,
         get=function()return Projection().ratioMode or 'current'end,
@@ -215,7 +214,7 @@ local function BuildTradeSettings(instance,panel,Feature)
             return ApplySettingsCommand(instance,Feature,'ToggleTrackedProduct',row.itemType or row.key)
         end})
     panel.refresh=function(projection)
-        panel.controlProjection=projection -- 中文维护：每轮覆盖旧快照，配置窗口不持有第二份业务状态。
+        panel.controlProjection=projection -- 每轮覆盖旧快照，配置窗口不持有第二份业务状态。
         Contents.specs.Trade.refreshControls(controls,projection,projection.rows or {},Feature)
         controls.refreshButton:SetEnabled(projection.isRefreshing~=true and (projection.viewMode=='cargo' or projection.fromZone~=nil and projection.toZone~=nil))
         controls.refreshButton:SetText(projection.isRefreshing and '刷新中' or '刷新货率')
@@ -252,7 +251,7 @@ local function BuildSettingsHeader(instance,parent,Feature,name)
                 local state={} -- 只保留本次会话的窗口几何，不保存第二份业务设置。
                 local prefix=instance.contentPrefix..'settings_'
                 local surface,err=Floating:Create({id=prefix..'window',owner='v3:'..prefix,title=name=='Trade' and '贸易设置' or '债券设置',
-                    persistSessionLock=true, -- 中文维护：会话几何不升级为业务存档；标题小锁由统一 Chrome 偏好永久保存。
+                    persistSessionLock=true, -- 会话几何不升级为业务存档；标题小锁由统一 Chrome 偏好永久保存。
                     movable=true,resizable=false,appearanceControls=false,footer=true,boundaryMode='clamp',defaultPlacement='center',
                     statePolicy={defaultWidth=380,defaultHeight=name=='Trade' and 320 or 210,minWidth=320,minHeight=name=='Trade' and 294 or 190},
                     getState=function()return state end,setState=function(value)state=value;return true end,persist=function()return true end,
@@ -306,7 +305,7 @@ local function BuildBody(instance,parent,spec,Feature)
         -- Refresh 时需要建立的可复用 Native 行池。18.298 为跑商悬浮窗恢复“添加/移除收藏”独立行后，数据区比
         -- 18.297 少约 30px，因此 Trade HUD 行池同步从 7 收到 6，避免为了恢复一个轻量 Button 又把首次 Native
         -- 分配峰值抬回去。ListView 仍通过复用/滚动访问全部数据，Trade Authority/rows 完全不裁剪。
-        -- 中文维护注释（2026-09-24，债券悬浮窗单入口预算）：Bonds 已从两行 3-Dropdown 收敛为一行
+        -- 约束（2026-09-24，债券悬浮窗单入口预算）：Bonds 已从两行 3-Dropdown 收敛为一行
         -- 单“设置”入口，恢复更多表格可见面积。初始 Native 行池使用 9 行，低于通用 10 行以控制悬浮窗首次
         -- 分配峰值，同时明显高于旧两行工具条时期的 7 行；TableView 仍通过滚动/复用访问全部业务 rows。
         local desiredRows = instance.overview and 6 or (spec.featureName == "Trade" and 6 or 10)
@@ -337,7 +336,7 @@ local function BuildBody(instance,parent,spec,Feature)
             end
         end
         if type(spec.onItemActivated) == "function" then
-            -- 中文维护注释（table-activation-contract-1）：RSUI TableView 的真实回调签名为
+            -- 约束（table-activation-contract-1）：RSUI TableView 的真实回调签名为
             -- (item,index,key,view,reason)。旧实现把第一个 item 当成 index，在简化 mock 中能通过、
             -- 实机双击却取不到行。Presentation 直接消费 item；仅在兼容旧测试/调用方时按 index 回退。
             instance.table.onItemActivated = function(item, index, key, view, reason)
@@ -351,10 +350,10 @@ local function BuildBody(instance,parent,spec,Feature)
 end
 local function RefreshBody(self,spec,Feature)
             local projection = Feature:GetProjection() or {}
-            self.controlProjection = projection -- 中文维护：主页面、首页卡片与悬浮窗使用同一轮投影契约。
+            self.controlProjection = projection -- 主页面、首页卡片与悬浮窗使用同一轮投影契约。
             local rows = type(spec.rows) == "function" and spec.rows(projection) or (projection.rows or {})
             rows = type(rows) == "table" and rows or {}
-            self.table:SetItems(rows, projection.revision or 0, spec.featureName == "Trade") -- 中文维护：仅 Trade 行承诺 revision 完整描述数据。
+            self.table:SetItems(rows, projection.revision or 0, spec.featureName == "Trade") -- 仅 Trade 行承诺 revision 完整描述数据。
             -- 维护（2026-09-24，life-widget-control-refresh-isolation-1）：Feature Projection/rows 与顶部交互控件属于
             -- 两个不同的 Presentation 子域。18.297 中任一 Dropdown/按钮同步异常都会从 refreshControls 抛出，导致整个
             -- RefreshBody 中止；即使 Authority 已有正确路线数据，TableView 仍停在默认“暂无数据”，Show() 最终只显示
@@ -381,7 +380,7 @@ local function RefreshBody(self,spec,Feature)
             if projection.status == "unavailable" or projection.status == "error" then
                 self.table:SetViewState("unavailable", { title = spec.title .. "数据不可用", detail = tostring(projection.error or "事实读取失败") })
             elseif spec.featureName == "Trade" and projection.status == "loading" and #rows == 0 then
-                -- 中文维护注释（trade-native-cooldown-1）：货率查询是异步 Native 事件。旧 UI 在 loading 时仍显示“暂无货率”，
+                -- 约束（trade-native-cooldown-1）：货率查询是异步 Native 事件。旧 UI 在 loading 时仍显示“暂无货率”，
                 -- 用户会误以为刷新按钮无效并连续点击，从而更容易撞服务器冷却。只改变 Presentation 文案；请求节流仍由 Trade Authority 所有。
                 self.table:SetViewState("empty", { title = "正在查询货率", detail = "等待服务器返回货率；无需连续点击刷新。" })
             elseif spec.featureName == "Trade" and projection.status == "cooldown" and #rows == 0 then
@@ -723,7 +722,7 @@ local ok, err = Register({
             id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite", parent = favoriteRow, items = {}, maxVisible = 6,
             popupWidth = 230, placeholder = "收藏路线",
             get = function()
-                local projection = instance.controlProjection or Feature:GetProjection() or {} -- 中文维护：收藏控件复用已提交展示快照。
+                local projection = instance.controlProjection or Feature:GetProjection() or {} -- 收藏控件复用已提交展示快照。
                 return projection.currentRouteFavorite and projection.currentFavoriteKey or nil
             end,
             set = function(value)
@@ -762,7 +761,7 @@ local ok, err = Register({
                 { value = "cargo", text = "随身" },
             },
             itemWidth = floatingFavoriteManagement and 32 or 40, gap = 2, height = 26, fontSize = 9,
-            get = function() return (instance.controlProjection or Feature:GetProjection() or {}).viewMode or "all" end, -- 中文维护：模式标量不触发全量投影。
+            get = function() return (instance.controlProjection or Feature:GetProjection() or {}).viewMode or "all" end, -- 模式标量不触发全量投影。
             set = function(value)
                 local ok, commandErr = Feature.Commands:SetViewMode(value)
                 if ok == true then instance:Refresh() end
@@ -782,7 +781,7 @@ local ok, err = Register({
             return ok, trackErr
         end
         if floatingFavoriteManagement then
-            -- 中文维护：悬浮窗直接提供两个货率选项；同一行保留320px客户区预算，单套金额由Feature切换。
+            -- 悬浮窗直接提供两个货率选项；同一行保留320px客户区预算，单套金额由Feature切换。
             instance.ratioSelector=RSUI:SegmentedSelector({id=(instance.contentPrefix or "v3_life_trade_widget_").."ratio_mode",parent=modeRow,
                 items={{value="current",text="实时货率"},{value="full",text="满货率"}},itemWidth=60,gap=2,height=26,fontSize=9,
                 get=function()return (instance.controlProjection or Feature:GetProjection()or {}).ratioMode or "current"end,
@@ -889,7 +888,7 @@ local ok, err = Register({
                 if type(detail) ~= "table" or type(detail.Open) ~= "function" then return false, "货物详情浮窗不可用" end
                 return detail:Open(row.key)
             end },
-        { id = "name", title = "货物", field = "name", size = "fill", minWidth = 108, fill = 1 }, -- 中文维护注释：货物列仍负责吸收剩余宽度，仅略降最小值以支持 320px 紧凑窗口。
+        { id = "name", title = "货物", field = "name", size = "fill", minWidth = 108, fill = 1 }, -- 货物列仍负责吸收剩余宽度，仅略降最小值以支持 320px 紧凑窗口。
         { id = "rate", title = "货率", field = "rate", size = "fixed", width = 54, minWidth = 48, getTone = function(item) return item and item.tone or "muted" end },
         { id = "price", title = "售价", field = "price", size = "fixed", width = 74, minWidth = 60 },
         { id = "profit", title = "毛利", field = "profit", size = "fixed", width = 78, minWidth = 64 },
@@ -958,7 +957,7 @@ ok, err = Register({
             return false, "债券悬浮窗设置菜单命令缺失"
         end
         if instance.headerMode then return BuildSettingsHeader(instance,content,Feature,'Bonds')end
-        -- 中文维护注释（2026-09-24，悬浮窗方案 B）：主页面继续保留 3 个完整 Dropdown；悬浮窗只保留
+        -- 约束（2026-09-24，悬浮窗方案 B）：主页面继续保留 3 个完整 Dropdown；悬浮窗只保留
         -- 一个“设置”Dropdown，内部通过不可选 Header 分组排序/显示范围/重复材料。这样配置能力不减少，
         -- 但常驻高度从约 60px 降到 26px，表格立即获得更多垂直空间。菜单 value 只是 Presentation action token，
         -- 不持久化；实际 mutation 始终交给 Bonds Feature 原子 Command。Dropdown v4 先 Close 再 Set，
@@ -1010,7 +1009,7 @@ ok, err = Register({
         end
     end,
     columns = {
-        -- 中文维护注释（2026-09-15，多大陆来源可见）：大陆列直接显示 Authority row.continent，
+        -- 约束（2026-09-15，多大陆来源可见）：大陆列直接显示 Authority row.continent，
         -- 让同日西/东快照合并后仍可辨认来源。悬浮窗不重新根据文本/材料猜大陆。
         { id = "continent", title = "大陆", field = "continent", size = "fixed", width = 54, minWidth = 48 },
         { id = "text", title = "居民板", field = "text", size = "fill", minWidth = 100, fill = 1 },
@@ -1059,7 +1058,7 @@ ok, err = Register({
         if instance.treasureInteractionHint then
             local errorText = instance.treasureActionError or projection.lastMapActionError
             instance.treasureInteractionHint:SetText(errorText and ("定位未完成：" .. tostring(errorText)) or TreasureMapInteraction.hint)
-            if projection.mapActionPending == true then instance.treasureInteractionHint:SetText("地图定位等待中，冷却结束后自动执行") end -- 中文维护：助手复用同一待执行请求，不另启计时器。
+            if projection.mapActionPending == true then instance.treasureInteractionHint:SetText("地图定位等待中，冷却结束后自动执行") end -- 助手复用同一待执行请求，不另启计时器。
         end
     end,
     rows = function(projection)
@@ -1088,7 +1087,7 @@ ok, err = Register({
     rootId = "v3_life_fishing_widget", contentId = "v3_life_fishing_widget_content", tableId = "v3_life_fishing_widget_table", title = "钓鱼助手",
     emptyTitle = "等待鱼动作", emptyDetail = "选中鱼后会根据已核动作 Buff 给出技能栏建议。",
     buildControls = function(instance, content, Feature)
-        -- 中文维护注释（2026-09-16，Auto-R 悬浮入口）：主页面与 HUD 必须共享 Fishing.Commands 的可逆 Hotkey 事务；
+        -- 约束（2026-09-16，Auto-R 悬浮入口）：主页面与 HUD 必须共享 Fishing.Commands 的可逆 Hotkey 事务；
         -- HUD 不持有 autoArmed 副本、不直接调用 X2Hotkey。ArmAuto 成功后 Auto-R 自有 Demand lease 会继续维持观察，关闭主菜单不影响钓鱼流程。
         if type(Feature.Commands.ArmAuto) ~= "function" or type(Feature.Commands.DisarmAuto) ~= "function" then return false, "钓鱼自动 R 命令缺失" end
         local row = RSUI:HorizontalBox({ id = (instance.contentPrefix or "v3_life_fishing_widget_") .. "auto_row", parent = content, gap = 4, slot = { size = "fixed", height = 28, hAlign = "fill" } })
@@ -1097,7 +1096,7 @@ ok, err = Register({
             local projection = Feature:GetProjection() or {}
             local armed = projection.autoArmed == true
             local actionOk, actionErr
-            -- 中文维护注释（2026-09-16，Lua 条件表达式陷阱）：不能写成 `armed and DisarmAuto() or ArmAuto()`。
+            -- 约束（2026-09-16，Lua 条件表达式陷阱）：不能写成 `armed and DisarmAuto() or ArmAuto()`。
             -- DisarmAuto 合法地返回 false（例如恢复事务暂时失败）时，`or` 会继续执行 ArmAuto，造成一次“关闭”点击反而重新启用。
             -- 用显式分支保证一个点击只提交一个用户意图；失败由原 Hotkey Authority 保留/恢复状态，Presentation 只刷新结果。
             if armed then
@@ -1112,7 +1111,7 @@ ok, err = Register({
     end,
     refreshControls = function(instance, projection)
         if instance.fishingAutoButton then
-            -- 中文维护注释：已 armed 时即使战斗导致 autoAvailable=false 也必须允许点击“关闭自动 R”；Disarm 会按既有事务进入延迟恢复，不能把退出按钮禁掉。
+            -- 已 armed 时即使战斗导致 autoAvailable=false 也必须允许点击“关闭自动 R”；Disarm 会按既有事务进入延迟恢复，不能把退出按钮禁掉。
             local armed = projection.autoArmed == true
             local autoAvailable = projection.autoAvailable == true
             instance.fishingAutoButton:SetText(armed and "关闭自动 R" or (autoAvailable and "启用自动 R" or "自动 R 不可用"))
@@ -1133,7 +1132,7 @@ ok, err = Register({
 if ok ~= true then error(err) end
 
 S.UIV3 = S.UIV3 or {}
--- 中文维护注释（2026-09-24，生活 HUD 契约 v9）：Trade 收藏/控件隔离契约继续保留；Bonds 在不改变
+-- 约束（2026-09-24，生活 HUD 契约 v9）：Trade 收藏/控件隔离契约继续保留；Bonds 在不改变
 -- Authority/Store 的前提下把悬浮窗 3 个常驻 Dropdown 收敛为单“设置”菜单，主页面仍保留完整配置。
 -- 子契约用于 Acceptance/静态回归阻断局部覆盖导致的新 Gate + 旧 Widget 混载，并防止后续再次把悬浮窗配置区膨胀成主页面。
 S.UIV3.LifeEconomyWidgetsV3 = { version = 9, tradeFloatingFavoriteContractVersion = 1, tradeControlRefreshIsolationContractVersion = 1, bondsMaterialColumnContractVersion = 3, bondsMultiContinentContractVersion = 3, bondsDropdownControlsContractVersion = 3, bondsFloatingSettingsMenuContractVersion = 1, bondsResidentBoardFamilyContractVersion = 1, treasureMapLocationContractVersion = 2, fishingFloatingAutoRContractVersion = 1, widgetIds = { "life.trade", "life.bonds", "life.treasure", "life.fishing" } }

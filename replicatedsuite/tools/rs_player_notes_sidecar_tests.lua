@@ -1,4 +1,10 @@
--- 中文维护：真实EventBus/Feature/Store/WidgetHost/RSUI；仅Native绘制与游戏好友名单响应为边界模型。
+------------------------------------------------------------------------
+-- Replicated Suite · 人员备注伴随浮窗测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 真实EventBus/Feature/Store/WidgetHost/RSUI；仅Native绘制与游戏好友名单响应为边界模型。
+------------------------------------------------------------------------
 local Base=dofile('tools/rs_gear_page_test_host.lua')
 local passed=0
 local function Boot(options)
@@ -7,7 +13,7 @@ local function Boot(options)
     h.friendReads=0;h.friendRequests=0;h.eventReject=options.eventReject
     S.Events.host={RegisterEvent=function(_,name)h.registeredEvent=name;return not h.eventReject end,UnregisterEvent=function()return true end}
     S.Events.running=true
-    -- 中文维护：全局 UI 事件与窗口 RegisterEvent 是独立传输，参考插件团队开关使用前者；只模拟 Native 注册/释放。
+    -- 全局 UI 事件与窗口 RegisterEvent 是独立传输，参考插件团队开关使用前者；只模拟 Native 注册/释放。
     UIParent=nil;h.globalHandlers={};h.globalRegistrations=0;h.globalReleases=0
     if options.globalEvents then
         UIParent={SetEventHandler=function(_,name,fn)h.globalRegistrations=h.globalRegistrations+1;h.globalHandlers[name]=h.globalHandlers[name]or {};table.insert(h.globalHandlers[name],fn);return true end,
@@ -40,7 +46,7 @@ local function Boot(options)
         function shell:GetPlacementDiagnostics()return {}end
         for _,key in ipairs({'SetOverallOpacity','SetBackgroundOpacity','SetTextOpacity','SetFontScale','SetMinimized'})do shell[key]=function()return true end end
         function shell:Close(reason)self:Show(false);return spec.onClosed(self,reason)end
-        -- 中文维护：这里只替代原生 Escape/OnHide 边界；真实 Shell 的单次通知和重复显隐由独立 Shell 回归覆盖。
+        -- 这里只替代原生 Escape/OnHide 边界；真实 Shell 的单次通知和重复显隐由独立 Shell 回归覆盖。
         function shell:NativeEscapeClose()
             assert(self.closeOnEscape,'notes did not opt into the native Escape policy')
             self:Show(false);return spec.onClosed(self,'native_hide')
@@ -52,7 +58,7 @@ local function Boot(options)
     dofile('features/tools/social/rs_player_notes_feature.lua')
     if options.diagnostics then dofile('features/rs_feature_registry.lua');dofile('core/rs_module_diagnostics.lua')end
     dofile('presentation/v3/widgets/rs_v3_player_notes_sidecar.lua')
-    -- 中文维护：常规窗口回归关闭临时调用审计，独立用例验证原始 Native 调用参数与审计预算。
+    -- 常规窗口回归关闭临时调用审计，独立用例验证原始 Native 调用参数与审计预算。
     S.Services.PlayerNotesSurfaceV3.nativeCallAuditEnabled=options.nativeCallAudit==true
     local F=S.Features.PlayerNotes;assert(F:Initialize());assert(F:Enable())
     local V,W=S.Services.PlayerNotesSurfaceV3,S.UIV3.WidgetHost
@@ -183,7 +189,7 @@ Test('real foundation gate accepts service boundary without store writes',functi
     local boundary;for _,check in ipairs(report.checks)do if check.id=='service_presentation_boundary'then boundary=check end end
     assert(boundary and boundary.ok and h.writes==writes)
 end)
--- 中文维护：用户已实测原生好友页有效回包启窗；上线/成员变化与有效响应分开，保持原生Getter全nil的真实故障边界。
+-- 用户已实测原生好友页有效回包启窗；上线/成员变化与有效响应分开，保持原生Getter全nil的真实故障边界。
 Test('background online membership block and raid notifications never open notes',function()
     local h,S,F,V,W=Boot()
     for _,event in ipairs({'FAMILY_MEMBER_ONLINE','FAMILY_REFRESH','FAMILY_INFO_REFRESH','FAMILY_MEMBER_ADDED','FAMILY_MEMBER_LEFT','FAMILY_MEMBER_KICKED','FAMILY_OWNER_CHANGED','FAMILY_REMOVED','FAMILY_NAME_CHANGED','BLOCKED_USERS_INFO','BLOCKED_USER_LIST','BLOCKED_USER_UPDATE','FRIENDLIST_UPDATE','TOGGLE_RAID_FRAME2','TOGGLE_RAID_FRAME_PARTY'})do

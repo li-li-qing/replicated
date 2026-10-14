@@ -1,4 +1,10 @@
--- Run from replicatedsuite with Lua 5.1. Native boundaries are stubbed; business code is real.
+------------------------------------------------------------------------
+-- Replicated Suite · 战斗基础统计测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 从 replicatedsuite 目录用 Lua 5.1 运行；原生边界为替身，业务实现保持真实。
+------------------------------------------------------------------------
 local function Copy(t) if type(t)~='table' then return t end local out={} for k,v in pairs(t) do out[k]=Copy(v) end return out end
 local now=1000
 ReplicatedSuite={Generation=1,NowMs=function() return now end,SafeTraceback=tostring,Utils={DeepCopy=Copy},Services={},Features={},Data={}}
@@ -66,7 +72,7 @@ local before=A.metricDispatches
 for i=1,10000 do A:_DispatchFact({category='damage',kind='damage',sourceName='Other'..i,targetName='Enemy',amount=100,receivedAt=now}) end
 assert(A.metricDispatches==before,'self scope must discard crowds before dispatch')
 assert(F.Commands:SetCollectionScope('all'))
--- More contributors than the former per-target assist cap: direct killer still counts, no contributor map.
+-- 贡献者数量超过旧的单目标助攻上限时仍应计入直接击杀者，且不再保存贡献者映射。
 for i=1,100 do Fact('damage','Contributor'..i,'CrowdVictim',1) end
 local ledger=assert(A:GetMetric('kills').state.targets.CrowdVictim)
 assert(ledger.sources==nil and ledger.sourceCount==nil and ledger.latest==nil,'do not allocate assist contributors or inferred last-damage source')
@@ -81,7 +87,7 @@ local received=A.factsReceived
 Fact('aura','Self','Other',0,'aura_apply')
 assert(A.metricDispatches==before,'aura facts dispatch no metrics')
 assert(A.factsReceived==received,'unused categories stop before allocating the metric fact snapshot')
--- Keep legacy saved counters, but never increment them again.
+-- 保留旧存档中的计数器，但不能继续递增已停用的计数。
 local h=F.PersonalHistory
 h.state.totals.assists=9;h.state.days['2026-10-05'].assists=9
 local revision=h.revision

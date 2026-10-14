@@ -1,14 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Trade Payout Calculator V3
+-- Replicated Suite · 贸易收益计算
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Pure/data-driven payout calculator for life_trade. X2Store remains the sole
--- Authority for route validity and live specialty ratio; X2Ability remains the
--- Authority for the player's current Commerce proficiency. This service only
--- combines already-observed facts with the static payout table and pack-category
--- multipliers retained from the supplied working Trade implementation.
---
--- No Tick / Scheduler / Native API calls live here. Price-key resolution and
--- larder indexes are built lazily on user-triggered route results.
+-- life_trade 纯数据收益计算器仅组合已观察事实、静态售价表和已验证货物类别倍率。X2Store 唯一拥有路线有效性和
+-- 实时货率，X2Ability 拥有当前 Commerce 熟练度。无 Tick/Scheduler/Native 调用，用户触发路线结果后惰性构建
+-- priceKey 和发酵索引。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -26,9 +23,14 @@ local P = {
 }
 S.Services.TradePayoutV3 = P
 
--- Raw server/API names are business identity. These aliases are compatibility
--- candidates only and never replace the sourceName stored on a Trade row.
+-- 服务器/API 原始名是业务身份，别名只是兼容候选，不能替换 Trade 行保存的 sourceName。
 local PRICE_KEY_ALIASES = {
+    -- 原生回包使用“翡翠谷”，静态售价表沿用“翡翠”简称；四种保存特产只按完整名称映射到同品类。
+    -- 此处仅选择当前目的地已有的价格键，不修改 sourceName、货率或基价；缺少对应键时仍保持未知。
+    ["[翡翠谷]保存特制特产"] = { "[翡翠]保存特制特产" },
+    ["[翡翠谷]保存特产"] = { "[翡翠]保存特产" },
+    ["[翡翠谷]保存传统特产"] = { "[翡翠]保存传统特产" },
+    ["[翡翠谷]保存肥料特产"] = { "[翡翠]保存肥料特产" },
     ["埋骨之地角笛"] = { "埋骨之地角笛", "埋骨之地狩猎战利品", "埋骨之地狩猎战利品货物" },
     ["埋骨之地狩猎战利品"] = { "埋骨之地角笛", "埋骨之地狩猎战利品", "埋骨之地狩猎战利品货物" },
     ["埋骨之地狩猎战利品货物"] = { "埋骨之地角笛", "埋骨之地狩猎战利品", "埋骨之地狩猎战利品货物" },
@@ -131,8 +133,7 @@ end
 local function OriginCandidates(index, exact, originZoneName)
     local list, seen = {}, {}
     local selected = Text(originZoneName)
-    -- Static fallback labels such as "地区 5" are not a localized zone name and
-    -- must not be allowed to cross-match a payout origin.
+    -- 地区 5 等静态兜底标签不是本地化地名，不能交叉匹配收益来源地区。
     if selected ~= "" and string.find(selected, "地区 ", 1, true) ~= 1 then
         if index.origins[selected] then PushUnique(list, seen, selected) end
         for origin, _ in pairs(index.origins) do
@@ -193,7 +194,7 @@ function P:ResolvePriceKey(destination, itemName, originZoneName)
 end
 
 function P:GetPackMultiplier(itemName, priceKey)
-    -- 中文维护（2026-09-27，trade-freshness-matrix-v3）：这里解析的是“最高新鲜度/品类奖励”，
+    -- （2026-09-27，trade-freshness-matrix-v3）这里解析的是“最高新鲜度/品类奖励”，
     -- 与 X2Store 返回的实时供需货率严格分离。Authority 只来自维护过的精确 token 表；禁止模糊匹配。
     -- sourceName 优先，是为了尊重 Native 当前商品身份；静态 priceKey 仅作为本地化/别名兜底。
     local sources = { { value = Text(itemName), source = "source_name" }, { value = Text(priceKey), source = "price_key" } }
@@ -255,7 +256,7 @@ function P:GetCommerceMultiplier(commerceSkill, enabled)
     local skill = Number(commerceSkill)
     if skill == nil then return nil, false end
     skill = math.max(0, skill)
-    -- Supplied working formula: +5% payout for each 10,000 Commerce points.
+    -- 已验证公式：每 10,000 Commerce 点增加 5% 收益。
     return 1 + (skill / 10000 * 0.05), true
 end
 

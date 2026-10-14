@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Plates semantic ID relations
+-- Replicated Suite · 头顶状态身份注册
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- These relations preserve the existing Plates migration source without
--- promoting compatibility IDs to database-verified facts.  The Registry owns
--- the reusable ID sets; Plates still owns runtime policy and live API reads.
+-- 保留 Plates 现有迁移来源，不把兼容 ID 升格为数据库已验证事实。Registry 拥有共享 ID 集合；Plates 继续拥有运行时策略和实时 API 读取。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -32,8 +32,7 @@ local function RegisterSet(kind, key, ids, name, notes, tags)
     return {}
 end
 
--- Static records are discovery seeds only. Runtime displays countdowns from
--- the live X2Skill APIs; these fields are labels/probe hints, not timers.
+-- 静态记录仅用于发现候选。倒计时来自实时 X2Skill API；这里的字段仅是标签和探测提示，不能作为计时器。
 P.ImportantCooldownEntries = {
     { id=24113, kind="skill", group="glider", priority=20, expectedSec=10, label="Burning Tail Feather / 燃烧尾羽" },
     { id=23040, kind="skill", group="glider", priority=21, expectedSec=30, label="Glider Nitro / 滑翔翼推进" },

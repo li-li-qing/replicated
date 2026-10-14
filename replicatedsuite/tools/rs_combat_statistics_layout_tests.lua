@@ -1,5 +1,11 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 战斗统计布局测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 战斗统计首次进入布局：真实 PageHost、RSUI、Feature 投影，Native 使用开发期替身。
 -- 不进入 toc.g，不访问玩家存档，不冒充 RU 客户端实测。
+------------------------------------------------------------------------
 local NativeHost=dofile('tools/rs_gear_page_test_host.lua')
 local function Boot(width,height,options)
     options=options or {}

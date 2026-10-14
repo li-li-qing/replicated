@@ -1,6 +1,11 @@
--- Regression coverage for RU single-line EditBox caret geometry and delayed
--- OnLostFocus ordering. Uses production primitive/control code with bounded
--- native substitutes; does not claim clipboard contents or RU pixels are emulated.
+------------------------------------------------------------------------
+-- Replicated Suite · 文本输入回归测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- RU 单行 EditBox 光标几何及延迟 OnLostFocus 顺序回归。
+-- 运行生产基础控件与控制逻辑，原生替身有界；不宣称模拟了剪贴板内容或 RU 实际像素。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -46,7 +51,7 @@ Test('deferred TextInput lost-focus completes after focus really leaves', functi
     edit.root.text = '最终草稿'
     edit.root.events.OnLostFocus()
     local task = assert(edit._lostFocusTask)
-    h.UI.focused = nil -- model Native focus id changing after the early callback
+    h.UI.focused = nil -- 模拟原生焦点 ID 在早期回调之后才发生变化。
     h.S.Scheduler:RunTask(task)
     assert(edit:IsEditing() == false and edit.root.rsUiKeyboardArmed == false,
         'real blur must still end editing and release keyboard ownership')

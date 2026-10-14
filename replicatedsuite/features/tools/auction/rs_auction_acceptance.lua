@@ -1,16 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - tools_auction Contract Acceptance
+-- Replicated Suite · 拍卖助手契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 3 Batch I（2026-09-29，core-feature-decoupling-1）：本文件承载拍卖模块的 Feature 侧契约。
--- 它们原先由 core/rs_foundation_gate.lua 的三个 AddCheck（v3_auction_query_contract /
--- v3_auction_sidecar_contract / v3_auction_workspace_contract）直接点名实现表检查；
--- 搬到这里之后 Core 不再认识具体业务 Feature。失败同样是 blocker
--- （sequence case 失败 → sequence_harness 检查）。
---
--- 边界：**同一条 AddCheck 里的 Service / UIV3 契约留在 Foundation**（AuctionQueryV3 /
--- AuctionSurfaceV3 / AuctionSidecar / AuctionSessionListV3 / DailyAuctionMaterialsV3 /
--- QuestProgressV3 —— 它们不是 Feature 债）。本文件只承载“这个 Feature 自己必须提供什么”。
--- 判定与旧版**逐条等价**（下限照搬），外加“实现缺失不再静默 return”。
+-- 验证拍卖Feature自身查询、Sidecar和工作区接口，保留所有版本下限；实现缺失不得静默返回，失败为blocker，由sequence_harness报告。
+-- AuctionQueryV3、AuctionSurfaceV3、AuctionSidecar、AuctionSessionListV3、DailyAuctionMaterialsV3、QuestProgressV3等Service/UI契约仍归Foundation。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -20,7 +14,7 @@ local F = S.Features and S.Features.tools_auction or nil
 
 local function Fail(message) return false, tostring(message or "auction_acceptance_failed") end
 
--- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_tools_auction_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     -- v3_auction_query_contract 的 Feature 侧

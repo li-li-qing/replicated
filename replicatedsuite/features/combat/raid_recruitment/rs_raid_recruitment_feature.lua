@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - combat_raid_recruitment Feature Authority
+-- Replicated Suite · 团队招募功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 1 Batch C（2026-09-28）：从 features/rs_business_bridge.lua 机械搬迁。
--- 只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、UpdateTopic、Demand owner、
--- Commands（Create/Close/Accept/Reject）、Projection shape、ApiDependencies 全部与被搬迁前逐字一致。
---
+-- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
 -- Authority 边界：申请列表只读；创建/接受/拒绝仍因 RU 字段形态未验证而显式安全停用，
 -- 本文件不得为了“功能完整”猜测 9 字段或 charIds 形态。
 ------------------------------------------------------------------------
@@ -20,9 +19,7 @@ NewFeature("combat_raid_recruitment", { apiDependencies = { "X2Team:RaidRecruitD
         local ok, list, callErr = Call("X2Team:RaidApplicantList", TeamApi, "RaidApplicantList")
         if not ok then
             if tostring(callErr or ""):find("capability cooldown active", 1, true) then
-                -- A fast manual refresh must not erase the last proven applicant
-                -- projection just because the official query pacing window is
-                -- still active. Keep stale-but-honest rows and surface the gate.
+                -- 快速手动刷新时，官方查询节奏窗口仍活动不能清空已证实申请者投影；保留明确标为陈旧的真实行并展示门槛状态。
                 return Copy(feature.Authority.rows), "partial", "申请列表刷新冷却中；保留上一份投影：" .. tostring(callErr)
             end
             return {}, "unavailable", "招募申请列表不可用：" .. tostring(callErr or "native read failed")

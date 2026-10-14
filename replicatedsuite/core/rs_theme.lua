@@ -1,7 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Theme
+-- Replicated Suite · 主题样式与安全绘制
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 主题样式。
 ------------------------------------------------------------------------
-
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -14,13 +17,18 @@ local C = S.Constants
 S.Theme = {}
 local T = S.Theme
 T.PaletteContractVersion = 2
--- 中文维护（2026-10-05）：world-HUD 保持原深色文字/阴影；存副本，不能引用会被主题原位更新的色表。
+-- （2026-10-05）world-HUD 保持原深色文字/阴影；存副本，不能引用会被主题原位更新的色表。
 local worldColors = {}
 local worldToneAliases={default='text',strong='text',muted='textMuted',info='blue',success='green',warning='yellow',caution='orange',danger='red'}
 for key,color in pairs(C.Color or {}) do
     if type(color)=='table' and type(color[1])=='number' then worldColors[key]={unpack(color)} end
 end
-T.ManualTypographyOwnershipContractVersion = 1 -- 中文维护（2026-09-24，visual-guide-resolution-style-recovery-1）：允许少数 world-HUD glyph 明确声明 rsManualTypography=true，由专属 Presenter 管理原生字体尺寸。普通页面控件默认仍由 Theme Authority 响应 addon/font scale；仅显式 opt-out 的控件跳过 RefreshTypography，避免分辨率/画质切换把手工字号重置为主题 10..24 范围。
+T.ManualTypographyOwnershipContractVersion = 1 -- （2026-09-24，visual-guide-resolution-style-recovery-1）允许
+                                               -- 少数 world-HUD glyph 明确声明 rsManualTypography=true，由专
+                                               -- 属 Presenter 管理原生字体尺寸。普通页面控件默认仍由 Theme
+                                               -- Authority 响应 addon/font scale；仅显式 opt-out 的控件跳过
+                                               -- RefreshTypography，避免分辨率/画质切换把手工字号重置为主题
+                                               -- 10..24 范围。
 
 local function Token(path, fallback)
     local tokens = S.UITokens
@@ -56,10 +64,8 @@ function T:ResolveFontSize(baseSize, localScale)
     local layoutScale = (S.Layout and S.Layout.GetContext) and S.Layout:GetContext().addonScale or 1
     local fontScale = ActiveFontScale()
     local localMultiplier = math.max(0.50, math.min(2.00, tonumber(localScale) or 1.0))
-    -- Preserve the historical global 10..24 native range when no local HUD
-    -- scaling is requested. Floating surfaces may opt into a bounded local
-    -- multiplier; give that path a slightly wider safe range without changing
-    -- ordinary page typography.
+    -- 未请求本地 HUD 缩放时保留原生 10..24 全局范围。浮面可主动使用有界本地倍率并给出稍宽安全范围，不改变普
+    -- 通页排版。
     local minimum = localMultiplier == 1.0 and 10 or 8
     local maximum = localMultiplier == 1.0 and 24 or 32
     return math.max(minimum, math.min(maximum, math.floor(base * layoutScale * fontScale * localMultiplier + 0.5)))
@@ -114,7 +120,7 @@ function T:Token(path, fallback) return Token(path, fallback) end
 function T:Metric(path, fallback) return TokenNumber(path, fallback) end
 function T:IsLightWorkspacePalette() return self.workspacePaletteMode=='light' or self.workspacePalette=='light' end
 
--- 中文维护（2026-10-09）：透明表面没有浅色底板可供深色字依赖。按继承的背景通道切换文字，
+-- （2026-10-09）透明表面没有浅色底板可供深色字依赖。按继承的背景通道切换文字，
 -- 不采样游戏画面、不混成过渡灰、不改用户文字 alpha；0.6 是待 RU 实机调校的初始分界。
 local TRANSPARENT_TEXT_BACKGROUND = 0.6
 local transparentTextColors = { text = { 0.96, 0.97, 0.98, 1 }, textMuted = { 0.82, 0.85, 0.89, 1 } }
@@ -142,13 +148,13 @@ function T:BindColorDrawable(widget, drawable, role, alpha, opacityChannel)
     widget.rsThemeColorDrawables=widget.rsThemeColorDrawables or {}
     local binding=widget.rsThemeColorDrawables[drawable] or {}
     binding.role,binding.alpha=tostring(role),alpha
-    -- 中文维护（2026-10-08）：可选通道由逻辑宿主拥有；滚动条等辅助 Native 不在组件树里，
+    -- （2026-10-08）可选通道由逻辑宿主拥有；滚动条等辅助 Native 不在组件树里，
     -- 显式登记为 background 才随背景透明度变化。旧绑定保持原语义，切主题刷新不能丢掉通道。
     if opacityChannel~=nil then binding.opacityChannel=opacityChannel end
     widget.rsThemeColorDrawables[drawable]=binding
     local color=self:ColorRole(binding.role)
     local a=alpha~=nil and alpha or color[4] or 1
-    if binding.opacityChannel=='background' then a=a*math.max(0,math.min(1,tonumber(widget.rsBackgroundOpacity) or 1)) end -- 中文维护：始终从主题原始 alpha 乘算，反复调整不能累乘变暗。
+    if binding.opacityChannel=='background' then a=a*math.max(0,math.min(1,tonumber(widget.rsBackgroundOpacity) or 1)) end -- 始终从主题原始 alpha 乘算，反复调整不能累乘变暗。
     local accepted=drawable:SetColor(color[1],color[2],color[3],a)
     if accepted==false then error('theme_drawable_color_rejected:'..binding.role) end
     if S.UI and type(S.UI.PrimeNativeState)=='function' then
@@ -167,7 +173,7 @@ function T:RefreshTextColor(widget)
     local color=self:ResolveTextColor(role or widget.rsLabelTone or 'default',widget)
     if (self:IsLightWorkspacePalette() or self.workspaceStatusBands) and widget.rsButtonStatusTone then color=self:ResolveTextColor(widget.rsButtonStatusTone,widget) end
     ApplyTextColor(widget,color,widget.rsTextOpacity)
-    -- 中文维护（2026-10-09）：原生 BUTTON 的 normal/highlighted/pushed/disabled 字色独立于 TextStyle。
+    -- （2026-10-09）原生 BUTTON 的 normal/highlighted/pushed/disabled 字色独立于 TextStyle。
     -- 点击进入 Native 状态时不能回到默认浅字；四个色槽共用已解析的主题/语义色与用户文字 alpha。
     -- 只更新已有按钮，不监听额外鼠标事件、不改变按钮状态；缺少可选 setter 时保留 TextStyle 降级。
     if type(widget.rsButtonBgs) == 'table' then
@@ -180,7 +186,7 @@ function T:RefreshTextColor(widget)
             end
         end
     end
-    -- 中文维护：普通文字始终关闭自动粗描边，透明表面改用原生阴影；手工字形在入口即退出。
+    -- 普通文字始终关闭自动粗描边，透明表面改用原生阴影；手工字形在入口即退出。
     self:SetTextOutline(widget, false)
     local transparent = (tonumber(widget.rsBackgroundOpacity) or 1) <= TRANSPARENT_TEXT_BACKGROUND
     local shadow = transparent or (widget.rsThemeShadowWanted==true and (not self:IsLightWorkspacePalette() or widget.rsWorldTextPalette==true))
@@ -233,12 +239,8 @@ function T:AddBorder(widget, soft)
     return border
 end
 
--- Modern dark theme: vertical 3-band gradient background. Uses the client's
--- CreateThreeColorDrawable + ChangeColor1/2/3 (r,g,b) API; falls back to the
--- solid-color background when the drawable type is unavailable so a panel is
--- never left invisible.  ChangeColor order is top -> mid -> bottom; if the RU
--- client renders the bands in a different order, swap the values in
--- Constants.Color.Gradient.
+-- 现代深色主题三段竖向渐变使用 CreateThreeColorDrawable 和 ChangeColor1/2/3(r,g,b)，不支持 drawable 时退回
+-- 纯色，避免面板不可见。顺序为上->中->下；RU 顺序不同则交换 Constants.Color.Gradient 中的值。
 function T:AddGradientBackground(widget, kind, layer)
     if widget == nil then return nil end
     local bands = (kind == "titlebar" and C.Color.Gradient.titlebar)
@@ -254,17 +256,15 @@ function T:AddGradientBackground(widget, kind, layer)
     local ok, bg = pcall(function()
         local d = widget:CreateThreeColorDrawable(16, 16, layer or "background")
         if d == nil then return nil end
-        -- Without the band setters the drawable stays blank/white; treat it as
-        -- unsupported and fall back to the solid background.
+        -- 缺少分段 setter 会让 drawable 空白或纯白，视作不支持并回退纯色背景。
         if type(d.ChangeColor1) ~= "function" or type(d.ChangeColor2) ~= "function" or type(d.ChangeColor3) ~= "function" then
             return nil
         end
         d:ChangeColor1(bands[1][1], bands[1][2], bands[1][3])
         d:ChangeColor2(bands[2][1], bands[2][2], bands[2][3])
         d:ChangeColor3(bands[3][1], bands[3][2], bands[3][3])
-        -- Do NOT call SetColor on a multi-band drawable: on the RU client it can
-        -- overwrite the ChangeColor bands and wash the gradient to a flat color.
-        -- Fade with SetAlpha when the client exposes it; otherwise keep opaque.
+        -- 多段 drawable 不能 SetColor，RU 会覆盖 ChangeColor 色带而变为纯色。支持 SetAlpha 时用其渐隐，否则
+        -- 保持不透明。
         if d.SetAlpha ~= nil then d:SetAlpha(baseAlpha) end
         if d.AddAnchor ~= nil then
             local inset = widget.rsBorder ~= nil and 1 or 0
@@ -278,13 +278,12 @@ function T:AddGradientBackground(widget, kind, layer)
     end
     widget.rsThemeBackgroundKind, widget.rsThemeGradient = kind or 'panel', true
     widget.rsBackground = bg
-    -- Gradient drawable keeps its own RGB bands; store white + base alpha so
-    -- SetBackgroundOpacity can still fade the whole strip uniformly.
+    -- 渐变 drawable 保留自身 RGB 色带；缓存白色及基准 alpha，使 SetBackgroundOpacity 仍能均匀渐隐整条。
     widget.rsBackgroundColor = { 1, 1, 1, baseAlpha }
     return bg
 end
 
--- Thin accent strip pinned to the top edge of a panel (modern highlight line).
+-- 面板顶部固定的细强调条，用于现代主题高亮线。
 function T:AddAccentStrip(widget, height, color)
     if widget == nil or type(widget.CreateColorDrawable) ~= "function" then return nil end
     local h = math.max(1, tonumber(height) or 2)
@@ -306,9 +305,7 @@ function T:AddAccentStrip(widget, height, color)
     return strip
 end
 
--- Horizontal divider line drawn as a thin color drawable (the Line widget is
--- not part of the guaranteed surface on every RU build; a 1px color strip is
--- equivalent visually and cannot crash).
+-- 横分隔线使用细 color drawable；不是每个 RU 构建都保证有 Line 控件，1px 色条视觉等价且避免崩溃。
 function T:AddDivider(widget, y, soft)
     if widget == nil or type(widget.CreateColorDrawable) ~= "function" then return nil end
     local c = soft and C.Color.dividerSoft or C.Color.divider
@@ -359,9 +356,8 @@ function T:StyleButton(button, width, height, fontSize, active, useGradient)
     local disabled = buttonTokens.disabled or { 0.050, 0.052, 0.058, 0.70 }
     local colors = { normal, highlight, pushed, disabled }
 
-    -- Modern gradient button skin. Each Button state gets its own
-    -- CreateThreeColorDrawable when useGradient is requested and the client
-    -- supports it; any failure falls back to the solid-color path below.
+    -- 请求 useGradient 且客户端支持时，为每个 Button 状态创建独立 CreateThreeColorDrawable；任何失败都回退
+    -- 下方纯色路径。
     local gradientBands = {
         active and C.Color.Gradient.buttonHover or C.Color.Gradient.button,
         C.Color.Gradient.buttonHover,
@@ -389,7 +385,7 @@ function T:StyleButton(button, width, height, fontSize, active, useGradient)
                     d:ChangeColor1(band[1][1], band[1][2], band[1][3])
                     d:ChangeColor2(band[2][1], band[2][2], band[2][3])
                     d:ChangeColor3(band[3][1], band[3][2], band[3][3])
-                    -- SetAlpha only: SetColor would overwrite the gradient bands.
+                    -- 只用 SetAlpha；SetColor 会覆盖渐变色带。
                     if d.SetAlpha ~= nil then d:SetAlpha(gradientAlphas[i]) end
                     if d.AddAnchor ~= nil then
                         d:AddAnchor("TOPLEFT", button, 0, 0)
@@ -407,8 +403,7 @@ function T:StyleButton(button, width, height, fontSize, active, useGradient)
             if created then
                 button.rsButtonBgs = gradientBgs
                 button.rsButtonBgColors = gradientColors
-                -- Keep the gradient band table so SetButtonActive can repaint the
-                -- normal/highlight states live (used by main-window tabs).
+                -- 保留渐变色带表，让 SetButtonActive 能实时重绘 normal/highlight，供主窗页签使用。
                 button.rsGradientBands = gradientBands
                 button.rsGradientAlphas = gradientAlphas
             end
@@ -446,9 +441,7 @@ function T:StyleButton(button, width, height, fontSize, active, useGradient)
     button.rsButtonHovered = false
 end
 
--- Live active/inactive repaint for gradient buttons (tabs etc.).
--- For gradient skins it swaps the normal/highlight band tables via
--- ChangeColor1/2/3; for solid skins it falls back to SetColor.
+-- 渐变按钮的活动/非活动状态通过 ChangeColor1/2/3 切换 normal/highlight 色带表；纯色皮肤用 SetColor 兜底。
 local function ApplyGradientBand(drawable, band)
     if drawable == nil or type(band) ~= "table" or type(drawable.ChangeColor1) ~= "function" then return false end
     local ok = pcall(function()
@@ -470,13 +463,9 @@ local function ApplySolidButtonColor(button, index, color)
     return ok == true
 end
 
--- RU can oscillate the Native BUTTON internal normal/highlight state while the
--- cursor remains physically over the same logical control (especially when a
--- parent refresh/layout pass happens).  While RSUI says the pointer is inside,
--- paint BOTH native normal/highlight backgrounds with the same hover visual so
--- that internal state oscillation is visually idempotent instead of flashing.
--- 维护（module-controls-diag-2）：业务运行态与导航选中态正交。颜色由 Theme 所有的
--- Drawable 实现，悬停/选中只调亮同色系，不覆盖红绿、不遍历未知Native子节点。
+-- 鼠标仍在同一逻辑控件上时，RU Native BUTTON 可能因父级刷新或布局来回切换 normal/highlight。RSUI 判定鼠标在
+-- 内时，两种原生背景都绘制同一悬停视觉，使状态摆动视觉幂等而不闪烁。业务运行态与导航选中态正交；颜色归
+-- Theme Drawable，悬停/选中只调亮同色系，不覆盖红绿，不遍历未知 Native 子节点。
 local STATUS_BANDS = {
     green = { normal = { {0.06,0.22,0.11}, {0.04,0.17,0.08}, {0.02,0.11,0.05} },
         bright = { {0.13,0.40,0.20}, {0.08,0.30,0.14}, {0.04,0.21,0.09} } },
@@ -511,7 +500,7 @@ local function RepaintButtonInteractiveState(button)
         local highlightBand = hovered and normalBand or C.Color.Gradient.buttonHover
         local changedA = ApplyGradientBand(button.rsButtonBgs[1], normalBand)
         local changedB = ApplyGradientBand(button.rsButtonBgs[2], highlightBand)
-        -- 维护：移除语义颜色时同时恢复按下态，避免重用按钮仍残留红/绿。原主题拥有默认皮肤。
+        -- 移除语义颜色时同时恢复按下态，避免重用按钮仍残留红/绿。原主题拥有默认皮肤。
         local changedC = ApplyGradientBand(button.rsButtonBgs[3], C.Color.Gradient.buttonPushed)
         return changedA or changedB or changedC
     end
@@ -573,20 +562,14 @@ function T:SetOpacity(widget, opacity)
     return true
 end
 
--- Floating HUD transparency must never walk arbitrary Widget references.
--- The RU client can retain Lua wrappers after the native widget underneath has
--- already been replaced/freed; GetParent()/SetDrawableLayerAlpha on such a
--- wrapper can cause a native access violation that pcall cannot catch.
---
--- Only drawables created and owned by this Theme are touched here. Their base
--- RGBA values are stored at creation time, so labels/text remain fully opaque
--- without probing descendants through the native UI tree.
+-- 浮动 HUD 透明度不能遍历任意 Widget 引用。原生控件已替换或释放时 RU 仍可能保留 Lua wrapper，GetParent()
+-- /SetDrawableLayerAlpha 可触发 pcall 无法捕获的原生访问违规。这里只处理 Theme 创建并拥有的 drawable，创建
+-- 时保存基准 RGBA，不探测原生后代树，使 label/text 始终完全不透明。
 local function ApplyOwnedDrawableAlpha(drawable, color, opacity)
     if drawable == nil or type(color) ~= "table" then return end
     local alpha = (tonumber(color[4]) or 1) * opacity
-    -- Multi-band (gradient) drawables must not be faded through SetColor: on the
-    -- RU client that call can overwrite the ChangeColor bands. SetAlpha is the
-    -- safe path when available; otherwise leave the drawable at full opacity.
+    -- 多段渐变 drawable 不通过 SetColor 渐隐，以免 RU 覆盖 ChangeColor 色带；有 SetAlpha 时使用，否则保留完
+    -- 全不透明。
     if type(drawable.ChangeColor1) == "function" or type(drawable.ChangeColor2) == "function" or type(drawable.ChangeColor3) == "function" then
         if type(drawable.SetAlpha) == "function" then
             pcall(function() drawable:SetAlpha(alpha) end)
@@ -605,7 +588,7 @@ local function ApplyOwnedDrawableAlpha(drawable, color, opacity)
 end
 
 function T:SetTextOutline(widget, enabled)
-    -- 中文维护（2026-10-09）：只用原生字体描边，保持原有文字颜色/透明度与焦点；没有该能力的客户端安全降级。
+    -- （2026-10-09）只用原生字体描边，保持原有文字颜色/透明度与焦点；没有该能力的客户端安全降级。
     -- 接受后的值才进入缓存，Native 拒写时保留下次设置/主题刷新重试机会；禁止每帧叠加影子 Label。
     if widget == nil or widget.style == nil or type(widget.style.SetOutline) ~= "function" then return false end
     local wanted = enabled == true
@@ -627,9 +610,9 @@ function T:SetBackgroundOpacity(widget, opacity)
         end
     end
     widget.rsBackgroundOpacity = value
-    -- 中文维护：仅刷新 Theme 管理的文字；背景继承和调色板切换都从原始色表重算，不能累乘或覆盖手工 HUD。
+    -- 仅刷新 Theme 管理的文字；背景继承和调色板切换都从原始色表重算，不能累乘或覆盖手工 HUD。
     if widget.rsLabelTone ~= nil or widget.rsThemeTextRole ~= nil then self:RefreshTextColor(widget) end
-    -- 中文维护：只刷新显式归入背景通道的宿主装饰；复用现有 Drawable，不碰文字、几何或输入代理。
+    -- 只刷新显式归入背景通道的宿主装饰；复用现有 Drawable，不碰文字、几何或输入代理。
     for drawable,binding in pairs(widget.rsThemeColorDrawables or {}) do
         if binding.opacityChannel=='background' then self:BindColorDrawable(widget,drawable,binding.role,binding.alpha) end
     end
@@ -670,7 +653,7 @@ function T:RefreshTypography()
     if type(controls) ~= "table" then return 0 end
     local changed = 0
     for _, widget in pairs(controls) do
-        -- 维护（2026-09-24，visual-guide-resolution-style-recovery-1）：Theme 只拥有普通文本的
+        -- （2026-09-24，visual-guide-resolution-style-recovery-1）Theme 只拥有普通文本的
         -- responsive typography。范围辅助/单位连线的“.” glyph 把字体大小当作点直径，Presenter
         -- 会映射到 16..82px，若这里按主题上限 24px 重算就会在切分辨率后瞬间变成小点。
         -- rsManualTypography 必须由创建该控件的专属 Presenter 显式设置；默认 nil/false 不改变

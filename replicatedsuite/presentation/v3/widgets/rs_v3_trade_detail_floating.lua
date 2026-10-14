@@ -1,12 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Trade Pack Floating Detail
+-- Replicated Suite · 贸易独立详情窗口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Auxiliary detail surface shared by the main Trade page and the Trade HUD.
--- Geometry is persisted by the Presentation-only AuxWindow Store; business data
--- remains owned by life_trade.
--- Business facts remain owned by life_trade.  This presenter never calls X2Store
--- or X2Auction directly; explicit material quotes route back through Trade
--- Commands -> PriceQuoteQueueV3.
+-- 主 Trade 页面与 HUD 共用辅助详情；几何归仅表现 AuxWindow Store，业务事实归 life_trade。presenter 不直接调用 X2Store/X2Auction；
+-- 明确材料报价经 Trade Commands -> PriceQuoteQueueV3。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -54,10 +52,7 @@ local function ZoneName(projection, id)
     return id and tostring(math.floor(id)) or "--"
 end
 
--- Internal cost/price status codes must never reach a player. Map each known
--- code to plain Chinese; an unknown code becomes an honest generic sentence
--- rather than the raw identifier (that is exactly the unreadable-token class of
--- noise this Suite kept producing).
+-- 内部成本/价格状态码不能显示给玩家；已知码映射为自然中文，未知码用准确通用说明，不能泄漏原始标识符。
 local PRICE_STATUS_TEXT = {
     explicit_quote_required = "价格需询价",
     quote_pending = "正在询价",
@@ -77,7 +72,7 @@ local PRICE_STATUS_TEXT = {
 local function PlayerPriceStatusText(code)
     local key = tostring(code or "")
     if PRICE_STATUS_TEXT[key] ~= nil then return PRICE_STATUS_TEXT[key] end
-    -- A bare ASCII identifier is an internal token, not wording: replace it.
+    -- 纯 ASCII 标识符属于内部 token，应替换为用户文案。
     if key ~= "" and key:match("^[A-Za-z0-9_%.%-]+$") then return "暂无法估价" end
     return key ~= "" and key or "售价不可用"
 end
@@ -85,8 +80,7 @@ end
 local function MaterialStatus(row)
     local status = tostring(row and row.costStatus or "")
     if status == "quoted" then return "已报价", "green" end
-    -- Distinct wording AND a softer tone than a live quote: auction listings can
-    -- be manipulated, so a stored sample must never look like fresh market data.
+    -- 存档样本使用独立文案与比实时报价更柔和的色调；拍卖挂单可被操纵，旧样本不能看起来像新市场数据。
     if status == "quoted_reference" then return "参考价", "muted" end
     if status == "excluded" then return "不计成本", "muted" end
     if status == "bound_resource" then return "绑定资源", "accent" end
@@ -146,7 +140,7 @@ function M:EnsureCreated()
         statePolicy = AuxStore:GetPolicy("trade_detail"),
         getState = function() return AuxStore:GetWindowState("trade_detail") end,
         setState = function(value, reason) return AuxStore:SetWindowState("trade_detail", value, reason) end,
-        -- 中文维护注释：贸易品详情只把窗口几何/锁定/透明度写入 Presentation Store；
+        -- 贸易品详情只把窗口几何/锁定/透明度写入 Presentation Store；
         -- 业务数据继续由原 Feature/Service Authority 管理，避免第二业务 Authority。
         persist = function(reason, delayMs) return AuxStore:PersistWindow("trade_detail", reason, delayMs) end,
         onClosed = function()
@@ -171,7 +165,7 @@ function M:EnsureCreated()
         slot = { size = "fixed", height = 30, hAlign = "fill" } })
     self.quoteButton = RSUI:Button({ id = self.id .. "_quote", parent = actions, text = "询价当前材料", compact = true,
         slot = { size = "fixed", width = 116 } })
-    -- 中文维护注释（2026-09-14，跑商→拍卖临时清单）：这里不让 Presentation 重算配方，也不把
+    -- 约束（2026-09-14，跑商→拍卖临时清单）：这里不让 Presentation 重算配方，也不把
     -- 临时材料写进 life_trade Store。点击时只把 Trade Authority 已经解析好的 detached row/materialRows
     -- 交给 AuctionSessionListV3；该 Service 没有 Persistence Store，ReloadAddon 后自然清空。
     self.auctionTempButton = RSUI:Button({ id = self.id .. "_auction_temp", parent = actions, text = "加入拍卖临时清单", compact = true,
@@ -282,7 +276,7 @@ function M:Subscribe()
             if M.visible then M:Refresh("feature_update") end
         end) ~= true then return false, "跑商详情更新事件订阅失败" end
     end
-    -- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：详情浮窗不经过 WidgetHost，过去因此
+    -- 约束（2026-09-25，feature-profile-lifecycle-1）：详情浮窗不经过 WidgetHost，过去因此
     -- 不知道功能方案已经 Disable。Trade Feature 会先 Demand:Clear；这里收到 disabled 后只同步 lease
     -- 事实并隐藏这个瞬时详情面板，绝不二次 Release。详情不做“自动重开”：重新启用跑商后由用户再次
     -- 选择贸易品，避免旧 rowKey/旧路线在新 Authority 投影上被误恢复。无 Tick、无轮询。
@@ -327,7 +321,7 @@ function M:Refresh(reason)
         or (" · " .. PlayerPriceStatusText(row.priceBreakdown or row.priceEstimateStatus))
     local resourceCount = math.max(0, tonumber(row.boundResourceCount) or 0) + math.max(0, tonumber(row.nonMarketResourceCount) or 0)
     local resourceHint = resourceCount > 0 and (" · 另含" .. tostring(resourceCount) .. "项绑定/非市场资源") or ""
-    -- 中文维护：详情跟随已选择的货率模式，始终只显示一套金额。
+    -- 详情跟随已选择的货率模式，始终只显示一套金额。
     self.summary:SetText((projection.ratioMode=="full" and "满货率估算 " or "实时货率 ") .. tostring(row.rate or "--") .. " · 预计售价 " .. tostring(row.price or "--") .. payoutFactors
         .. "\n材料金币成本 " .. Money(row.materialCostCopper) .. resourceHint .. " · 毛利 " .. tostring(row.profit or "--"))
 
@@ -338,18 +332,16 @@ function M:Refresh(reason)
         -- 维护（trade-requote-2）：是否可询价由材料能力决定，不由“是否已经有价”决定。
         if material.includeInCost ~= false and material.auctionable ~= false
             and (tonumber(material.itemType) or 0) > 0 then marketCount = marketCount + 1 end
-        -- Separate missing-price counts from the explicit refresh action.
+        -- 缺失价格计数与明确刷新操作分开呈现。
         if costStatus == "explicit_quote_required" or costStatus == "quote_failed" then pending = pending + 1 end
         if costStatus == "quote_pending" then inflight = inflight + 1 end
         if costStatus == "quote_failed" then
             failed = failed + 1
         end
         items[#items + 1] = {
-            -- key is an internal row handle for the table widget, not display text.
+            -- key 是表格内部行句柄，不能作为显示文字。
             key = tostring(material.internalKey or material.materialKey or index),
-            -- The projection already resolved `name` through the Localization
-            -- Authority; the old English-key fallback leaked raw data keys
-            -- ("Chopped Produce") straight onto a player-facing table.
+            -- 投影已由 Localization 权威层解析 name；不能回退英文 key 而把 "Chopped Produce" 等原始数据键泄漏到玩家表格。
             name = tostring(material.name or "材料"),
             countText = "×" .. tostring(math.max(0, tonumber(material.count) or 0)),
             unitText = material.includeInCost == false and "资源" or Money(material.unitCostCopper),

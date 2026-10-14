@@ -1,3 +1,8 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 功能预设测试
+-- 作者：Replicated
+-- QQ群：1104129461
+------------------------------------------------------------------------
 local ROOT = './'
 
 local function deepcopy(v, seen)
@@ -21,7 +26,7 @@ local S = ReplicatedSuite
 local diagnosticProviders = {}
 S.ModuleDiagnosticsHub = { RegisterProvider=function(_, _, name, fn) diagnosticProviders[name]=fn;return true end }
 
--- Minimal internal event bus with the same owner-first callback contract used by the suite.
+-- 最小内部事件总线保留框架实际使用的 owner-first 回调参数契约。
 S.Events = { listeners = {} }
 function S.Events:SubscribeInternal(topic, owner, cb)
     self.listeners[topic] = self.listeners[topic] or {}
@@ -55,7 +60,7 @@ function S.FeatureRegistry:Get(id) return byId[id] end
 -- 中文维护（5.3 发布自检）：测试目录内的已登记功能均开放；真实 Runtime 仍执行访问检查，未知 ID 必须拒绝。
 function S.FeatureRegistry:IsAccessible(id) return byId[id] ~= nil end
 function S.FeatureRegistry:List() return metas end
--- 中文维护：当前方案浏览只列开放项；本宿主的目录全为开放项，复用同一目录而非绕过生产筛选调用。
+-- 当前方案浏览只列开放项；本宿主的目录全为开放项，复用同一目录而非绕过生产筛选调用。
 function S.FeatureRegistry:ListAccessible() return metas end
 
 S.Persistence = {
@@ -158,17 +163,17 @@ eq(Runtime:IsEnabled('combat_unit_lines'),false,'unit lines off')
 truth(Runtime:IsEnabled('tools_feature_profiles'),'profile feature must not disable itself')
 eq(Profiles:GetProjection().dirty,false,'freshly applied profile clean')
 
--- Manual user toggle must only mark the last-applied profile dirty; it must not rewrite the profile.
+-- 用户手动切换只允许标记上次应用的预设已变化，不能重写该预设。
 truth(Runtime:SetPreferredEnabled('combat_range_assist',true,'manual_test'),'manual range enable')
 local projection=Profiles:GetProjection(); truth(projection.dirty,'manual module toggle marks profile dirty')
 local row=nil; for _,m in ipairs(projection.moduleRows) do if m.featureId=='combat_range_assist' then row=m end end
 truth(row ~= nil,'range row present'); eq(row.targetEnabled,false,'saved profile not silently overwritten'); eq(row.runtimeEnabled,true,'runtime reflects manual toggle')
 
--- Capture is the explicit overwrite path.
+-- Capture 才是显式覆盖预设的入口。
 truth(Profiles.Commands:CaptureCurrent(livingId),'capture current')
 projection=Profiles:GetProjection(); eq(projection.dirty,false,'capture makes profile match current')
 
--- A second profile proves full-state semantics: unselected controllable modules are targets=false.
+-- 第二个预设验证完整状态语义：未选中的可控模块必须进入 targets=false。
 local ok2, battleId=Profiles.Commands:CreateProfile('战斗'); truth(ok2,'create battle')
 truth(Profiles.Commands:SetModule(battleId,'combat_unit_lines',true),'select unit lines')
 
@@ -181,7 +186,7 @@ local function assertStates(expected,label)
     for id,v in pairs(expected) do eq(Runtime:IsEnabled(id),v,(label or 'state')..' '..id) end
 end
 
--- Lifecycle failure must roll back already-transitioned modules.
+-- 生命周期切换失败时必须回滚此前已经切换的模块。
 local before=snapshotStates()
 fake.life_trade.failDisable=true
 local failOk=Profiles.Commands:ApplyProfile(battleId)
@@ -189,7 +194,7 @@ eq(failOk,false,'lifecycle failure propagates')
 fake.life_trade.failDisable=false
 assertStates(before,'lifecycle rollback')
 
--- Durable v3.features persistence failure must also restore all lifecycle transitions.
+-- v3.features 持久化失败时同样必须恢复全部生命周期切换。
 before=snapshotStates(); local prefsBefore=deepcopy(Runtime.preferences)
 P.failNext['v3.features']=true
 local persistOk=Profiles.Commands:ApplyProfile(battleId)
@@ -198,7 +203,7 @@ assertStates(before,'persistence rollback')
 for id,v in pairs(prefsBefore) do eq(Runtime.preferences[id],v,'preference rollback '..id) end
 for id,v in pairs(Runtime.preferences) do eq(v,prefsBefore[id],'preference rollback no new key '..id) end
 
--- Successful battle profile now closes everything else and only leaves unit-lines among controllable rows.
+-- 成功应用战斗预设后关闭其它可控模块，仅保留 unit-lines。
 truth(Profiles.Commands:ApplyProfile(battleId),'apply battle after rollback tests')
 eq(Runtime:IsEnabled('life_trade'),false,'battle closes trade')
 eq(Runtime:IsEnabled('life_bonds'),false,'battle closes bonds')

@@ -1,5 +1,10 @@
--- Cache-first Trade integration. Recipe quantities and payout arithmetic are unchanged;
--- legacy force/anomaly verification remains covered in rs_trade_requote_pipeline_tests.lua.
+------------------------------------------------------------------------
+-- Replicated Suite · 交易重新询价端到端测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 缓存优先的交易集成测试，配方数量和收入计算保持原样；旧强制询价及异常确认路径仍由 rs_trade_requote_pipeline_tests.lua 覆盖。
+------------------------------------------------------------------------
 dofile('tools/rs_trade_tests.lua')
 local baseS=ReplicatedSuite
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')
@@ -35,7 +40,7 @@ local function Fixture(mode,blocked)
  if blocked then h.content=nil;ADDON.GetContentMainScriptPosVis=function()return nil,nil,nil,nil end
   ADDON.GetContent=function()error('native_content_unreadable')end end
  assert(TA:RebuildDisplayRows('requote_fixture'));assert(#TA.rows==1)
- local row=TA.rows[1];row.priceCopper=253900 -- observed screenshot sale input; production payout formula is unchanged
+ local row=TA.rows[1];row.priceCopper=253900 -- 售价输入来自已观察截图，生产收入公式保持原样。
  assert(T:EnsurePriceQuoteSubscription())
  h.T,h.TA,h.row,h.m=T,TA,row,m
  return h
@@ -260,7 +265,7 @@ Test('module TXT preserves selected missing-grade evidence without native calls 
  assert(not line:find('<serialization_budget>',1,true),'worst-case price evidence exceeded report budget')
  Eq(#h.T:DescribePriceEvidence().requests,8);Eq(#h.calls,calls)
 end)
--- 中文维护：全表必须提供明确品质；覆盖已报错普通材料与遗漏的固定稀有材料，而非只改一个配方。
+-- 全表必须提供明确品质；覆盖已报错普通材料与遗漏的固定稀有材料，而非只改一个配方。
 Test('canonical metadata supplies native grades for all 73 trade material identities',function()
  local h=Fixture('missing');local meta=h.S.Data.TradeMaterialAuctionMeta;local count=0
  for name,m in pairs(meta)do
@@ -271,7 +276,7 @@ Test('canonical metadata supplies native grades for all 73 trade material identi
  for _,name in ipairs({'Cultivated Ginseng','Cherry','Moringa Fruit','Turmeric','Saffron'})do Eq(meta[name].itemGrade,3,name)end
  Eq(meta['Bay Leaf'].itemGrade,2);Eq(meta['Cornflower'].itemGrade,2);Eq(meta['Time-Space Rift Shard'].itemGrade,5)
 end)
--- 中文维护：复现原报告的大量 raw 字段。允许原始记录明示截断，任务/货物/核心来源必须先完整落盘。
+-- 复现原报告的大量 raw 字段。允许原始记录明示截断，任务/货物/核心来源必须先完整落盘。
 Test('large raw listing ring cannot truncate Trade state or later core diagnostics',function()
  local h=Fixture('missing');h.TA.selectedKey=h.row.key
  dofile('ui/framework/rs_ui_floating_surface.lua');dofile('presentation/v3/rs_v3_aux_window_store.lua')
@@ -296,7 +301,7 @@ Test('large raw listing ring cannot truncate Trade state or later core diagnosti
  assert(report:find('OMITTED',1,true),'large raw source must report its real budget omission')
  assert(#report<=1048576);Eq(#h.calls,calls)
 end)
--- 中文维护：222712 TXT 暴露了 static accessor 未接入投影，Gilda 被错误标记可拍卖/market。
+-- 222712 TXT 暴露了 static accessor 未接入投影，Gilda 被错误标记可拍卖/market。
 Test('commercial Gilda recipe retains bound-resource policy from canonical accessor',function()
  local h=Fixture('missing')
  h.T.State.fromZone=1;h.TA.rawRows={{key='1:5:31831',name='[格威尔]标准特制特产',sourceName='[格威尔]标准特制特产',originZone=1,destinationZone=5,itemType=31831,currentRatio=122,ratio=122,ratioUpdatedAt=h.now}}
@@ -311,7 +316,7 @@ Test('commercial Gilda recipe retains bound-resource policy from canonical acces
  assert(h.T:QuoteRowMaterials(h.row.key));h:advance(5000)
  Eq(h:count('SearchAuctionArticle'),2);Eq(h.row.materialCostCopper,500290);Eq(h.row.materialCostComplete,true)
 end)
--- 中文维护：222712 中只有债券 41488 返回空列表；用户确认本服绑定且不可上架。
+-- 222712 中只有债券 41488 返回空列表；用户确认本服绑定且不可上架。
 -- 覆盖共享运输配方与仅 ItemID 的 Live 配方，禁止空列表把其他市场材料当成绑定资源。
 local function BondTransportFixture(live)
  local h=Fixture('missing');local product=live and 654331 or 47110

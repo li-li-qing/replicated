@@ -1,13 +1,19 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 14 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · HUD默认模板测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 维护（hud-default-template-2）：当前默认布局来自用户 hud.1.1 的完整三页报告，
 -- 历史几何基线 RAW_BYTES=1539 / RAW_CHECK=3486F051；.18.221 仅把 PLAYER ranged.enabled 从0改为1，当前期望 RAW_CHECK=37FAF052。下方预期仍是独立的用户输入，
 -- 不从生产默认表生成；改错坐标、漏职业图标、误用旧目标装备模板必须失败。
 -- Authority：真实 Store/canonical/耐久事务、Calibration 和报告编码器；仅 Native/磁盘使用
 -- 既有开发宿主。历史 fingerprint 在改生产代码前采样，禁止随新默认更新；不进 toc.g，
 -- 不宣称 Native 替身等于 RU Lua5.1/屏幕布局验收。
+------------------------------------------------------------------------
 local H=dofile("tools/rs_udf_numeric_test_host.lua")
 local Open=dofile("tools/rs_hud_template_copy_test_host.lua")
 local passed,failed=0,0
@@ -120,7 +126,7 @@ Test("existing custom settings persist and reload without default overwrite",fun
         st.apply(H.Copy(cases.dual))
         F.State.settings.tracked.player.auto={4899,716};F.State.settings.tracked.target.auto={4899,716};F.State.settings.trackedCooldowns.skill={123}
         F.State.settings.library.importedPacks.custom=2
-        F.State.settings.components.ranged.x=7 -- explicit user customization: release migration must not touch this profile
+        F.State.settings.components.ranged.x=7 -- 这是用户显式自定义配置，发行迁移不能覆盖。
         return true
     end,"fixture_custom_state"))
     local before=H.Copy(F.State);assert(F:PersistHudCalibrationSnapshot(F:GetHudCalibrationSnapshot()))
@@ -151,7 +157,7 @@ Test("default report preserves verified user body and appends independent alias 
     local h,S,F,P,C=Open({width=2560,height=1440})
     assert(C:ResetCurrentScope());assert(C:SetScope("target"));assert(C:ResetCurrentScope())
     S.BuildTag="v3-m1.16.0.18.208-target-gear-score-api-default-template"
-    -- 中文维护：原11条用户报告与历史 checksum 保持不动；当前新增的 Alias 记录单独声明，
+    -- 原11条用户报告与历史 checksum 保持不动；当前新增的 Alias 记录单独声明，
     -- 不从生产输出重造旧 golden，不允许追加字段掩盖旧坐标/默认值变化。
     local expected=RAW:gsub("LINES=11;", "LINES=12;"):gsub("\nRS%-HUD%-TEMPLATE%-END$",
         "\nHUD_TEMPLATE_V2;TARGET;ALIAS;alias{x=0,y=-94,font=12,alpha=1,enabled=1}\nRS-HUD-TEMPLATE-END")

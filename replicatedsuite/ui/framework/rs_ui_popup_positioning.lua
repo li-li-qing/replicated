@@ -1,37 +1,26 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Popup Positioning Authority v2 -- 中文维护注释：v2 使用 Suite-owned Diff cache 完整父链作为首选锚点，外部 Native 才进入 Effective Geometry 校准。
+-- Replicated Suite · 弹层位置求解
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Detached UIParent popups (Dropdown / ColorField / Tooltip fallback /
--- ContextMenu) MUST NOT derive their screen position by hand from a child
--- widget's local x/y or by blindly dividing GetEffectiveOffset() by uiScale.
---
--- RU clients have exposed WidgetBase effective geometry in both already-logical
--- and UI-scaled units depending on client/UI-size combinations.  The old popup
--- path divided by uiScale unconditionally, so a trigger that was already in
--- logical space was transformed a second time.  The visible symptom is exactly
--- what users reported: the farther the trigger is from the top-left, the larger
--- the popup offset becomes.
---
--- This file is the single Presentation Authority for detached popup placement:
---   Anchor native geometry -> Layout viewport-logical normalization ->
---   one bounded placement solve -> UIParent anchor.
---
--- It is event-driven only.  No Tick, polling, inventory scan or feature-domain
--- state belongs here.
+-- 分离 UIParent 弹层（Dropdown/ColorField/Tooltip/ContextMenu）不能用子控件局部 x/y 手算屏幕位置，也不能盲除 GetEffectiveOffset()/uiScale。
+-- RU 随客户端/UI 尺寸组合可能返回已逻辑化或已缩放 Effective 几何；无条件除 uiScale 会二次转换，使触发器越远离左上原点弹层偏移越大。
+-- 分离弹层位置唯一表现权威：原生锚几何 -> Layout 视口逻辑规范化 -> 有界位置求解 -> UIParent 锚。
+-- 仅事件驱动，不持有 Tick、轮询、背包扫描或功能领域状态。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI, Layout = S.UI, S.RSUI, S.Layout
 if type(UI) ~= "table" or type(RSUI) ~= "table" or type(Layout) ~= "table" then return end
 
-RSUI.PopupPositioningContractVersion = 4 -- 中文维护注释：ColorField V2 增加“Suite 父链解析后的 viewport-logical 绝对提交”车道；Dropdown/Tooltip 仍保留 Native-relative，避免把一个 RU 控件族的修复强套到所有 Popup。
-RSUI.PopupNativeRelativeAnchorContractVersion = 1 -- 中文维护注释：Dropdown/目标型 Tooltip/ContextMenu 仍可使用 Native AddAnchor 相对触发控件定位，并由 CorrectOffsetByScreen 处理屏幕边缘。
-RSUI.PopupViewportResolvedAnchorContractVersion = 1 -- 中文维护注释：ColorField V2 专用安全车道：先用 Suite-owned 父链得到 viewport-logical 坐标，再把顶层 Window 只锚到 UIParent，禁止跨层级 Window→Button Native Anchor。
-RSUI.PopupCoordinateSpaceContractVersion = 1 -- 中文维护注释：最终输出仍保持 viewport-logical-v1，因此坐标空间名称不变，仅更换更可靠的锚点来源。
-RSUI.PopupSuiteAnchorAuthorityContractVersion = 1 -- 中文维护注释：用于 Foundation/Acceptance 强制要求 Suite-owned Popup 优先走 NativeStateCache 完整父链。
+RSUI.PopupPositioningContractVersion = 4 -- ColorField V2 增加“Suite 父链解析后的 viewport-logical 绝对提交”车道；Dropdown/Tooltip 仍保留 Native-relative，避免把一个 RU 控件族的修复强套到所有 Popup。
+RSUI.PopupNativeRelativeAnchorContractVersion = 1 -- Dropdown/目标型 Tooltip/ContextMenu 仍可使用 Native AddAnchor 相对触发控件定位，并由 CorrectOffsetByScreen 处理屏幕边缘。
+RSUI.PopupViewportResolvedAnchorContractVersion = 1 -- ColorField V2 专用安全车道：先用 Suite-owned 父链得到 viewport-logical 坐标，再把顶层 Window 只锚到 UIParent，禁止跨层级 Window→Button Native Anchor。
+RSUI.PopupCoordinateSpaceContractVersion = 1 -- 最终输出仍保持 viewport-logical-v1，因此坐标空间名称不变，仅更换更可靠的锚点来源。
+RSUI.PopupSuiteAnchorAuthorityContractVersion = 1 -- 用于 Foundation/Acceptance 强制要求 Suite-owned Popup 优先走 NativeStateCache 完整父链。
 
 local P = RSUI.PopupPositioning or {
-    version = 4, -- 中文维护注释：运行时快照 v4 同时区分 native-relative 与 viewport-resolved 两条已验证车道。
+    version = 4, -- 运行时快照 v4 同时区分 native-relative 与 viewport-resolved 两条已验证车道。
     coordinateSpace = "viewport-logical-v1",
     metrics = {
         resolves = 0,
@@ -40,21 +29,21 @@ local P = RSUI.PopupPositioning or {
         verticalClamps = 0,
         shrinks = 0,
         anchorFallbacks = 0,
-        nativeRelativeApplies = 0, -- 中文维护注释：统计 Native-relative Popup 次数。
-        viewportResolvedApplies = 0, -- 中文维护注释：统计 ColorField 等顶层 Window 使用 resolved viewport→UIParent 提交的次数。
-        nativeScreenCorrections = 0, -- 中文维护注释：统计调用 RU CorrectOffsetByScreen 的次数，用于确认屏幕边缘修正是否真正进入 Native 路径。
-        nativeScreenCorrectionFailures = 0, -- 中文维护注释：统计 CorrectOffsetByScreen 抛出异常的次数；Native 返回 false 不视为 transport 失败，遵循项目 Boolean Setter/Native 调用语义。
+        nativeRelativeApplies = 0, -- 统计 Native-relative Popup 次数。
+        viewportResolvedApplies = 0, -- 统计 ColorField 等顶层 Window 使用 resolved viewport→UIParent 提交的次数。
+        nativeScreenCorrections = 0, -- 统计调用 RU CorrectOffsetByScreen 的次数，用于确认屏幕边缘修正是否真正进入 Native 路径。
+        nativeScreenCorrectionFailures = 0, -- 统计 CorrectOffsetByScreen 抛出异常的次数；Native 返回 false 不视为 transport 失败，遵循项目 Boolean Setter/Native 调用语义。
     },
     recent = {},
     recentOrder = {},
     recentLimit = 12,
 }
-RSUI.PopupPositioning = P -- 中文维护注释：将唯一 Popup Positioning Authority 挂回 RSUI 命名空间，所有 detached Popup Consumer 只能通过这里解析位置。
-P.version = 4 -- 中文维护注释：热重载复用旧表时显式提升到 v4，诊断可证明 ColorField V2 已加载。
-P.metrics.nativeRelativeApplies = tonumber(P.metrics.nativeRelativeApplies) or 0 -- 中文维护注释：热重载补齐相对锚定计数器。
-P.metrics.viewportResolvedApplies = tonumber(P.metrics.viewportResolvedApplies) or 0 -- 中文维护注释：热重载补齐 viewport-resolved 计数器。
-P.metrics.nativeScreenCorrections = tonumber(P.metrics.nativeScreenCorrections) or 0 -- 中文维护注释：热重载沿用旧 metrics table 时补齐屏幕修正计数器，保持诊断连续。
-P.metrics.nativeScreenCorrectionFailures = tonumber(P.metrics.nativeScreenCorrectionFailures) or 0 -- 中文维护注释：热重载沿用旧 metrics table 时补齐屏幕修正失败计数器，失败证据不会因升级丢失。
+RSUI.PopupPositioning = P -- 将唯一 Popup Positioning Authority 挂回 RSUI 命名空间，所有 detached Popup Consumer 只能通过这里解析位置。
+P.version = 4 -- 热重载复用旧表时显式提升到 v4，诊断可证明 ColorField V2 已加载。
+P.metrics.nativeRelativeApplies = tonumber(P.metrics.nativeRelativeApplies) or 0 -- 热重载补齐相对锚定计数器。
+P.metrics.viewportResolvedApplies = tonumber(P.metrics.viewportResolvedApplies) or 0 -- 热重载补齐 viewport-resolved 计数器。
+P.metrics.nativeScreenCorrections = tonumber(P.metrics.nativeScreenCorrections) or 0 -- 热重载沿用旧 metrics table 时补齐屏幕修正计数器，保持诊断连续。
+P.metrics.nativeScreenCorrectionFailures = tonumber(P.metrics.nativeScreenCorrectionFailures) or 0 -- 热重载沿用旧 metrics table 时补齐屏幕修正失败计数器，失败证据不会因升级丢失。
 
 local function N(value, fallback)
     value = tonumber(value)
@@ -89,66 +78,66 @@ local function ResolveNative(target)
     return nil, nil
 end
 
-local function ReadNativePopupGeometry(widget) -- 中文维护注释：只在用户显式打开 Popup 的低频路径读取 Native 几何，用于诊断 .18.191 的真实相对锚定结果，禁止放入 Tick/Observer。
-    local row = {} -- 中文维护注释：每次采样只构造一个有界小表，最多随 PopupPositioning recentLimit 保留 12 条，不形成长期增长。
-    if widget == nil then return row end -- 中文维护注释：目标为空时返回空诊断事实，不尝试猜测坐标或访问 Native 方法。
-    if type(widget.GetOffset) == "function" then pcall(function() row.offsetX, row.offsetY = widget:GetOffset() end) end -- 中文维护注释：记录 RU UIBounds:GetOffset 原始返回值，不做 uiScale 变换，作为实机原始证据。
-    if type(widget.GetExtent) == "function" then pcall(function() row.extentW, row.extentH = widget:GetExtent() end) end -- 中文维护注释：记录 GetExtent 原始尺寸，用于判断顶层 Window 与普通子控件是否采用不同单位。
-    if type(widget.GetEffectiveOffset) == "function" then pcall(function() row.effectiveX, row.effectiveY = widget:GetEffectiveOffset() end) end -- 中文维护注释：记录 EffectiveOffset 原始值，仅用于诊断对比，绝不再作为 Suite-owned Popup 定位 Authority。
-    if type(widget.GetEffectiveExtent) == "function" then pcall(function() row.effectiveW, row.effectiveH = widget:GetEffectiveExtent() end) end -- 中文维护注释：记录 EffectiveExtent 原始值，便于确认 RU 客户端是否对不同 Widget 类型应用额外缩放。
-    row.logicalId = tostring(widget.rsNativeLogicalId or widget.rsUiLogicalId or widget.rsUiOwner or "?") -- 中文维护注释：附带 Suite 逻辑身份，实机报告可直接知道采样的是哪个 Trigger/Popup，而不是只看到四个数字。
-    return row -- 中文维护注释：返回原始 Native 几何事实；调用方只负责格式化，不对这些值做业务判断。
-end -- 中文维护注释：结束低频 Native Popup 几何采样 helper。
+local function ReadNativePopupGeometry(widget) -- 只在用户显式打开 Popup 的低频路径读取 Native 几何，用于诊断 .18.191 的真实相对锚定结果，禁止放入 Tick/Observer。
+    local row = {} -- 每次采样只构造一个有界小表，最多随 PopupPositioning recentLimit 保留 12 条，不形成长期增长。
+    if widget == nil then return row end -- 目标为空时返回空诊断事实，不尝试猜测坐标或访问 Native 方法。
+    if type(widget.GetOffset) == "function" then pcall(function() row.offsetX, row.offsetY = widget:GetOffset() end) end -- 记录 RU UIBounds:GetOffset 原始返回值，不做 uiScale 变换，作为实机原始证据。
+    if type(widget.GetExtent) == "function" then pcall(function() row.extentW, row.extentH = widget:GetExtent() end) end -- 记录 GetExtent 原始尺寸，用于判断顶层 Window 与普通子控件是否采用不同单位。
+    if type(widget.GetEffectiveOffset) == "function" then pcall(function() row.effectiveX, row.effectiveY = widget:GetEffectiveOffset() end) end -- 记录 EffectiveOffset 原始值，仅用于诊断对比，绝不再作为 Suite-owned Popup 定位 Authority。
+    if type(widget.GetEffectiveExtent) == "function" then pcall(function() row.effectiveW, row.effectiveH = widget:GetEffectiveExtent() end) end -- 记录 EffectiveExtent 原始值，便于确认 RU 客户端是否对不同 Widget 类型应用额外缩放。
+    row.logicalId = tostring(widget.rsNativeLogicalId or widget.rsUiLogicalId or widget.rsUiOwner or "?") -- 附带 Suite 逻辑身份，实机报告可直接知道采样的是哪个 Trigger/Popup，而不是只看到四个数字。
+    return row -- 返回原始 Native 几何事实；调用方只负责格式化，不对这些值做业务判断。
+end -- 结束低频 Native Popup 几何采样 helper。
 
-function P:_TouchRecentId(id) -- 中文维护注释：统一维护 Popup 诊断 recent 的有界 LRU 顺序，Native-relative 与绝对坐标两条车道共享同一 12 条上限。
-    id = tostring(id or "popup") -- 中文维护注释：所有无显式 ID 的 Popup 统一归入 popup，避免 nil key 破坏有界表。
-    if self.recent[id] == nil then self.recentOrder[#self.recentOrder + 1] = id end -- 中文维护注释：只有第一次出现该 ID 才加入顺序表，重复打开只覆盖最新事实。
-    while #self.recentOrder > math.max(1, tonumber(self.recentLimit) or 12) do local oldest = table.remove(self.recentOrder, 1); self.recent[oldest] = nil end -- 中文维护注释：超过上限立即淘汰最旧 Popup，诊断不允许随玩家长期使用无限增长。
-    return id -- 中文维护注释：返回归一后的 ID，供记录函数写入同一个 recent 槽位。
-end -- 中文维护注释：结束有界 recent ID 维护 helper。
+function P:_TouchRecentId(id) -- 统一维护 Popup 诊断 recent 的有界 LRU 顺序，Native-relative 与绝对坐标两条车道共享同一 12 条上限。
+    id = tostring(id or "popup") -- 所有无显式 ID 的 Popup 统一归入 popup，避免 nil key 破坏有界表。
+    if self.recent[id] == nil then self.recentOrder[#self.recentOrder + 1] = id end -- 只有第一次出现该 ID 才加入顺序表，重复打开只覆盖最新事实。
+    while #self.recentOrder > math.max(1, tonumber(self.recentLimit) or 12) do local oldest = table.remove(self.recentOrder, 1); self.recent[oldest] = nil end -- 超过上限立即淘汰最旧 Popup，诊断不允许随玩家长期使用无限增长。
+    return id -- 返回归一后的 ID，供记录函数写入同一个 recent 槽位。
+end -- 结束有界 recent ID 维护 helper。
 
-function P:ApplyNativeRelativePopup(popup, target, owner, options) -- 中文维护注释：这是 .18.191 Suite-owned detached Popup 的最终定位入口，Native Window 直接相对 Trigger 锚定，彻底绕开绝对屏幕坐标反推。
-    options = type(options) == "table" and options or {} -- 中文维护注释：缺省参数归一为空表，保持所有调用点 fail-safe 且不依赖外部可变表。
-    local targetNative = select(1, ResolveNative(target)) -- 中文维护注释：只取得触发器真实 Native 根；Component 仅作为逻辑包装，不参与后续坐标计算。
-    if popup == nil or targetNative == nil then return false, "popup_native_relative_target_unavailable" end -- 中文维护注释：Popup 或 Trigger 缺失时无法建立原生 Anchor，必须 fail-closed，禁止回退魔法偏移。
-    local width = math.max(1, N(options.width, 1)) -- 中文维护注释：Popup 宽度使用 Consumer 已经 Measure/Resolve 的逻辑尺寸，不从 RU Getter 反推。
-    local height = math.max(1, N(options.height, 1)) -- 中文维护注释：Popup 高度使用 Consumer 已经 Measure/Resolve 的逻辑尺寸，保证列表行高与组件布局一致。
-    local triggerWidth = math.max(1, N(options.triggerWidth, 1)) -- 中文维护注释：Trigger 宽度由调用组件自身 lastLayout 提供，因此不受 GetEffectiveExtent 单位差异影响。
-    local triggerHeight = math.max(1, N(options.triggerHeight, 1)) -- 中文维护注释：Trigger 高度同样由组件布局事实提供，是 bottom/right 相对偏移的唯一尺寸 Authority。
-    local gap = math.max(0, N(options.gap, 2)) -- 中文维护注释：相对间距属于纯 Presentation token，默认 2 逻辑像素，不与分辨率比例相乘。
-    local placement = tostring(options.placement or "bottom-start") -- 中文维护注释：placement 只决定 Trigger-local 偏移方向，不再产生 UIParent 绝对坐标。
-    local relativeX, relativeY = N(options.offsetX, 0), triggerHeight + gap -- 中文维护注释：默认把 Popup 左边缘与 Trigger 左边缘对齐，并紧贴 Trigger 下方。
-    if placement == "top-start" then relativeY = -(height + gap) elseif placement == "right-start" then relativeX, relativeY = triggerWidth + gap, 0 end -- 中文维护注释：顶部/右侧 Popup 仍只使用 Trigger-local 偏移，Native Anchor 系统负责父链、Shell、Scroll 与 UI Scale。
-    local extentOk, _, extentErr = UI:EnsureExtent(popup, width, height, owner) -- 中文维护注释：先事务式提交 Popup 尺寸；Native 拒绝时不允许继续发布错误锚点。
-    if extentOk ~= true then return false, "popup_native_relative_extent_failed:" .. tostring(extentErr or "unknown") end -- 中文维护注释：尺寸事务失败立即返回真实原因，不显示尺寸未知的顶层 Window。
-    if type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(popup, "anchorParent") end -- 中文维护注释：CorrectOffsetByScreen 可能在 Native 内部改写顶层 Window 的最终偏移；每次显式打开前只失效 Anchor 父字段，强制重新建立相对 Trigger Anchor，避免 Diff cache 把合法 Native 边缘修正误判为外部写入。
-    local anchorOk, _, anchorErr = UI:EnsureAnchor(popup, targetNative, relativeX, relativeY, owner) -- 中文维护注释：关键修复：顶层 transient Window 的 Anchor reference 直接使用 Trigger Native，而不是 UIParent + 反推绝对 X/Y。
-    if anchorOk ~= true then return false, "popup_native_relative_anchor_failed:" .. tostring(anchorErr or "unknown") end -- 中文维护注释：原生相对锚定失败时必须 fail-closed，禁止自动退回 .18.189/.18.190 的猜测坐标路径。
-    popup.rsUiCoordinateLane = "popup-native-relative-v1" -- 中文维护注释：显式标记新坐标 lane，诊断与 Foundation 可区分 Native-relative 与旧 popup-anchor-v1。
-    popup.rsUiCoordinateSpace = "native-trigger-relative-v1" -- 中文维护注释：相对 Anchor 不是 viewport absolute 坐标，因此使用独立空间名称，禁止 Consumer 二次做 uiScale/HostOrigin 变换。
-    self.metrics.nativeRelativeApplies = N(self.metrics.nativeRelativeApplies) + 1 -- 中文维护注释：记录一次用户触发的相对锚定事务，仅用于诊断覆盖率。
-    local id = self:_TouchRecentId(options.id) -- 中文维护注释：取得有界 recent 槽位，重复打开同一 Dropdown 只更新最后一次事实。
-    self.recent[id] = { id = id, mode = "native_relative", coordinateSpace = "native-trigger-relative-v1", anchorSource = "native_relative_trigger", placement = placement, relative = { x = relativeX, y = relativeY, width = width, height = height, triggerWidth = triggerWidth, triggerHeight = triggerHeight }, targetNative = ReadNativePopupGeometry(targetNative), popupNativeBeforeCorrection = ReadNativePopupGeometry(popup) } -- 中文维护注释：记录相对偏移与修正前两端 Native 原始值，为下一次 RU 报告提供可直接比对的第一手证据。
-    return true, nil, { placement = placement, relativeX = relativeX, relativeY = relativeY, width = width, height = height } -- 中文维护注释：返回已提交的 Trigger-local 几何，调用方只管理行布局/显示生命周期，不再决定屏幕坐标。
-end -- 中文维护注释：结束 Native-relative Popup Anchor Authority。
+function P:ApplyNativeRelativePopup(popup, target, owner, options) -- 这是 .18.191 Suite-owned detached Popup 的最终定位入口，Native Window 直接相对 Trigger 锚定，彻底绕开绝对屏幕坐标反推。
+    options = type(options) == "table" and options or {} -- 缺省参数归一为空表，保持所有调用点 fail-safe 且不依赖外部可变表。
+    local targetNative = select(1, ResolveNative(target)) -- 只取得触发器真实 Native 根；Component 仅作为逻辑包装，不参与后续坐标计算。
+    if popup == nil or targetNative == nil then return false, "popup_native_relative_target_unavailable" end -- Popup 或 Trigger 缺失时无法建立原生 Anchor，必须 fail-closed，禁止回退魔法偏移。
+    local width = math.max(1, N(options.width, 1)) -- Popup 宽度使用 Consumer 已经 Measure/Resolve 的逻辑尺寸，不从 RU Getter 反推。
+    local height = math.max(1, N(options.height, 1)) -- Popup 高度使用 Consumer 已经 Measure/Resolve 的逻辑尺寸，保证列表行高与组件布局一致。
+    local triggerWidth = math.max(1, N(options.triggerWidth, 1)) -- Trigger 宽度由调用组件自身 lastLayout 提供，因此不受 GetEffectiveExtent 单位差异影响。
+    local triggerHeight = math.max(1, N(options.triggerHeight, 1)) -- Trigger 高度同样由组件布局事实提供，是 bottom/right 相对偏移的唯一尺寸 Authority。
+    local gap = math.max(0, N(options.gap, 2)) -- 相对间距属于纯 Presentation token，默认 2 逻辑像素，不与分辨率比例相乘。
+    local placement = tostring(options.placement or "bottom-start") -- placement 只决定 Trigger-local 偏移方向，不再产生 UIParent 绝对坐标。
+    local relativeX, relativeY = N(options.offsetX, 0), triggerHeight + gap -- 默认把 Popup 左边缘与 Trigger 左边缘对齐，并紧贴 Trigger 下方。
+    if placement == "top-start" then relativeY = -(height + gap) elseif placement == "right-start" then relativeX, relativeY = triggerWidth + gap, 0 end -- 顶部/右侧 Popup 仍只使用 Trigger-local 偏移，Native Anchor 系统负责父链、Shell、Scroll 与 UI Scale。
+    local extentOk, _, extentErr = UI:EnsureExtent(popup, width, height, owner) -- 先事务式提交 Popup 尺寸；Native 拒绝时不允许继续发布错误锚点。
+    if extentOk ~= true then return false, "popup_native_relative_extent_failed:" .. tostring(extentErr or "unknown") end -- 尺寸事务失败立即返回真实原因，不显示尺寸未知的顶层 Window。
+    if type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(popup, "anchorParent") end -- CorrectOffsetByScreen 可能在 Native 内部改写顶层 Window 的最终偏移；每次显式打开前只失效 Anchor 父字段，强制重新建立相对 Trigger Anchor，避免 Diff cache 把合法 Native 边缘修正误判为外部写入。
+    local anchorOk, _, anchorErr = UI:EnsureAnchor(popup, targetNative, relativeX, relativeY, owner) -- 关键修复：顶层 transient Window 的 Anchor reference 直接使用 Trigger Native，而不是 UIParent + 反推绝对 X/Y。
+    if anchorOk ~= true then return false, "popup_native_relative_anchor_failed:" .. tostring(anchorErr or "unknown") end -- 原生相对锚定失败时必须 fail-closed，禁止自动退回 .18.189/.18.190 的猜测坐标路径。
+    popup.rsUiCoordinateLane = "popup-native-relative-v1" -- 显式标记新坐标 lane，诊断与 Foundation 可区分 Native-relative 与旧 popup-anchor-v1。
+    popup.rsUiCoordinateSpace = "native-trigger-relative-v1" -- 相对 Anchor 不是 viewport absolute 坐标，因此使用独立空间名称，禁止 Consumer 二次做 uiScale/HostOrigin 变换。
+    self.metrics.nativeRelativeApplies = N(self.metrics.nativeRelativeApplies) + 1 -- 记录一次用户触发的相对锚定事务，仅用于诊断覆盖率。
+    local id = self:_TouchRecentId(options.id) -- 取得有界 recent 槽位，重复打开同一 Dropdown 只更新最后一次事实。
+    self.recent[id] = { id = id, mode = "native_relative", coordinateSpace = "native-trigger-relative-v1", anchorSource = "native_relative_trigger", placement = placement, relative = { x = relativeX, y = relativeY, width = width, height = height, triggerWidth = triggerWidth, triggerHeight = triggerHeight }, targetNative = ReadNativePopupGeometry(targetNative), popupNativeBeforeCorrection = ReadNativePopupGeometry(popup) } -- 记录相对偏移与修正前两端 Native 原始值，为下一次 RU 报告提供可直接比对的第一手证据。
+    return true, nil, { placement = placement, relativeX = relativeX, relativeY = relativeY, width = width, height = height } -- 返回已提交的 Trigger-local 几何，调用方只管理行布局/显示生命周期，不再决定屏幕坐标。
+end -- 结束 Native-relative Popup Anchor Authority。
 
-function P:ApplyResolvedViewportPopup(popup, anchor, resolved, owner, options) -- 中文维护注释：ColorField V2 的最终提交入口。问题根因是 RU 顶层 Window 跨层级直接 Anchor 到页面 Button 时可能“调用成功但仍留在创建原点(0,0)”；因此这里只接受已经由 ResolveAnchorRect+ResolveAnchored 证明为 viewport-logical-v1 的坐标，并把 Window 只锚到 UIParent。
-    options = type(options) == "table" and options or {} -- 中文维护注释：参数只保存展示/诊断事实，不允许业务层再做分辨率比例换算。
-    if popup == nil or type(resolved) ~= "table" then return false, "popup_viewport_resolved_target_unavailable" end -- 中文维护注释：缺少 Popup 或求解结果时 fail-closed，禁止回退魔法偏移。
-    if tostring(resolved.coordinateSpace or "") ~= "viewport-logical-v1" then return false, "popup_viewport_resolved_space_invalid" end -- 中文维护注释：只接受统一逻辑视口坐标，避免重复 *uiScale 或 /uiScale。
-    local x, y = tonumber(resolved.x), tonumber(resolved.y) -- 中文维护注释：最终 x/y 已由统一 Placement solver 完成翻转和边界 Clamp。
-    local width, height = tonumber(resolved.width), tonumber(resolved.height) -- 中文维护注释：尺寸同样来自同一求解结果，不从 Native EffectiveExtent 反推。
-    if x == nil or y == nil or width == nil or height == nil then return false, "popup_viewport_resolved_geometry_invalid" end -- 中文维护注释：几何不完整时拒绝提交。
-    local extentOk, _, extentErr = UI:EnsureExtent(popup, math.max(1, width), math.max(1, height), owner) -- 中文维护注释：先提交尺寸，避免 Native CorrectOffsetByScreen 使用旧窗口范围。
-    if extentOk ~= true then return false, "popup_viewport_resolved_extent_failed:" .. tostring(extentErr or "unknown") end -- 中文维护注释：尺寸失败不能继续发布 Anchor。
-    if type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(popup, "anchorParent") end -- 中文维护注释：每次显式打开重建 UIParent Anchor，避免缓存把 Native 边缘修正误当 Authority。
-    local anchorOk, _, anchorErr = UI:EnsureAnchor(popup, UIParent, x, y, owner) -- 中文维护注释：关键安全边界：顶层 Window 只 Anchor 到 UIParent；UI Framework 会把根引用规范成 RU 所需的 "UIParent" 字符串。
-    if anchorOk ~= true then return false, "popup_viewport_resolved_anchor_failed:" .. tostring(anchorErr or "unknown") end -- 中文维护注释：禁止回退到跨层级 Trigger Anchor。
-    popup.rsUiCoordinateLane = "popup-viewport-resolved-v1" -- 中文维护注释：实机诊断能区分 ColorField V2 与旧 Native-relative 车道。
-    popup.rsUiCoordinateSpace = "viewport-logical-v1" -- 中文维护注释：明确 Consumer 不得二次变换。
-    self.metrics.viewportResolvedApplies = N(self.metrics.viewportResolvedApplies) + 1 -- 中文维护注释：只在用户打开/重排 Popup 时增加，无后台轮询。
-    local id = self:_TouchRecentId(options.id) -- 中文维护注释：有界 recent 槽位，与其他 Popup 共用最多 12 条。
-    local row = self.recent[id] or { id = id } -- 中文维护注释：ResolveAnchored 通常已写入 anchor/result；这里补充最终提交事实。
+function P:ApplyResolvedViewportPopup(popup, anchor, resolved, owner, options) -- ColorField V2 的最终提交入口。问题根因是 RU 顶层 Window 跨层级直接 Anchor 到页面 Button 时可能“调用成功但仍留在创建原点(0,0)”；因此这里只接受已经由 ResolveAnchorRect+ResolveAnchored 证明为 viewport-logical-v1 的坐标，并把 Window 只锚到 UIParent。
+    options = type(options) == "table" and options or {} -- 参数只保存展示/诊断事实，不允许业务层再做分辨率比例换算。
+    if popup == nil or type(resolved) ~= "table" then return false, "popup_viewport_resolved_target_unavailable" end -- 缺少 Popup 或求解结果时 fail-closed，禁止回退魔法偏移。
+    if tostring(resolved.coordinateSpace or "") ~= "viewport-logical-v1" then return false, "popup_viewport_resolved_space_invalid" end -- 只接受统一逻辑视口坐标，避免重复 *uiScale 或 /uiScale。
+    local x, y = tonumber(resolved.x), tonumber(resolved.y) -- 最终 x/y 已由统一 Placement solver 完成翻转和边界 Clamp。
+    local width, height = tonumber(resolved.width), tonumber(resolved.height) -- 尺寸同样来自同一求解结果，不从 Native EffectiveExtent 反推。
+    if x == nil or y == nil or width == nil or height == nil then return false, "popup_viewport_resolved_geometry_invalid" end -- 几何不完整时拒绝提交。
+    local extentOk, _, extentErr = UI:EnsureExtent(popup, math.max(1, width), math.max(1, height), owner) -- 先提交尺寸，避免 Native CorrectOffsetByScreen 使用旧窗口范围。
+    if extentOk ~= true then return false, "popup_viewport_resolved_extent_failed:" .. tostring(extentErr or "unknown") end -- 尺寸失败不能继续发布 Anchor。
+    if type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(popup, "anchorParent") end -- 每次显式打开重建 UIParent Anchor，避免缓存把 Native 边缘修正误当 Authority。
+    local anchorOk, _, anchorErr = UI:EnsureAnchor(popup, UIParent, x, y, owner) -- 关键安全边界：顶层 Window 只 Anchor 到 UIParent；UI Framework 会把根引用规范成 RU 所需的 "UIParent" 字符串。
+    if anchorOk ~= true then return false, "popup_viewport_resolved_anchor_failed:" .. tostring(anchorErr or "unknown") end -- 禁止回退到跨层级 Trigger Anchor。
+    popup.rsUiCoordinateLane = "popup-viewport-resolved-v1" -- 实机诊断能区分 ColorField V2 与旧 Native-relative 车道。
+    popup.rsUiCoordinateSpace = "viewport-logical-v1" -- 明确 Consumer 不得二次变换。
+    self.metrics.viewportResolvedApplies = N(self.metrics.viewportResolvedApplies) + 1 -- 只在用户打开/重排 Popup 时增加，无后台轮询。
+    local id = self:_TouchRecentId(options.id) -- 有界 recent 槽位，与其他 Popup 共用最多 12 条。
+    local row = self.recent[id] or { id = id } -- ResolveAnchored 通常已写入 anchor/result；这里补充最终提交事实。
     row.id = id
     row.mode = "viewport_resolved"
     row.coordinateSpace = "viewport-logical-v1"
@@ -156,26 +145,26 @@ function P:ApplyResolvedViewportPopup(popup, anchor, resolved, owner, options) -
     row.result = CopyRect(resolved) or row.result
     row.anchorSource = anchor and anchor.source or row.anchorSource
     row.resolvedXY = { x = x, y = y, width = width, height = height }
-    row.popupNativeBeforeCorrection = ReadNativePopupGeometry(popup) -- 中文维护注释：记录 UIParent Anchor 提交后的原始 Native 几何，用户报告可以直接证明是否仍落在(0,0)。
+    row.popupNativeBeforeCorrection = ReadNativePopupGeometry(popup) -- 记录 UIParent Anchor 提交后的原始 Native 几何，用户报告可以直接证明是否仍落在(0,0)。
     self.recent[id] = row
-    return true, nil, { x = x, y = y, width = width, height = height } -- 中文维护注释：调用方随后只做 Show + CorrectOffsetByScreen。
-end -- 中文维护注释：结束 viewport-resolved 顶层 Popup 提交入口。
+    return true, nil, { x = x, y = y, width = width, height = height } -- 调用方随后只做 Show + CorrectOffsetByScreen。
+end -- 结束 viewport-resolved 顶层 Popup 提交入口。
 
-function P:CorrectNativePopupToScreen(popup, id) -- 中文维护注释：Popup 已经相对 Trigger 正确锚定后，仅调用 RU 官方允许的 UIBounds:CorrectOffsetByScreen 处理屏幕边缘，不能拿它替代 Anchor Authority。
-    id = tostring(id or "popup") -- 中文维护注释：归一诊断 ID，确保修正后的 Native 结果能写回同一条 Popup 记录。
-    if popup == nil then return false, "popup_screen_correction_target_unavailable" end -- 中文维护注释：没有 Popup Native 时无法做边缘修正，直接返回明确错误。
-    local corrected = false -- 中文维护注释：默认记录本次没有执行 Native 修正，便于区分客户端缺方法与调用异常。
-    if type(popup.CorrectOffsetByScreen) == "function" then local ok = pcall(function() popup:CorrectOffsetByScreen() end); corrected = ok == true; self.metrics.nativeScreenCorrections = N(self.metrics.nativeScreenCorrections) + 1; if ok ~= true then self.metrics.nativeScreenCorrectionFailures = N(self.metrics.nativeScreenCorrectionFailures) + 1 end end -- 中文维护注释：调用 RU 已允许的屏幕修正；只把 Lua/Native 异常视为失败，不把未知 Native 返回值误判为事务拒绝。
-    local row = self.recent[id] -- 中文维护注释：读取相同 Popup 的上一阶段记录，把修正后原始 Native 坐标追加进去而不是另建无限日志。
+function P:CorrectNativePopupToScreen(popup, id) -- Popup 已经相对 Trigger 正确锚定后，仅调用 RU 官方允许的 UIBounds:CorrectOffsetByScreen 处理屏幕边缘，不能拿它替代 Anchor Authority。
+    id = tostring(id or "popup") -- 归一诊断 ID，确保修正后的 Native 结果能写回同一条 Popup 记录。
+    if popup == nil then return false, "popup_screen_correction_target_unavailable" end -- 没有 Popup Native 时无法做边缘修正，直接返回明确错误。
+    local corrected = false -- 默认记录本次没有执行 Native 修正，便于区分客户端缺方法与调用异常。
+    if type(popup.CorrectOffsetByScreen) == "function" then local ok = pcall(function() popup:CorrectOffsetByScreen() end); corrected = ok == true; self.metrics.nativeScreenCorrections = N(self.metrics.nativeScreenCorrections) + 1; if ok ~= true then self.metrics.nativeScreenCorrectionFailures = N(self.metrics.nativeScreenCorrectionFailures) + 1 end end -- 调用 RU 已允许的屏幕修正；只把 Lua/Native 异常视为失败，不把未知 Native 返回值误判为事务拒绝。
+    local row = self.recent[id] -- 读取相同 Popup 的上一阶段记录，把修正后原始 Native 坐标追加进去而不是另建无限日志。
     if type(row) == "table" then
         row.nativeCorrectionAvailable = type(popup.CorrectOffsetByScreen) == "function"
         row.nativeCorrectionOk = corrected
         row.popupNativeAfterCorrection = ReadNativePopupGeometry(popup)
         local after = row.popupNativeAfterCorrection or {}
-        row.finalNativeXY = { x = after.offsetX or after.effectiveX, y = after.offsetY or after.effectiveY } -- 中文维护注释：ColorField V2 诊断显式保留最终 Native XY，和 anchorSource/resolvedXY 形成三段证据链。
-    end -- 中文维护注释：记录修正能力、执行结果和最终 Native Geometry，用户点击诊断按钮即可复制。
-    return corrected or type(popup.CorrectOffsetByScreen) ~= "function", corrected and nil or (type(popup.CorrectOffsetByScreen) == "function" and "popup_screen_correction_failed" or nil) -- 中文维护注释：客户端没有该方法时不阻断普通 Popup；方法存在却异常才向调用方报告失败。
-end -- 中文维护注释：结束 Native 屏幕边缘修正 helper。
+        row.finalNativeXY = { x = after.offsetX or after.effectiveX, y = after.offsetY or after.effectiveY } -- ColorField V2 诊断显式保留最终 Native XY，和 anchorSource/resolvedXY 形成三段证据链。
+    end -- 记录修正能力、执行结果和最终 Native Geometry，用户点击诊断按钮即可复制。
+    return corrected or type(popup.CorrectOffsetByScreen) ~= "function", corrected and nil or (type(popup.CorrectOffsetByScreen) == "function" and "popup_screen_correction_failed" or nil) -- 客户端没有该方法时不阻断普通 Popup；方法存在却异常才向调用方报告失败。
+end -- 结束 Native 屏幕边缘修正 helper。
 
 function P:GetViewport(context)
     context = type(context) == "table" and context or (type(Layout.GetContext) == "function" and Layout:GetContext() or nil)
@@ -240,58 +229,54 @@ function P:GetSnapshot()
             verticalClamps = N(self.metrics.verticalClamps),
             shrinks = N(self.metrics.shrinks),
             anchorFallbacks = N(self.metrics.anchorFallbacks),
-            nativeRelativeApplies = N(self.metrics.nativeRelativeApplies), -- 中文维护注释：输出 Native-relative 次数。
-            viewportResolvedApplies = N(self.metrics.viewportResolvedApplies), -- 中文维护注释：输出 ColorField V2 resolved→UIParent 次数。
-            nativeScreenCorrections = N(self.metrics.nativeScreenCorrections), -- 中文维护注释：输出 Native 屏幕修正调用次数，确认边缘适配是否执行。
-            nativeScreenCorrectionFailures = N(self.metrics.nativeScreenCorrectionFailures), -- 中文维护注释：输出 Native 屏幕修正异常次数，异常必须可复制而不能静默。
+            nativeRelativeApplies = N(self.metrics.nativeRelativeApplies), -- 输出 Native-relative 次数。
+            viewportResolvedApplies = N(self.metrics.viewportResolvedApplies), -- 输出 ColorField V2 resolved→UIParent 次数。
+            nativeScreenCorrections = N(self.metrics.nativeScreenCorrections), -- 输出 Native 屏幕修正调用次数，确认边缘适配是否执行。
+            nativeScreenCorrectionFailures = N(self.metrics.nativeScreenCorrectionFailures), -- 输出 Native 屏幕修正异常次数，异常必须可复制而不能静默。
         },
         recent = rows,
     }
 end
 
--- 中文维护说明：.18.189 已证明“统一调用一个 Effective Geometry 校准函数”仍不足以解决 RU 实机偏移，因为 GetEffectiveOffset 的问题不仅可能是单位不同，还可能包含控件类型/父级语义差异。 -- 中文维护注释：记录真实实机证据，禁止未来再次把 Effective API 当成 Suite-owned Trigger 的首选 Authority。
--- 中文维护说明：Suite-owned Trigger 的位置本来就是由 UI:SetAnchor / UI:SetExtent 写入，NativeStateCache 保存了每一级真实逻辑父链；只要父链完整抵达 UIParent，它比任何反向读取 Native Effective Geometry 都更确定。 -- 中文维护注释：说明为什么 .18.190 改成 cache-first。
-function P:ResolveAnchorRect(target) -- 中文维护注释：把 Trigger 解析为 UIParent viewport-logical-v1 锚点；此函数是所有 Dropdown/ColorField/Tooltip/ContextMenu 的统一入口。
-    local native, component = ResolveNative(target) -- 中文维护注释：同时保留 Native 根和 RSUI Component 身份，用于区分 Suite-owned 与外部原生控件。
-    if native == nil then return nil, "popup_anchor_rect_unavailable" end -- 中文维护注释：没有 Native 根无法建立任何屏幕几何证据，直接 fail-closed。
-    local cache = UI and UI.NativeStateCache or nil -- 中文维护注释：读取 Diff Authority 的弱引用状态缓存；这里只读，不新增 Tick，也不修改组件状态。
-    local suiteOwned = component ~= nil or (type(cache) == "table" and type(cache[native]) == "table") -- 中文维护注释：RSUI Component 或已被 Diff Authority 管理的 Native 控件都属于 Suite-owned 车道。
-    if suiteOwned == true and type(Layout.ResolveSuiteOwnedViewportLogicalRect) == "function" then -- 中文维护注释：Suite-owned Trigger 必须优先使用完整缓存父链，禁止先尝试 Effective Geometry。
-        local ok, x, y, w, h, meta = pcall(function() return Layout:ResolveSuiteOwnedViewportLogicalRect(native) end) -- 中文维护注释：有界调用缓存父链 Authority；异常不会逃逸到 Popup Open 事件。
-        if ok == true and tonumber(x) ~= nil and tonumber(y) ~= nil and tonumber(w) ~= nil and tonumber(h) ~= nil then -- 中文维护注释：只有完整可证明的逻辑矩形才允许继续显示 Popup。
-            return { -- 中文维护注释：构造统一的 viewport-logical-v1 Anchor Rect，后续 Placement 只能做 flip/clamp，不能再次缩放。
-                x = tonumber(x), y = tonumber(y), width = math.max(1, tonumber(w)), height = math.max(1, tonumber(h)), -- 中文维护注释：直接使用 Diff Authority 的逻辑位置和尺寸。
-                right = tonumber(x) + math.max(1, tonumber(w)), bottom = tonumber(y) + math.max(1, tonumber(h)), -- 中文维护注释：预计算右/下边界供 Dropdown 空间预算与 Clamp 使用。
-                coordinateSpace = "viewport-logical-v1", -- 中文维护注释：明确最终锚点已处于 UIParent 逻辑视口坐标，Consumer 不得二次变换。
-                source = "suite_native_state_anchor_chain", -- 中文维护注释：实机诊断明确标记本次采用 cache-first Authority。
-                normalization = meta, -- 中文维护注释：保留父链深度等只读诊断证据，不参与业务逻辑。
-            }, nil -- 中文维护注释：Suite-owned 成功后立即返回，绝不再混入 Effective Geometry 的第二套坐标。
-        end -- 中文维护注释：结束完整缓存父链成功分支。
-        self.metrics.anchorFallbacks = N(self.metrics.anchorFallbacks) + 1 -- 中文维护注释：缓存父链断裂属于需要关注的异常路径，累计到有界诊断指标。
-        return nil, "popup_suite_anchor_chain_unavailable" -- 中文维护注释：Suite-owned 控件父链不完整时直接 fail-closed；禁止退回 Effective API 猜位置，否则会重演 .18.189 实机偏移。
-    end -- 中文维护注释：结束 Suite-owned Trigger 车道。
-    if type(Layout.ResolveViewportLogicalRect) == "function" then -- 中文维护注释：只有外部原生 Trigger 才允许使用 RU Effective Geometry 校准车道。
-        local ok, x, y, w, h, meta = pcall(function() return Layout:ResolveViewportLogicalRect(native) end) -- 中文维护注释：对外部原生控件保留 .18.189 的 bounded effective-unit calibration。
-        if ok == true and tonumber(x) ~= nil and tonumber(y) ~= nil and tonumber(w) ~= nil and tonumber(h) ~= nil then -- 中文维护注释：只有有效完整矩形才允许外部原生 Popup 锚定。
-            local source = type(meta) == "table" and tostring(meta.source or "") or "external_native_effective" -- 中文维护注释：记录外部原生几何来源，便于与 Suite cache 车道区分。
-            self.metrics.anchorFallbacks = N(self.metrics.anchorFallbacks) + 1 -- 中文维护注释：外部原生车道不是默认路径，计入 fallback 方便诊断覆盖率。
-            return { -- 中文维护注释：把外部原生解析结果规范成同一 Anchor Rect 结构。
-                x = tonumber(x), y = tonumber(y), width = math.max(1, tonumber(w)), height = math.max(1, tonumber(h)), -- 中文维护注释：使用校准后的外部原生逻辑矩形。
-                right = tonumber(x) + math.max(1, tonumber(w)), bottom = tonumber(y) + math.max(1, tonumber(h)), -- 中文维护注释：计算边界供 Placement 使用。
-                coordinateSpace = "viewport-logical-v1", -- 中文维护注释：外部原生结果也必须统一成 viewport-logical-v1。
-                source = source ~= "" and source or "external_native_effective", -- 中文维护注释：保证诊断来源永远非空。
-                normalization = meta, -- 中文维护注释：保留 Effective scale、scaleSource、score 等校准证据。
-            }, nil -- 中文维护注释：返回外部原生 Anchor Rect。
-        end -- 中文维护注释：结束外部原生 Effective Geometry 成功分支。
-    end -- 中文维护注释：结束外部原生 Geometry Authority 检查。
-    return nil, "popup_anchor_rect_unavailable" -- 中文维护注释：所有可证明坐标来源都失败时拒绝显示 Popup，绝不使用固定偏移或局部坐标猜测。
-end -- 中文维护注释：结束统一 Popup Anchor Rect 解析函数。
+-- .18.189 已证明“统一调用一个 Effective Geometry 校准函数”仍不足以解决 RU 实机偏移，因为 GetEffectiveOffset 的问题不仅可能是单位不同，还可能包含控件类型/父级语义差异。 -- 记录真实实机证据，禁止未来再次把 Effective API 当成 Suite-owned Trigger 的首选 Authority。
+-- Suite-owned Trigger 的位置本来就是由 UI:SetAnchor / UI:SetExtent 写入，NativeStateCache 保存了每一级真实逻辑父链；只要父链完整抵达 UIParent，它比任何反向读取 Native Effective Geometry 都更确定。 -- 说明为什么 .18.190 改成 cache-first。
+function P:ResolveAnchorRect(target) -- 把 Trigger 解析为 UIParent viewport-logical-v1 锚点；此函数是所有 Dropdown/ColorField/Tooltip/ContextMenu 的统一入口。
+    local native, component = ResolveNative(target) -- 同时保留 Native 根和 RSUI Component 身份，用于区分 Suite-owned 与外部原生控件。
+    if native == nil then return nil, "popup_anchor_rect_unavailable" end -- 没有 Native 根无法建立任何屏幕几何证据，直接 fail-closed。
+    local cache = UI and UI.NativeStateCache or nil -- 读取 Diff Authority 的弱引用状态缓存；这里只读，不新增 Tick，也不修改组件状态。
+    local suiteOwned = component ~= nil or (type(cache) == "table" and type(cache[native]) == "table") -- RSUI Component 或已被 Diff Authority 管理的 Native 控件都属于 Suite-owned 车道。
+    if suiteOwned == true and type(Layout.ResolveSuiteOwnedViewportLogicalRect) == "function" then -- Suite-owned Trigger 必须优先使用完整缓存父链，禁止先尝试 Effective Geometry。
+        local ok, x, y, w, h, meta = pcall(function() return Layout:ResolveSuiteOwnedViewportLogicalRect(native) end) -- 有界调用缓存父链 Authority；异常不会逃逸到 Popup Open 事件。
+        if ok == true and tonumber(x) ~= nil and tonumber(y) ~= nil and tonumber(w) ~= nil and tonumber(h) ~= nil then -- 只有完整可证明的逻辑矩形才允许继续显示 Popup。
+            return { -- 构造统一的 viewport-logical-v1 Anchor Rect，后续 Placement 只能做 flip/clamp，不能再次缩放。
+                x = tonumber(x), y = tonumber(y), width = math.max(1, tonumber(w)), height = math.max(1, tonumber(h)), -- 直接使用 Diff Authority 的逻辑位置和尺寸。
+                right = tonumber(x) + math.max(1, tonumber(w)), bottom = tonumber(y) + math.max(1, tonumber(h)), -- 预计算右/下边界供 Dropdown 空间预算与 Clamp 使用。
+                coordinateSpace = "viewport-logical-v1", -- 明确最终锚点已处于 UIParent 逻辑视口坐标，Consumer 不得二次变换。
+                source = "suite_native_state_anchor_chain", -- 实机诊断明确标记本次采用 cache-first Authority。
+                normalization = meta, -- 保留父链深度等只读诊断证据，不参与业务逻辑。
+            }, nil -- Suite-owned 成功后立即返回，绝不再混入 Effective Geometry 的第二套坐标。
+        end -- 结束完整缓存父链成功分支。
+        self.metrics.anchorFallbacks = N(self.metrics.anchorFallbacks) + 1 -- 缓存父链断裂属于需要关注的异常路径，累计到有界诊断指标。
+        return nil, "popup_suite_anchor_chain_unavailable" -- Suite-owned 控件父链不完整时直接 fail-closed；禁止退回 Effective API 猜位置，否则会重演 .18.189 实机偏移。
+    end -- 结束 Suite-owned Trigger 车道。
+    if type(Layout.ResolveViewportLogicalRect) == "function" then -- 只有外部原生 Trigger 才允许使用 RU Effective Geometry 校准车道。
+        local ok, x, y, w, h, meta = pcall(function() return Layout:ResolveViewportLogicalRect(native) end) -- 对外部原生控件保留 .18.189 的 bounded effective-unit calibration。
+        if ok == true and tonumber(x) ~= nil and tonumber(y) ~= nil and tonumber(w) ~= nil and tonumber(h) ~= nil then -- 只有有效完整矩形才允许外部原生 Popup 锚定。
+            local source = type(meta) == "table" and tostring(meta.source or "") or "external_native_effective" -- 记录外部原生几何来源，便于与 Suite cache 车道区分。
+            self.metrics.anchorFallbacks = N(self.metrics.anchorFallbacks) + 1 -- 外部原生车道不是默认路径，计入 fallback 方便诊断覆盖率。
+            return { -- 把外部原生解析结果规范成同一 Anchor Rect 结构。
+                x = tonumber(x), y = tonumber(y), width = math.max(1, tonumber(w)), height = math.max(1, tonumber(h)), -- 使用校准后的外部原生逻辑矩形。
+                right = tonumber(x) + math.max(1, tonumber(w)), bottom = tonumber(y) + math.max(1, tonumber(h)), -- 计算边界供 Placement 使用。
+                coordinateSpace = "viewport-logical-v1", -- 外部原生结果也必须统一成 viewport-logical-v1。
+                source = source ~= "" and source or "external_native_effective", -- 保证诊断来源永远非空。
+                normalization = meta, -- 保留 Effective scale、scaleSource、score 等校准证据。
+            }, nil -- 返回外部原生 Anchor Rect。
+        end -- 结束外部原生 Effective Geometry 成功分支。
+    end -- 结束外部原生 Geometry Authority 检查。
+    return nil, "popup_anchor_rect_unavailable" -- 所有可证明坐标来源都失败时拒绝显示 Popup，绝不使用固定偏移或局部坐标猜测。
+end -- 结束统一 Popup Anchor Rect 解析函数。
 
--- Generic anchor placement.  `preferred` is bottom-start by default.  The
--- solver flips vertically when the preferred side cannot contain the desired
--- popup and the opposite side can (or simply has more room), then clamps the
--- final rect into the safe viewport.  No consumer may apply another scale or
--- host-origin transform after this returns.
+-- 通用锚位置，preferred 默认 bottom-start；首选侧不足且反侧可容纳/余量更大时纵向翻转，再限制到安全视口。返回后不能再作缩放或宿主原点转换。
 function P:ResolveAnchored(anchor, popupWidth, popupHeight, options)
     options = type(options) == "table" and options or {}
     anchor = CopyRect(anchor)
@@ -344,10 +329,7 @@ function P:ResolveAnchored(anchor, popupWidth, popupHeight, options)
     return result, nil, meta
 end
 
--- Dropdown specialization: visible row count is derived from the selected side
--- and a viewport-height budget.  This keeps long region lists usable on 768p
--- without creating a screen-sized popup; the existing Dropdown pool/scroll
--- authority remains responsible for row reuse and scrolling.
+-- Dropdown 按选定侧与视口高度预算推导可见行，768p 长区域列表仍可用且弹层不撑满屏；行复用/滚动仍归已有池。
 function P:ResolveDropdown(target, options)
     options = type(options) == "table" and options or {}
     local anchor, anchorErr = self:ResolveAnchorRect(target)
@@ -380,12 +362,10 @@ function P:ResolveDropdown(target, options)
         context = options.context,
         gap = gap,
         preferred = useAbove and "top-start" or "bottom-start",
-        record = false, -- Dropdown records once after attaching row/flip evidence.
+        record = false, -- Dropdown 附上行数/翻转证据后记录一次。
     })
     if result == nil then return nil, resolveErr end
-    -- Dropdown's product preference is always below the trigger.  ResolveAnchored
-    -- receives the already-selected side so it can clamp without re-flipping;
-    -- restore the user-meaningful flip bit here for diagnostics/acceptance.
+    -- Dropdown 优先触发器下方；ResolveAnchored 接收已选侧，限制位置而不二次翻转，在此恢复面向用户的 flip 标志供诊断/验收。
     if useAbove == true and meta.flipped ~= true then
         self.metrics.flips = N(self.metrics.flips) + 1
     end

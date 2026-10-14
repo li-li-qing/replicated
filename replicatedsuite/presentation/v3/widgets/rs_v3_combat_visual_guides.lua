@@ -1,13 +1,11 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 3 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Visual Guides Presenter
+-- Replicated Suite · 战斗视觉引导
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Screen-only Presentation for current-target line and user-defined range
--- circle. Features own sampling cadence and detached projections; this file
--- only diff-renders bounded dot pools and owns no Tick/Scheduler.
+-- 合并约束：先检查冲突标记、toc.g 加载清单完整性与 Lua 语法，再做运行时验收。
+-- 权威归属、调用链和存档协议由实现负责，不能通过清配置、跳过加载或恢复 Legacy 绕过错误。
+-- 仅负责当前目标连线与用户范围圆的屏幕表现；Feature 持有采样节拍和分离投影，本文件只对有界点池差异渲染，不持有 Tick/Scheduler。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -36,20 +34,16 @@ P.rangeHeld = P.rangeHeld == true
 P.unitHost = P.unitHost or nil
 P.rangeHost = P.rangeHost or nil
 P.unitPools = P.unitPools or {}
-P.unitPool = P.unitPool or {} -- legacy allocation field retained only for diagnostics compatibility
+P.unitPool = P.unitPool or {} -- 旧分配字段仅保留用于诊断兼容。
 P.rangePools = P.rangePools or {}
-P.rangePool = P.rangePool or {} -- legacy first-pool alias kept for diagnostics compatibility
+P.rangePool = P.rangePool or {} -- 旧首池别名仅保留用于诊断兼容。
 P.eventOwner = P.eventOwner or {}
 P.hostMetrics = P.hostMetrics or {}
--- Lifecycle watchdog telemetry (v6): the presenter acquires its render lease by
--- SUBSCRIBING to feature lifecycle events, so every failure mode below was
--- permanently fatal AND silent before v6 — 0 consumers, 0 warnings, "已开启但
--- 无消费者" until the user re-toggled:
---   a) lifecycle event missed (subscription/handshake timing),
---   b) lease cleared underneath the presenter (Demand:ClearAll on runtime
---      stop/start publishes no lifecycle event, and a later F:Enable is a
---      no-op because row.enabled is already true),
---   c) acquire transaction failure (never warned).
+-- 生命周期看门诊断：presenter 通过订阅 Feature 生命周期事件获取渲染租约，下方须覆盖全部失败模式：
+-- 失败不能永久静默停留在零 Consumer、零告警的“已开启但
+-- 无消费者”状态并等待用户重新切换：
+-- a）订阅/握手时序导致漏收事件；b）运行 stop/start 的 Demand:ClearAll 清空租约却无生命周期事件，后续 F:Enable 因 row.enabled=true 无操作；
+-- c）获取事务失败且无告警。
 P.watchdogTask = P.watchdogTask or "v3_visual_guides_lifecycle_watchdog"
 P.lastLifecycle = P.lastLifecycle or nil
 P.acquireAttempts = P.acquireAttempts or { unit = 0, range = 0 }
@@ -57,12 +51,9 @@ P.lastAcquireError = P.lastAcquireError or {}
 P.reconcileRuns = tonumber(P.reconcileRuns) or 0
 P.watchdogTicks = tonumber(P.watchdogTicks) or 0
 
--- RETIRED 2026-09-06: emptywidget + CreateColorDrawable("overlay") 4x4 dots
--- had no working-reference precedent and were invisible on the real client.
--- Both reference implementations (easypull, plates) draw overlay dots as
--- LABEL widgets containing a '.' glyph; EnsureUnitPairPool/EnsurePool now do
--- the same via S.UI:CreateLabel. Kept here so the audit token trail and any
--- external caller survive one generation.
+-- 2026-09-06 实机确认 emptywidget + CreateColorDrawable("overlay") 的 4x4 点不可见，且无成功参考。
+-- easypull/plates 均以包含 '.' 的 LABEL 绘点；
+-- EnsureUnitPairPool/EnsurePool 同样使用 S.UI:CreateLabel，此处保留一个代际的审计标识与外部调用兼容。
 local function NewColorDrawable(parent)
     if parent == nil or type(parent.CreateColorDrawable) ~= "function" then return nil end
     local ok, drawable = pcall(function() return parent:CreateColorDrawable(0.96, 0.78, 0.18, 0.8, "overlay") end)
@@ -73,11 +64,8 @@ function P:EnsureHost(kind)
     local field = kind == "unit" and "unitHost" or "rangeHost"
     local host = self[field]
     if host == nil then
-        -- v7 reference alignment (rp_ui.lua EnsureLinesHost / easypull.lua:257):
-        -- the overlay host MUST be a real top-level WINDOW. The previous root
-        -- emptywidget + "system" UILayer is recorded in our own CreatePanel
-        -- documentation as unreliable on RU clients — the host rendered nothing
-        -- and every dot (its child) was invisible with it.
+        -- 按 rp_ui.lua EnsureLinesHost/easypull.lua:257 的已验证模型，覆盖宿主必须是实际顶层 WINDOW；
+        -- CreatePanel 文档已记录 RU 的根 emptywidget + "system" UILayer 不可靠，会使宿主和全部子点不可见。
         local created, err = S.UI:CreateOverlayWindow("v3_visual_" .. kind .. "_host", self.owner)
         if created == nil then return nil, err end
         host=created; self[field]=host
@@ -89,8 +77,7 @@ local UNIT_COLORS = {
     target = {1.00,0.72,0.12}, targettarget = {0.94,0.42,0.20},
     focus = {0.35,0.82,1.00}, focustarget = {0.67,0.52,1.00},
 }
--- Resolve a per-pair color override from the Feature projection; falls back to
--- the hardcoded palette so older stores without colors keep rendering.
+-- 从 Feature 投影解析每对颜色覆盖；无颜色的旧 Store 回退硬编码色板，保持渲染。
 local function UnitLineColor(projection, pairKey)
     local colors = type(projection) == "table" and projection.colors or nil
     if type(colors) == "table" then
@@ -101,14 +88,10 @@ local function UnitLineColor(projection, pairKey)
     return c[1], c[2], c[3]
 end
 
--- Unit Line Adaptive Sampling + Smooth Refresh Contract v2
+-- 单位连线自适应采样与平滑刷新契约。
 --
--- `pointCount/pairPoints` are preserved as the user's BASE density for store
--- compatibility.  They are no longer treated as the final number of dots.
--- The visible screen-space segment is clipped first, then extra samples are
--- added as the segment grows so long-distance relations keep the same visual
--- continuity as short-distance relations.  A cadence-aware TOTAL budget caps
--- Native work when the user selects very high refresh rates.
+-- pointCount/pairPoints 保留为用户基线密度，兼容 Store，不再视为最终点数。先裁切可见屏幕线段，再随长度增加额外样本，使远近连线具有一致连续性；
+-- 总预算随节拍调整，限制高刷新率的 Native 工作。
 -- 维护 2026-09-12：客户端报告端点y=-3345，旧实现整段分配点并把屏外点计为可见。
 -- 只在UIParent:GetScreenWidth/Height同源raw坐标范围裁剪线段，再分配屏内密度。
 -- 禁止用GetUiMetrics的logical尺寸或addonScale裁raw坐标；拿不到同源尺寸就保留原坐标。
@@ -122,12 +105,8 @@ local UNIT_LINE_TOTAL_BUDGET_FAST = 256
 local UNIT_LINE_TOTAL_BUDGET_MEDIUM = 320
 local UNIT_LINE_TOTAL_BUDGET_NORMAL = 384
 local UNIT_LINE_TOTAL_BUDGET_SLOW = 480
--- Smooth Refresh Contract v1: high-frequency unit lines must not be deferred as
--- one monolithic P3 burst under crowd/frame pressure.  Instead the producer
--- stays frame-cadence eligible while Presentation caps adaptive EXTRA
--- density and grows Native dot pools progressively.  The user's configured
--- base density remains the hard floor.
--- 中文维护（dynamic-hud-1）：取旧Critical档保守上限固定额外点预算，后台积压恢复不能
+-- 高频单位连线不能在拥挤/帧压力下整体延迟为 P3 突发；生产端保持帧节拍资格，表现层限制自适应额外密度并逐步扩点池，用户基线密度始终为硬下限。
+-- 约束（dynamic-hud-1）：取旧Critical档保守上限固定额外点预算，后台积压恢复不能
 -- 自动将连线加密近一倍。用户基础密度仍为硬下限，Native点池增长仍受当帧压力约束。
 local UNIT_LINE_EXTRA_BUDGET_FACTOR = 0.55
 local UNIT_LINE_POOL_GROWTH = { Normal=48, Busy=32, Heavy=24, Critical=16 }
@@ -152,8 +131,7 @@ end
 local function DesiredUnitLinePointCount(length, baseCount)
     baseCount=math.max(UNIT_LINE_DENSITY_HARD_MIN,math.min(UNIT_LINE_PAIR_HARD_CAP,math.floor(tonumber(baseCount) or 24)))
     length=math.max(0,tonumber(length) or 0)
-    -- Preserve the old near-distance look: baseCount remains a floor.  The
-    -- reference maps 24 legacy points to roughly 10.4 logical px spacing.
+    -- 保持近距外观，baseCount 为下限；参考将旧 24 点映射为约 10.4 逻辑像素间距。
     local spacing=UNIT_LINE_REFERENCE_LENGTH/math.max(1,baseCount-1)
     local adaptive=math.ceil(length/math.max(1,spacing))+1
     return math.max(baseCount,math.min(UNIT_LINE_PAIR_HARD_CAP,adaptive))
@@ -249,7 +227,7 @@ function P:BuildUnitLineSamplePlan(rows, projection, viewportW, viewportH, press
     return plans,budget,stats
 end
 
--- 中文维护（performance-visual-hotpath-1）：只缓存已读端点的纯几何结果，不跳过Feature采样。
+-- 约束（performance-visual-hotpath-1）：只缓存已读端点的纯几何结果，不跳过Feature采样。
 -- 逐项比较端点/顺序/密度/视口/压力/间隔，不用revision（每帧都增加），不拼接长签名。
 -- 样式不参与采样，命中后仍绑定本次独立row并执行放置/失败重试/点池渐进增长。
 function P:GetUnitRenderPlan(rows, projection, viewportW, viewportH, pressure)
@@ -363,16 +341,9 @@ function P:EnsureUnitPairPool(pairKey, count, growthLimit)
     local target=math.min(count,#pool+growthLimit)
     local created=0
     for index=#pool+1,target do
-        -- DOT MODEL (2026-09-06, reference-aligned): the previous emptywidget +
-        -- 4x4 CreateColorDrawable("overlay") dot has NO working-reference
-        -- precedent and 4px is near-invisible at 1080p+. Every reference that
-        -- actually works on live RU draws dots as a LABEL containing a single
-        -- '.' character (easypull.lua:262-280 label '.' SetFontSize(22)
-        -- SetOutline; plates rp_ui.lua:2341-2354 label '.' 15px pools). Use the
-        -- same model through the project's own S.UI:CreateLabel primitive.
-        -- Reference dot model (rp_ui.lua EnsureLinesHost): extent 1x1 — the
-        -- '.' glyph size IS carried by the font size, a larger extent only
-        -- offsets the glyph from the anchor point.
+        -- 2026-09-06 实机参考确认绘点应使用单 '.' 字符 LABEL：easypull.lua:262-280 为 22px/SetOutline，rp_ui.lua:2341-2354 为 15px 点池。
+        -- 旧 emptywidget + 4x4 drawable 没有成功参考，在 1080p 以上近乎不可见；使用本项目 S.UI:CreateLabel。
+        -- 宿主点 extent 保持 1x1，字形大小由字体决定，较大 extent 只会把字形偏离锚点。
         local dot,dotErr=S.UI:CreateLabel(host,"v3_visual_unit_"..pairKey.."_dot_"..tostring(index),".",0,0,1,1,15,"strong","CENTER",false)
         if dot==nil then return nil,dotErr end
         AdoptManualPointTypography(dot)
@@ -410,9 +381,7 @@ function P:HideUnitPools()
 end
 
 function P:EnsurePool(kind, count)
-    -- Legacy compatibility helper: honor the same real safety envelopes as the
-    -- active per-pair/per-circle pools so a future caller cannot reintroduce the
-    -- obsolete 48-dot presentation ceiling behind the Feature Authority.
+    -- 旧兼容辅助函数仍遵循活跃连线/范围池的真实安全范围，防止未来调用在 Feature 权威层后重新引入废弃 48 点上限。
     local hardCap = kind == "range" and RANGE_DENSITY_HARD_MAX or UNIT_LINE_PAIR_HARD_CAP
     count=math.max(0,math.min(hardCap,math.floor(tonumber(count) or 0)))
     local pool = kind == "unit" and self.unitPool or self.rangePool
@@ -420,8 +389,7 @@ function P:EnsurePool(kind, count)
     for index=1,count do
         local row=pool[index]
         if type(row)~="table" or row.root==nil then
-            -- Reference-aligned label dot (same rationale as
-            -- EnsureUnitPairPool; easypull/rp_ui both draw '.' labels).
+            -- 使用参考验证的标签点，与 EnsureUnitPairPool 原因相同；easypull/rp_ui 都用 '.' 标签。
             local dot, dotErr = S.UI:CreateLabel(host, "v3_visual_" .. kind .. "_dot_" .. tostring(index), ".", 0, 0, 1, 1, 15, "strong", "CENTER", false)
             if dot == nil then return false, dotErr end
             AdoptManualPointTypography(dot)
@@ -474,8 +442,7 @@ local VISUAL_POINT_SIZE_MIN = tonumber(S.Constants and S.Constants.VisualGuide a
 local VISUAL_POINT_SIZE_HARD_MAX = tonumber(S.Constants and S.Constants.VisualGuide and S.Constants.VisualGuide.pointSizeHardMax) or 24
 local function ResolveVisualPointFontSize(value)
     local setting = math.max(VISUAL_POINT_SIZE_MIN, math.min(VISUAL_POINT_SIZE_HARD_MAX, math.floor(tonumber(value) or 4)))
-    -- Preserve the proven 2..10 mapping (2->16px, 10->40px) and extend it
-    -- monotonically instead of flattening all values >10 back to 40px.
+    -- 保留已验证 2..10 映射（2->16px、10->40px）并单调扩展，不能把全部 >10 值压成 40px。
     return math.max(15, math.floor(10 + setting * 3))
 end
 
@@ -504,13 +471,11 @@ local function HostLocalPoint(transform, x, y)
 end
 
 function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransform)
-    -- LABEL dots: color/size ride the label style, not a drawable (see
-    -- EnsureUnitPairPool for why the drawable model was replaced).
+    -- LABEL 点的颜色/大小通过标签样式设置，不使用 drawable；原因见 EnsureUnitPairPool。
     if type(dot)~="table" or dot.root==nil then return 0,0,0 end
-    -- v11 (.18.135): the point-size SETTING range is 2..10 while the glyph
-    -- must stay readable (>=15px, rp_ui reference). Clamping the setting into
-    -- the band made the size slider a no-op ("设置没有用"). Map it
-    -- monotonically instead: setting 2→16px, 4→22, 6→28, 8→34, 10→40.
+    -- 点大小设置范围为 2..10，但字形需按 rp_ui 参考保持 >=15px 可读；不能将设置值直接钳制为
+    -- 字形可读下限，否则大小滑块会变成无操作（“设置没有用”）。
+    -- 应使用单调映射：设置 2→16px、4→22、6→28、8→34、10→40。
     size=ResolveVisualPointFontSize(size)
     local alpha=math.max(0.1,math.min(1,tonumber(opacity) or 0.78))
     local cr,cg,cb=r,g,b
@@ -519,25 +484,15 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransfor
         cr,cg,cb=c[1],c[2],c[3]
     end
     local state=type(dot.renderState)=="table" and dot.renderState or {}; dot.renderState=state
-    -- .18.154: Unit-line dots are 1x1 LABEL anchors whose glyph size is carried
-    -- by TextStyle. The proven rp_ui renderer anchors that 1x1 label directly
-    -- at the projected unit point. Subtracting half the FONT size here shifted
-    -- every sampled point up-left by ~8..41px even though the projection itself
-    -- was correct, so endpoints missed the unit-head center. Keep raw projected
-    -- coordinates authoritative; font size changes visual ink only.
+    -- 单位线点是 1x1 LABEL 锚点，字形大小由 TextStyle 决定；rp_ui 直接锚在投影单位点。不能减去半字体大小，否则每个点会向左上偏约 8..41px 而错过头顶中心；
+    -- 原始投影坐标保持权威，字体只改变墨迹大小。
     local localX, localY = HostLocalPoint(hostTransform, x, y)
     local px=math.floor(localX+0.5)
     local py=math.floor(localY+0.5)
     local anchorWrites,styleWrites,visibilityWrites=0,0,0
-    -- .18.133 ROOT-CAUSE FIX (the "S visible but no dots" report): RSUI setters
-    -- return false BOTH for "rejected" AND for "no change needed". CreateLabel
-    -- primes row.fontSize=15 via PrimeNativeState, so with the 15px floor the
-    -- first SetFontSize(15) returned false (no-op), the old commit-on-accept
-    -- check treated it as failure, bailed out BEFORE SetUnitDotVisible, and
-    -- the dot stayed hidden at (0,0) on EVERY tick. Style writes are now
-    -- best-effort exactly like the working reference (rp_ui pcall style/font
-    -- and never bails): a visible dot with imperfect styling beats a
-    -- perfectly-styled dot that never shows.
+    -- RSUI setter 的 false 同时表示拒绝和无变化；
+    -- CreateLabel 经 PrimeNativeState 预设 row.fontSize=15，因此 SetFontSize(15) 可合法返回无操作 false。
+    -- 不能在显示前据此退出而使所有点永久隐藏在 (0,0)；样式写入按成功参考尽力执行，不妨碍点显现。
     if state.x~=px or state.y~=py then
         -- 维护：旧代码无条件提交anchor缓存，一次拒绝后相同坐标永不重试、点卡在旧位置。
         -- Authority=RSUI EnsureAnchor确认结果；失败隐藏当前点，保留未提交cache供下一帧重试。
@@ -595,12 +550,8 @@ function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b, hostTransf
     return state.visible==true
 end
 
--- ScreenProjectionV3 already returns coordinates in the same top-left
--- UIParent screen space used by OverlayWindow child anchors. Suite addonScale is
--- a layout-size preference, NOT a world/screen coordinate conversion. Applying
--- it here scales positions away from the top-left origin and creates a larger
--- absolute offset at 2560x1440. Presentation therefore consumes projected x/y
--- 1:1; all projection/calibration authority remains in ScreenProjectionV3.
+-- ScreenProjectionV3 已返回 OverlayWindow 子锚点使用的左上 UIParent 屏幕坐标；addonScale 是布局大小偏好，不能作世界/屏幕转换。
+-- 表现按 1:1 使用 x/y，避免 2560x1440 下随原点距离放大偏移；投影/校准权威均归 ScreenProjectionV3。
 
 function P:RenderUnit()
     self:SyncUiEnvironmentRevision()
@@ -636,10 +587,7 @@ function P:RenderUnit()
         requestedDots=requestedDots+requested
         local size=math.max(VISUAL_POINT_SIZE_MIN,math.min(VISUAL_POINT_SIZE_HARD_MAX,math.floor(tonumber(pairSizes[row.pairKey]) or tonumber(projection.pointSize) or 4)))
         local cr,cg,cb=UnitLineColor(projection,row.pairKey)
-        -- Split the frame growth budget across the remaining pairs instead of
-        -- letting the first pool consume it all: with four pairs enabled the
-        -- old first-come loop starved pools 2..4 for many frames (up to ten
-        -- under Critical pressure), rendering as "only one line has dots".
+        -- 逐帧扩池预算在剩余连线对间分配，不能让首池耗尽；四对连线时先到先得会让 2..4 池饥饿多帧，Critical 压力下可达十帧而只见一条线。
         local growthShare=math.max(8,math.floor(growthRemaining/math.max(1,remainingPlans)))
         local pool,err,created=self:EnsureUnitPairPool(key,requested,math.min(growthRemaining,growthShare)); if pool==nil then return false,err end
         created=math.max(0,tonumber(created) or 0); growthRemaining=math.max(0,growthRemaining-created); poolGrowth=poolGrowth+created
@@ -664,8 +612,7 @@ function P:RenderUnit()
     for key,pool in pairs(self.unitPools) do
         if active[key]~=true then for _,dot in ipairs(pool) do if self:SetUnitDotVisible(dot,false) then visibilityWrites=visibilityWrites+1 end end end
     end
-    -- Reference model: the host window is shown while lines exist and raised
-    -- above other Suite surfaces (rp_ui.lua UpdateLinesView host Show/Raise).
+    -- 参考模型：有连线时显示宿主窗口，并在 Suite 表面中抬升（rp_ui.lua UpdateLinesView host Show/Raise）。
     S.UI:SetVisible(self.unitHost,#plans>0,self.owner)
     self.lastUnitSampling={budget=budget,pressure=pressure,visibleEdges=#plans,requestedDots=requestedDots,
         inputEdges=sampleStats.inputEdges,clippedEdges=sampleStats.clippedEdges,outsideEdges=sampleStats.outsideEdges,
@@ -690,7 +637,7 @@ function P:RenderRange()
     if self.rangeHeld ~= true then
         self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); sample.status="no_consumer"; return true
     end
-    -- 中文维护（performance-hotpath-1）：范围绘制只消费独立坐标/样式快照，完整页面投影
+    -- 约束（performance-hotpath-1）：范围绘制只消费独立坐标/样式快照，完整页面投影
     -- 保留给设置与诊断；不用Authority裸引用，旧宿主兼容仍可回退原GetProjection。
     local projection=(type(RangeFeature.GetRenderProjection)=="function" and RangeFeature:GetRenderProjection()
         or RangeFeature:GetProjection()) or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
@@ -779,10 +726,8 @@ function P:ReconcileOne(feature,id,token,heldField,kind)
         end
         return true
     end
-    -- Lease-desync heal (v6): runtime ClearAll/ForceQuiesce can empty the lease
-    -- WITHOUT any lifecycle event, and a later F:Enable is a row.enabled no-op
-    -- that publishes nothing. Without this heal the presenter believes it holds
-    -- a dead lease forever — the "已开启但无消费者 + 零告警" field report.
+    -- 租约失配必须自愈：ClearAll/ForceQuiesce 可无生命周期事件清空租约，后续 F:Enable 因 row.enabled 无操作也不发布；否则 presenter 会误认仍持有
+    -- 失效租约，形成“已开启但无消费者 + 零告警”的实机现象。
     if self[heldField]==true and type(feature.HasConsumer)=="function" and feature:HasConsumer(token)~=true then
         self[heldField]=false
     end
@@ -807,13 +752,8 @@ function P:ReconcileOne(feature,id,token,heldField,kind)
     local rendered,renderErr
     if kind=="unit" then rendered,renderErr=self:RenderUnit() else rendered,renderErr=self:RenderRange() end
     if rendered~=true and acquiredNow then
-        -- Historical behavior released the consumer on the SAME tick the
-        -- render failed. That quiesced the demand, removed the refresh task
-        -- and left the presenter with no retry path (Reconcile only listens to
-        -- lifecycle events), so one transient pool/anchor failure permanently
-        -- hid the overlay until the user toggled the feature. Keep the
-        -- consumer instead: Authority ticks keep publishing UpdateTopic, so
-        -- the render retries automatically and self-heals.
+        -- 渲染失败时保留 Consumer，不能同 Tick 释放；释放会停用 Demand、移除刷新任务，且 Reconcile 只监听生命周期事件，暂时池/锚点失败将永久隐藏覆盖层。
+        -- 保留后 Authority Tick 继续发布 UpdateTopic，渲染可自动重试自愈。
         if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarnRateLimited) == "function" then
             S.DiagnosticsManager:WarnRateLimited("combat_visual_guides", kind == "unit" and "UNIT_RENDER_RETRY_KEPT" or "RANGE_RENDER_RETRY_KEPT",
                 5000, "渲染失败但保留 Consumer 自动重试", { error = tostring(renderErr or "unknown") })
@@ -828,14 +768,10 @@ function P:Reconcile(reason)
     return ok1==true and ok2==true, err1 or err2
 end
 
--- Lifecycle watchdog (v6, 1 s, P3, a few table reads per tick when healthy).
--- It closes every silent-failure mode of the subscribe-based lease handshake:
--- missed lifecycle events, lease cleared without lifecycle, and failed
--- acquires (retried here at 1 s instead of dying on the first attempt).
--- Registered unconditionally; a disabled-but-converged state costs nothing.
+-- 生命周期看门任务为 1 s/P3，正常时每次仅少量表读取；补齐订阅握手漏事件、无事件租约清空、获取失败，并按 1 s 重试。始终注册，但停用且已收敛状态不执行工作。
 function P:ConvergeTick()
     self.watchdogTicks=(tonumber(self.watchdogTicks) or 0)+1
-    -- 中文维护（2026-10-09）：正背面显示复用现有一秒租约收敛任务；只查开关/租约，不造第二个
+    -- 约束（2026-10-09）：正背面显示复用现有一秒租约收敛任务；只查开关/租约，不造第二个
     -- watchdog，不读取目标/相机。新 Presenter 在视觉共享文件之后加载，因此运行时再取得引用。
     local facing=S.UIV3 and S.UIV3.FacingIndicatorV3
     if facing and type(facing.ConvergeTick)=="function" then facing:ConvergeTick() end

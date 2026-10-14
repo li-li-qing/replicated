@@ -1,18 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native Craft Surface Observation Service
+-- Replicated Suite · 制作原生窗口观察
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Read-only bridge between verified native craft-window facts and V3
--- Presentation.  This Service never owns craft recipes, bag state, auction
--- queries, or a UI object.  It polls only three governed UIC constants while
--- tools_craft explicitly enables automatic sidecar observation.
---
--- RU safety contract:
---   * only ADDON:GetContent / GetContentMainScriptPosVis are used;
---   * candidate order is bounded: MAKE_CRAFT_ORDER -> CRAFT_ORDER -> CRAFT_BOOK;
---   * no unverified craft events are subscribed;
---   * four-value MainScript builds require a positive Content/parent visibility
---     fact before a window is considered open.  Geometry alone is not enough;
---   * no inventory/craft getter is called from this observer loop.
+-- 制作窗口只读桥连接已验证原生事实与 V3 Presentation，不拥有配方、背包、拍卖查询或 UI。仅在 tools_craft 显
+-- 式启用自动侧栏时观察三个受治理 UIC；只用 ADDON:GetContent/GetContentMainScriptPosVis，有界候选顺序
+-- MAKE_CRAFT_ORDER -> CRAFT_ORDER -> CRAFT_BOOK，不订阅未验证事件。四返回值版本须有 Content/parent 可见性肯
+-- 定事实，几何不足以证明打开；观察循环不调用背包或制作 getter。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -126,7 +120,7 @@ local function ResolveContentRect(content, logicalWidth, logicalHeight)
     for depth = 0, 8 do
         if node == nil then break end
         if S.Layout ~= nil and (type(S.Layout.ResolveViewportLogicalRect) == "function" or type(S.Layout.GetLogicalRect) == "function") then
-            -- 维护（2026-09-22，external-surface-geometry-1）：外部原生内容坐标最终用于 UIParent 侧栏锚定，
+            -- （2026-09-22，external-surface-geometry-1）外部原生内容坐标最终用于 UIParent 侧栏锚定，
             -- 必须优先走已校准的 viewport-logical-v1；旧 GetLogicalRect 会在部分 RU UI Scale 语义下
             -- 重复除缩放。兼容测试/旧引导环境时才退回 legacy helper，不改变 Native ADDON Authority。
             local ok, x, y, width, height = pcall(function()
@@ -183,9 +177,8 @@ function V:_ReadCandidate(addon, candidate, logicalWidth, logicalHeight)
         return { status = "unknown", visible = false, kind = candidate.kind, contentGlobal = candidate.globalName, source = "main-script-error", reason = "制作窗口几何读取失败" }
     end
     if mainRect == true then
-        -- Unlike AuctionSurfaceV3, craft candidates do not accept geometry-only
-        -- as an open signal. Multiple craft UICs can retain stale rectangles;
-        -- without a boolean or Content visibility fact we fail closed.
+        -- 制作候选不同于 AuctionSurfaceV3，不接受仅几何作为打开证据；多个 UIC 可保留旧矩形，缺 boolean 或
+        -- Content 可见事实时失败封闭。
         return { status = "unknown", visible = false, kind = candidate.kind, contentGlobal = candidate.globalName, source = "geometry-only", reason = "制作窗口仅返回几何，缺少可见性事实" }
     end
     return { status = "unknown", visible = false, kind = candidate.kind, contentGlobal = candidate.globalName, source = "unknown", reason = "制作窗口返回值未知" }

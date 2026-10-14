@@ -1,6 +1,10 @@
 ------------------------------------------------------------------------
--- 个人工作台：仅拥有 Presentation 偏好与只读投影（2026-09-18）。
--- 原因：导航、首页及列表选择过去分散且无法恢复隐藏。Authority：启停仍属
+-- Replicated Suite · 应用工作台
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 个人工作台：仅拥有表现偏好与只读投影。
+-- 导航、首页及列表选择共用可恢复的偏好。权威归属：启停仍属
 -- FeatureRuntime，窗口仍属 WidgetHost，关注仍属业务 Store。本 Store 不保存
 -- Enabled/进度/几何，不调用游戏 API；失败保留原存档写保护，不猜指纹、不重置业务。
 -- 所有投影有界，只有显式操作耐久写入；不新增 Tick/扫描/全量诊断。
@@ -11,7 +15,7 @@ S.UIV3 = S.UIV3 or {}
 local W = { version=1, revision=0, loaded=false, storeId='v3.workspace' }
 S.UIV3.Workspace = W
 local P = S.Persistence
--- 中文维护：外观名称与可选目录由 Workspace 统一声明，保存校验和页面选项共用此表，避免只加色表却遗漏入口。
+-- 外观名称与可选目录由 Workspace 统一声明，保存校验和页面选项共用此表，避免只加色表却遗漏入口。
 local APPEARANCES={
  {id='dark',name='经典深色',detail='保留原有默认风格'},
  {id='light',name='柔和浅色',detail='中性灰白底与低饱和蓝灰强调'},
@@ -172,7 +176,7 @@ end
 function W:SetCardVisible(id,value)
  local known=false;for _,r in ipairs(CARDS)do if r.id==id then known=true end end;if not known then return false,'未知卡片'end
  return self:Change('home',function()
-  -- 中文维护（2026-10-04）：今日收获进入卡片网格，但沿用 schema1 的 home.stats 开关，
+  -- 约束（2026-10-04）：今日收获进入卡片网格，但沿用 schema1 的 home.stats 开关，
   -- 不迁移/清理用户旧排序与隐藏偏好，不扩张 canonical 形状或改变旧存档指纹。
   if id=='stats'then self.state.home.stats=value==true;self.state.home.hidden.stats=nil
   else self.state.home.hidden[id]=value~=true or nil end;return true
@@ -251,7 +255,7 @@ function W:Reset(section)
 end
 function W:GetFeatureRows(mode,query)
  local rows={};query=tostring(query or ''):lower()
- -- 中文维护：功能管理同样只呈现手动配置已开放的模块；内部 Registry 仍保留完整身份与旧存档。
+ -- 功能管理同样只呈现手动配置已开放的模块；内部 Registry 仍保留完整身份与旧存档。
  for _,meta in ipairs(S.FeatureRegistry and S.FeatureRegistry:ListAccessible() or {})do
   if meta.lifecycle~='shell' then
    local state=self:ReadControl(meta.id);local pref=self:GetNavPreference(meta.route)

@@ -1,5 +1,7 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Death Review Floating Widget
+-- Replicated Suite · 死亡回顾悬浮组件
+-- 作者：Replicated
+-- QQ群：1104129461
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -17,7 +19,7 @@ local function Policy()
         defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 }
 end
 local function RuntimePolicy()
-    -- 只约束本轮内容所需的显示尺寸；Store 的历史 canonical/min=1 不变。
+    -- 仅约束内容所需显示尺寸；Store 的历史 canonical/min=1 不变。
     local policy = Policy()
     policy.minWidth, policy.minHeight = 420, 300
     return policy
@@ -32,7 +34,7 @@ local function CreateWidget()
         statePolicy = RuntimePolicy(), getState = function() return Feature:GetWidgetWindowState() end,
         setState = function(value, reason) return Feature.Commands:SetWidgetWindowState(value, reason) end, persist = Persist,
         onStateChanged = function()
-            -- 中文维护：拖动、缩放和锁定只刷新布局读数，不重建历史列表或增加定时任务。
+            -- 拖动、缩放和锁定只刷新布局读数，不重建历史列表或增加定时任务。
             if S.Events and type(S.Events.Publish) == "function" then S.Events:Publish("v3.death_review.layout") end
         end,
         onClosed = function(_, reason)
@@ -43,7 +45,7 @@ local function CreateWidget()
     instance.surface, instance.shell, instance.window = surface, surface.shell, surface.window
     instance.root, instance.windowController = surface.shell.root, surface.windowController
 
-    -- 中文维护：内容区与 WindowShell 使用独立身份前缀，避免状态列撞到 Shell 的 _status，导致整窗构建隔离。
+    -- 内容区与 WindowShell 使用独立身份前缀，避免状态列撞到 Shell 的 _status，导致整窗构建隔离。
     local content = S.UIV3.DeathReviewContent:Create(surface:GetContentRoot(), "v3_death_review_widget_detail")
     instance.content = content
     instance.summary, instance.timeline = content.summary, content.timeline
@@ -95,8 +97,7 @@ local function CreateWidget()
     end
     function instance:Open(context) return self:Show(context) end
     function instance:Close(context) return self:Hide(context) end
-    -- Shared responsive/react paths. Without ApplyLayout the floating window
-    -- would keep its old geometry after a resolution change.
+    -- 共享响应式布局/响应路径；需 ApplyLayout，使悬浮窗口在分辨率变化后更新几何。
     function instance:ApplyLayout(fromMetricsChange) return self.surface:ApplyLayout(fromMetricsChange == true) end
     function instance:ApplyProjection() return self:Refresh() end
     function instance:SetSize(width, height, persist) return self.surface:SetSize(width, height, persist) end
@@ -129,11 +130,10 @@ local ok, err = Host:Register(WIDGET_ID, {
 })
 if ok ~= true then error(err) end
 
--- Presentation owns automatic visibility reactions. Domain code publishes
--- lifecycle/death facts only and never touches WidgetHost from combat callbacks.
+-- 表现层负责自动显隐；Domain 仅发布生命周期/死亡事实，战斗回调不能操作 WidgetHost。
 local AutoPresenter = { id = "v3:death_review:auto_presenter" }
 if S.Events and type(S.Events.SubscribeInternal) == "function" then
-    -- 中文维护：Events 先传 owner，Authority 再传 revision、reason、record；跳过 revision 才能识别死亡通知。
+    -- Events 先传 owner，Authority 再传 revision、reason、record；跳过 revision 才能识别死亡通知。
     S.Events:SubscribeInternal("v3.death_review.updated", AutoPresenter, function(_, revision, reason)
         if tostring(reason or "") ~= "death" or S.FeatureRuntime:IsEnabled(FEATURE_ID) ~= true or Feature:GetSettingsProjection().autoShow ~= true then return end
         local okShow, showErr = Host:SetVisible(WIDGET_ID, true, { source = "death_auto", persist = false })

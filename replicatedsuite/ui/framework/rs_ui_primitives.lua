@@ -1,5 +1,7 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Primitive Components v1.1
+-- Replicated Suite · 基础界面原语
+-- 作者：Replicated
+-- QQ群：1104129461
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -122,17 +124,9 @@ end)
 RSUI.ButtonActionContractVersion = 2
 RSUI.StableButtonHoverContractVersion = 2
 
--- Native RU buttons may briefly emit a false OnLeave -> OnEnter pair while the
--- cursor has not physically left the control (parent Refresh/Layout is enough
--- to trigger it on high-frequency settings pages).  v1 only made the native
--- NORMAL/HIGHLIGHT drawables visually identical while hover=true; it still
--- cleared hover immediately on that false OnLeave, so the control could flash.
+-- RU 父 Refresh/Layout 可能在光标未离开时派发虚假 OnLeave -> OnEnter；仅把 NORMAL/HIGHLIGHT 设同外观不足，不能立即清 hover 导致闪烁。
 --
--- v2 keeps the event-driven model but fences leave with a short one-shot grace
--- window.  Re-entry cancels the pending leave.  At commit time IsMouseOver() is
--- used when the widget exposes the verified RU method; a still-hovered control
--- remains highlighted.  No Tick/polling is introduced and Component Release
--- already removes scheduler work through owner lifetime.
+-- 事件驱动离开使用短 one-shot 宽限，重入取消；提交时若提供已验证 IsMouseOver()，仍悬浮则保留高亮。不加 Tick/轮询，Release 已按 owner 移除任务。
 local STABLE_HOVER_LEAVE_GRACE_MS = 120
 
 local function StableHoverTaskName(component, native)
@@ -182,9 +176,7 @@ function RSUI:BindStableButtonHover(component, native)
             native.rsStableHoverLeaveTask = nil
             if tonumber(native.rsStableHoverEpoch) ~= leaveEpoch then return true end
 
-            -- RU exposes IsMouseOver on Widget.  A layout-induced false leave can
-            -- therefore be rejected at the safe point instead of repainting the
-            -- button to normal for a single frame.
+            -- RU Widget 提供 IsMouseOver，可在安全点拒绝布局导致的虚假离开，避免按钮恢复普通态一帧。
             if type(native.IsMouseOver) == "function" then
                 local ok, stillOver = pcall(function() return native:IsMouseOver() end)
                 if ok == true and stillOver == true then
@@ -273,11 +265,7 @@ local function CreateButtonComponent(kind, spec, withIcon)
         if state.icon ~= nil and type(self.SetIcon) == "function" then self:SetIcon(state.icon) end
         return true
     end
-    -- Button Action Contract v2: the component owns the single Native OnClick
-    -- handler for its entire lifetime.  Presentation may install or replace the
-    -- logical action after construction through SetOnClick()/component.onClick
-    -- without rebinding the Native widget (which would overwrite RSUI's event
-    -- mux, disabled gate and release bookkeeping).
+    -- Button 组件整个生命周期持有唯一 Native OnClick；表现可经 SetOnClick()/component.onClick 更换逻辑操作，不重绑而覆盖 RSUI mux、禁用门或释放记录。
     c.onClick = type(spec.onClick) == "function" and spec.onClick or nil
     function c:SetOnClick(fn)
         if self.released == true then return false, "released" end
@@ -326,18 +314,13 @@ RSUI:RegisterType("Button", function(spec) return CreateButtonComponent("Button"
 RSUI:RegisterType("IconButton", function(spec) return CreateButtonComponent("IconButton", spec, true) end)
 
 ------------------------------------------------------------------------
--- Phase 3 UMG-like primitive upgrades. These registrations intentionally
--- replace the earlier v1 factories while keeping the same public type names.
+-- UMG 风格原语注册显式替换旧工厂，同时保留公开类型名。
 ------------------------------------------------------------------------
 
--- ArcheAge/RU LABEL is a single-line primitive. The public API exposes
--- SetAutoResize but no word-wrap/line-height contract; feeding a manually
--- wrapped string containing "\\n" into one LABEL can make multiple lines paint
--- on the same native baseline. RSUI therefore renders overflow="wrap" through
--- a bounded pool of one-line LABEL children hosted by an EMPTY_WIDGET.
+-- ArcheAge/RU LABEL 是单行原语，虽公开 SetAutoResize 却无换行/行高契约；单标签写带 "\\n" 字符串可能让多行叠在同一基线。
+-- overflow="wrap" 由 EMPTY_WIDGET 下有界单行 LABEL 池渲染。
 --
--- The pool is created lazily and capped so long descriptions never explode the
--- native widget count. This remains event/layout driven: no Tick/OnUpdate.
+-- 标签池延迟创建并设上限，长描述不能无限增 Native；仅事件/布局驱动，无 Tick/OnUpdate。
 function RSUI.NormalizeWrappedTextSizing(spec)
     spec = type(spec) == "table" and spec or {}
     local maxLines = math.max(1, math.floor(tonumber(spec.maxLines) or 1000))
@@ -399,7 +382,7 @@ local function CreateWrappedText(spec)
         end
         label.rsLocalFontScale = tonumber(self.appearanceFontScale) or tonumber(self.root and self.root.rsLocalFontScale) or 1.0
         self.lineLabels[index] = label
-        -- 中文维护（2026-10-09）：延迟创建的换行子 Label 继承背景通道及其文字样式，避免首次布局后新行仍看不清。
+        -- 约束（2026-10-09）：延迟创建的换行子 Label 继承背景通道及其文字样式，避免首次布局后新行仍看不清。
         if self.appearanceBackgroundOpacity ~= nil and S.Theme and type(S.Theme.SetBackgroundOpacity) == "function" then
             S.Theme:SetBackgroundOpacity(label, self.appearanceBackgroundOpacity)
         end
@@ -453,7 +436,7 @@ local function CreateWrappedText(spec)
     end
 
     function c:ApplyBackgroundOpacity(value)
-        -- 中文维护：透明文字策略跟随现有外观继承；已分配的子行复用，无需重建文本或额外树扫描。
+        -- 透明文字策略跟随现有外观继承；已分配的子行复用，无需重建文本或额外树扫描。
         local theme = S.Theme
         if type(theme) ~= "table" or type(theme.SetBackgroundOpacity) ~= "function" then return false end
         theme:SetBackgroundOpacity(self.root, value)
@@ -602,17 +585,13 @@ RSUI:ReplaceType("Text", function(spec)
         if self.text == value then return false end
         self.text = value
         self:InvalidateMeasure("text_changed")
-        -- Once geometry exists, let Measure -> Layout -> Render own the update.
-        -- This prevents ellipsis/wrap from rendering against a stale width.
+        -- 几何建立后由 Measure -> Layout -> Render 更新，防止省略/换行使用旧宽度。
         if tonumber(self.width) ~= nil and tonumber(self.height) ~= nil then return true end
         return self:Render()
     end
     function c:SetTone(tone) self.state.tone = tostring(tone or "default"); return UI:SetLabelTone(self.root, self.state.tone, self.owner) end
 
-    -- Event-time overflow query used by TooltipService/TableView. Do not rely
-    -- only on cached Render flags: a row may have just been rebound or a column
-    -- may have been resized immediately before the pointer enters it. Measuring
-    -- here is cheap because this path runs only on hover, never on Tick.
+    -- TooltipService/TableView 在事件时查询溢出，不能仅依赖 Render 缓存，悬浮前行可能刚重绑或列刚缩放；测量仅悬浮时执行，不进入 Tick。
     function c:IsTextTruncated()
         if self.state.textTruncated == true or self.state.textClipped == true or self.state.textOverflow == true then return true end
         local TL = RSUI.TextLayout
@@ -643,10 +622,7 @@ RSUI:ReplaceType("Text", function(spec)
         local height = lineH
         if tonumber(availableWidth) ~= nil then
             local aw = math.max(1, tonumber(availableWidth))
-            -- A single Native LABEL never owns wrap semantics. overflow=wrap is
-            -- routed to CreateWrappedText before this factory is entered. If a
-            -- caller mutates the field afterward, keep geometry single-line
-            -- rather than ever feeding a newline string to the LABEL.
+            -- 单个 LABEL 不持换行语义，overflow=wrap 在进入工厂前转 CreateWrappedText；调用方随后改字段时仍保持单行几何，不写换行串。
             if self.spec.allowOverflow ~= true then width = math.min(width, aw) end
         end
         width = math.max(1, tonumber(self.spec.minWidth) and math.max(width, tonumber(self.spec.minWidth)) or width)
@@ -684,10 +660,7 @@ RSUI:ReplaceType("Text", function(spec)
             elseif overflowMode == "clip" then
                 clipped = TL:MeasureWidth(self.root, self.text, font) > width
             else
-                -- Unknown/visible overflow policies are the only unmanaged case.
-                -- Managed policies above always return a display value that is
-                -- bounded by the allocated geometry, so truncation is not a
-                -- layout failure and must not be reported as text_overflow.
+                -- 仅未知/visible 溢出策略为非管理情况；受管策略显示值受几何限制，正常截断不是布局失败，不能报告 text_overflow。
                 overflowed = TL:MeasureWidth(self.root, self.text, font) > width
             end
         end

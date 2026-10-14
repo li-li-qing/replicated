@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Death Review Authority
+-- Replicated Suite · 死亡复盘业务权威
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Owns the low-cost death-review Domain only: incoming SELF damage ring,
--- optional Aura snapshots, death-window records and history projection.
--- Native combat handlers remain exclusively owned by CombatEventBusV3.
+-- 仅拥有低成本死亡复盘 Domain：SELF 受伤环形缓冲、可选 Aura 快照、死亡窗口记录和历史投影。Native 战斗处理器由 CombatEventBusV3 独占。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -85,10 +85,7 @@ function A:ResetTransient()
     return true
 end
 
--- Routine Debuff sampling must never run inside the native COMBAT_MSG
--- callback. The callback only records that a sample is due; the actual Native
--- Aura read happens on the shared Scheduler so it is covered by FrameBudget
--- and can never add latency to the game's combat event dispatch.
+-- 常规 Debuff 采样禁止在 Native COMBAT_MSG 回调内运行；回调只记录采样到期，Native Aura 读取由共享 Scheduler 执行，纳入 FrameBudget，避免延迟战斗事件派发。
 function A:RequestDebuffSample(now, forceRefresh)
     local settings = F:GetSettings()
     if settings.showDebuffs ~= true or F.auraConsumerHeld ~= true or self.pendingDeath ~= nil then return true end
@@ -407,7 +404,7 @@ function A:GetRecord(serial)
         end
         return nil
     end
-    return record -- 中文维护：LoadRecord已经返回独立副本；这里不再复制同一完整时间线，仍不暴露Store引用。
+    return record -- LoadRecord已经返回独立副本；这里不再复制同一完整时间线，仍不暴露Store引用。
 end
 
 function A:GetTimelineRows(serial, limit)

@@ -1,12 +1,13 @@
 ------------------------------------------------------------------------
--- Phase 1 Batch A 源码故障域拆分契约回归（2026-09-28）
+-- Replicated Suite · 功能分片拆分测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
+-- Phase 1 Batch A 源码故障域拆分契约回归（2026-09-28）
 -- 目的：证明“从 rs_business_bridge.lua 拆到独立源码单元”只改变源码边界，
 -- 不改变任何公开契约。逐项对应规划文档 §31 的 Feature 前后对照表。
---
 -- 覆盖：tools_social（已拆）。tools_market_analysis 在共享 Auction 读模型
 -- 归属确定前不在此文件断言，避免用错误 Authority 换取绿色。
---
 -- 使用真实 Persistence / Demand / FeatureRuntime 替身（只替换 Native 与应用宿主），
 -- 不读写用户 UDF，不声明 RU 实机行为。
 ------------------------------------------------------------------------
@@ -380,10 +381,7 @@ Test('BatchB：删除的工具不再装配或保留业务源码',function()
     assert(bridge_retired())
 end)
 
-------------------------------------------------------------------------
--- Phase 1 Batch C：combat_boss_alerts / combat_target_monitor /
---                   combat_buff_cap / combat_raid_recruitment
-------------------------------------------------------------------------
+-- 覆盖 combat_boss_alerts、combat_target_monitor、combat_buff_cap 和 combat_raid_recruitment 的功能拆分契约。
 local unitHost = { calls = {} }
 _G.X2Unit = _G.X2Unit or {}
 _G.X2Unit.GetTargetUnitId = function(_, ...) unitHost.calls[#unitHost.calls+1] = { 'GetTargetUnitId', ... }; return 4242 end
@@ -605,7 +603,7 @@ Test('静态：bridge 不再注册 Batch C 四个 Feature', function()
 end)
 
 ------------------------------------------------------------------------
--- Phase 1 Batch D：combat_team_tools / tools_craft / tools_auction
+-- 覆盖 combat_team_tools、tools_craft 和 tools_auction 的功能拆分契约。
 -- （这三个是 chunk 级 helper 大户：搬走后 bridge 主 chunk 从 187 降到 105 slots）
 ------------------------------------------------------------------------
 _G.BagApi_SharedHost = true

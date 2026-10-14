@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Launcher / Recovery Entry Store
+-- Replicated Suite · 启动器位置存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- The bootstrap R entry exists before Persistence is available, but once V3
--- Foundation is ready its placement becomes a normal account-level V3 store.
--- The launcher remains usable during startup failure; persistence is an upgrade,
--- never a prerequisite for the recovery path.
+-- 启动 R 入口早于 Persistence 创建；V3 Foundation 就绪后位置归普通账户级 V3 Store。启动失败时启动器仍应可用，持久化是能力升级，不能成为恢复路径的前提。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -26,7 +25,7 @@ local function Normalize(value)
         and tonumber(value.x) ~= nil and tonumber(value.y) ~= nil
     return {
         userMoved = moved,
-        locked = value.locked == true and true or nil, -- 中文维护：未锁定不写新键，旧 schema2 位置 canonical 保持不变。
+        locked = value.locked == true and true or nil, -- 未锁定不写新键，旧 schema2 位置 canonical 保持不变。
         x = free and tonumber(value.x) or nil,
         y = free and tonumber(value.y) or nil,
         anchorH = moved and not free and (tostring(value.anchorH or "") == "RIGHT" and "RIGHT" or "LEFT") or nil,
@@ -132,7 +131,7 @@ end
 
 function V3:ApplyLauncherPlacement()
     local ok,err=ApplyLauncherRect(self.LauncherState,"show",true)
-    -- 中文维护：恢复入口仍由 Bootstrap 持有 Native 拖动；读取存档后同步已有 EnableDrag，不改变点击/恢复用途。
+    -- 恢复入口仍由 Bootstrap 持有 Native 拖动；读取存档后同步已有 EnableDrag，不改变点击/恢复用途。
     if S.RecoveryEntry and type(S.RecoveryEntry.EnableDrag) == "function" then
         local called, accepted = pcall(S.RecoveryEntry.EnableDrag, S.RecoveryEntry, self.LauncherState.locked ~= true)
         if not called or accepted == false then return false, "启动按钮锁状态应用失败" end
@@ -156,7 +155,7 @@ function V3:ApplyLauncherPlacement()
 end
 
 function V3:SetLauncherLocked(value)
-    -- 中文维护：锁状态沿用 Launcher Store；先接受 Native 再提交偏好，失败恢复同一状态，不增加窗口位置副本。
+    -- 锁状态沿用 Launcher Store；先接受 Native 再提交偏好，失败恢复同一状态，不增加窗口位置副本。
     local loaded, loadErr = self:EnsureLauncherStoreLoaded(); if loaded ~= true then return false, loadErr end
     local button, state = S.RecoveryEntry, self.LauncherState
     if button == nil or type(button.EnableDrag) ~= "function" then return false, "启动按钮拖动能力不可用" end
@@ -189,7 +188,7 @@ function V3:ResetLauncherPlacement(persist)
         local called,result=pcall(button.Show,button,true);ok=called and result~=false;err=result
     end
     if ok~=true then ApplyLauncherRect(before,"reset_rollback",false);return false,err or "launcher_show_rejected" end
-    Apply({locked=before.locked}) -- 中文维护：恢复位置保留用户的锁偏好，与 FloatingSurface reset 一致；不能只清偏好而留下 Native 禁止拖动。
+    Apply({locked=before.locked}) -- 恢复位置保留用户的锁偏好，与 FloatingSurface reset 一致；不能只清偏好而留下 Native 禁止拖动。
     if persist~=false then ok,err=self:MarkLauncherStoreDirty(0,"launcher_reset") end
     if ok~=true then
         for k in pairs(state)do state[k]=nil end;for k,v in pairs(before)do state[k]=v end

@@ -1,5 +1,10 @@
--- Replicated Suite window geometry/layer regression.
+------------------------------------------------------------------------
+-- Replicated Suite · 窗口层级持久化测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 维护（2026-09-16）：本测试只验证 Foundation 契约，不冒充 RU 实机层级验收。
+------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Verified official Chinese names
--- Author: Replicated
+-- Replicated Suite · 官方中文名称
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Static names here are only for schedule/group labels that cannot always be
--- obtained from a live quest object. Quest child titles are read from X2Quest.
+-- 这里只保存无法始终从实时任务对象获取的日程/分组名称；任务子标题仍从 X2Quest 读取。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

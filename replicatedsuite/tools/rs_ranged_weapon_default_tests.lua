@@ -1,5 +1,10 @@
--- Development-only regression: player ranged weapon release default / compatibility / layout order.
--- Uses real BuffDisplay Store and real ComputePlateLayout; Native facts are test-host stubs only.
+------------------------------------------------------------------------
+-- Replicated Suite · 远程武器默认测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 开发期验证玩家远程武器默认值、兼容和布局顺序；使用真实 BuffDisplay Store 及 ComputePlateLayout，原生事实仅由测试宿主提供。
+------------------------------------------------------------------------
 local H = dofile('tools/rs_udf_numeric_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)
@@ -37,7 +42,7 @@ Test('old untouched ranged default upgrades once without changing its geometry',
     assert(s.components.ranged.x == 0 and s.components.ranged.y == 0 and s.components.ranged.size == 26 and s.components.ranged.alpha == 1,
         'upgrade changed user geometry')
     assert(s.layoutPresetVersion == 5, 'upgrade did not stamp preset v5')
-    -- A user may disable it after upgrading; the version stamp must prevent re-enabling on next load.
+    -- 用户升级后可主动关闭功能；版本标记必须阻止下次加载时再次启用。
     s.components.ranged.enabled = false
     local ok2, changed2 = F:UpgradeRangedWeaponReleaseDefault(false)
     assert(ok2 == true and changed2 == false and s.components.ranged.enabled == false, 'v5 user choice was overwritten')
@@ -62,7 +67,7 @@ Test('EnsureStoreLoaded durably upgrades a persisted untouched v3 player profile
     F1.State.settings.layoutPresetVersion = 3
     local r = F1.State.settings.components.ranged
     r.enabled=false; r.x=0; r.y=0; r.size=26; r.fontSize=0; r.alpha=1
-    -- 中文维护：v3.buff_display 已仅作一次迁移源，当前布局耐久写经实际 layout Authority；
+    -- v3.buff_display 已仅作一次迁移源，当前布局耐久写经实际 layout Authority；
     -- 此处保存合法旧 preset 字段来验证升级，绝不反造历史 Envelope/canonical 指纹。
     assert(F1:MutateHudLayoutStore(function() return true end,0,'seed_untouched_v3_layout',true))
     local writesBefore = io1.writes

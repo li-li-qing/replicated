@@ -1,13 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Shell Persistence Contract
+-- Replicated Suite · 主窗口状态存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Application-window preferences only. Domain/Feature state is never stored
--- here. Schema v7 preserves explicit V3 free-placement plus responsive source
--- viewport metadata. Schema v6 remains a read-only historical canonical for
--- exact integrity recovery; never change a canonical shape without a schema bump.
--- Legacy edge placement is intentionally re-centered once so the rebuilt menu no longer
--- inherits old top-left defaults. Windowing adds no semantic minimum/maximum
--- unless a caller opts in.
+-- 仅保存应用窗口偏好，不存 Domain/Feature 状态。Schema v7 保留显式 V3 自由位置和响应式来源视口信息；
+-- Schema v6 是精确完整性恢复的只读历史规范，不升 schema 不能改变规范形状。旧边缘位置仅重新居中一次，避免继承左上角默认值；Windowing 仅在调用方明确选择时添加语义最小/最大值。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -42,9 +39,7 @@ local function NormalizeState(value)
     local requestedMoved = value.userMoved == true
     local free = requestedMoved and tostring(value.coordinateSpace or "") == "logical-free-v2"
         and tonumber(value.x) ~= nil and tonumber(value.y) ~= nil
-    -- Edge-v1 belonged to the retired shell placement model. Carrying an old
-    -- LEFT/TOP offset of zero into V3 makes the rebuilt menu reopen in the
-    -- corner forever. Only an explicit V3 free placement is authoritative.
+    -- Edge-v1 属于废弃 Shell 位置模型；旧 LEFT/TOP 零偏移会让重建菜单持续在角落打开，只有显式 V3 自由位置才具有权威性。
     local moved = free
     return {
         width = AtLeast(value.width, SIZE.minWidth, SIZE.defaultWidth),
@@ -68,14 +63,8 @@ local function NormalizeState(value)
     }
 end
 
--- Historical schema-v6 canonical. `.18.157` extended the shell payload with
--- responsive placement metadata but the Store remained schema 6. That did not
--- guarantee a mismatch for every old payload (nil fields are omitted by Lua),
--- but it removed the schema boundary needed to distinguish the two canonical
--- generations. Keep this function immutable and narrow: Persistence may try it
--- only after a current-v4 mismatch, and accepts it only when it reproduces the
--- already-stamped old fingerprint byte-for-byte while the independent envelope
--- seal is valid. Unknown/corrupt payloads therefore remain fail-closed.
+-- 历史 schema-v6 规范必须保持不可变且边界严格：旧版本添加响应式元数据却未升级 schema，Lua 会省略 nil 字段，不能保证所有旧载荷失配，也失去代际区分。
+-- Persistence 仅在当前 v4 不匹配后尝试，并要求逐字节重现已标记旧指纹且独立封印有效；未知/损坏载荷仍拒绝。
 local function NormalizeHistoricalV6(value)
     value = type(value) == "table" and value or {}
     local requestedMoved = value.userMoved == true
@@ -104,16 +93,10 @@ V3.ShellCanonicalMigrationContractVersion = 1
 V3.ShellStoreSchemaContractVersion = 7
 V3.ShellKnownLegacyRecoveryContractVersion = 1
 
--- Real-machine incident identity, observed unchanged on `.18.184` and `.18.187`:
---   stamped v4 = 2EA0A82A, current canonical = 2EC2F5C5
+-- 实机事件身份：在 `.18.184` 与 `.18.187` 观测结果一致；stamped v4 = 2EA0A82A，current canonical = 2EC2F5C5。
 --
--- This is deliberately NOT a generic "accept shell mismatch" escape hatch. The
--- Persistence core reaches this hook only after envelope seal + metadata + decode
--- + budget + exact historical reconstruction have all passed/failed as required.
--- We additionally require the exact old/new fingerprint pair and schema 6. This
--- follows the same one-time Store-owned migration pattern used by Death Review:
--- preserve the validated UI-domain payload, immediately restamp with schema 7,
--- and leave every unknown fingerprint fenced.
+-- 此处不是通用 Shell 失配放行口；Persistence 仅在封印、元数据、解码、预算和精确历史重建按要求检查后调用。额外要求精确新旧指纹对与 schema 6；
+-- 按 Death Review 的一次性 Store 迁移模式保留已验证 UI 载荷，立即重标 schema 7，未知指纹继续隔离。
 local KNOWN_V6_STAMP = "2EA0A82A"
 local KNOWN_V7_CANONICAL = "2EC2F5C5"
 local SHELL_BUDGET = { maxDepth = 5, maxNodes = 80, maxStringBytes = 2048, maxEntriesPerTable = 40 }
@@ -128,8 +111,7 @@ local function RecoverKnownV6Shell(decoded, stampedFingerprint, currentCanonical
     if tostring(stampedFingerprint or "") ~= KNOWN_V6_STAMP then return nil end
     if type(decoded) ~= "table" or type(currentCanonical) ~= "table" then return nil end
 
-    -- Normalize again rather than returning raw decoded data. Unknown/legacy keys
-    -- are intentionally dropped by the current schema authority before recovery.
+    -- 再次规范化，不能返回原始解码数据；恢复前由当前 schema 权威层丢弃未知/旧 key。
     local normalized = NormalizeState(decoded)
     local currentFingerprint = P:FingerprintDurablePayload(normalized, SHELL_BUDGET)
     if tostring(currentFingerprint or "") ~= KNOWN_V7_CANONICAL then return nil end
@@ -156,18 +138,13 @@ if P:GetStore(STORE_ID) == nil then
         get = function() return NormalizeState(V3.ShellState) end,
         apply = Apply,
         migrate = function(value) return NormalizeState(value) end,
-        -- Exact v6 -> v7 canonical bridge. The raw metadata check prevents this
-        -- historical candidate from being considered for a current/future schema.
-        -- Persistence itself hashes the candidate and accepts it only when that
-        -- hash equals the already-stamped old fingerprint.
+        -- 精确 v6 -> v7 规范桥；原始元数据检查防止当前/未来 schema 使用历史候选。Persistence 自行计算候选哈希，仅等于已标记旧指纹时接受。
         rebuildCanonicalForIntegrity = function(decoded, _stampedFingerprint, _currentCanonical, raw)
             local meta = type(raw) == "table" and raw.__rsmeta or nil
             if type(meta) ~= "table" or tonumber(meta.schema) ~= 6 then return nil end
             return NormalizeHistoricalV6(decoded)
         end,
-        -- Final one-time bridge for the repeated `.18.184/.18.187` RU incident.
-        -- Exact historical reconstruction above always gets first chance; this
-        -- hook handles only the known stamp pair and otherwise returns nil.
+        -- 已知 `.18.184/.18.187` RU 事件的一次性桥：上方精确历史重建优先，此钩子仅处理已知指纹对，否则返回 nil。
         recoverKnownLegacyCanonical = RecoverKnownV6Shell,
     })
     if store == nil and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then
@@ -210,9 +187,7 @@ end
 
 function V3:MarkShellStoreDirty(delayMs, reason)
     if P:GetStore(STORE_ID) == nil then return false, "新版主窗口存档不可用" end
-    -- Session fallback is intentionally memory-only. Navigation/geometry may
-    -- continue to change for usability, but must not turn a protected failed
-    -- load into WRITE_BEFORE_LOAD noise or overwrite the last recoverable save.
+    -- 会话兜底仅在内存中生效；导航/几何可继续变化，但不能把受保护的读取失败变成 WRITE_BEFORE_LOAD 噪声或覆盖最后可恢复存档。
     if self.ShellStoreSessionFallback == true then return true, "session_fallback_no_persist" end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 750, reason or "shell_changed")
 end

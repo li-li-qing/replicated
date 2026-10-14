@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - combat_unit_lines Feature Authority
+-- Replicated Suite · 单位连线功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 1 Batch E（2026-09-28）：从 features/rs_business_bridge.lua 机械搬迁。
--- 只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、UpdateTopic、Demand owner、
--- Commands、Projection shape、ApiDependencies、Scheduler task name
+-- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
 -- （v3_business_unit_lines_refresh，1ms 下限的高频车道）与 VisualGuideLimits 默认值全部逐字一致。
---
 -- Authority 边界：单位屏幕/世界坐标事实来自 ScreenProjectionV3 的已校准读数；
 -- 本文件只做连线投影与颜色归一，不做全单位枚举。
 ------------------------------------------------------------------------
@@ -24,15 +23,10 @@ local UNIT_LINE_PAIRS = {
     { key="focus", label="自己 ↔ 焦点目标", from="player", to="watchtarget", setting="showFocusTarget" },
     { key="focustarget", label="焦点目标 ↔ 焦点目标的目标", from="watchtarget", to="watchtargettarget", setting="showFocusTargetTarget" },
 }
--- Refresh floor is 1 ms (never clamped up): the unit-line overlay must be able
--- to follow the target at frame cadence. The high-frequency scheduler lane
--- still respects the user-selected cadence and only enables sub-16 ms when the
--- user actually asks for it.
+-- 刷新下限1ms，不向上钳制，连线可跟随目标帧节奏；高频 Scheduler 仍遵守用户设置，仅用户实际要求时启用低于16ms节奏。
 
 local function UnitLineInterval(feature)
-    -- 2026-09-15: 1000ms is only the recommended slider ceiling. Slower user
-    -- cadences are safe and reduce work, so the Domain accepts them up to the
-    -- shared technical envelope instead of mirroring the old UI maximum.
+    -- 1000ms 仅为滑条推荐上限；更慢节奏安全且减少工作，Domain 接受共享技术范围内数值，不照搬旧 UI 上限。
     return math.max(S.VisualGuideLimits.refreshMsHardMin or 1, math.min(S.VisualGuideLimits.refreshMsHardMax or 60000,
         math.floor(tonumber(feature.State.refreshMs) or 100)))
 end
@@ -98,8 +92,7 @@ local UnitLines = NewFeature("combat_unit_lines", {
     end,
     onDisable = function() if S.Scheduler ~= nil then S.Scheduler:RemoveTask(UNIT_LINE_TASK) end return true end,
     read = function(feature)
-        -- Bounded runtime diagnostics for the RU acceptance workflow; lives on
-        -- the Feature object, never persisted, never printed per frame.
+        -- RU 验收的有界运行诊断保存在 Feature 上，禁止持久化与逐帧打印。
         local dia = feature.Diagnostics
         if dia == nil then
             dia = { enabled = false, consumerCount = 0, attemptedPairs = 0, drawnRows = 0,
@@ -113,7 +106,7 @@ local UnitLines = NewFeature("combat_unit_lines", {
         dia.attemptedPairs = 0
         dia.drawnRows = 0
         dia.endpointCollapsed = 0
-        dia.endpoints = {} -- 维护：最多五个配置token，本次刷新覆盖；不写State/Store、不累计历史目标。
+        dia.endpoints = {} -- 最多五个配置token，本次刷新覆盖；不写State/Store、不累计历史目标。
         local projection = S.Services and S.Services.ScreenProjectionV3 or nil
         if type(projection) ~= "table" or type(projection.ProjectUnitBatch) ~= "function" then
             dia.lastStatus = "unavailable"
@@ -135,16 +128,11 @@ local UnitLines = NewFeature("combat_unit_lines", {
             dia.lastFailureReason = "ALL_PAIRS_DISABLED"
             return {}, "empty", "所有连线类型均已关闭"
         end
-        -- .18.131b reference alignment (rp_api.lua UnitScreenPoint): the
-        -- working references draw lines from RAW native screen positions and
-        -- cull only depth<=0 — there is NO world-vs-camera front-hemisphere
-        -- gate. That gate classified the PLAYER endpoint as "相机背后" on the
-        -- live client (self↔target died with 单位在相机背后), because the
-        -- GetViewCameraPos basis and GetUnitWorldPositionByTarget(false) world
-        -- space do not agree on RU. Native depth is the proven behind-cull.
+        -- rp_api.lua UnitScreenPoint参考实现使用原始Native屏幕点，仅以depth≤0裁剪；不能加世界坐标/相机前半球门槛。
+-- RU的GetViewCameraPos基向量与GetUnitWorldPositionByTarget(false)世界空间不一致，会把PLAYER误判相机背后；Native depth是已证明裁剪权威。
         local projected,batchErr = projection:ProjectUnitBatch(tokens,{ worldZOffset=1 })
         projected=type(projected)=="table" and projected or {}
-        -- 维护：健康计数必须在本次采集之后读取，旧实现报告的是上一批。端点来自Service事实，
+        -- 健康计数必须在本次采集之后读取，旧实现报告的是上一批。端点来自Service事实，
         -- 保存screen/world各自的错误给统一诊断，避免焦点缺失永远只有一个泛化字符串。
         dia.projection = projection.GetHealth ~= nil and projection:GetHealth() or nil
         for _,token in ipairs(tokens) do
@@ -158,12 +146,7 @@ local UnitLines = NewFeature("combat_unit_lines", {
             if feature.State[pair.setting] ~= false then
                 local a,b=projected[pair.from],projected[pair.to]
                 if type(a)=="table" and a.visible==true and type(b)=="table" and b.visible==true then
-                    -- Collapse guard uses SEGMENT LENGTH, not per-axis deltas:
-                    -- a 2-4px near-coincident segment passed the old <=1px
-                    -- filter and the renderer then stacked ~24 dots inside
-                    -- those few pixels -- visually "the whole line is one
-                    -- dot". Anything shorter than two dot widths is invisible
-                    -- anyway.
+                    -- 塌缩保护按线段长度判定，不能仅看各轴差。2-4px 近重合线段会把约24点堆到几像素内；短于两点宽度的段本来也不可辨认，应隐藏。
                     local collapseLimit = math.max(4, (tonumber(feature.State.pointSize) or 4) * 2)
                     local segDx = (tonumber(a.x) or 0) - (tonumber(b.x) or 0)
                     local segDy = (tonumber(a.y) or 0) - (tonumber(b.y) or 0)
@@ -204,8 +187,7 @@ local UnitLines = NewFeature("combat_unit_lines", {
         samplingMode="adaptive_screen_space", pointBudgetMode="cadence_pressure_bounded", refreshPriority="P1_visual" } end,
     commands = {
         SetPointCount = function(feature, value)
-            -- 8..48 is Presentation guidance only; Feature owns the real safety
-            -- envelope so exact entry (e.g. 58) is persisted and renderer-visible.
+            -- 8..48 仅为 Presentation 建议；真实安全范围归 Feature，58 等精确输入仍可持久化并交给渲染器。
             value=math.max(S.VisualGuideLimits.unitLineDensityHardMin or 2,math.min(S.VisualGuideLimits.unitLineDensityHardMax or 160,math.floor(tonumber(value) or 24)))
             return PersistStateMutation(feature,"unit_lines_points",function(state) state.pointCount=value; return true end)
         end,
@@ -260,7 +242,7 @@ UnitLines.AdaptiveDensityContractVersion = 2
 UnitLines.SmoothRefreshContractVersion = 1
 UnitLines.FrontHemisphereContractVersion = 1
 UnitLines.ProjectionConsistencyContractVersion = 1
--- 中文维护（performance-visual-hotpath-1）：绘制只复制端点、密度和样式；完整页面投影仍
+-- 绘制只复制端点、密度和样式；完整页面投影仍
 -- 使用原GetProjection。每次独立快照不暴露Authority/State，不缓存玩家或目标的实时事实。
 UnitLines.RenderProjectionContractVersion = 1
 function UnitLines:GetRenderProjection()
@@ -274,9 +256,9 @@ function UnitLines:GetRenderProjection()
     end
     return snapshot
 end
--- UnitLines.Diagnostics is attached lazily by read() (Lua 5.1 main-chunk local budget)
+-- UnitLines.Diagnostics由read()惰性挂载，遵守Lua5.1主块local预算。
 
--- 中文维护注释（Phase 3 Batch G，2026-09-29，core-feature-decoupling-1）：把 Diagnostics 投影注册到
+-- 把 Diagnostics 投影注册到
 -- Core 的取值表。原先 core/rs_diagnostics.lua 直接按 id 读取它（属 CORE_FEATURE 债务）；
 -- 现在 Core 只按“用途名”取值，业务 Feature id 只出现在本目录。provider 每次实时调用、不缓存：
 -- Diagnostics 是 read() 惰性挂上的，取值时必须现读，不能在注册时抓一份快照。

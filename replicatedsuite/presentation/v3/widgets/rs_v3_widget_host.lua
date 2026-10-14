@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Widget Host
+-- Replicated Suite · 悬浮组件生命周期宿主
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Registry/lifecycle and common floating-widget management. Feature widgets
--- register factories plus optional preference callbacks; the Host owns the
--- consistent visibility/lock/reset contract without starting Legacy HUDs.
+-- 注册表、生命周期及共享悬浮管理：功能组件注册工厂与可选偏好回调，Host 统一负责显隐、锁定、重置，不启动旧 HUD。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -80,9 +80,7 @@ function W:EnsureInstance(id, context)
     local ok, value, detail = rsui:WithBuildScope("widget:" .. id, function()
         local created, createDetail = spec.create(context or {})
         if created == nil or created == false then return nil, createDetail or "widget create failed" end
-        -- Windowing is part of the build contract, not a post-commit preference.
-        -- Reject it while the scope is still active so all tracked RSUI objects
-        -- roll back together instead of committing a half-valid Native surface.
+        -- Windowing 属于构建契约，不能在提交后才应用偏好；构建 scope 活跃时拒绝失败，全部已追踪 RSUI 对象一起回滚，避免提交半有效 Native 窗口。
         if spec.windowingRequired == true and type(created.windowController) ~= "table" then
             return nil, "悬浮组件未接入统一窗口拖动与缩放能力"
         end
@@ -177,10 +175,7 @@ function W:NotifyWindowClosed(id, context)
     return true
 end
 
--- Programmatic close must use the same public contract as the native X button:
--- WindowShell performs the visual close, then onClosed lands here. Nothing in
--- this path calls back into the shell, so there is no Shell→Feature→Host→Hide
--- recursion.
+-- 程序关闭与原生 X 使用相同公开契约：WindowShell 完成视觉关闭后由 onClosed 到此；该路径不回调 Shell，避免 Shell→Feature→Host→Hide 递归。
 function W:RequestClose(id, context)
     id = NormalizeId(id)
     context = type(context) == "table" and context or {}
@@ -192,8 +187,7 @@ function W:RequestClose(id, context)
         if type(shell) == "table" and type(shell.Close) == "function" then
             local ok, err = shell:Close(tostring(context.source or "close"))
             if ok == true then return true end
-            -- fail-open: the shell contract normally hides anyway; fall through
-            -- so a broken veto cannot make a window impossible to dismiss.
+            -- 默认允许关闭：Shell 通常已隐藏，继续处理，使损坏的否决回调不能让窗口无法关闭。
             if ok == false and context.allowVeto == true then return false, err end
         end
     end
@@ -201,12 +195,9 @@ function W:RequestClose(id, context)
 end
 
 ------------------------------------------------------------------------
--- Feature lifecycle bridge (Presentation side)
+-- 表现侧 Feature 生命周期桥。
 --
--- Domain code publishes `v3.feature.lifecycle` and never calls WidgetHost.
--- A widget declares how its visibility is derived from Domain state and the
--- Host performs the reaction. That removes the Domain → Presentation edge
--- while keeping ONE shared implementation instead of N per-feature copies.
+-- Domain 发布 `v3.feature.lifecycle`，不能调用 WidgetHost；组件声明从 Domain 状态推导可见性，Host 执行响应，移除反向依赖并保持统一实现。
 ------------------------------------------------------------------------
 function W:BindFeatureLifecycle(id, options)
     id = NormalizeId(id)
@@ -257,10 +248,7 @@ function W:_OnFeatureLifecycle(featureId, state, reason)
                     if ok ~= true then self.stats.lifecycleReactionFailures = (tonumber(self.stats.lifecycleReactionFailures) or 0) + 1 end
                 end
             elseif self.visible[id] ~= true then
-                -- Visibility preference is persisted by the owning Feature. Load
-                -- that authority before consulting preference(); otherwise a
-                -- Fresh Reload can briefly read Lua defaults and auto-open a HUD
-                -- that the user previously hid (or miss one they enabled).
+                -- 可见偏好由所属 Feature 持久化，调用 preference() 前先加载该权威层，防止 Fresh Reload 短暂读取默认值而误开已隐藏 HUD 或漏开已启用 HUD。
                 local spec = self.specs[id]
                 local prepared, prepareErr = EnsurePreferences(spec)
                 if prepared ~= true then
@@ -271,10 +259,7 @@ function W:_OnFeatureLifecycle(featureId, state, reason)
                         })
                     end
                 else
-                -- Lifecycle callbacks are presentation extensions supplied by a
-                -- Feature/widget module. A broken callback must not escape into
-                -- the shared event dispatcher and abort reactions for every
-                -- other widget in the same event.
+                -- 生命周期回调由 Feature/组件模块扩展；损坏回调不能传播到共享事件派发器并中止同一事件中其它组件响应。
                 local preferenceOk, preferred = xpcall(binding.preference, S.SafeTraceback)
                 if preferenceOk ~= true then
                     self.stats.lifecycleReactionFailures = (tonumber(self.stats.lifecycleReactionFailures) or 0) + 1
@@ -307,8 +292,7 @@ function W:_OnFeatureLifecycle(featureId, state, reason)
     return true
 end
 
--- Domain publishes that its projection changed; the Host decides whether a
--- live widget instance should re-read it. Domain never touches an instance.
+-- Domain 发布投影变化，由 Host 决定活跃实例是否重读；Domain 不操作实例。
 function W:NotifyProjectionChanged(id, kind)
     id = NormalizeId(id)
     local instance = self.instances[id]
@@ -316,8 +300,7 @@ function W:NotifyProjectionChanged(id, kind)
     if type(instance.ApplyProjection) == "function" then
         local ok, result, detail = xpcall(function() return instance:ApplyProjection(tostring(kind or "projection")) end, S.SafeTraceback)
         if not ok or result == false then
-            -- Presentation refresh failures are diagnostic-only; the Domain
-            -- transaction that published the change must not roll back.
+            -- 表现刷新失败仅报告诊断，不能回滚发布变化的 Domain 事务。
             if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then
                 S.DiagnosticsManager:WarningRateLimited("widget_host_v3", "WIDGET_PROJECTION_REFRESH_FAILED", 3000,
                     "悬浮组件投影刷新失败", { id = id, kind = tostring(kind or "projection"), error = tostring(ok and detail or result) })
@@ -435,13 +418,13 @@ function W:GetState(id)
         minimizable = spec.minimizable == true or (instance ~= nil and type(instance.SetMinimized) == "function"),
         minimized = minimized == true,
         resettable = spec.resettable == true or (instance ~= nil and type(instance.ResetLayout) == "function"),
-        opacityAdjustable = overallAdjustable, -- compatibility alias
+        opacityAdjustable = overallAdjustable, -- 兼容别名。
         overallOpacityAdjustable = overallAdjustable,
         backgroundOpacityAdjustable = backgroundAdjustable,
         textOpacityAdjustable = textAdjustable,
         fontScaleAdjustable = fontScaleAdjustable,
         appearanceAdjustable = overallAdjustable or backgroundAdjustable or textAdjustable or fontScaleAdjustable,
-        opacity = overallOpacity, -- compatibility alias
+        opacity = overallOpacity, -- 兼容别名。
         overallOpacity = overallOpacity,
         backgroundOpacity = backgroundOpacity,
         textOpacity = textOpacity,
@@ -526,9 +509,7 @@ function W:SetOpacity(id, opacity, persist)
     return self:SetAppearance(id, "overall", opacity, persist)
 end
 
--- Font scale is intentionally a separate appearance channel from alpha. It is
--- bounded as a scalar, not normalized to [0,1], and remains local to the
--- floating widget rather than changing the application-wide typography scale.
+-- 字体缩放与 alpha 为独立外观通道；按标量约束，不归一化到 [0,1]，仅作用于悬浮组件，不改变应用全局字体。
 function W:SetFontScale(id, fontScale, persist)
     id = NormalizeId(id)
     local spec, instance = self.specs[id], self.instances[id]
@@ -636,9 +617,7 @@ function W:HideAll()
     return true
 end
 
--- Responsive changes are application-wide: a visible floating widget must clamp
--- and reflow together with the main shell. Hidden widgets do no work here; they
--- resolve against the latest Layout context the next time they are shown.
+-- 响应式变化影响整个应用，可见悬浮组件与主 Shell 一起限制边界并重新布局；隐藏组件不工作，下次显示时使用最新 Layout 上下文。
 function W:ApplyResponsiveLayout(fromMetricsChange)
     local failures = {}
     local reflowed = 0

@@ -1,4 +1,10 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 死亡复盘布局测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 真实死亡回顾 Page/WidgetHost/Widget/Windowing/Shell/Surface/Layout；仅控件叶节点和存档边界采用模型。
+------------------------------------------------------------------------
 local NewHost = dofile('tools/rs_window_viewport_test_host.lua')
 local function Copy(t)
     if type(t) ~= 'table' then return t end
@@ -9,7 +15,7 @@ local function Boot(saved, realPersistence)
     local h = NewHost()
     local s, r = h.S, h.S.RSUI
     local nodes = {}
-    -- 中文维护：记录真实 Page/WindowShell/Content 的创建序列；叶节点模型不能吞掉重复身份。
+    -- 记录真实 Page/WindowShell/Content 的创建序列；叶节点模型不能吞掉重复身份。
     local componentSpecs = {}
     for _, name in ipairs({'Overlay','Border','HorizontalBox','VerticalBox','Text','Button'}) do
         local create = r[name]
@@ -137,7 +143,7 @@ Test('tiny historical sizes render at the usable runtime minimum without changin
 end)
 Test('layout preview identities pass the real RSUI generation fence',function()
     local h=Boot();assert(h:OpenLayout())
-    -- 中文维护：只替代 Native 绘制；重复 ID 判定调用生产 ValidateSpec，不能用手写假门禁。
+    -- 只替代 Native 绘制；重复 ID 判定调用生产 ValidateSpec，不能用手写假门禁。
     local realHost=dofile('tools/rs_gear_page_test_host.lua')()
     local rsui=realHost.S.RSUI
     for _,entry in ipairs(h.componentSpecs) do

@@ -1,4 +1,9 @@
-"""中文维护：只读客户端 UDF 的活动 LevelDB 文件，验证导出专用 key 后生成 UTF-8 txt。
+# ---------------------------------------------------------------------
+# Replicated Suite · 诊断文件导出
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+"""只读客户端 UDF 的活动 LevelDB 文件，验证导出专用 key 后生成 UTF-8 txt。
 
 不打开数据库写锁、不写原数据库、不执行存档内容、不从废弃 SST 或旧账号兜底取报告。
 支持已观察的 LevelDB legacy SST、无压缩/Snappy、WriteBatch WAL；未知格式明确失败。
@@ -18,7 +23,7 @@ import tempfile
 
 
 def addon_root():
-    """中文维护：发行 exe 使用自身位置，不能使用 one-file 解包临时目录或开发者路径。"""
+    """发行 exe 使用自身位置，不能使用 one-file 解包临时目录或开发者路径。"""
     entry = Path(sys.executable if getattr(sys, 'frozen', False) else __file__).resolve()
     return entry.parents[2]
 
@@ -65,7 +70,7 @@ def field(data, pos):
     return data[pos:pos + size], pos + size
 
 def snappy(data):
-    """中文维护：有界原始 Snappy 解码，允许合法重叠拷贝，拒绝越界/超大声明。"""
+    """有界原始 Snappy 解码，允许合法重叠拷贝，拒绝越界/超大声明。"""
     expected, pos = varint(data)
     if expected > MAX_BLOCK:
         raise ValueError('Snappy block too large')
@@ -105,7 +110,7 @@ def snappy(data):
     return bytes(out)
 
 def log_records(data, allow_tail=False):
-    """中文维护：验证物理 log 的 CRC/分片次序；活动 WAL 的未写完尾部不视为已提交记录。"""
+    """验证物理 log 的 CRC/分片次序；活动 WAL 的未写完尾部不视为已提交记录。"""
     pos, pending = 0, None
     while pos < len(data):
         remain = 32768 - pos % 32768
@@ -259,7 +264,7 @@ def wal_entries(data):
             raise ValueError('extra WriteBatch bytes')
 
 def read_database(directory, cache=None):
-    """中文维护：按 CURRENT/MANIFEST 选活动文件并按 sequence 合并删除标记，绝不搜索废弃文件。"""
+    """按 CURRENT/MANIFEST 选活动文件并按 sequence 合并删除标记，绝不搜索废弃文件。"""
     current = (directory / 'CURRENT').read_bytes()
     manifest_name = current.decode('ascii').strip()
     if not re.fullmatch(r'MANIFEST-\d+', manifest_name):
@@ -310,7 +315,7 @@ def export_scalar(text, name):
 
 
 def decode_mailbox(text, records=None, key=None):
-    """中文维护：Native 缩进文本只解析本工具拥有的 ASCII 字段；不解释或执行 Lua。"""
+    """Native 缩进文本只解析本工具拥有的 ASCII 字段；不解释或执行 Lua。"""
     def scalar(name):
         return export_scalar(text, name)
     protocol = scalar('protocol')
@@ -419,7 +424,7 @@ def save_report(udf, output=None, cache=None):
     return target
 
 def watch(game, specified_udf=None):
-    """中文维护：一次启动后自动接收显式导出。只在数据库文件发生变化后重新读，不持续扫描全文。"""
+    """一次启动后自动接收显式导出。只在数据库文件发生变化后重新读，不持续扫描全文。"""
     folder = report_folder()
     folder.mkdir(parents=True, exist_ok=True)
     # 中文维护：仅锁接收器自己的文件，不碰客户端 LOCK；重复启动不产生第二个接收进程。

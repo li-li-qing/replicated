@@ -1,7 +1,11 @@
--- CooldownObservationV3/V4 offline contract tests. PASS proves the corrected
--- architecture: Buff/Aura ids are not cooldown ids, normal runtime has no
--- CombatEventBus dependency, and only Native X2Skill cooldown getters own the
--- countdown. It does not claim every RU live Skill id is known statically.
+------------------------------------------------------------------------
+-- Replicated Suite · 冷却观察测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- CooldownObservationV3/V4 离线契约测试：Buff/Aura ID 不能作为冷却 ID；常规运行不依赖 CombatEventBus；倒计时仅由原生 X2Skill 冷却 Getter 提供。
+-- 通过测试不代表已静态掌握所有 RU 实际 Skill ID。
+------------------------------------------------------------------------
 unpack=unpack or table.unpack
 ReplicatedSuite={Generation=1,Services={},Data={},NowMs=function() return ReplicatedSuite._now or 0 end,SafeTraceback=function(e)return tostring(e)end}
 local S=ReplicatedSuite
@@ -87,21 +91,21 @@ assert(C.taskActive==false,"READY ids must not use active lane")
 assert(C.probeTaskActive==true and S.Scheduler.tasks[C.probeTaskName],"tracked Skill ids need Native READY probe")
 assert(C:GetHealth().probeIntervalMs==250,"corrected event-independent probe cadence missing")
 
--- No combat event is emitted. Native getters alone discover a running wing CD.
+-- 不发送战斗事件，仅靠原生 Getter 发现正在计时的翅膀冷却。
 skillRemain=25000
 S.Scheduler.tasks[C.probeTaskName].cb()
 local rows=C:GetActiveRows()
 assert(#rows==1 and rows[1].id==100 and rows[1].idType=="skill" and rows[1].remainingMs==25000)
 assert(C.taskActive==true and S.Scheduler.tasks[C.taskName],"positive Native observation must arm active lane")
 
--- Mate type is learned only from a positive GetMateCooldown observation.
+-- 只有 GetMateCooldown 返回有效观测后，才允许记录 Mate 类型。
 mateBattle=88000
 S.Scheduler.tasks[C.probeTaskName].cb()
 rows=C:GetActiveRows()
 assert(#rows==2 and C.mateTypeById[200]==2,"battle mate type must be Native-proven")
 assert(C.probeHits>=2,"Native probes should record both active cooldowns")
 
--- Complete both. No pending/event fast path should exist afterwards.
+-- 两项冷却结束后不能遗留待处理任务或事件快速路径。
 skillRemain,mateBattle=0,0
 S.Scheduler.tasks[C.taskName].cb()
 rows=C:GetActiveRows()
@@ -109,8 +113,7 @@ assert(#rows==0 and C.taskActive==false,"completed cooldowns must release active
 health=C:GetHealth()
 assert(health.pending==0 and health.pendingMaxAttempts==0,"legacy combat-event pending lane must stay removed")
 
--- Native failure is Unknown, not Ready; stale countdown comes only from the last
--- successful Native snapshot and naturally expires.
+-- 原生读取失败应为 Unknown，不能视为 Ready；旧倒计时只允许来自最后一次成功快照，并自然到期。
 skillRemain=15000
 S.Scheduler.tasks[C.probeTaskName].cb()
 rows=C:GetActiveRows();assert(#rows==1 and rows[1].remainingMs==15000)

@@ -1,13 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Casting Observation Domain
+-- Replicated Suite · 共享施法观察
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared read-only casting facts for player/target/targettarget/watchtarget.
--- The four-unit scope set is the proven wbdebuff fact model
--- (jumpblackdragon.lua:115-129 checks target -> targettarget -> player ->
--- watchtarget in that order); Boss mechanic rules depend on all of them
--- because losing the target mid-mechanic must not kill the cast fact.
--- Consumers declare which scopes they need; the service owns the only
--- UnitCastingInfo polling task and stops it when the last lease is released.
+-- 共享 player/target/targettarget/watchtarget 只读施法事实；四单位范围源于 wbdebuff 已验证模型（
+-- jumpblackdragon.lua:115-129 依次 target->targettarget->player->watchtarget）。Boss 机制依赖全部范围，失去
+-- 目标不能抹掉施法事实。消费者声明所需 scope；服务拥有唯一 UnitCastingInfo 轮询任务，最后租约释放即停止。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -15,7 +13,7 @@ S.Services = S.Services or {}
 
 local C = {
     Id = "v3.casting_observation",
-    version = 3, -- 中文维护：新增可用性与会话施法序号；不是服务器施法/实体 ID，不用于归属推断。
+    version = 3, -- 新增可用性与会话施法序号；不是服务器施法/实体 ID，不用于归属推断。
     taskName = "v3_casting_observation_refresh",
     snapshots = { player = nil, target = nil, targettarget = nil, watchtarget = nil },
     revision = 0,
@@ -23,7 +21,7 @@ local C = {
     readFailures = 0,
     intervalMs = nil,
     scopes = { player = false, target = false, targettarget = false, watchtarget = false },
-    -- 中文维护：读失败不同于施法结束。Service 独占覆盖状态；旧快照仅用于下一次成功读取的边沿比较，
+    -- 读失败不同于施法结束。Service 独占覆盖状态；旧快照仅用于下一次成功读取的边沿比较，
     -- Consumer 经 Get/GetCoverage 消费，不得把失败期间的缓存当作仍在施法的事实。
     coverage = {}, castSequence = 0, taskGeneration = 0,
 }
@@ -51,7 +49,7 @@ local function CopyCast(value)
         remainingMs = math.max(0, math.floor(tonumber(value.remainingMs) or 0)),
         at = math.max(0, tonumber(value.at) or 0),
         revision = math.max(0, math.floor(tonumber(value.revision) or 0)),
-        serial = tonumber(value.serial) or 0, -- 中文维护：进度回退/新读条时递增，补足连续同名读条无空帧的通知边沿。
+        serial = tonumber(value.serial) or 0, -- 进度回退/新读条时递增，补足连续同名读条无空帧的通知边沿。
     }
 end
 
@@ -64,7 +62,7 @@ end
 
 local function NowMs() return math.max(0, tonumber(S.NowMs and S.NowMs()) or 0) end
 
--- 中文维护：Native 返回只在本边界解析；未知/非法计时不能按 0/1ms 补齐，
+-- Native 返回只在本边界解析；未知/非法计时不能按 0/1ms 补齐，
 -- 否则下游会把坏数据当真实首领机制。已有无读条 nil/空名称语义保留，不增加 API 调用。
 function C:_Read(scope)
     local function Failed(reason)
@@ -100,7 +98,7 @@ function C:Refresh(reason)
             local scopeChanged = oldCoverage == nil or oldCoverage.available ~= available or oldCoverage.error ~= err
             self.coverage[scope] = { available = available == true, error = err, at = NowMs() }
             if available == true then
-                -- 中文维护：序号只描述本 scope 的本地观察段；读失败不清空旧比较基线，
+                -- 序号只描述本 scope 的本地观察段；读失败不清空旧比较基线，
                 -- 真正空读条、名称/总时长变化或进度回退才产生新段。绝不能把序号保存成服务器身份。
                 if nextCast ~= nil then
                     if oldCast == nil or oldCast.spellName ~= nextCast.spellName
@@ -136,7 +134,7 @@ function C:Get(scope)
     return CopyCast(self.snapshots[scope])
 end
 
--- 中文维护：detached 覆盖投影供通知边沿判断“已结束/未知”；调用不读 Native，也不暴露可变快照。
+-- detached 覆盖投影供通知边沿判断“已结束/未知”；调用不读 Native，也不暴露可变快照。
 function C:GetCoverage(scope)
     local value = self.coverage[tostring(scope or "")]
     return { available = value ~= nil and value.available == true, error = value and value.error or nil,
@@ -170,7 +168,7 @@ function C:_Desired(after)
 end
 
 function C:_StopTask()
-    -- 中文维护：移除索引不保证已捕获闭包失效；每次停止推进代次，旧任务不得借新 Consumer 再次读取。
+    -- 移除索引不保证已捕获闭包失效；每次停止推进代次，旧任务不得借新 Consumer 再次读取。
     self.taskGeneration = self.taskGeneration + 1
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.taskName) end
     self.intervalMs = nil
@@ -222,7 +220,7 @@ local demand, demandErr = S.Demand:Create({
         options = type(options) == "table" and options or {}
         local player = options.player == true
         local target = options.target ~= false
-        -- 中文维护：焦点/目标的目标也是独立合法消费者；只在四个 scope 均未请求时沿用旧 target 默认值。
+        -- 焦点/目标的目标也是独立合法消费者；只在四个 scope 均未请求时沿用旧 target 默认值。
         if player ~= true and target ~= true and options.targettarget ~= true and options.watchtarget ~= true then target = true end
         return { player = player, target = target,
             targettarget = options.targettarget == true, watchtarget = options.watchtarget == true,
@@ -235,13 +233,13 @@ local demand, demandErr = S.Demand:Create({
             C:_StopTask()
             C.scopes = { player = false, target = false, targettarget = false, watchtarget = false }
             C.snapshots = { player = nil, target = nil, targettarget = nil, watchtarget = nil }
-            C.coverage = {} -- 中文维护：最后一个租约释放即丢弃覆盖事实，不向下一代消费者泄漏旧可用性。
+            C.coverage = {} -- 最后一个租约释放即丢弃覆盖事实，不向下一代消费者泄漏旧可用性。
             return true
         end
         local scopes, interval = C:_Desired(after)
         local needsRestart = beforeCount <= 0 or C.intervalMs ~= interval
             or C.scopes.player ~= scopes.player or C.scopes.target ~= scopes.target
-            -- 中文维护：原实现漏比两个附加 scope，新增/释放它们不会更新 Native 轮询集合。
+            -- 原实现漏比两个附加 scope，新增/释放它们不会更新 Native 轮询集合。
             or C.scopes.targettarget ~= scopes.targettarget or C.scopes.watchtarget ~= scopes.watchtarget
         if needsRestart then return C:_StartTask(scopes, interval) end
         return true
@@ -250,7 +248,7 @@ local demand, demandErr = S.Demand:Create({
         C:_StopTask()
         C.scopes = { player = false, target = false, targettarget = false, watchtarget = false }
         C.snapshots = { player = nil, target = nil, targettarget = nil, watchtarget = nil }
-            C.coverage = {} -- 中文维护：最后一个租约释放即丢弃覆盖事实，不向下一代消费者泄漏旧可用性。
+            C.coverage = {} -- 最后一个租约释放即丢弃覆盖事实，不向下一代消费者泄漏旧可用性。
         return true
     end,
 })

@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Team Auto Role Catalog
+-- Replicated Suite · 团队自动职责目录
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Migrated from the project's preserved ArcheRage classmappings baseline and
--- the already-proven TeamUtility Vitalism+Dancer correction. Exact class-key
--- lookup only; no fuzzy class-name inference in the runtime hot path.
+-- 来源于项目保留的 ArcheRage classmappings 基线，以及已验证的 TeamUtility Vitalism+Dancer 分类修正。只允许按 class key 精确查询，热路径禁止模糊推断职业名。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
@@ -81,8 +81,8 @@ C.byClassKey["name_8_10_14"]={role="healer", classType="Dancer"}
 C.byClassKey["name_2_10_14"]={role="healer", classType="Dancer"}
 C.byClassKey["name_3_4_14"]={role="tank", classType="Dancer"}
 C.byClassKey["name_1_3_14"]={role="tank", classType="Dancer"}
--- 中文维护注释（2026-09-16，职责纠正）：用户已在 RU 实机确认 8(暗杀)+9(吟游)+14(欢乐) 的团队职责是治疗。
--- Authority：这里只修改 TeamAutoRoleCatalog 的业务职责映射；classType 仍保留 Dancer，因为它服务职业类别/图标，不等同于团队职责。
+-- 用户已在 RU 实机确认 8(暗杀)+9(吟游)+14(欢乐) 的团队职责是治疗。
+-- 权威边界：这里只修改 TeamAutoRoleCatalog 的业务职责映射；classType 仍保留 Dancer，因为它服务职业类别/图标，不等同于团队职责。
 -- 数据流：ResolveAutoRole 精确按排序后的三天赋 key 读取 role，再映射到 TMROLE_HEALER；Presentation 不参与判定。
 -- 兼容边界：不改 Store schema、不改其它 Dancer 组合，也不按职业名称模糊推断。风险：未来 RU 若重做该职业组合语义，必须用新的实机证据更新此精确 key。
 C.byClassKey["name_8_9_14"]={role="healer", classType="Dancer"}
@@ -99,7 +99,7 @@ C.byClassKey["name_4_9_10"]={role="healer", classType="Healer"}
 C.byClassKey["name_2_5_10"]={role="healer", classType="Healer"}
 C.byClassKey["name_2_3_10"]={role="healer", classType="Healer"}
 C.byClassKey["name_2_4_10"]={role="healer", classType="Healer"}
--- 中文维护（enemy-loadout-1）：仅借用已存在客户端资源路径，不引入外部插件运行时。
+-- 仅借用已存在客户端资源路径，不引入外部插件运行时。
 -- 来源：Strawberry-devs/ArcheRage-addons, classtracker/classtracker.lua,
 -- commit 6e7813108325d1631f10735cfe99aa48b0dd2ce4。中央类别图标与 byClassKey 同源匹配；
 -- 不修改原职责映射，不按名字猜测，不为 NPC/未知组合分配误导性图标。

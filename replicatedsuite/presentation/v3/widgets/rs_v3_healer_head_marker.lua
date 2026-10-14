@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Healer Head Marker Consumer (M1.16.0.18)
+-- Replicated Suite · 治疗推荐头顶标记
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Independent Presentation Consumer. Recommendation facts are cached only on
--- Domain publish. The 50ms visual task performs bounded world->screen projection
--- and Diff writes; it never creates Native widgets or reads Health/Aura/Roster.
+-- 独立表现 Consumer，只在 Domain 发布时缓存推荐事实；50ms 视觉任务执行有界世界到屏幕投影与 Diff 写入，不创建 Native 控件，也不读取 Health/Aura/Roster。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -216,7 +216,7 @@ function P:Start(reason)
     if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then Feature:ReleaseConsumer(self.consumerToken); self.consumerHeld=false; return false, "event bus unavailable" end
     ok = S.Events:SubscribeInternal("v3.healer.updated", self.activeOwner, function() self:RefreshProjection() end)
     if ok ~= true then Feature:ReleaseConsumer(self.consumerToken); self.consumerHeld=false; return false, "head marker event subscribe failed" end
-    local interval = math.max(1, math.floor(N(settings.refreshMs, 50))) -- 中文维护：沿用已归一化视觉设置，不再额外抬高到50ms。
+    local interval = math.max(1, math.floor(N(settings.refreshMs, 50))) -- 沿用已归一化视觉设置，不再额外抬高到50ms。
     ok = (S.Scheduler.AddHighFrequencyTask or S.Scheduler.AddTask)(S.Scheduler,self.taskName, interval, function() return self:VisualTick() end, false, self, "P4", 1)
     if ok ~= true then
         if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self.activeOwner) end
@@ -231,9 +231,7 @@ end
 
 function P:Stop(reason)
     if self.running ~= true and self.consumerHeld ~= true and self.taskActive ~= true then self:HideAll(); return true end
-    -- Release Demand first while the visual task/subscription is still intact.
-    -- If Demand rejects the transition, keep the old Presentation state rather
-    -- than ending in a half-stopped marker with a leaked consumer token.
+    -- 先释放 Demand，期间保留视觉任务/订阅；若释放拒绝则保留旧表现，避免标记半停用且 Consumer token 泄漏。
     if self.consumerHeld == true then
         local ok, err = Feature:ReleaseConsumer(self.consumerToken)
         if ok ~= true and FeatureEnabled() then return false, err end
@@ -255,8 +253,7 @@ function P:Reconcile(reason)
         if self.running ~= true then return self:Start(reason) end
         local ok, err = self:EnsurePool(settings.count)
         if ok ~= true then return false, err end
-        -- AddTask is an atomic replace-by-name in the shared Scheduler; do not
-        -- remove the old task first or a rejected update would create a gap.
+        -- 共享 Scheduler 的 AddTask 按名称原子替换；不能先删旧任务，否则更新拒绝会造成空档。
         if self.taskActive == true then
             self.taskActive = (S.Scheduler.AddHighFrequencyTask or S.Scheduler.AddTask)(S.Scheduler,self.taskName, math.max(1, math.floor(N(settings.refreshMs,50))), function() return self:VisualTick() end, false, self, "P4", 1) == true
         end
@@ -275,9 +272,7 @@ function P:Describe()
     }
 end
 
--- Dormant controller only: no Native work, no Demand lease, no Scheduler. It
--- exists so Feature lifecycle and display-setting changes can start/stop the
--- independent consumer without a Domain->Presentation direct call.
+-- 休眠控制器无 Native 工作、Demand 租约或 Scheduler；生命周期和显示设置可启停独立 Consumer，无需 Domain 直接调用表现层。
 if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
     S.Events:SubscribeInternal((S.FeatureRuntime and S.FeatureRuntime.LifecycleTopic) or "v3.feature.lifecycle", P,
         function(_, featureId)

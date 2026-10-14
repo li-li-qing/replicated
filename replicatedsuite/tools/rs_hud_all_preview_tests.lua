@@ -1,4 +1,10 @@
--- Real BuffDisplay stores, calibration, marker geometry and commands. Native drawing uses the existing test host.
+------------------------------------------------------------------------
+-- Replicated Suite · HUD全部预览测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用真实 BuffDisplay Store、校准、标记几何和命令；原生绘制由已有测试宿主提供。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Eq(a,b)
     if type(a)~=type(b) then return false end
@@ -68,7 +74,7 @@ local function Boot(scale,failSelectedDetails)
         'presentation/v3/widgets/rs_v3_buff_head_markers.lua','presentation/v3/widgets/rs_v3_buff_hud_calibration.lua'})do dofile(path)end
     local F=S.Features.BuffDisplay;assert(F:EnsureStoreLoaded())
     F.GetPlatesAnchor=function(_,scope)return scope=='target' and 1740 or 1280,680 end
-    -- Calibration must never start an observation lane or ask Native for simulated cooldowns.
+    -- 校准不能启动观察任务，也不能请求原生接口提供模拟冷却。
     h.F=F;h.C=S.UIV3.BuffHudCalibrationV3
     if failSelectedDetails then
         local createLabel=S.UI.CreateLabel

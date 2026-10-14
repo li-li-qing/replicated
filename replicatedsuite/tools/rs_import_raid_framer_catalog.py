@@ -1,4 +1,9 @@
-"""中文维护：固定版本参考数据转换器；仅解析字面量，不执行外部源码。
+# ---------------------------------------------------------------------
+# Replicated Suite · Raid Framer目录转换工具
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+"""固定版本参考数据转换器；仅解析字面量，不执行外部源码。
 
 开发期运行，不进入 TOC。输入为 RF246 的平铺源码缓存；输出可审计的 Lua
 静态表及 JSON 覆盖清单。Skill 树的 id 是槽位，possibleCastIDs 才是游戏 ID。
@@ -152,7 +157,7 @@ def convert(cache):
         text = clean(original, file.endswith('.lua'))
         before = len(records)
         line = lambda pos: text[:pos].count('\n') + 1
-        if file[:-13] in TREE_NAMES:  # FooDefinition.kt
+        if file[:-13] in TREE_NAMES:  # 参考定义文件名示例：FooDefinition.kt。
             declared_tree = re.search(r'override val tree = SkillTreeType\.(\w+)', text)[1]
             tree = tree_bindings[file]
             game_id = int(re.search(r'override val gameId = (\d+)', text)[1])

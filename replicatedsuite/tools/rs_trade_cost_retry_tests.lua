@@ -1,5 +1,10 @@
--- Cache-first contract migration: exercise real MaterialPrice/TradeQuote services.
--- Monetary samples are synthetic boundary inputs, not live market evidence.
+------------------------------------------------------------------------
+-- Replicated Suite · 交易成本重试测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 缓存优先契约测试运行真实 MaterialPrice 和 TradeQuote 服务；金额样本为构造的边界输入，不是实时市场证据。
+------------------------------------------------------------------------
 dofile('tools/rs_trade_tests.lua')
 local baseS=ReplicatedSuite
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')

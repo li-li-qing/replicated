@@ -1,18 +1,17 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Activity Acceptance / Sequence Contract
+-- Replicated Suite · 活动追踪契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Bounded M1 probe. It never creates a second event Authority and never owns
--- presentation. When Activity is enabled and idle, the probe temporarily
--- acquires one synthetic consumer, validates projection identity/lifecycle, and
--- releases it before returning.
+-- 有界活动序列探测不建第二事件权威、不拥有表现；Activity 已启用且空闲时临时获取一个模拟消费端，验证投影身份/生命周期，返回前释放。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 中文维护注释（Phase 3 Batch D，2026-09-29，core-feature-decoupling-1）：本文件是 life_activities 的
+-- 本文件是 life_activities 的
 -- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
--- 断言兜底；Phase 3 正在删掉那处硬编码，所以这里必须**无条件注册** case，并在实现缺失时明确失败。
+-- 独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败。
 local F = S.Features and S.Features.Activities or nil
 
 local function Fail(message) return false, tostring(message or "activity_acceptance_failed") end
@@ -30,16 +29,16 @@ G:RegisterSequenceCase("v3_m1_activities", function(runtimeOnly)
         or type(F.Authority.GetTimelineRows) ~= "function" or type(F.Authority.GetLiveRows) ~= "function" then
         return Fail("activity_timeline_v2_contract")
     end
-    local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.activities") or nil -- 中文维护注释：Acceptance 只读取 Persistence 注册事实，不创建第二 Store Authority，也不触发额外 Load/Save。
-    if store == nil or tostring(store.owner or "") ~= "v3.activities" or tonumber(store.schemaVersion) ~= 8 -- 中文维护注释：`.18.193` 当前活动偏好必须是 schema8，避免共享 FloatingSurface 增字段后继续在 schema7 内偷换 canonical。
-        or (tonumber(F.PersistenceStoreSchemaContractVersion) or 0) < 8 -- 中文维护注释：Feature 显式暴露 schema 契约，防止只改注册数字却漏掉维护边界声明。
-        or (tonumber(F.PersistenceWindowCanonicalContractVersion) or 0) < 1 -- 中文维护注释：窗口持久化必须经过 Store-owned 字段投影，而不是直接 Hash 可演进 Foundation 返回表。
-        or (tonumber(F.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 3 -- 中文维护注释（Phase 3 Batch L，2026-09-29）：下限从 1 提到 3，与原 Foundation 判定取齐（v3 才包含 Framework3 + Transport v1 的零值省略结构化恢复）。
-        or type(store.rebuildCanonicalForIntegrity) ~= "function" -- 中文维护注释：schema7 历史 canonical 必须先走 exact Hash 重建，known-pair 只能作为其后的最后恢复边界。
-        or type(store.recoverKnownLegacyCanonical) ~= "function" then -- 中文维护注释：实机 6271E40B→7E85D975 必须由 Store-owned hook 验证，Persistence Core 不增加通用 bypass。
-        return Fail("store_contract") -- 中文维护注释：任何契约缺失都阻断发布，避免下一轮再次把持久化 Fence 表现误诊成页面/Toggle 故障。
-    end -- 中文维护注释：结束活动 schema8 + canonical recovery Acceptance 门禁。
-    -- 中文维护注释（Phase 3 Batch L，2026-09-29，core-feature-decoupling-1）：以下四项原先由
+    local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.activities") or nil -- Acceptance 只读取 Persistence 注册事实，不创建第二 Store Authority，也不触发额外 Load/Save。
+    if store == nil or tostring(store.owner or "") ~= "v3.activities" or tonumber(store.schemaVersion) ~= 8 -- `.18.193` 当前活动偏好必须是 schema8，避免共享 FloatingSurface 增字段后继续在 schema7 内偷换 canonical。
+        or (tonumber(F.PersistenceStoreSchemaContractVersion) or 0) < 8 -- Feature 显式暴露 schema 契约，防止只改注册数字却漏掉维护边界声明。
+        or (tonumber(F.PersistenceWindowCanonicalContractVersion) or 0) < 1 -- 窗口持久化必须经过 Store-owned 字段投影，而不是直接 Hash 可演进 Foundation 返回表。
+        or (tonumber(F.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 3 -- 下限从 1 提到 3，与原 Foundation 判定取齐（v3 才包含 Framework3 + Transport v1 的零值省略结构化恢复）。
+        or type(store.rebuildCanonicalForIntegrity) ~= "function" -- schema7 历史 canonical 必须先走 exact Hash 重建，known-pair 只能作为其后的最后恢复边界。
+        or type(store.recoverKnownLegacyCanonical) ~= "function" then -- 实机 6271E40B→7E85D975 必须由 Store-owned hook 验证，Persistence Core 不增加通用 bypass。
+        return Fail("store_contract") -- 任何契约缺失都阻断发布，避免下一轮再次把持久化 Fence 表现误诊成页面/Toggle 故障。
+    end -- 结束活动 schema8 + canonical recovery Acceptance 门禁。
+    -- 以下四项原先由
     -- core/rs_foundation_gate.lua 的 v3_activity_persistence_recovery_contract / 以及
     -- v3_feature_persistence_mutation_contract 里的活动侧条件直接点名实现表检查，现搬到这里。
     -- 判定逐条等价（下限照搬）。**Store 侧的 activityStore 契约仍留在 Foundation** ——
@@ -60,8 +59,7 @@ G:RegisterSequenceCase("v3_m1_activities", function(runtimeOnly)
         -- 恢复资格必须由 Store-owned hook + Core exact fingerprint 验真组合完成，Feature/UI 不得直接放行。
         return Fail("store_integrity_upgrade_not_allowed")
     end
-    -- Legacy EventService is reference-only in V3 rebuild mode. A stale runtime
-    -- Authority would make both event clocks compete, so fail the gate loudly.
+    -- 旧 EventService 仅供参考；陈旧运行权威会让两套活动时钟竞争，必须明确阻断门禁。
     if S.Services ~= nil and S.Services.Event ~= nil then return Fail("legacy_event_authority_loaded") end
     local progress = S.Services and S.Services.QuestProgressV3 or nil
     if type(progress) ~= "table" or type(progress.GetQuestProgress) ~= "function" or type(progress.GetInstanceProgress) ~= "function"
@@ -81,11 +79,10 @@ G:RegisterSequenceCase("v3_m1_activities", function(runtimeOnly)
         return Fail("presentation_command_contract")
     end
 
-    -- 维护（2026-09-30）：玩家诊断到此只读返回；下方租约/刷新/选择测试仅离线执行。
+    -- 玩家诊断到此只读返回；下方租约/刷新/选择测试仅离线执行。
     if runtimeOnly == true then return true end
     if S.FeatureRuntime:IsEnabled("life_activities") ~= true then
-        -- A user-disabled Feature is valid. The contracts above are still
-        -- checked, while no gameplay API is touched just to satisfy diagnostics.
+        -- 用户禁用 Feature 属有效状态；仍检查上述契约，禁止为了满足诊断触碰 Gameplay API。
         return true
     end
 

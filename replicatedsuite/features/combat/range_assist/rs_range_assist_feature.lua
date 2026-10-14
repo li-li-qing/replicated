@@ -1,11 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - combat_range_assist Feature Authority
+-- Replicated Suite · 范围辅助功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 1 Batch E（2026-09-28）：从 features/rs_business_bridge.lua 机械搬迁（最后一批，
+-- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
 -- rs_business_bridge.lua 至此退役）。只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、
--- UpdateTopic、Demand owner、Commands、Projection shape、ApiDependencies、
+-- UpdateTopic、Demand所有者、Commands、Projection结构、ApiDependencies、
 -- Scheduler task name（v3_business_range_assist_refresh，16ms）与九个契约版本号全部逐字一致。
---
 -- Authority 边界：圆几何只做本地数学（圆心/半径/点密度），世界距离标定来自
 -- ScreenProjectionV3 的 metric calibration；本文件不做单位枚举、不做写操作。
 ------------------------------------------------------------------------
@@ -19,14 +20,14 @@ local UnitApi = rawget(_G, "X2Unit")
 
 local RANGE_ASSIST_TASK = "v3_business_range_assist_refresh"
 local RANGE_ASSIST_REFRESH_MS = 16
--- 中文维护注释（range-multi-circle-local-budget-1）：rs_business_bridge.lua 是 Lua 5.1 单一主 chunk，
+-- rs_business_bridge.lua 是 Lua 5.1 单一主 chunk，
 -- 原文件已经长期接近 200 个活跃顶层 local 的硬上限。本次多圆不能把常量/Normalize/Find 等辅助项
 -- 继续声明在主 chunk，否则整个 business bridge 会在编译期失败，范围辅助、背包、拍卖、制造、团队等
 -- 同文件 Feature 会一起“implementation unavailable”。因此多圆内部 Authority/迁移/命令辅助全部封进
 -- 这个 IIFE 的子函数作用域；主 chunk 只增加/保留 RangeAssist 一个引用。数据流仍是
 -- Persistence -> Feature.State.circles -> Authority rows -> Presenter rangePools，不改变任何其它业务 Feature。
 -- 后续维护若要增加多圆 helper，也必须放在此内部作用域或对象字段，禁止再消耗主 chunk local 预算。
--- 中文维护（performance-hotpath-1）：诊断文字只在完整页面投影被显式读取时格式化。
+-- 诊断文字只在完整页面投影被显式读取时格式化。
 -- 只使用本模块保存的批次/标定事实，不触发Native、Refresh或Consumer，不进入绘制热路径。
 local function RangeAssistDescribeFrame(feature)
     local batch = type(feature.RangeLastBatch)=="table" and feature.RangeLastBatch or {}
@@ -88,10 +89,7 @@ local function RangeAssistNormalizeCircle(circle, fallbackId)
         id = id,
         name = tostring(type(circle) == "table" and circle.name or ("范围圆 " .. tostring(id))),
         enabled = type(circle) ~= "table" or circle.enabled ~= false,
-        -- Recommended UI window remains radius 1..100 / density 12..48, but
-        -- normalization must preserve any exact value accepted inside the true
-        -- renderer safety envelope. Otherwise Reload would silently undo the
-        -- user's dynamic-slider expansion.
+        -- UI 推荐半径1..100、密度12..48；归一化必须保留真实渲染安全范围内的精确输入，避免重载撤销用户动态滑条扩展。
         radius = math.max(RANGE_ASSIST_RADIUS_HARD_MIN, math.min(RANGE_ASSIST_RADIUS_HARD_MAX, tonumber(type(circle) == "table" and circle.radius) or RANGE_ASSIST_DEFAULT_RADIUS)),
         pointCount = math.max(RANGE_ASSIST_POINT_HARD_MIN, math.min(RANGE_ASSIST_POINT_HARD_MAX, math.floor(tonumber(type(circle) == "table" and circle.pointCount) or RANGE_ASSIST_DEFAULT_POINT_COUNT))),
         pointSize = math.max(S.VisualGuideLimits.pointSizeMin, math.min(S.VisualGuideLimits.pointSizeHardMax,
@@ -159,15 +157,15 @@ local function RangeAssistLegacyCircleId(feature)
     return tonumber(first.id)
 end
 
--- 维护（2026-09-18，range-motion-cadence-1）：范围圆以前固定 50ms（20Hz）刷新，镜头旋转时即使
+-- 范围圆以前固定 50ms（20Hz）刷新，镜头旋转时即使
 -- 投影坐标本身正确，也会表现为每 3 帧左右跳一次。Scheduler 仍只保留一个 16ms 高频任务，真正
 -- Authority 刷新根据本次启用点总量自适应：常规 <=48 点跟随帧级；中等密度 32ms；高密度 48ms。
--- 维护（2026-09-30，range-continuity-1）：16ms 是调度下限，不保证回调间隔；低帧率时
+-- 16ms 是调度下限，不保证回调间隔；低帧率时
 -- Scheduler 每个游戏帧最多回调一次。32/48ms 档必须按经过时间控制，不能再按回调次数除以 2/3。
 -- 数据流：Demand Consumer -> 单 Scheduler task -> Authority Refresh；关闭/无 Consumer 仍释放任务。
 -- 这里只控制会话刷新节奏，不改 circle.pointCount 持久配置，也不在循环内做额外 Static/API 查找。
 local function RangeAssistRefreshInterval(feature)
-    -- 中文维护：用户显式绘制间隔优先；旧档缺值保留原密度自适应节奏，不扩大实际 Native 点预算。
+    -- 用户显式绘制间隔优先；旧档缺值保留原密度自适应节奏，不扩大实际 Native 点预算。
     local configured=tonumber(feature.State.refreshMs)
     if configured and configured>=1 then return configured end
     local total = 0
@@ -188,7 +186,7 @@ local function RangeAssistRefreshInterval(feature)
 end
 
 
--- 维护（range-continuity-1）：缓存只包含拓扑、单位方向和世界点工作区，不保存跨帧屏幕事实。
+-- 缓存只包含拓扑、单位方向和世界点工作区，不保存跨帧屏幕事实。
 -- 配置替换/增删/启停/点数变化时重建；半径/圆心/米标定仍在每次 read 时重新应用。
 -- 最后一个 Consumer 释放后清理缓存，不改任何持久配置，不新增 Scheduler 或 Native 依赖。
 local function RangeAssistGeometry(feature, circles)
@@ -266,7 +264,7 @@ local function RangeAssistFrameResult(feature, rows, status, reason, batch)
     health.projectorSource = source
     -- 保存本模块刚返回的批次，而不是读取可能已被 UnitLines 覆盖的 service.lastWorldBatch。
     feature.RangeLastBatch = batch
-    -- 维护（2026-10-07）：只保存已有批次/标定事实，最多 12 条、通常 500ms 一条；无新 Native 调用。
+    -- 只保存已有批次/标定事实，最多 12 条、通常 500ms 一条；无新 Native 调用。
     -- 暂缺 FOV、比例变化立即留一条，导出时可分辨镜头拉近、角色高度变化与标定跳缩。
     if type(batch)=="table" then
         local now=tonumber(batch.at) or 0
@@ -340,7 +338,7 @@ return NewFeature("combat_range_assist", {
     apply = function(value, state)
         value = type(value) == "table" and value or {}
         state.refreshMs = tonumber(value.refreshMs) and math.max(1,math.min(60000,math.floor(tonumber(value.refreshMs)))) or nil
-        -- 中文维护注释（range-multi-circle-store-1）：默认空 circles 才符合“新用户不送圆”的产品要求；
+        -- 默认空 circles 才符合“新用户不送圆”的产品要求；
         -- 但老版本只存一组 radius/pointCount/...，这里要做单次兼容迁移，避免已有玩家的半径/颜色设置在升级后丢失。
         -- Authority 仍是 feature.State.circles；Persistence 只负责把旧单圆快照转为新数组快照，不自动为真正新用户造圆。
         if type(value.circles) == "table" then
@@ -427,7 +425,7 @@ return NewFeature("combat_range_assist", {
         if #geometry.plans <= 0 then return RangeAssistFrameResult(feature, {}, "ready", "no_enabled_circle") end
         local px,py,pz,posErr = projection:GetUnitWorldPosition("player", true)
         if px == nil then return RangeAssistFrameResult(feature, {}, "unavailable", "自身世界坐标不可读：" .. tostring(posErr or "unknown")) end
-        -- 中文维护注释（2026-09-15，range-real-meter-1）：配置里的 circle.radius 永远保存“游戏米”，
+        -- 配置里的 circle.radius 永远保存“游戏米”，
         -- 不把历史用户配置迁移成世界单位。真正绘制前才向 ScreenProjectionV3 请求受控标定：
         -- UnitDistance(target) 是米数 Authority，player/target world delta 只计算 worldUnitsPerMeter；
         -- Camera fallback 的 screen scale 也是 Session-only 校准。无目标/样本不可信时保留已核验值，
@@ -457,7 +455,7 @@ return NewFeature("combat_range_assist", {
             end
         end
 
-        -- 维护（2026-09-18，range-rigid-frame-1）：所有启用圆在同一次 Authority 刷新中必须共享
+        -- 所有启用圆在同一次 Authority 刷新中必须共享
         -- 同一个 Camera frame / Native-anchor 校准。旧实现“每个圆各投影一次”，旋转镜头时多个圆可能
         -- 分别采到不同相机姿态；同时逐点 Native->Camera fallback 还会让单个圆内部混用两套坐标。
         -- 现在最多 192 个点整批投影一次，ScreenProjectionV3 的 rigidBatch 在 Native 任一点失败时
@@ -479,7 +477,7 @@ return NewFeature("combat_range_assist", {
                 local screenPoint=projected[index]
                 if type(screenPoint)=="table" and tonumber(screenPoint.x)~=nil and tonumber(screenPoint.y)~=nil
                     and screenPoint.visible~=false and tonumber(screenPoint.depth)~=nil and tonumber(screenPoint.depth)>0 then
-                    -- 中文维护：本次batch的新点由Authority持有，不再多分配一份x/y点表。
+                    -- 本次batch的新点由Authority持有，不再多分配一份x/y点表。
                     -- 外部读取仍走独立快照，禁止把这些点暴露给Presentation反向写入。
                     points[#points+1]=screenPoint
                 end
@@ -536,7 +534,7 @@ return NewFeature("combat_range_assist", {
             -- 原始 UIParent 视口，复用本批 Camera frame；不能拿 Layout logical 尺寸代替。
             viewportWidth = feature.RangeLastBatch and feature.RangeLastBatch.viewportWidth,
             viewportHeight = feature.RangeLastBatch and feature.RangeLastBatch.viewportHeight,
-            refreshMs = RangeAssistRefreshInterval(feature), -- 中文维护：控件回显当前偏好，不能被上一帧旧诊断节奏覆盖。
+            refreshMs = RangeAssistRefreshInterval(feature), -- 控件回显当前偏好，不能被上一帧旧诊断节奏覆盖。
             pointCountHardMin = RANGE_ASSIST_POINT_HARD_MIN, pointCountHardMax = RANGE_ASSIST_POINT_HARD_MAX,
             radiusHardMin = RANGE_ASSIST_RADIUS_HARD_MIN, radiusHardMax = RANGE_ASSIST_RADIUS_HARD_MAX,
             pointSizeMin = S.VisualGuideLimits.pointSizeMin,
@@ -553,7 +551,7 @@ return NewFeature("combat_range_assist", {
                 if S.Scheduler and type(S.Scheduler.SetTaskInterval)=="function" then S.Scheduler:SetTaskInterval(RANGE_ASSIST_TASK,value,true) end
                 -- 显式节奏变化清除旧回调余量；几何与事实保持原所有权，下一帧采当前位置，不追赶历史帧。
                 if feature.RangeRefreshHealth then feature.RangeRefreshHealth.lastCallbackAtMs=nil end
-                feature:Refresh("settings_changed") -- 中文维护：关闭/无Consumer时只保存设置，不从配置操作触发Native采样。
+                feature:Refresh("settings_changed") -- 关闭/无Consumer时只保存设置，不从配置操作触发Native采样。
             end
             return ok,why
         end,
@@ -623,7 +621,7 @@ return NewFeature("combat_range_assist", {
                 return true
             end)
         end,
-        -- 中文维护注释（range-legacy-command-1）：保留旧单圆命令名字给旧页面/脚本兼容；
+        -- 保留旧单圆命令名字给旧页面/脚本兼容；
         -- 但新默认是空 circles，不允许隐式造圆，以免“新用户默认没有圆”的产品规则被兼容层破坏。
         SetRadius = function(feature, value)
             local circleId, err = RangeAssistLegacyCircleId(feature)
@@ -653,7 +651,7 @@ return NewFeature("combat_range_assist", {
     },
 })
 end)()
--- 中文维护：完整页面快照保持旧字段与复制边界；诊断文字按需由已有事实补齐。
+-- 完整页面快照保持旧字段与复制边界；诊断文字按需由已有事实补齐。
 local RangeAssistFullProjection = RangeAssist.GetProjection
 function RangeAssist:GetProjection()
     local snapshot = RangeAssistFullProjection(self)
@@ -668,7 +666,7 @@ function RangeAssist:GetProjection()
     return snapshot
 end
 
--- 中文维护：绘制专用小快照只复制坐标/样式，不复制页面圆列表、限制、诊断长串。
+-- 绘制专用小快照只复制坐标/样式，不复制页面圆列表、限制、诊断长串。
 -- 快照仍完全独立，上一帧的读者不能修改Authority，后续刷新不会改写旧快照。
 RangeAssist.RenderProjectionContractVersion = 1
 function RangeAssist:GetRenderProjection()
@@ -698,7 +696,7 @@ RangeAssist.AnchorCalibrationContractVersion = 2
 RangeAssist.MetricDistanceContractVersion = 1
 RangeAssist.MultiCircleContractVersion = 1
 
--- 维护（range-continuity-1）：采集只读会话事实；不 Initialize、不 Acquire、不刷新投影或查询 Native。
+-- 采集只读会话事实；不 Initialize、不 Acquire、不刷新投影或查询 Native。
 -- 原模块没有 GetHealth 且 Store Owner 未归属，导致错误为零也完全看不到实际刷新/投影状态。
 RangeAssist.ContinuityContractVersion = 1
 RangeAssist.ProjectionStabilityContractVersion = 1

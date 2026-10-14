@@ -1,9 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Analytics Runtime / Metric Registry
+-- Replicated Suite · 战斗分析与指标登记
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- One self/all CombatEventBus consumer fans borrowed immutable facts into
--- independent, bounded metric plugins. Optional native enrichment is shared and
--- may degrade without failing the combat fact pipeline.
+-- 战斗分析运行体与指标登记表使用一个 self/all CombatEventBus 消费者，将借用的不可变事实分发到独立有界指标插
+-- 件。可选原生补充共享，降级不能使战斗事实流水线失败。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -179,7 +180,7 @@ local function CombatFactChanged(fact, v)
         or fact.subjectName ~= v.subjectName or fact.rawNotice2 ~= v.rawNotice2 or fact.rawNotice3 ~= v.rawNotice3 or fact.rawNotice4 ~= v.rawNotice4 or fact.rawNotice5 ~= v.rawNotice5
         or fact.auraType ~= v.auraType or fact.auraId ~= v.auraId or fact.auraName ~= v.auraName or fact.auraEvidence ~= v.auraEvidence
 end
--- 中文维护（2026-10-08）：首个指标前的过滤过去没有死者证据。只为 death 类记录32槽标量环，
+-- （2026-10-08）首个指标前的过滤过去没有死者证据。只为 death 类记录32槽标量环，
 -- 由 Analytics 自己解释采集范围；不扩大自身 Actor、伤害账本或订阅，计数保留本代全部过滤原因。
 local deathIngress={rows={},next=1,count=0,evicted=0,counters={}}
 local function IngressScalar(value)
@@ -191,7 +192,7 @@ local function IngressScalar(value)
     return value:sub(1,finish).."<clipped>"
 end
 local function RecordDeathIngress(runtime,fact,reason)
-    if fact.category~="death" then return end -- 中文维护：团战伤害热路禁止生成逐事件诊断行。
+    if fact.category~="death" then return end -- 团战伤害热路禁止生成逐事件诊断行。
     deathIngress.counters[reason]=(deathIngress.counters[reason] or 0)+1
     deathIngress.rows[deathIngress.next]={at=IngressScalar(fact.receivedAt),sequence=IngressScalar(fact.sequence),
         kind=IngressScalar(fact.kind),rawEventType=IngressScalar(fact.rawEventType),reason=reason,scope=runtime:GetCollectionScope(),
@@ -201,7 +202,7 @@ local function RecordDeathIngress(runtime,fact,reason)
     if deathIngress.count<32 then deathIngress.count=deathIngress.count+1 else deathIngress.evicted=deathIngress.evicted+1 end
 end
 function A:GetDeathIngressDiagnostics()
-    -- 中文维护：导出取得脱离现场的副本；停用/清空实时统计不删除排障现场，不做惰性加载或写存档。
+    -- 导出取得脱离现场的副本；停用/清空实时统计不删除排障现场，不做惰性加载或写存档。
     local rows,counters={},{};local first=deathIngress.count==32 and deathIngress.next or 1
     for offset=0,deathIngress.count-1 do
         local copy={};for key,value in pairs(deathIngress.rows[(first+offset-1)%32+1]) do copy[key]=value end
@@ -215,13 +216,12 @@ function A:_DispatchFact(fact)
     if type(fact) ~= "table" then return false end
     -- 无活动指标的类别直接退出，避免状态/施法等事件分配 borrowed fact 保护快照。
     local plan = self.factPlans[tostring(fact.category or "other"):lower()] or self.factPlans.other
-    if type(plan) ~= "table" or #plan == 0 then RecordDeathIngress(self,fact,"no_active_metrics");return false end -- 中文维护：无指标与缺通知必须可区分。
+    if type(plan) ~= "table" or #plan == 0 then RecordDeathIngress(self,fact,"no_active_metrics");return false end -- 无指标与缺通知必须可区分。
     -- 在指标分发之前过滤；其它模块的全场 Consumer 不扩大本统计的处理范围。
-    if self:GetCollectionScope() == "self" and self:IsRelevantSelfFact(fact) ~= true then RecordDeathIngress(self,fact,"self_scope_filtered");return false end -- 中文维护：排除他人仍保留有界死亡入口证据。
-    RecordDeathIngress(self,fact,"accepted") -- 中文维护：只证明进入指标链，最终归属仍以 kills 的 decision 为准。
+    if self:GetCollectionScope() == "self" and self:IsRelevantSelfFact(fact) ~= true then RecordDeathIngress(self,fact,"self_scope_filtered");return false end -- 排除他人仍保留有界死亡入口证据。
+    RecordDeathIngress(self,fact,"accepted") -- 只证明进入指标链，最终归属仍以 kills 的 decision 为准。
     self.factsReceived = self.factsReceived + 1
-    -- One compact scalar snapshot protects sibling metrics from each other. The
-    -- parent CombatEventBus still applies its own full consumer fence as well.
+    -- 一个紧凑标量快照保护同级指标互不污染；上层 CombatEventBus 仍执行完整消费者隔离。
     local v = {
         schemaVersion=fact.schemaVersion, sequence=fact.sequence, receivedAt=fact.receivedAt, transport=fact.transport,
         kind=fact.kind, category=fact.category, environmental=fact.environmental, amount=fact.amount,
@@ -409,8 +409,7 @@ function A:_ReconcileDemand(_, before, after, context)
         local ok, err = self:_SubscribeBus(); if ok ~= true then return false, err end
     end
     if beforeCount > 0 and afterCount <= 0 then
-        -- Release can fail on some native builds; do not erase metric session
-        -- state until the downstream lease transition really succeeded.
+        -- 部分原生版本 Release 可失败；下游租约转换真正成功前不能擦除指标会话状态。
         local ok, err = self:_UnsubscribeBus(); if ok ~= true then return false, err end
     end
     local applied, applyErr = self:_ApplyActiveSet(activeSet, type(context)=="table" and context.reason or "demand")
@@ -531,10 +530,8 @@ function A:RefreshStatisticsConsumers(reason)
     return true
 end
 
--- Bounded actor drill-down projection. Metric plugin state stays private to the
--- Analytics Authority; Presentation never reads metric.state directly. Only
--- scalar actor fields, bounded detail maps and the bounded opener queue are
--- copied out. This runs on explicit UI selection/refresh, not on combat facts.
+-- 有界角色下钻投影仅复制标量角色字段、有界详情 map 及 opener 队列。metric.state 保持 Analytics 私有，
+-- Presentation 不直接读取。只在显式 UI 选择或刷新执行，不在战斗事实回调执行。
 function A:GetMetricActorDetail(id, actorKey, options)
     local metric = self.metrics[NormalizeId(id)]
     if metric == nil then return nil, "metric missing" end

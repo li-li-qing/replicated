@@ -1,11 +1,17 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 9 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · 内置库运行时契约测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 维护（2026-09-12）：物理版本按Store注册策略验收；仍比较完整配置，不放宽业务指纹/重载一致性。
--- Development-only: shipped EventBus/Scheduler/Api/Store; optional production
--- Button factory/Click dispatch through a recorded Native handler. Geometry, focus,
--- Native tooltip and disk remain synthetic; not RU-client acceptance.
+-- 开发期使用发行包中的 EventBus、Scheduler、Api 和 Store；可选生产 Button 工厂
+-- 及点击派发通过已记录的原生处理器调用；几何、焦点、
+-- 原生 tooltip 和磁盘仍为构造数据，不能替代 RU 验收。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,function(e)return tostring(e)..'\n'..debug.traceback()end)
@@ -34,8 +40,7 @@ local function Boot(options)
     local F=S.Features.BuffDisplay;assert(F:EnsureStoreLoaded())
     local h=dofile('tools/rs_status_ui_test_host.lua')(S)
     if options.productionButtons then
-        -- Keep actual primitive deferred-onClick resolution; the small adapter supplies
-        -- only native handler registration/base component methods, not game hit-testing.
+        -- 保留基础控件实际的延迟 onClick 解析；小型适配器仅提供原生处理器注册和基础组件方法，不模拟游戏命中检测。
         local factories={}
         S.RSUI.RegisterType=function(_,kind,factory)factories[kind]=factory;return true end
         S.RSUI.ReplaceType=S.RSUI.RegisterType
@@ -210,7 +215,7 @@ end)
 Test('bulk import preserves numeric window configuration through Transport3 loss model',function()
     local model=dofile('tools/rs_udf_numeric_test_host.lua')
     local S,F,p,h,c=Boot({nativeLoss=model.NativeLoss,productionButtons=true})
-    -- State schema owns the window; use actual registered get/apply to avoid assumptions.
+    -- 窗口状态由结构定义管理；使用已注册的真实 get/apply，避免猜测状态字段。
     assert(F:MutateStore(function()
         F.State.widgetWindow.userMoved=true;F.State.widgetWindow.coordinateSpace='logical-free-v2';F.State.widgetWindow.x=100;F.State.widgetWindow.y=120;F.State.widgetWindow.normalizedCenterX=0.82991701364517212;F.State.widgetWindow.normalizedCenterY=0.19861100614070892;return true
     end,0,'numeric_window_fixture',true))

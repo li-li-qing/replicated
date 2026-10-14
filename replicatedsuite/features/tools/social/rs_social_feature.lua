@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - tools_social Feature Authority
+-- Replicated Suite · 社交名单功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 1 Batch A（2026-09-28，FND-001 / FND-002）：本文件是把 tools_social 从
--- features/rs_business_bridge.lua 机械搬迁出来的独立源码单元。搬迁只改变源码边界，
--- 不改变任何业务行为：Feature ID、Store ID/Schema、UpdateTopic、Demand owner、
--- Commands 公开名称、Projection shape、ApiDependencies 全部与被搬迁前逐字一致。
--- 中文维护注释：本文件不认识其它 Feature 的私有 State，也不建立第二个 Registry/Runtime；
+-- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
+-- 本文件不认识其它 Feature 的私有 State，也不建立第二个 Registry/Runtime；
 -- 装配骨架来自 features/shared/rs_feature_slice_factory.lua（toc.g 已保证先加载）。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
@@ -13,24 +12,13 @@ local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory
 if type(FSF) ~= "table" then error("FeatureSliceFactory unavailable for tools_social") end
 local Call, Action, NewFeature = FSF.Call, FSF.Action, FSF.NewFeature
--- 中文维护注释：X2Friend 只作为能力宿主候选传入；真正的导入 Authority 仍是 FeatureRuntime →
+-- X2Friend 只作为能力宿主候选传入；真正的导入 Authority 仍是 FeatureRuntime →
 -- S.ApiImports（ApiDependencies 声明 8 个 X2Friend method），本文件不自己 ImportAPI。
 local FriendApi = rawget(_G, "X2Friend")
 
-------------------------------------------------------------------------
--- tools_social: friend / block / mute lists over X2Friend. The RU list
--- return shape is not yet runtime-verified, so every read goes through a
--- conservative normalizer instead of trusting one guessed shape:
---   * array-of-tables, array-of-names and name-keyed tables all normalize;
---   * entries without a usable name become explicit "未识别条目" rows (never
---     rendered as raw table addresses) and degrade the status to partial;
---   * lists are bounded (SOCIAL_LIST_MAX_ROWS) with an explicit truncation
---     note, so a huge roster cannot flood the projection;
---   * per-list failures aggregate into ready/partial/empty/unavailable --
---     a failed read must never present itself as an empty list.
--- Signatures are the client export manifest (api_functions.lua):
--- GetFriendList(allMember) / GetBlockList() / GetMuteList().
-------------------------------------------------------------------------
+-- tools_social通过X2Friend读取好友/屏蔽/静音名单。RU返回形态尚未实机核实，必须用保守normalizer：表数组、名称数组与名称键表均可归一化。
+-- 缺可用名称的条目显示未识别条目并降级partial，禁止渲染表地址；SOCIAL_LIST_MAX_ROWS限制行数并明确截断，避免巨大名单冲垮投影。
+-- 各名单失败汇总ready/partial/empty/unavailable，读取失败不能冒充空名单。签名以api_functions.lua导出为准：GetFriendList(allMember)/GetBlockList()/GetMuteList()。
 local SOCIAL_LIST_MAX_ROWS = 200
 local SOCIAL_LIST_SCAN_LIMIT = 1000
 local SOCIAL_LISTS = {
@@ -54,9 +42,7 @@ local function SocialMemberName(value)
     return nil
 end
 local function SocialListEntries(list)
-    -- Array part first (ipairs semantics); only a purely name-keyed table
-    -- falls back to sorted string keys. Scalar hash fields such as a native
-    -- `count` are metadata, not entries, and are skipped in both shapes.
+    -- 先处理数组部分，遵循ipairs语义；仅纯名称键表回退排序字符串key。Native count等标量哈希字段为元数据，两种形态都跳过。
     local arrayCount = 0
     for index = 1, SOCIAL_LIST_SCAN_LIMIT do
         if list[index] == nil then break end
@@ -104,7 +90,7 @@ local function AppendSocialList(rows, spec, list)
             end
             local fact = online == nil and "在线状态未知" or (online and "在线" or "离线")
             if level ~= nil then fact = fact .. " · 等级 " .. tostring(level) end
-            -- 中文维护：社交名单只读独立备注的标量，不建立第二份备注 Store，也不因展示备注额外读取 Native 名单。
+            -- 社交名单只读独立备注的标量，不建立第二份备注 Store，也不因展示备注额外读取 Native 名单。
             local notes = S.Features and S.Features.PlayerNotes
             local note = notes and notes:GetNote(name) or ""
             if note ~= "" then fact = fact .. " · 备注：" .. note end
@@ -130,8 +116,7 @@ NewFeature("tools_social", { apiDependencies = { "X2Friend:IsMyFriend", "X2Frien
         if spec.allMember == true then
             ok, list, callErr = Call(spec.capability, FriendApi, spec.method, true)
         else
-            -- GetBlockList()/GetMuteList() take no argument (client export
-            -- manifest); do not pass a nil that would change the native arity.
+            -- GetBlockList()/GetMuteList()按客户端导出清单无参数；禁止传nil改变Native参数个数。
             ok, list, callErr = Call(spec.capability, FriendApi, spec.method)
         end
         if ok ~= true then

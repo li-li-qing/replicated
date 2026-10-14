@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Replicated Suite Phase 0 native dependency ownership audit.
+# ---------------------------------------------------------------------
+# Replicated Suite · 原生依赖审查
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+"""原生依赖归属审查。
 
-Purpose:
-- prove that an implementation-level ApiDependencies override cannot silently
-  drop a namespace already declared by FeatureRegistry;
-- inventory shared-service Native usage and Feature -> Service transitive gaps;
-- detect Native namespaces used by shipped runtime code but absent from the
-  curated NativeContract.
+验证实现中的 ApiDependencies 覆盖不能悄然丢失 FeatureRegistry 已声明的命名空间；
+盘点共享服务原生调用及 Feature→Service 传递依赖缺口；
+发现运行时代码使用但 NativeContract 尚未声明的命名空间。
 
-The audit is deliberately namespace-scoped because ADDON:ImportAPI imports a
-namespace, while feature metadata remains method-capability scoped.
-It does not mutate runtime files and it does not infer unknown API_TYPE ids.
-"""
+ADDON:ImportAPI 按命名空间导入，因此审查以命名空间为范围，功能元数据仍按方法能力声明。
+不修改运行时文件，不推断未知 API_TYPE ID。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,23 +28,23 @@ REGISTRY = FEATURES / "rs_feature_registry.lua"
 
 FOUNDATION_NATIVE_NAMES = {"ADDON", "X2Chat", "X2Locale", "X2Option", "X2Unit"}
 
-# Phase 0 first standalone-bootstrap matrix. These rows are limited to call chains
-# already proven by production diagnostics/source tracing; optional sub-capabilities
-# are intentionally not promoted to hard requirements here.
+# 独立启动依赖矩阵仅包含已由生产诊断或源码追踪
+# 证明的调用链；可选子能力
+# 不能在此升级为强制依赖。
 STANDALONE_REQUIRED_NAMESPACES = {
     "life_trade": {"X2Store", "X2Ability", "X2Equipment", "X2Craft", "X2Auction"},
     "life_bonds": {"X2Resident", "X2Bag", "X2Quest"},
     "combat_buff_display": {"X2Ability", "X2Equipment"},
 }
 
-# Proven Feature -> Shared Service Native edge policy. The same service file may
-# expose methods with different Native needs, so source-wide namespace union must
-# never be promoted wholesale into a Feature hard dependency.
+# 按已证明的 Feature→共享服务原生调用路径判断依赖；同一服务文件
+# 可能为不同方法使用不同原生命名空间，不能把整个文件的命名空间并集
+# 全部提升为某个功能的强制依赖。
 #
-# required: namespace used by the exact service method path this Feature consumes.
-# optional: namespace belongs to other service methods / graceful enrichment paths.
-# lazy: namespace is needed only when a user-enabled sub-capability or drill-down
-#       actually executes; it must be owned by the service/lazy capability boundary.
+# required：此功能实际消费的确切服务方法路径所使用的命名空间。
+# optional：属于其它服务方法或允许优雅降级的增强路径。
+# lazy：只有用户启用子能力或实际进入详情路径时才需要，
+# 其导入责任必须留在服务或延迟能力边界。
 SERVICE_EDGE_NATIVE_POLICY = {
     # 中文维护（2026-10-13）：人员备注选家族时才调用ReadFamilyList，由名单Service取得Native lease。
     # 好友、黑名单、团队及已保存备注不能为此强制导入FAMILY；此策略与实际AcquireApi边界成对维护。
@@ -90,12 +90,9 @@ class Finding:
 
 
 def _mask_comments(text: str) -> str:
-    """Replace Lua comments with spaces while preserving strings/newlines.
+    """将 Lua 注释替换为空格，保留字符串及换行。
 
-    This is a small lexer, not a Lua parser. It is sufficient for source-level
-    dependency tokens and avoids counting `X2Foo` names that only appear in
-    maintenance comments.
-    """
+这是面向源码依赖标记的轻量词法分析器，不是 Lua 解析器；避免把维护注释中的 X2Foo 名称计为依赖。"""
     out = list(text)
     i, n = 0, len(text)
     quote: Optional[str] = None
@@ -114,7 +111,7 @@ def _mask_comments(text: str) -> str:
             i += 1
             continue
         if c == "-" and i + 1 < n and text[i + 1] == "-":
-            # Long comment --[[ ... ]] or line comment.
+            # 识别长注释 --[[ ... ]] 和单行注释。
             if text.startswith("--[[", i):
                 j = text.find("]]", i + 4)
                 end = n if j < 0 else j + 2
@@ -257,11 +254,9 @@ def load_registry() -> Dict[str, List[str]]:
 
 
 def load_implementation_overrides() -> Tuple[Dict[str, List[str]], Dict[str, str]]:
-    """Return feature_id -> explicit implementation deps and source path.
+    """返回 feature_id 对应的显式实现依赖和源码路径。
 
-    A missing row means the implementation has no override and FeatureRuntime
-    correctly falls back to FeatureRegistry metadata.
-    """
+缺少条目表示实现没有覆盖声明，FeatureRuntime 应回退到 FeatureRegistry 元数据。"""
     result: Dict[str, List[str]] = {}
     sources: Dict[str, str] = {}
     for path in FEATURES.rglob("*.lua"):
@@ -271,7 +266,7 @@ def load_implementation_overrides() -> Tuple[Dict[str, List[str]], Dict[str, str
         text = _mask_comments(raw)
         constants = _constants(raw)
 
-        # NewFeature("id", { apiDependencies = ... }) used by business bridge.
+        # 业务桥接使用的声明形状：NewFeature("id", { apiDependencies = ... })。
         for call in _find_named_calls(raw, "NewFeature"):
             first = re.match(r"\s*(['\"])(.*?)\1", call, re.S)
             if not first:
@@ -281,11 +276,11 @@ def load_implementation_overrides() -> Tuple[Dict[str, List[str]], Dict[str, str
                 result[first.group(2)] = deps
                 sources[first.group(2)] = str(path.relative_to(ROOT))
 
-        # Named Feature tables registered later (Trade/Bonds/... and standalone F).
+        # 识别随后注册的具名功能表，包括 Trade、Bonds 和独立 F。
         var_to_id: Dict[str, str] = {}
         for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\.Id\s*=\s*(['\"])(.*?)\2", text):
             var_to_id[m.group(1)] = m.group(3)
-        # local F = { Id = "...", ..., ApiDependencies = {...} }
+        # 功能表声明示例：local F = { Id = "...", ..., ApiDependencies = {...} }。
         for m in re.finditer(r"\blocal\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\{", text):
             var = m.group(1)
             brace = text.find("{", m.start())
@@ -301,7 +296,7 @@ def load_implementation_overrides() -> Tuple[Dict[str, List[str]], Dict[str, str
                     result[idm.group(2)] = deps
                     sources[idm.group(2)] = str(path.relative_to(ROOT))
 
-        # RegisterImplementation("literal", Var) can recover ids if Id assignment is indirect.
+        # Id 间接赋值时，可通过 RegisterImplementation("literal", Var) 恢复功能 ID。
         for m in re.finditer(
             r"RegisterImplementation\s*\(\s*(['\"])(.*?)\1\s*,\s*([A-Za-z_][A-Za-z0-9_]*)",
             text,
@@ -346,11 +341,11 @@ def _mask_strings(text: str) -> str:
 
 def _runtime_x2_names(path: Path) -> Set[str]:
     raw = _mask_comments(path.read_text(encoding="utf-8", errors="replace"))
-    # Bare object references such as X2Skill.Info. Strings are masked here so
-    # documentation text cannot invent a dependency.
+    # 识别 X2Skill.Info 等直接对象引用时屏蔽字符串，
+    # 避免文档说明凭空产生依赖。
     bare = set(re.findall(r"\b(X2[A-Z][A-Za-z0-9_]*)\b", _mask_strings(raw)))
-    # Capability-mediated calls intentionally carry namespace in a string. Only
-    # count strings at actual API boundary call sites, not arbitrary prose.
+    # 通过能力包装调用时，命名空间有意放在字符串中；仅统计
+    # 真实 API 边界调用位置的字符串，不能统计任意说明文字。
     mediated = set()
     call_pat = re.compile(
         r"(?:CallCapability|ActionCapability|IsCapabilityAllowed|_Call|Call|Action)\s*\(\s*['\"](X2[A-Z][A-Za-z0-9_]*):",
@@ -365,7 +360,7 @@ def service_native_inventory() -> Dict[str, Set[str]]:
     for path in SERVICES.glob("*.lua"):
         names = _runtime_x2_names(path)
         if names:
-            # Use the service export name when it is statically visible; otherwise filename.
+            # 静态可见时使用服务导出名，否则退回文件名。
             text = _mask_comments(path.read_text(encoding="utf-8", errors="replace"))
             m = re.search(r"S\.Services\.([A-Za-z_][A-Za-z0-9_]*)\s*=", text)
             key = m.group(1) if m else path.stem
@@ -468,10 +463,10 @@ def audit() -> Tuple[List[Finding], Dict[str, object]]:
                 )
             )
 
-    # Standalone feature source direct Native usage must be covered by its effective
-    # FeatureRuntime import contract. Shared bundle files are skipped because source-wide
-    # attribution would assign one slice's API use to every sibling; Phase 1/2 splitting
-    # will remove that ambiguity.
+    # 独立功能直接使用的原生命名空间必须被有效 FeatureRuntime
+    # 导入契约覆盖；跳过共享打包文件，避免全文件归属分析
+    # 把一个分片的 API 使用归给每个相邻分片；
+    # 后续拆分共享包时应消除该歧义。
     by_feature_source: Dict[str, List[str]] = {}
     for fid, source in feature_sources.items():
         by_feature_source.setdefault(source, []).append(fid)
@@ -488,7 +483,7 @@ def audit() -> Tuple[List[Finding], Dict[str, object]]:
                 f"namespaces={','.join(gap)} source={source}"
             ))
 
-    # Runtime source must never depend on an X2 namespace that NativeContract cannot name.
+    # 运行时源码不能依赖 NativeContract 无法声明的 X2 命名空间。
     runtime_roots = [ROOT / "features", ROOT / "services", ROOT / "presentation"]
     used_names: Dict[str, List[str]] = {}
     for base in runtime_roots:
@@ -509,9 +504,9 @@ def audit() -> Tuple[List[Finding], Dict[str, object]]:
                 )
             )
 
-    # Service transitive ownership is policy-aware. A service file can contain
-    # methods for several consumers; only the exact required edge belongs in the
-    # Feature hard dependency set. Optional/lazy namespaces stay service-owned.
+    # 服务传递依赖按策略判断：一个服务文件可包含多个消费者的方法，
+    # 只有确切 required 路径应进入 Feature 的强制依赖集合，
+    # optional 和 lazy 命名空间仍由服务负责。
     for feature_id, service_names in sorted(refs.items()):
         effective = impl.get(feature_id, registry.get(feature_id, []))
         effective_ns = _namespace_set(effective) | FOUNDATION_NATIVE_NAMES
@@ -542,9 +537,9 @@ def audit() -> Tuple[List[Finding], Dict[str, object]]:
                     "ERROR", "TRANSITIVE_REQUIRED_NAMESPACE_MISSING", feature_id,
                     f"service={service_name} missing={','.join(missing_required)}",
                 ))
-            # Lazy namespace absence is represented by the global NativeContract
-            # blocker if the namespace itself is unknown. Do not duplicate it as a
-            # Feature warning: lazy ownership must remain at the service boundary.
+            # lazy 命名空间本身未知时，由全局 NativeContract
+            # 检查报告阻断，不应再重复成 Feature 警告，
+            # 延迟依赖的责任须保留在服务边界。
 
     stats: Dict[str, object] = {
         "registry_features": len(registry),
@@ -573,7 +568,7 @@ def main() -> int:
     if errors:
         return 1
     if blockers:
-        # 2 means the audit itself worked but Phase 0 cannot claim a green Native gate.
+        # 返回码 2 表示审查工具成功执行，但原生门禁仍未通过。
         return 2
     return 0
 

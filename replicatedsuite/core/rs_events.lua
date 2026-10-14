@@ -1,9 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Isolated event bus
--- Uses a private hidden Window so this addon never replaces another addon's
--- UIParent:SetEventHandler callback.
+-- Replicated Suite · 隔离原生事件与内部总线
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 隔离事件总线使用私有隐藏 Window，绝不替换其他插件的 UIParent:SetEventHandler 回调。
 ------------------------------------------------------------------------
-
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -26,10 +27,10 @@ S.Events = {
     unregisterCapability = nil,
     unregisterSkipped = 0,
     ownerReleaseContractVersion = 1,
-    -- 维护（foundation-lifecycle-1）：Owner 释放立即撤销在途回调，Epoch 隔离同代 Stop/Start。
+    -- Owner 释放立即撤销在途回调，Epoch 隔离同代 Stop/Start。
     -- 仅治理事件执行权限，不拥有 Feature/UI 状态；不改变 owner-first 参数或 Native 注册策略。
     dispatchEpoch = 0,
-    -- 中文维护：全局 UI 事件单独桥接，不能假定私有 Window:RegisterEvent 会收到；每个事件只注册一个可释放的 Native 回调。
+    -- 全局 UI 事件单独桥接，不能假定私有 Window:RegisterEvent 会收到；每个事件只注册一个可释放的 Native 回调。
     globalBridges = {}, globalRegisterFailures = 0, globalReleaseFailures = 0,
     lifecycleContractVersion = 1,
 }
@@ -101,10 +102,8 @@ end
 
 function E:Subscribe(eventName, owner, callback)
     if type(eventName) ~= "string" or eventName == "" or type(callback) ~= "function" then return false end
-    -- Native registration is part of the subscription transaction. Never tell
-    -- a Service that its listener is live when RegisterEvent actually failed.
-    -- Do not promote an existing optional topic to required until registration
-    -- has succeeded and this required listener is actually committed.
+    -- 原生注册属于订阅事务；RegisterEvent 失败时不能告诉 Service 监听已生效。已有可选主题须等注册成功且必需
+    -- 监听器真正提交后，才能升级为必需。
     if self.running == true and self.registered[eventName] ~= true then
         if self:Register(eventName) ~= true then
             self.subscribeFailures = self.subscribeFailures + 1
@@ -126,7 +125,7 @@ function E:Unsubscribe(eventName, owner)
     if type(list) ~= "table" then return 0 end
     local kept, removed = {}, 0
     for _, listener in ipairs(list) do
-        -- 维护：只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
+        -- 只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
         -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
         if listener.owner == owner then
             listener.cancelled = true
@@ -152,7 +151,7 @@ function E:UnsubscribeOwner(owner)
         if type(list) == "table" then
             local kept = {}
             for _, listener in ipairs(list) do
-                -- 维护：只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
+                -- 只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
                 -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
                 if listener.owner == owner then
                     listener.cancelled = true
@@ -174,13 +173,8 @@ function E:UnsubscribeOwner(owner)
     return removed
 end
 
-------------------------------------------------------------------------
--- Internal event bus
---
--- V3 Features publish projection changes here. Internal topics never call
--- Native RegisterEvent(), so a Presentation subscriber cannot accidentally
--- expand the game's event surface merely by observing a Feature.
-------------------------------------------------------------------------
+-- 内部事件总线供 V3 Feature 发布投影变化。内部主题不调用 Native RegisterEvent()，因此 Presentation 订阅不能
+-- 仅因观察 Feature 而扩大游戏事件面。
 function E:SubscribeInternal(topic, owner, callback)
     topic = tostring(topic or "")
     if topic == "" or type(callback) ~= "function" then return false end
@@ -196,7 +190,7 @@ function E:UnsubscribeInternal(topic, owner)
     if type(list) ~= "table" then return 0 end
     local kept, removed = {}, 0
     for _, listener in ipairs(list) do
-        -- 维护：只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
+        -- 只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
         -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
         if listener.owner == owner then
             listener.cancelled = true
@@ -215,7 +209,7 @@ function E:UnsubscribeInternalOwner(owner)
         if type(list) == "table" then
             local kept = {}
             for _, listener in ipairs(list) do
-                -- 维护：只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
+                -- 只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
                 -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
                 if listener.owner == owner then
                     listener.cancelled = true
@@ -232,11 +226,11 @@ end
 function E:ReleaseUnusedGlobalBridges(force)
     for name,row in pairs(self.globalBridges)do
         if (force or self.internalListeners[row.topic]==nil)and not row.releaseFailed then
-            -- 中文维护：先撤销在途 Native 闭包的执行权，再释放精确 handler；不移除游戏/其它插件的订阅。
+            -- 先撤销在途 Native 闭包的执行权，再释放精确 handler；不移除游戏/其它插件的订阅。
             row.active=false
             local ok=S.Api and S.Api:ActionCapability("UIParent:ReleaseEventHandler",row.host,"ReleaseEventHandler",name,row.handler)
             if ok~=true then
-                -- 中文维护：释放被拒后保留一个永不执行的记录，禁止重新注册累积闭包或每次内部取消都重复尝试。
+                -- 释放被拒后保留一个永不执行的记录，禁止重新注册累积闭包或每次内部取消都重复尝试。
                 self.globalReleaseFailures=self.globalReleaseFailures+1;row.releaseFailed=true
             else self.globalBridges[name]=nil end
         end
@@ -249,7 +243,7 @@ function E:SubscribeGlobalOptional(name,owner,callback)
     local topic="native.global."..name
     if row==nil then
         local host,api=rawget(_G,"UIParent"),S.Api
-        -- 中文维护：不注册无法释放的全局回调，避免禁用/重载累积；缺此入口不影响现有私有事件和手动功能。
+        -- 不注册无法释放的全局回调，避免禁用/重载累积；缺此入口不影响现有私有事件和手动功能。
         if not api or not host or type(host.SetEventHandler)~="function"or type(host.ReleaseEventHandler)~="function"
             or api:IsCapabilityAllowed("UIParent:SetEventHandler")~=true or api:IsCapabilityAllowed("UIParent:ReleaseEventHandler")~=true then
             self.globalRegisterFailures=self.globalRegisterFailures+1;return false
@@ -276,7 +270,7 @@ function E:Publish(topic, ...)
     local list = self.internalListeners[topic]
     if type(list) ~= "table" then return 0 end
     local args, argCount = { ... }, select("#", ...)
-    -- 维护：新增订阅延至下一次 Publish；Stop/Generation 变化中断快照，即使同代立即重启。
+    -- 新增订阅延至下一次 Publish；Stop/Generation 变化中断快照，即使同代立即重启。
     local epoch, generation = self.dispatchEpoch, S.Generation
     local count = #list
     local delivered = 0
@@ -301,10 +295,8 @@ function E:Unregister(eventName)
     eventName = tostring(eventName or "")
     if eventName == "" or self.registered[eventName] ~= true then return true end
 
-    -- Some ArcheRage RU builds expose RegisterEvent without a matching
-    -- UnregisterEvent. That is a capability limitation, not a runtime failure:
-    -- listener ownership has already been removed above, so the native event can
-    -- be safely parked on the hidden host and ignored until host shutdown.
+    -- 部分 ArcheRage RU 版本提供 RegisterEvent 却没有匹配的 UnregisterEvent，这是能力限制而非运行失败。上方
+    -- 已移除监听所有权，原生事件可安全停放在隐藏宿主并忽略，直到宿主关闭。
     if self.host == nil or type(self.host.UnregisterEvent) ~= "function" then
         self.unregisterCapability = false
         if self.parkedRegistrations[eventName] ~= true then
@@ -346,7 +338,7 @@ function E:Dispatch(eventName, ...)
     if type(list) ~= "table" then return end
     local args = { ... }
     local argCount = select("#", ...)
-    -- 维护：只冻结本次订阅数量，不冻结生命周期权限；取消立即生效，新增下次分发。
+    -- 只冻结本次订阅数量，不冻结生命周期权限；取消立即生效，新增下次分发。
     -- 复用原 list + 撤销标记，无每事件 listener 副本；重载/Stop/Start 均不能复活旧快照。
     local epoch, generation = self.dispatchEpoch, S.Generation
     local listenerCount = #list
@@ -374,7 +366,7 @@ function E:Start()
     if host == nil then self.startFailures = self.startFailures + 1; return false end
     if type(host.Show)=="function" then host:Show(false) end
     if type(host.SetHandler)~="function" then self.startFailures = self.startFailures + 1; return false end
-    -- 维护：Generation 只区分重载，不区分同代重启；Native 可能无法解绑旧 Handler。
+    -- Generation 只区分重载，不区分同代重启；Native 可能无法解绑旧 Handler。
     -- Host 身份 + Epoch 是 transport 执行门，不复制模块启停/可见性 Authority。
     self.dispatchEpoch = self.dispatchEpoch + 1
     local epoch = self.dispatchEpoch
@@ -437,13 +429,13 @@ function E:GetHealth()
         unregisterSkipped = tonumber(self.unregisterSkipped) or 0,
         nativeUnregisterSupported = self.unregisterCapability,
         ownerReleaseContractVersion = tonumber(self.ownerReleaseContractVersion) or 0,
-        -- 维护：仅只读契约标识，诊断不触发事件注册、订阅或业务状态变更。
+        -- 仅只读契约标识，诊断不触发事件注册、订阅或业务状态变更。
         lifecycleContractVersion = self.lifecycleContractVersion,
     }
 end
 
 function E:Stop()
-    -- 维护：先撤销在途分发和旧 Native 闭包，再释放订阅；禁止先清表却留下快照可调用。
+    -- 先撤销在途分发和旧 Native 闭包，再释放订阅；禁止先清表却留下快照可调用。
     self.dispatchEpoch = self.dispatchEpoch + 1
     self:ReleaseUnusedGlobalBridges(true)
     self.running = false

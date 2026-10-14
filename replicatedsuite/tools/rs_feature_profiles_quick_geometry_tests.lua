@@ -1,8 +1,14 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 功能预设快捷几何测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 中文维护（2026-09-25，feature-profile-quick-relog-1）：
 -- 功能方案屏幕快捷按钮的 viewport/重登几何离线回归。
 -- 真实被测代码：Api -> Layout -> RSUI.Windowing -> FeatureProfile Feature -> FeatureProfile Quick Widget。
 -- 只有 Native 叶节点、事件总线、Scheduler 与磁盘是替身；不进入 toc.g，失败不得标记为 RU 实机通过。
 -- 运行：cd replicatedsuite && lua tools/rs_feature_profiles_quick_geometry_tests.lua
+------------------------------------------------------------------------
 local BootHost = dofile('tools/rs_window_viewport_test_host.lua')
 _G.unpack = _G.unpack or table.unpack -- Lua 5.4 宿主兼容；游戏客户端为 5.1。
 
@@ -89,8 +95,8 @@ local function NewSuite(options)
     S.FeatureRegistry = { categories = { life = { name = '生活' }, combat = { name = '战斗' }, tools = { name = '工具' } } }
     function S.FeatureRegistry:Get(id) return metaById[id] end
     function S.FeatureRegistry:List() return metas end
-    function S.FeatureRegistry:IsAccessible(id) return metaById[id] ~= nil end -- 中文维护：测试目录只开放已声明的三项；补齐当前 Runtime 的必需只读接口。
-    function S.FeatureRegistry:ListAccessible() return metas end -- 中文维护：上述目录无受限条目，生产的只读可见目录接口与 List 一致。
+    function S.FeatureRegistry:IsAccessible(id) return metaById[id] ~= nil end -- 测试目录只开放已声明的三项；补齐当前 Runtime 的必需只读接口。
+    function S.FeatureRegistry:ListAccessible() return metas end -- 上述目录无受限条目，生产的只读可见目录接口与 List 一致。
 
     S.Persistence = {
         Scope = { Account = 'account' }, Lifetime = { Permanent = 'permanent' }, V3KeyPrefix = 'replicated_suite_v1_v3_',
@@ -566,7 +572,7 @@ Test('L on-demand diagnostics expose per-button placement and native geometry ev
 end)
 
 
--- 2026-09-30: lifecycle native reset without a viewport change, not just resolution migration.
+-- 覆盖视口不变时的原生生命周期重置，不能只测试分辨率迁移。
 Test('M same-metrics reload repairs every existing profile button without Store writes',function()
     local ctx=BootSession(nil,{1280,960,.8,1024,768});local h,S=ctx.h,ctx.S
     PlaceAll(ctx,{[1]={300,150},[2]={430,150},[3]={560,150}})
@@ -586,7 +592,7 @@ Test('N same-metrics repair leaves an in-progress profile drag untouched',functi
     record.button.handlers.OnDragStop();local committed=record.button.x;for _=1,9 do h:Drain()end;Eq(record.button.x,committed)
 end)
 
--- 中文维护：真实 Native 可在未移动时发布拖动开始/结束；这种点击必须仍能应用方案。
+-- 真实 Native 可在未移动时发布拖动开始/结束；这种点击必须仍能应用方案。
 Test('stationary drag gesture still applies profile and reports result', function()
     local ctx = BootSession(SeedStore({}), {1920,1080,1920,1080,1})
     local instance = ctx.S.UIV3.WidgetHost._instance
@@ -599,7 +605,7 @@ Test('stationary drag gesture still applies profile and reports result', functio
     Eq(ctx.S.Features.FeatureProfiles.Stats.applies, 1, 'stationary gesture must not swallow click')
     assert(#messages == 1, 'screen click needs visible operation feedback')
 end)
--- 中文维护：失败保持事务回滚，但屏幕快捷入口必须把真实原因交给用户而非只返回 Lua false。
+-- 失败保持事务回滚，但屏幕快捷入口必须把真实原因交给用户而非只返回 Lua false。
 Test('quick apply rejection shows reason without claiming success', function()
     local ctx = BootSession(SeedStore({}), {1920,1080,1920,1080,1})
     local record = ctx.S.UIV3.WidgetHost._instance.buttons['1']

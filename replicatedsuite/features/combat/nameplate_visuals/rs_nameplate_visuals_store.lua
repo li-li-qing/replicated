@@ -1,16 +1,17 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native nameplate visual settings store
+-- Replicated Suite · 原生头标与血条外观设置存储
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 维护（2026-09-20，nameplate-mark-ratio-3）：
 -- 1) 这里只保存用户希望写入的“绝对客户端显示值”，不保存运行时 CVar 当前值。
---    原因：ReloadAddon / ENTERED_WORLD 后当前值可能来自 system.cfg 或其它插件，若把
---    当前值当缩放基线反复相乘会出现 1.5x -> 2.25x 的累乘漂移。
+-- 原因：ReloadAddon / ENTERED_WORLD 后当前值可能来自 system.cfg 或其它插件，若把
+-- 当前值当缩放基线反复相乘会出现 1.5x -> 2.25x 的累乘漂移。
 -- 2) Native 写入 Authority 在独立文件，Store 不接触 X2Option；加载配置本身不能产生
---    客户端副作用，也不能因为打开设置页就改变头标/血条。
--- 3) schema1 为已发布兼容边界，本轮不升 schema：markerWidth/markerHeight/markerOffset 三个字段
---    继续保留原 canonical 形状。18.273 起 Native 只用 markerWidth/46 计算 name_tag_mark_size_ratio；
---    markerHeight 仍由百分比预设同步保存，markerOffset 仅作为旧配置兼容保留，不再写入无效 CVar。
---    这样旧用户存档指纹不会因为字段增删而触发 fence。
+-- 客户端副作用，也不能因为打开设置页就改变头标/血条。
+-- 3) schema1 为已发布兼容边界，当前不升 schema：markerWidth/markerHeight/markerOffset 三个字段
+-- 继续保留原 canonical 形状。18.273 起 Native 只用 markerWidth/46 计算 name_tag_mark_size_ratio；
+-- markerHeight 仍由百分比预设同步保存，markerOffset 仅作为旧配置兼容保留，不再写入无效 CVar。
+-- 这样旧用户存档指纹不会因为字段增删而触发 fence。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -32,7 +33,7 @@ F.Defaults = {
     bgHpWidth = 158,
     bgHpHeight = 38,
 }
--- 维护：这些上下限是插件自己的安全 UI/配置预算，不宣称是 CryEngine 或 RU 客户端
+-- 这些上下限是插件自己的安全 UI/配置预算，不宣称是 CryEngine 或 RU 客户端
 -- 的硬限制。范围故意留有较大余量，同时阻止负尺寸、NaN、无穷等坏值进入 Native。
 F.Limits = {
     markerWidth = { 20, 220 },
@@ -109,7 +110,7 @@ function F:GetSettings()
     return self:NormalizeSettings(self.settings)
 end
 
--- 维护：所有写入走 Persistence 的事务 + durable readback；Presentation 不允许直接改
+-- 所有写入走 Persistence 的事务 + durable readback；Presentation 不允许直接改
 -- F.settings，否则 UI 显示成功但 ReloadAddon 后回退会破坏用户升级兼容。
 function F:CommitSettings(mutator, reason)
     local loaded, loadErr = self:EnsureStoreLoaded()

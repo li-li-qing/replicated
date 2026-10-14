@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- 中文维护（2026-10-09）：正背面设置使用既有 PageHost/RSUI/Feature Commands；页面不保活采样。
+-- Replicated Suite · 朝向提示页面
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 约束（2026-10-09）：正背面设置使用既有 PageHost/RSUI/Feature Commands；页面不保活采样。
 -- 页面编辑和 16ms 世界帧分离，不能每帧重写 NumericField 草稿或抢游戏聊天焦点。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
@@ -30,7 +34,7 @@ local function Build(parent,route)
         end})
     RSUI:Text({id="v3_facing_hint",parent=root,text="只标记当前选中目标。缺少朝向、目标消失或位于镜头后方时隐藏。弧线是方向提示，弧长不代表技能背击判定范围。",
         fontSize=10,tone="muted",overflow="wrap",slot={size="auto",minHeight=42,hAlign="fill"}})
-    -- 中文维护：两侧开关复用 RSUI Toggle/get/set；只提交 Feature Commands，编辑设置不启动总功能。
+    -- 两侧开关复用 RSUI Toggle/get/set；只提交 Feature Commands，编辑设置不启动总功能。
     -- 明确保存的 false 必须在 Render 中由 Feature 投影回显，不能靠控件自己的临时布尔状态。
     local sides=RSUI:UniformGrid({id="v3_facing_sides",parent=root,minCellWidth=145,minCellHeight=30,maxColumns=2,gap=7,
         slot={size="auto",minHeight=30,hAlign="fill"}})
@@ -52,7 +56,7 @@ local function Build(parent,route)
         {key="pointSize",label="点大小",step=1,integer=true},
         {key="opacity",label="透明度",step=0.05},
         {key="angleOffset",label="朝向校准",step=5,unit="°",integer=true},
-        -- 中文维护：滑块只覆盖常用1～100ms；精确输入保留旧技术上限，数值越小跟随越快。
+        -- 滑块只覆盖常用1～100ms；精确输入保留旧技术上限，数值越小跟随越快。
         {key="refreshMs",label="绘制间隔",step=1,unit="ms",integer=true},
     }
     for _,spec in ipairs(specs) do
@@ -80,7 +84,7 @@ local function Build(parent,route)
         self._active=true
         if not S.Events then self._active=false;return false,"页面事件不可用" end
         local updated=S.Events:SubscribeInternal(F.UpdateTopic,self,function(_,_,reason)
-            -- 中文维护：只在显式配置提交后刷新字段，visual_tick/target_changed 不能覆盖编辑草稿。
+            -- 只在显式配置提交后刷新字段，visual_tick/target_changed 不能覆盖编辑草稿。
             if root._active and S.Generation==generation and reason=="settings_changed" then root:Refresh() end
         end)
         local lifecycle=S.Events:SubscribeInternal(S.FeatureRuntime.LifecycleTopic or "v3.feature.lifecycle",self,function(_,id)

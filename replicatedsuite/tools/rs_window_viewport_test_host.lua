@@ -1,5 +1,11 @@
--- 中文维护：独立 Native/RSUI 叶节点模型，运行真实 Api/Layout/Windowing/WindowShell/FloatingSurface。
+------------------------------------------------------------------------
+-- Replicated Suite · 窗口视口测试宿主
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 独立 Native/RSUI 叶节点模型，运行真实 Api/Layout/Windowing/WindowShell/FloatingSurface。
 -- 不补造缺失历史 gear host，不代表 RU API 权限/回调触发已实测；仅测试同步几何、缓存及拒绝语义。
+------------------------------------------------------------------------
 return function(options)
     options = options or {}
     local h = { w=1920, h=1080, scale=1, sw=1920, sh=1080, effective=1, writes=0, samples=0, tasks={}, events={}, resizeConfigCalls=0 }
@@ -92,7 +98,7 @@ return function(options)
         function c:SetVisibility(v)self.visibility=v;local ok,changed,err=UI:EnsureVisible(self.root,v=='visible');return self,ok,err end
         function c:SetText(v)self.text=v;return self end;function c:SetTone(v)self.tone=v;return self end
         function c:SetOnClick(fn)self.onClick=fn;return self end
-        function c:SetSelected(v)self.selected=v==true;return true end -- 中文维护：模拟 Button 已有的选中外观叶节点，不替代 Shell 锁/保存逻辑。
+        function c:SetSelected(v)self.selected=v==true;return true end -- 模拟 Button 已有的选中外观叶节点，不替代 Shell 锁/保存逻辑。
         function c:SetLayoutHost(v)self.layoutHost=v end
         function c:Release()return 1 end
         function c:SetSlot(v)self.slot=v;return self end

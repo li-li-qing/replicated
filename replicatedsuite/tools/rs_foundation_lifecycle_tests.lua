@@ -1,4 +1,8 @@
 ------------------------------------------------------------------------
+-- Replicated Suite · 基础层生命周期测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 底层生命周期回归：真实 Events / Scheduler / RefreshCoordinator；仅 Native
 -- Host、单调时钟、遥测为替身。开发期独立入口，不进 toc.g，不读取用户存档。
 -- Authority：取消属于 Owner，分发/任务执行属于 Core；替身不实现被测调度逻辑。

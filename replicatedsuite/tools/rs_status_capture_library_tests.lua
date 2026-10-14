@@ -1,9 +1,15 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 3 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
--- Maintenance: real Feature/Store/metadata service; Native facts, clock and UI are
--- controlled adapters. These assertions are not an RU-client acceptance claim.
+------------------------------------------------------------------------
+-- Replicated Suite · 状态采集内置库测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
+-- 使用真实 Feature、Store 和元数据服务，原生事实、时钟及 UI
+-- 由受控适配器提供；这些断言不能作为 RU 客户端验收。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn) local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS '..name) else failed=failed+1;print('FAIL '..name..': '..tostring(err)) end end
 local function Copy(v) if type(v)~='table' then return v end;local t={};for k,x in pairs(v) do t[k]=Copy(x) end;return t end
@@ -79,7 +85,7 @@ Test('recommended catalog includes every effect but excludes unfinished cooldown
     for id in pairs(catalog.ByEffectId) do assert(ids[id],'effect missing from one click pack') end
 end)
 local host=dofile('tools/rs_status_ui_test_host.lua')(S)
--- These regressions test the built-in source specifically; Add Status now opens current facts by default.
+-- 本组回归专门测试内置来源；添加状态默认打开当前事实页。
 local BuildLibraryHost=host.Build
 function host:Build()
     local page,err=BuildLibraryHost(self)
@@ -137,7 +143,7 @@ Test('metadata work bounded per batch and cancelled when page is hidden',functio
     local job=assert(tasks.v3_buff_management_metadata);tasks.v3_buff_management_metadata=nil;job.fn();assert(reads<=8)
     F:SetManagementPageActive(false);assert(not tasks.v3_buff_management_metadata);assert(F:GetManagementHealth().metadata.queued==0)
 end)
--- Shared resolver edge cases exposed by the new catalogue consumer.
+-- 覆盖新目录消费者暴露的共享解析器边界情况。
 Test('metadata continues beyond empty native shape to a valid icon',function()
     dofile('services/rs_buff_metadata_v3.lua');X2Ability={};local M=S.Services.BuffMetadataV3;local count=0
     S.Api.CallCapability=function(_,_,_,_,_,level) count=count+1;if level==0 then return true,{} end;return true,{iconPath='ok.dds'} end

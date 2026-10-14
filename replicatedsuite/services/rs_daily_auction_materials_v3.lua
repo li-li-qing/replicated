@@ -1,10 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Daily Auction Materials
+-- Replicated Suite · 日常拍卖材料读模型
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Demand-scoped detached read-model for active resident trade-pack quests.
--- QuestProgressV3 owns quest facts; TradeMaterialIdentityV3 owns recipe/material
--- identity.  This service owns only session UI choices (candidate recipe,
--- hidden/material order) and never persists or invents quest requirements.
+-- 居民贸易包日常任务的按需分离读模型。QuestProgressV3 拥有任务事实，TradeMaterialIdentityV3 拥有配方/材料身
+-- 份；此服务只拥有会话 UI 选择（候选配方、隐藏和材料顺序），不持久化、不编造任务需求。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -81,7 +81,7 @@ local function FindZoneIdInText(text)
     for zoneId, zone in pairs(type(byId) == "table" and byId or {}) do
         if type(zone) == "table" then
             Consider(zoneId, zone.nameZh)
-            -- 中文维护注释（2026-09-25，daily-trade-zone-alias-1）：地区任务标题来自当前 RU 客户端，
+            -- （2026-09-25，daily-trade-zone-alias-1）地区任务标题来自当前 RU 客户端，
             -- 而稳定 ZoneId 数据可能保留旧汉化名。别名属于 Zone 静态身份的一部分；这里只做 bounded
             -- 字符串匹配，不在刷新热路径扫描拍卖数据/价格表，也不根据相似文字猜地区。最长精确命中优先，
             -- 防止“珊瑚海岸”覆盖“珊瑚海岸北部”这类包含关系。
@@ -90,7 +90,7 @@ local function FindZoneIdInText(text)
             end
         end
     end
-    -- 中文维护注释（2026-10-02）：最长命中只用于消除名称包含关系。两个独立地区同时出现
+    -- （2026-10-02）最长命中只用于消除名称包含关系。两个独立地区同时出现
     -- 不提供唯一来源证据，禁止按 pairs 顺序/汉字字数选一个地区并展示错误材料。
     for _, match in ipairs(matches) do
         if match.zoneId ~= bestId and (match.name == bestName or string.find(bestName, match.name, 1, true) == nil) then
@@ -115,7 +115,7 @@ end
 
 local CRAFT_TITLE_ENDINGS = { "保存特产", "标准特产", "新鲜特产", "特供特产", "特制特产", "传统特产", "肥料特产" }
 local function HasCraftTitleEvidence(title, zoneId, zoneReason)
-    -- 中文维护（2026-10-04）：仅含“特产”的活动标题不证明有固定制作材料。
+    -- （2026-10-04）仅含“特产”的活动标题不证明有固定制作材料。
     -- “内陆特产”等泛化任务只留诊断；明确制作标签、地区或货物品类的失败仍须保留，
     -- 不能把真实制作任务缺材料伪装成没有任务。已核 QuestId 映射在调用处另行保留。
     if zoneId ~= nil or zoneReason == "zone_ambiguous" or string.find(title, "[特产", 1, true) ~= nil then return true end
@@ -173,7 +173,7 @@ function D:Refresh(reason)
         local fact = facts[qid]
         if qid > 0 and type(fact) == "table" and fact.active == true then
             local recipes = {}; for _, recipe in ipairs(type(entry.recipes) == "table" and entry.recipes or {}) do recipes[#recipes + 1] = tostring(recipe) end
-            -- 中文维护（2026-10-03）：客户端物品名尚不可用时，共享 Identity resolver
+            -- （2026-10-03）客户端物品名尚不可用时，共享 Identity resolver
             -- 用已核配方地区显示“[地区]特产”；只有地区也未知才保留候选占位。稳定 recipe 参数不变。
             local recipeOptions = {}
             local staticTrade = S.Data and S.Data.TradeStaticV2 or nil
@@ -206,7 +206,7 @@ function D:Refresh(reason)
             tasks[#tasks + 1] = task
         end
     end
-    -- 中文维护注释（2026-09-14，RU 区域制作日常发现）：历史 DailyTradePackQuestRecipes 只覆盖一组
+    -- （2026-09-14，RU 区域制作日常发现）历史 DailyTradePackQuestRecipes 只覆盖一组
     -- 已核交付 QuestId，但实机任务“[特产-西部] 黄金平原的保存特产”属于明确区域+品类的制作日常，
     -- 其 QuestId 不应靠猜补白名单。这里消费 QuestProgressV3 detached 活动任务标题，以共享 Zone.nameZh
     -- 识别地区，再交给 TradeMaterialIdentityV3:ResolveStatic(title, zoneId) 证明真实配方；只有能解析出
@@ -276,7 +276,7 @@ function D:Refresh(reason)
     return true
 end
 
--- 中文维护注释（2026-09-14，多候选居民做货）：一个 QuestId 可能允许多个地区货物，recipes 是
+-- （2026-09-14，多候选居民做货）一个 QuestId 可能允许多个地区货物，recipes 是
 -- 候选集合而不是同时需求。只有用户显式选中一个合法候选后才解析材料；绝不把多个 recipe 材料累加。
 -- 选择仅属于 Session，不写任务 Authority/Store，任务消失后快照自然不再展示。
 function D:SelectRecipe(questId, recipe)
@@ -320,7 +320,7 @@ local function IsCurrentConsumer(self)
 end
 
 function D:RetryPendingTitles(epoch)
-    -- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：Quest ID/完成状态不变时
+    -- （2026-09-30，daily-auction-title-recovery-1）Quest ID/完成状态不变时
     -- updated 不发布，但 Native 标题可能已就绪。复用 QuestProgress 的事件/15s safety refreshed
     -- 纪元，只读 pending ID；未变化不重算配方、不发布 UI。无第二轮询、无拍卖查询、无永久任务。
     if not IsCurrentConsumer(self) or #self.pendingTitles == 0 then return true end
@@ -376,7 +376,7 @@ function D:_AcquireQuest()
     if self.questHeld then return true end
     local quest = S.Services and S.Services.QuestProgressV3 or nil
     if type(quest) ~= "table" or type(quest.AcquireConsumer) ~= "function" then return false, "QuestProgressV3 Consumer 不可用" end
-    -- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：拍卖 Feature 本身只需
+    -- （2026-09-30，daily-auction-title-recovery-1）拍卖 Feature 本身只需
     -- X2Auction，不能假定活动/债券已替“今日任务”导入 X2Quest。仅在本服务首个消费者进入时，
     -- 通过唯一 NativeImports Authority 取得已核 X2Quest namespace；不在模块加载/诊断时导入。
     -- Native 注册表无卸载接口，导入身份沿用当前 Generation；任务监听仍随最后 Consumer 释放。

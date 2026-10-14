@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI UMG-style Panel / Slot Components v1
+-- Replicated Suite · 基础布局面板
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Layout contract:
---   Measure(availableW, availableH) -> desired size (no native layout writes)
---   Layout(x, y, width, height)     -> arrange children through cached UI writes
---
--- Panel/Slot work is event/layout driven only; never call this from Tick.
+-- 布局契约：Measure(availableW,availableH) 返回期望尺寸且不写 Native；Layout(x,y,width,height) 通过缓存 UI 写排列子节点。
+-- Panel/Slot 仅事件/布局驱动，不能从 Tick 调用。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -13,7 +12,7 @@ local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 local Tokens = S.UITokens or {}
 local Base = RSUI.BaseComponent
-RSUI.LinearSlotMeasureContractVersion = 1 -- 中文维护注释：.18.218 起 Linear Measure 与 Layout 对 slot/child min/max 使用同一几何约束，禁止父容器低估尺寸后由子控件在 Arrange 阶段溢出造成重叠/裁切。
+RSUI.LinearSlotMeasureContractVersion = 1 -- Linear Measure 与 Layout 对 slot/child min/max 使用同一几何约束，禁止父低估尺寸而在 Arrange 阶段造成子项重叠/裁切。
 
 local function Token(path, fallback)
     if type(Tokens.Number) == "function" then return Tokens:Number(path, fallback) end
@@ -105,9 +104,7 @@ local function Host(kind, spec, rootFactory)
     return c
 end
 
--- Shared pure helpers for later UMG-like panels. Keeping Slot normalization and
--- Measure/Align semantics here prevents each panel family from inventing a
--- slightly different layout contract.
+-- 共享纯辅助函数统一 Slot 规范化与 Measure/Align，防止各面板族出现细微不同契约。
 RSUI.LayoutUtil = { N = N, Clamp = Clamp, Pad = Pad, Slot = Slot, Measure = Measure, Align = Align, Arrange = Arrange, Host = Host }
 
 local function NewLinear(kind, axis, spec)
@@ -119,7 +116,7 @@ local function NewLinear(kind, axis, spec)
             local child,slot=entry.child,entry.slot
             if child.visible~=false then
                 local dw,dh=Measure(child, availableW, availableH)
-                -- 中文维护注释（2026-09-14，linear slot minimum authority）：Measure 与 Layout 必须对
+                -- 约束（2026-09-14，linear slot minimum authority）：Measure 与 Layout 必须对
                 -- slot.minWidth/minHeight/maxWidth/maxHeight 使用同一套约束。旧 Measure 只看 child 的自然尺寸，
                 -- Layout 却在 Arrange 阶段才应用 slot minimum，导致父容器先报告过小高度，随后子项又按更大的
                 -- 最小高度排版并溢出父边界；在设置页表现为颜色/状态行、标题/列表互相覆盖或被裁切。
@@ -161,12 +158,7 @@ local function NewLinear(kind, axis, spec)
         local primaryAvail=axis=="x" and innerW or innerH
         local crossAvail=axis=="x" and innerH or innerW
 
-        -- Measure/Arrange must agree about Fill children.  The old layout pass
-        -- excluded Fill minimums from the required size and then divided the
-        -- entire remainder between Fill slots.  Under tight layouts that could
-        -- silently allocate a Fill child below its declared min size, while
-        -- Measure still reported the larger desired size.  That mismatch is a
-        -- common source of clipped/overlapping descendants.
+        -- Measure/Arrange 对 Fill 必须一致；排列所需尺寸包含 Fill 下限，再分余量，不能 Measure 报较大高而实际分配低于声明 min 导致裁切/重叠。
         local visibleCount,totalNonFill,totalFillMin,totalFillWeight=0,0,0,0
         local work={}
         for _,entry in ipairs(self.slots) do
@@ -211,9 +203,7 @@ local function NewLinear(kind, axis, spec)
         end
         self.state.lastCompressionDeficit=deficit
 
-        -- Only Auto slots are compressed automatically. Fixed stays authoritative
-        -- and Fill never drops below its declared minimum. If even those minima
-        -- cannot fit we expose overflow instead of creating hidden overlap.
+        -- 仅 Auto 自动压缩，Fixed 保持权威，Fill 不低于声明 min；最小值也放不下则暴露溢出，不造隐藏重叠。
         if deficit>0 then
             local shrinkable=0
             for _,item in ipairs(work) do
@@ -363,9 +353,7 @@ RSUI:RegisterType("SizeBox", function(spec)
 end)
 
 RSUI.BorderInteractionForwardingContractVersion = 1
--- Border click action contract v1: pickable Borders expose SetOnClick as the
--- single public action surface. Presentation must never RequireOn a Border's
--- internal native root directly (same contract class as Button action v2).
+-- 可拾取 Border 仅公开 SetOnClick 操作，与 Button action 契约一致；表现不能直接 RequireOn 内部原生根。
 RSUI.BorderClickActionContractVersion = 1
 RSUI:RegisterType("Border", function(spec)
     local root=UI:CreatePanel(spec.parent,spec.id,N(spec.x,0),N(spec.y,0),math.max(1,N(spec.width,1)),math.max(1,N(spec.height,1)),spec.variant or "card",{

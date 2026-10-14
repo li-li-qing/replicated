@@ -1,18 +1,18 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Bootstrap
--- Author: Replicated
--- Version: 1.2 (V3-only; current BuildTag is declared below)
+-- Replicated Suite · 插件引导入口
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 插件引导入口；当前构建标识由下方 BuildTag 声明。
 ------------------------------------------------------------------------
 ReplicatedSuite = ReplicatedSuite or {}
 local S = ReplicatedSuite
 
--- V3 rebuild is the only active application architecture. Legacy / Professional
--- source and the old globals tree have been physically removed; they are not
--- runtime dependencies and must not be reintroduced through bootstrap.
+-- V3 重建是唯一活动应用架构；旧 Legacy/Professional 源码与 globals 树已物理删除，不是运行依赖，也不能通过
+-- bootstrap 重新引入。
 S.ArchitectureMode = "v3_rebuild"
 
--- Preserve a lightweight process-time baseline before the TOC continues loading
--- the V3 runtime. It is diagnostic-only and never persisted.
+-- 在 TOC 继续加载 V3 运行体前保留轻量进程时间基准，仅作诊断，不持久化。
 local bootOs = rawget(_G, "os")
 local bootNow = nil
 if type(bootOs) == "table" and type(bootOs.clock) == "function" then
@@ -21,7 +21,7 @@ if type(bootOs) == "table" and type(bootOs.clock) == "function" then
 end
 S.BootLoadStartedAt = bootNow
 
--- Quiesce the previous hot-reload generation before replacing references.
+-- 先停止上一轮运行任务，再替换热重载引用。
 local previousRuntime = rawget(S, "Runtime")
 local previousUI = rawget(S, "UI")
 if type(previousRuntime) == "table" and type(previousRuntime.Stop) == "function" then
@@ -41,8 +41,7 @@ local previousRecoveryCommandBar = rawget(S, "RecoveryCommandBar")
 if previousRecoveryCommandBar ~= nil then
     local edit = previousRecoveryCommandBar.edit
     if edit ~= nil then
-        -- A hidden RU EditBox may retain keyboard focus across addon reloads.
-        -- Always return focus before releasing handlers/hiding the old generation.
+        -- 隐藏 RU EditBox 可能跨插件重载保留键盘焦点；释放处理器或隐藏旧代际前必须归还焦点。
         if type(edit.ClearFocus) == "function" then pcall(function() edit:ClearFocus() end) end
         if type(edit.EnableKeyboard) == "function" then pcall(function() edit:EnableKeyboard(false) end) end
         if type(edit.EnableFocus) == "function" then pcall(function() edit:EnableFocus(false) end) end
@@ -60,10 +59,8 @@ S.RecoveryEntryError = nil
 S.RecoveryCommandBar = nil
 S.RecoveryCommandHealthy = false
 S.RecoveryCommandError = nil
--- A successful ReloadAddon may preserve the global ReplicatedSuite table while
--- re-executing bootstrap. Never inherit the previous generation's pending gate
--- or detached reload host, otherwise the next developer reload could stay
--- permanently blocked after one successful cycle.
+-- ReloadAddon 成功后可能保留全局 ReplicatedSuite 表并重新执行 bootstrap。不能继承旧代际 pending gate 或
+-- detached reload host，否则一次成功循环后下次开发重载可能永久阻断。
 local previousCodeReloadHost = rawget(S, "CodeReloadHost")
 if previousCodeReloadHost ~= nil then
     if type(previousCodeReloadHost.ReleaseHandler) == "function" then
@@ -75,11 +72,8 @@ if previousCodeReloadHost ~= nil then
 end
 S.CodeReloadHost = nil
 S.CodeReloadPending = false
--- Audit5 used an r_VSync toggle as a supposed "safe UI refresh" edge.
--- RU ArcheRage proves that changing this restricted console variable can trigger
--- a real UI reload. Never touch it from Suite bootstrap/recovery again. Detach
--- any stale helper callback from an older generation, but deliberately do not
--- write the console variable while recovering.
+-- bootstrap 与恢复安装阶段不能触碰受限 r_VSync，它在 RU ArcheRage 会触发真实 UI 重载。只解绑旧代际残留辅助
+-- 回调，恢复时不写控制台变量。
 local previousRestoreHost = rawget(S, "ReloadRestoreHost")
 if previousRestoreHost ~= nil then
     if type(previousRestoreHost.ReleaseHandler) == "function" then
@@ -94,9 +88,18 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.332-phase2-life-bundle-slice-complete" -- 中文维护（2026-09-28，phase2-life-slices-4）：Phase 2 第一轮闭合（§24.1 固定顺序 Treasure→Fishing→Bonds→Trade 全部完成）：rs_life_m16_bundle.lua（5633 行 / 4 个 Feature）已全部拆成 4 个独立 Feature 源码单元并退役删除，共享装配 helper 收敛到 features/life/shared/rs_life_slice_factory.lua（与 Phase 1 工厂语义不同，未合并）。注意：以上是 Phase 2 首轮“一 Feature 一文件”完成，§24.4 的 Trade 第二轮进一步拆分（ratio/材料投影/报价/缓存/diagnostics 分离）仍以 RU 实机一轮 Fresh Reload / 老配置 / 自动刷新 / 报价 / 材料缓存实测为前置条件，未开始。门禁：Install 282/282、默认 Full Runner 端到端 PASS（0 FAIL）、--feature-split 全绿、Lua 5.1 compile gate 282、Native audit 0/0/0、Architecture 47（两个巨型 bundle 都不再在列）。未改 Store ID/Schema、Feature ID、route、Commands、Projection shape、Scheduler 任务名、Event topic、用户配置语义。
--- 维护（2026-09-28，phase1-slices-5）：Phase 1 闭合：rs_business_bridge.lua（5223 行 / 15 个 Feature / 188 chunk slots）已全部拆成 15 个独立 Feature 源码单元并退役删除；新增 features/shared/rs_feature_slice_factory.lua（唯一装配骨架）与 rs_shared_bounds.lua（跨 Feature 共享有界常量）与拍卖共享读模型；主 chunk local 预算从 188 slots 降到 104 slots；拆出文件共 18 个（含读模型/边界模块）；每个 Feature 在 toc.g 只登记一次。门禁：Install 278/278、默认 Full Runner 端到端 PASS（0 FAIL）、--feature-split 59/59、Lua 5.1 compile gate 278、Native audit 0/0/0、Architecture 48（bridge 不再在列）。未改 Store ID/Schema、Feature ID、route、Commands、Projection shape、用户配置语义。
--- 维护（.18.248）：补齐缺失运行时文件并恢复被 Git 冲突破坏的源码；保留 .247 个人工作台与所有 Store 协议，不清配置。
+S.BuildTag = "v3-m1.16.0.18.332-phase2-life-bundle-slice-complete" -- 当前构建标签。
+-- 生活领域按 Treasure/Fishing/Bonds/Trade 分为独立 Feature；共享装配归
+-- features/life/shared/rs_life_slice_factory.lua，与 features/shared/rs_feature_slice_factory.lua
+-- 的业务装配语义不同，不能强行合并。跨 Feature 有界常量归 rs_shared_bounds.lua，拍卖读模型共享。
+-- 每个 Feature 在 toc.g 仅登记一次；不能恢复已退役 rs_life_m16_bundle.lua 或 rs_business_bridge.lua。
+-- 进一步拆分 Trade 的货率/材料投影/报价/缓存/诊断须先完成 RU 实机 Fresh Reload、旧配置、自动刷新、
+-- 报价和材料缓存验收。拆分不能改 Store ID/schema、Feature ID/route、Commands、Projection 形状、
+-- Scheduler 任务名、Event topic 或用户配置语义；源码合并先查完整清单和冲突，不能清配置绕过。
+-- 2026-09-28 历史结构验证：生活拆分 Install/Lua5.1 为 282，Full Runner 为 0 FAIL，
+-- feature-split 通过，Native audit 0/0/0，Architecture 47；业务拆分 Install/Lua5.1 为 278，
+-- Full Runner 为 0 FAIL，feature-split 59/59，Native audit 0/0/0，Architecture 48。
+-- 原业务 chunk 局部槽由 188 降至 104；这些是当时证据，不代替当前版本或实机验收。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")
@@ -139,10 +142,8 @@ S.UIV3Design = nil
 S.FeatureRegistry = nil
 S.FeatureRuntime = nil
 S.Features = nil
--- Legacy Presentation/Widget entry points are reference-only in V3 rebuild.
--- Explicitly clear cross-generation Lua references because ArcheRage may keep
--- the ReplicatedSuite root table alive across UI reloads. Native instances were
--- already hidden by previousRuntime/previousUI quiescence above.
+-- 旧 Presentation/Widget 入口在 V3 仅作参考；ArcheRage 可跨 UI 重载保留 ReplicatedSuite 根表，因此须显式清
+-- 除跨代际 Lua 引用。原生实例已由上方 previousRuntime/previousUI 静止过程隐藏。
 S.MainWindow = nil
 S.MainButton = nil
 S.AppShell = nil
@@ -165,16 +166,13 @@ S.GameDataRegistry = nil
 S.StaticDataV2 = nil
 S.Utils = nil
 
--- One bounded, generation-local diagnostic log Authority.  Every Suite chat
--- notice and every DiagnosticsManager record is mirrored here so the user can
--- print one copy-friendly diagnostic message instead of collecting many
--- scattered chat rows.  Keep it bounded: long MMO sessions must not grow an
--- unbounded Lua table merely because diagnostics are enabled.
+-- 代际内唯一有界诊断日志汇集每条 Suite 聊天通知和 DiagnosticsManager 记录，使用户能打印一条易复制消息，不需
+-- 收集分散聊天行。长时间 MMO 会话也不能因诊断启用而增长无界 Lua 表。
 S.LogBuffer = {}
 S.LogSequence = 0
 S.LogDropped = 0
 S.LogBufferMax = 200
--- 维护：采集失败计数属于当前 generation；不能让诊断异常递归写日志。
+-- 采集失败计数属于当前 generation；不能让诊断异常递归写日志。
 S.SelfCheckCaptureFailures = 0
 
 local function RecordLog(level, source, message)
@@ -191,7 +189,7 @@ local function RecordLog(level, source, message)
         message = tostring(message or ""),
         at = type(S.NowMs) == "function" and (tonumber(S.NowMs()) or 0) or 0,
     }
-    -- 维护（两按钮统一报告）：早期/运行时 warning/error 通过同一日志入口交给
+    -- 早期/运行时 warning/error 通过同一日志入口交给
     -- Diagnostics 的有界错误环，避免 200 条 info 把原始异常挤掉。先验证 generation，
     -- 防热重载把新错误投到旧 manager；仅错误路径受保护调用，不新增 Tick/持久化。
     -- Diagnostics 不反写 RecordLog，因此不递归；采集失败只计数，原日志仍保留。
@@ -234,10 +232,8 @@ local function SafeChat(message, level, source)
     return DispatchSystemChat("[上古世纪综合辅助] " .. body)
 end
 
--- Runtime scheduling must never depend on UI:GetCurrentTimeStamp().  The same
--- RU client issue was already proven in Replicated Gear: the API can exist but
--- remain frozen inside Addon execution.  One OnUpdate-owned monotonic clock is
--- therefore the only timing Authority for Suite debounce, timeout and timers.
+-- 运行调度绝不依赖 UI:GetCurrentTimeStamp()。Replicated Gear 的 RU 证据表明 API 可存在但在插件执行中冻结；
+-- OnUpdate 拥有的单调时钟才是 debounce、timeout、timer 的唯一时间权威。
 S.Clock = { elapsedMs = 0 }
 local function NowMs()
     local value = tonumber(S.Clock and S.Clock.elapsedMs) or 0
@@ -258,25 +254,14 @@ function S.WarnOnce(key, message)
     key = tostring(key or message or "warning")
     if S.Diagnostics.seen[key] == true then return end
     S.Diagnostics.seen[key] = true
-    -- 维护：WarnOnce 原来走默认 info，保存/后台任务故障无法进入错误历史；只补充已有
+    -- WarnOnce 原来走默认 info，保存/后台任务故障无法进入错误历史；只补充已有
     -- warning 语义，不推断普通聊天是错误，不改变 once 去重或业务控制流。
     SafeChat(message, "warning", "suite.warn_once")
 end
 
--- ArcheAge native widget names are not a safe place for long logical paths.
--- The M1.14 RU log proves that long semantic native paths participated in
--- duplicate-registration failures; the client does not expose a documented
--- safe name-length contract to addons.  Treat the physical name as a bounded,
--- opaque identity instead of assuming an unbounded logical path is safe.  A
--- generation suffix at the end of the old path is also insufficient because
--- native identity must remain distinct even when the client normalizes/truncates
--- names internally.
---
--- Keep logical IDs readable in RSUI, but project them to a compact opaque
--- native identity. Full generation plus a generation-local sequence prevents
--- hot reload aliasing without spending 23 bytes at every nested widget. The reverse
--- map is diagnostic-only; business/presentation code must never depend on the
--- physical value.
+-- 原生控件名称不能承载长逻辑路径；M1.14 RU 日志证实长语义路径参与重复登记失败，客户端未公开安全长度契约，也
+-- 可能内部归一化或截断，给长路径追加代际尾缀仍不够。RSUI 逻辑 ID 保持可读，投影为有界不透明原生身份；完整代
+-- 际加代际内序号避免热重载别名，不为每层花费 23 字节。反向映射仅作诊断，业务或表现不能依赖物理值。
 local function Base36(value, width)
     local alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
     local n = math.max(0, math.floor(tonumber(value) or 0))
@@ -331,8 +316,7 @@ function S.PhysicalId(id)
         physical = nil
     end
     if physical == nil then
-        -- Practically unreachable with a generation-local unique sequence. Fail
-        -- deterministically rather than falling back to the unsafe long ID.
+        -- 代际内唯一序号通常使此分支不可达；仍确定性失败，不能退回不安全长 ID。
         physical = registry:Build("identity_collision_" .. logical, S.Generation, 31)
     end
     registry.logicalToPhysical[logical] = physical
@@ -362,26 +346,14 @@ S.DispatchSystemChat = DispatchSystemChat
 S.NowMs = NowMs
 S.AdvanceClock = AdvanceClock
 
--- Native objects and APIs are imported by replicatedsuite/native/* immediately
--- after this bootstrap file. Bootstrap itself intentionally consumes no legacy
--- globals and owns no client ABI constants.
-
-------------------------------------------------------------------------
--- Bootstrap recovery entry
---
--- This button is deliberately created in the bootstrap file instead of the
--- normal UI factory.  The toc loads rs_runtime.lua last, so a syntax/runtime
--- error in any intermediate module used to leave the player with no "R" entry
--- and therefore no in-game way to trigger the Suite reload command.  The
--- bootstrap entry survives that partial-load state.  A successful runtime
--- later adopts the same widget and upgrades it to the normal themed launcher.
-------------------------------------------------------------------------
+-- 原生对象和 API 在本 bootstrap 后由 replicatedsuite/native/* 导入；bootstrap 不消费旧 globals，也不拥有客
+-- 户端 ABI 常量。恢复 R 按钮在引导中直接创建，因为 toc 最后加载 rs_runtime.lua，中间模块语法或运行错误也必
+-- 须留下游戏内重载入口。运行体成功后接管同一控件并升级为正常主题启动器。
 local externalRecovery = rawget(_G, "ReplicatedSuiteRecovery")
 if type(externalRecovery) == "table" and externalRecovery.button ~= nil and type(externalRecovery.button.Show) == "function" then
     pcall(function() externalRecovery.button:Show(false) end)
 end
--- v0.3.23 created a second pre-bootstrap recovery owner. It is no longer part
--- of toc.g; release the stale generation so only the bootstrap-owned R remains.
+-- 旧前置引导恢复所有者不在 toc.g 中；释放残留代际，使 R 只归 bootstrap 所有。
 ReplicatedSuiteRecovery = nil
 local function BootStatusText()
     local stage = tostring(S.BootStage or "bootstrap")
@@ -392,10 +364,7 @@ local function BootStatusText()
         .. "；" .. err
 end
 
--- Backward-compatible function name retained because the settings page in older
--- hot-reload generations may still reference it. It no longer reloads the addon,
--- toggles VSync, or writes any client console variable. This is a Suite-internal
--- data/layout refresh only.
+-- 旧热重载设置页可能仍引用兼容名称；此函数只刷新 Suite 内部数据和布局，不重载插件、不切换 VSync、不写控制台变量。
 local function SafeSuiteRefresh(source)
     if S.Ready ~= true or S.Runtime == nil or S.Runtime.started ~= true then
         SafeChat("刷新未执行：插件尚未就绪；" .. BootStatusText())
@@ -424,21 +393,11 @@ end
 S.SafeSuiteRefresh = SafeSuiteRefresh
 S.ForceUiReload = SafeSuiteRefresh
 
-------------------------------------------------------------------------
--- Explicit developer UI / addon-file reload
---
--- IMPORTANT NATIVE LIFETIME RULE:
--- Never call ADDON:ReloadAddon() from a widget callback owned by the addon
--- being reloaded, and never defer it through an addon-owned OnUpdate host.
--- The 2026-08-15 live crash proved that ReloadAddon can destroy that host while
--- its native OnUpdate dispatcher is still on the stack (rs_code_reload_host),
--- causing an EXCEPTION_ACCESS_VIOLATION after Lua has already returned control.
---
--- ArcheRage's established uirefresh path toggles r_VSync directly from the
--- explicit button callback. That produces the loading-screen UI refresh and
--- rereads addon files without constructing a self-destructing callback owner.
--- This function is therefore the single explicit "载" Authority.
-------------------------------------------------------------------------
+-- 显式开发 UI/插件文件重载的唯一“载”入口须遵守原生生命周期：不能从待重载插件自有 Widget 回调直接调用
+-- ADDON:ReloadAddon()，也不能经插件自有 OnUpdate 延后调用。2026-08-15 实机崩溃证实 ReloadAddon 会在
+-- rs_code_reload_host 原生 dispatcher 仍在栈上时销毁宿主，Lua 返回后仍发生 EXCEPTION_ACCESS_VIOLATION。此显
+-- 式按钮路径采用已验证 uirefresh 的直接 r_VSync 切换，触发加载屏 UI 刷新和文件重读，不创建会自毁的回调所有
+-- 者。
 S.RecoveryReloadContractVersion = 1
 S.LastReloadFlushFailure = nil
 
@@ -451,13 +410,9 @@ local function ReloadCodeFromDisk(source, options)
         return false
     end
 
-    -- Reload is first and foremost the developer/recovery escape hatch used
-    -- after files on disk have been replaced. Persistence therefore performs a
-    -- best-effort durability barrier, but a broken Store must never deadlock the
-    -- only path capable of loading the fix for that Store. Strict durability is
-    -- still available to callers that explicitly set requireDurable=true (for
-    -- example shutdown/transactional flows); recovery reload records the exact
-    -- failure evidence and continues with a loud data-loss warning.
+    -- 重载是替换磁盘文件后的开发或恢复出口。Persistence 尽力完成耐久屏障，但损坏 Store 不能锁死唯一能加载修
+    -- 复的路径。调用者可显式 requireDurable=true 要求严格耐久（如关闭或事务流程）；恢复重载记录精确失败证据
+    -- ，并明显警告数据丢失后继续。
     S.LastReloadFlushFailure = nil
     if S.Persistence ~= nil and type(S.Persistence.Flush) == "function" then
         local callOk, flushed, failures = pcall(function() return S.Persistence:Flush() end)
@@ -494,11 +449,8 @@ local function ReloadCodeFromDisk(source, options)
         if readOk and value ~= nil then current = tostring(value) end
     end
 
-    -- Match the proven ArcheRage uirefresh primitive. A readable current value
-    -- lets us always create a real edge instead of guessing whether the write
-    -- will be ignored. We intentionally do not create a restore OnUpdate host:
-    -- changing this variable back would trigger a second UI refresh and recreate
-    -- the exact native lifetime hazard this hotfix removes.
+    -- 显式动作沿用已验证 ArcheRage uirefresh 原语；读取当前值后产生真实边沿，不猜写入是否忽略。不创建恢复
+    -- OnUpdate 宿主，因为切回该变量会触发第二次 UI 刷新并重新引入原生生命周期危险。
     if current == nil then
         SafeChat("重载失败：无法读取客户端界面刷新开关；已取消，避免盲目修改客户端设置。")
         return false
@@ -577,9 +529,8 @@ function S.SetRecoveryCommandBarVisible(visible)
     local edit = bar.edit
     local wantVisible = visible == true
 
-    -- Recovery input is a break-glass surface, never a keyboard Authority.
-    -- RU may keep focus on a hidden EditBox, so every visibility transition
-    -- explicitly returns focus. Hidden state also disables keyboard/focus input.
+    -- 恢复输入是应急表面，不拥有常驻键盘权威。RU 隐藏 EditBox 可保留焦点，每次可见性转换须显式归还焦点；隐
+    -- 藏时同时关闭 keyboard/focus 输入。
     if edit ~= nil and type(edit.ClearFocus) == "function" then
         pcall(function() edit:ClearFocus() end)
     end
@@ -588,8 +539,7 @@ function S.SetRecoveryCommandBarVisible(visible)
         if type(edit.EnableKeyboard) == "function" then pcall(function() edit:EnableKeyboard(true) end) end
     end
 
-    -- ArcheAge boolean native setters may return the state being applied.
-    -- Therefore Show(false) returning false is not a transport failure.
+    -- ArcheAge 原生布尔 setter 可能返回施加后的状态，因此 Show(false) 返回 false 不表示传输失败。
     local ok = pcall(function() bar:Show(wantVisible) end)
 
     if edit ~= nil then
@@ -669,10 +619,8 @@ function S.InstallRecoveryCommandBar()
         edit:SetExtent(136, 24)
         if type(edit.SetInset) == "function" then edit:SetInset(5, 5, 5, 5) end
         if type(edit.Enable) == "function" then edit:Enable(true) end
-        -- Recovery input must be born inert. RU can retain keyboard ownership
-        -- from an EditBox that was keyboard-enabled even if it is hidden a few
-        -- frames later, so bootstrap must never briefly enable keyboard/focus.
-        -- SetRecoveryCommandBarVisible(true) is the only authority that arms it.
+        -- 恢复输入创建时必须惰性；即使几帧后隐藏，曾启用 keyboard 的 RU EditBox 也可能保留键盘所有权。
+        -- bootstrap 不能短暂启用 keyboard/focus，只有 SetRecoveryCommandBarVisible(true) 可激活。
         if type(edit.EnableFocus) == "function" then edit:EnableFocus(false) end
         if type(edit.EnableKeyboard) == "function" then edit:EnableKeyboard(false) end
         if type(edit.EnablePick) == "function" then edit:EnablePick(true) end
@@ -712,9 +660,8 @@ function S.InstallRecoveryCommandBar()
         return result == true
     end
 
-    -- OnEnterPressed is verified in the ArcheAge client scripts for editboxes.
-    -- Do not invent/fallback to WoW-style slash registries or unverified edit
-    -- events: this bootstrap recovery surface must remain inside known RU ABI.
+    -- ArcheAge 客户端脚本已验证 editbox 的 OnEnterPressed；不能捏造 WoW 式 slash 登记表或未验证编辑事件，恢
+    -- 复输入须限定已知 RU ABI。
     local enterBound = false
     if type(edit.SetHandler) == "function" then
         local ok, result = pcall(edit.SetHandler, edit, "OnEnterPressed", SubmitRecoveryCommand)
@@ -729,15 +676,13 @@ function S.InstallRecoveryCommandBar()
     S.RecoveryCommandBar = bar
     S.RecoveryCommandHealthy = true
     S.RecoveryCommandError = nil
-    -- Normal bootstrap is intentionally keyboard-inert. Runtime failure may
-    -- explicitly reveal this break-glass input later, but successful startup
-    -- must never expose even a transient keyboard-enabled EditBox.
+    -- 正常 bootstrap 不激活键盘；运行失败可稍后显式展示应急输入，但成功启动不能暴露任何短暂启用键盘的 EditBox。
     S.SetRecoveryCommandBarVisible(false)
     return true
 end
 
 local function ReadRecoveryPosition(button, pinnedScale)
-    -- 维护：恢复入口使用统一 logical 校准；手势冻结单位，禁止无条件 / uiScale。
+    -- 恢复入口使用统一 logical 校准；手势冻结单位，禁止无条件 / uiScale。
     if button == nil then return nil, nil end
     if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect) == "function" then
         local ok, x, y = pcall(function()
@@ -768,9 +713,8 @@ local function CreateBootstrapRecoveryEntry()
     local configured, configureErr = pcall(function()
         button:SetText("R")
         if type(button.SetStyle) == "function" then pcall(function() button:SetStyle("text_default") end) end
-        -- Native Button auto-resize can re-expand a one-letter launcher to the
-        -- style's minimum text footprint on RU. Disable it before forcing the
-        -- compact recovery extent, matching Theme:StyleButton's size discipline.
+        -- RU 原生 Button 自动尺寸可能把单字启动器撑回样式最小文本宽度；强制紧凑恢复尺寸前先禁用自动缩放，与
+        -- Theme:StyleButton 一致。
         if type(button.SetAutoResize) == "function" then pcall(function() button:SetAutoResize(false) end) end
         if type(button.SetExtent) == "function" then button:SetExtent(RECOVERY_BUTTON_SIZE, RECOVERY_BUTTON_SIZE) end
         if type(button.SetWidth) == "function" then pcall(function() button:SetWidth(RECOVERY_BUTTON_SIZE) end) end
@@ -816,7 +760,7 @@ RecoveryLeftClick = function()
 end
 
 local function RecoveryRightClick()
-    -- Explicit emergency/developer path.  Left click remains a pure launcher.
+    -- 显式应急或开发入口；左键只负责启动。
     return ReloadCodeFromDisk("recovery")
 end
 
@@ -825,8 +769,7 @@ local function InstallRecoveryHandlers(button)
     if type(button.EnableDrag) == "function" then
         local dragOk, dragResult = pcall(function() return button:EnableDrag(true) end)
         if dragOk ~= true or dragResult == false then SafeChat("恢复入口拖动能力启用失败。") end
-        -- RU requires an explicit drag condition on some WidgetBase/Button
-        -- implementations; EnableDrag alone can leave OnDragStart unreachable.
+        -- 部分 RU WidgetBase/Button 需要显式拖动条件，仅 EnableDrag 可能无法触达 OnDragStart。
         if dragOk == true and dragResult ~= false and type(button.SetDragCondition) == "function" and DC_ALWAYS ~= nil then
             local conditionOk, conditionResult = pcall(function() return button:SetDragCondition(DC_ALWAYS) end)
             if conditionOk ~= true or conditionResult == false then SafeChat("恢复入口拖动条件启用失败。") end
@@ -835,9 +778,10 @@ local function InstallRecoveryHandlers(button)
     local leftOk, leftResult = pcall(button.SetHandler, button, "OnClick", RecoveryLeftClick)
     local rightOk, rightResult = pcall(button.SetHandler, button, "OnRButtonUp", RecoveryRightClick)
     local dragStartOk, dragStartResult = pcall(button.SetHandler, button, "OnDragStart", function()
-        if S.UIV3 and S.UIV3.LauncherState and S.UIV3.LauncherState.locked == true then return false end -- 中文维护：晚加载的 Launcher 偏好保护 Bootstrap 入口，锁定仍保留左右键恢复动作。
+        if S.UIV3 and S.UIV3.LauncherState and S.UIV3.LauncherState.locked == true then return false end -- 晚加载的 Launcher 偏好保护 Bootstrap 入口，锁定仍保留左右键
+                                                                                                         -- 恢复动作。
         if type(button.StartMoving) ~= "function" then return false end
-        -- 维护：早期 Bootstrap 不依赖 V3；可用时仅在开始读一次单位与 viewport 身份。
+        -- 早期 Bootstrap 不依赖 V3；可用时仅在开始读一次单位与 viewport 身份。
         if S.Layout and type(S.Layout.GetWindowLogicalRect)=="function" then
             local _,_,_,_,unit=S.Layout:GetWindowLogicalRect(button)
             button.rsGeometryUnitScale=unit and unit.effectiveScale or nil
@@ -849,7 +793,7 @@ local function InstallRecoveryHandlers(button)
         return button.rsMoving
     end)
     local dragStopOk, dragStopResult = pcall(button.SetHandler, button, "OnDragStop", function()
-        -- 维护：Reset 取消后迟到 DragStop 没有写权限，不再次保存旧坐标。
+        -- Reset 取消后迟到 DragStop 没有写权限，不再次保存旧坐标。
         if button.rsMoving~=true then return true end
         if type(button.StopMovingOrSizing)=="function" then pcall(button.StopMovingOrSizing,button) end
         local endX,endY=ReadRecoveryPosition(button,button.rsGeometryUnitScale)
@@ -870,8 +814,8 @@ local function InstallRecoveryHandlers(button)
                     {enabled=true,group="screen_buttons",kind="button",distance=16,gap=0})
                 if snapped then x,y=sx,sy end
             end
-            -- 维护：唯一 committed logical rect → 临时 edge intent → Native 接受 → 原 Store。
-            -- 旧链路 StorePlacement 再读 GetLogicalRect，RU 返回 logical effective 值时会重复除缩放。
+            -- 唯一提交逻辑矩形 -> 临时边缘意图 -> Native 接受 -> 原 Store。不能再
+            -- StorePlacement/GetLogicalRect 重读，否则 RU 已是逻辑单位的 effective 值会重复除缩放。
             local candidate={userMoved=true}
             x,y=L:StorePlacementRect(candidate,x,y,RECOVERY_BUTTON_SIZE,RECOVERY_BUTTON_SIZE,{mode="strict"})
             local windowing=S.RSUI and S.RSUI.Windowing
@@ -906,8 +850,7 @@ local function InstallRecoveryHandlers(button)
     local dragStartBound = dragStartOk and dragStartResult ~= false
     local dragStopBound = dragStopOk and dragStopResult ~= false
     if not dragStartBound or not dragStopBound then SafeChat("恢复入口拖动绑定不可用。") end
-    -- Left click is the minimum viable recovery path; right-click reload is an
-    -- optional developer convenience and must not make the launcher itself fail.
+    -- 左键是最小恢复路径；右键重载仅为可选开发便利，不能使启动器自身失败。
     return leftBound
 end
 

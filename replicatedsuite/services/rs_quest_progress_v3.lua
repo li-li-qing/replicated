@@ -1,22 +1,13 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Shared Quest / Instance Progress Service
+-- Replicated Suite · 任务与副本进度
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Read-only gameplay projection shared by Activity and the future Task Tracker.
--- It never owns UI or persistence and never revives the Legacy QuestService.
---
--- Authority:
---   * Quest membership/completion: X2Quest read-only getters.
---   * Instance entry counters: InstanceCatalogV3 projection (X2BattleField is owned there).
---   * Quest/instance semantic grouping: data/rs_quest_data.lua.
---
--- Performance:
---   * No Tick / OnUpdate.
---   * Native quest reads are event-driven plus a 15s safety refresh while at
---     least one consumer exists.
---   * Instance discovery/counters are delegated to InstanceCatalogV3 and only
---     acquired for consumers that explicitly request event-instance progress.
---   * Consumers read immutable-style projection tables; presentation never calls
---     X2Quest/X2BattleField directly.
+-- Activity 与任务跟踪器共享只读任务/副本进度投影，不拥有 UI 或持久化，不恢复旧 QuestService。任务加入/完成
+-- 事实归 X2Quest 只读 getter，副本次数归 InstanceCatalogV3（拥有 X2BattleField），语义分组归
+-- data/rs_quest_data.lua。无 Tick/OnUpdate；原生任务读取事件驱动，消费者存在时加 15s 安全刷新。副本发现/次
+-- 数委托目录，只有显式请求事件副本进度才租用。消费者按不可变数据读取，Presentation 不直接调用
+-- X2Quest/X2BattleField。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -33,7 +24,7 @@ local P = {
     snapshots = {},
     scopeSnapshots = { daily = {}, weekly = {} },
     activeIndex = {},
-    -- 中文维护注释（2026-09-14，quest-active-state-publish）：除固定 QuestGroups 外，居民债券/拍卖今日任务
+    -- （2026-09-14，quest-active-state-publish）除固定 QuestGroups 外，居民债券/拍卖今日任务
     -- 也会消费任意活动任务事实。保存 detached qid->state 快照，只用于判断事件是否需要发布；不暴露 Native 对象。
     activeQuestStates = {},
     refreshQuestStateCache = nil,
@@ -44,7 +35,7 @@ local P = {
     refreshFailures = 0,
     ActiveQuestListContractVersion = 1,
     ActiveQuestTitleAvailabilityContractVersion = 1,
-    -- Activity consumers may personalize x/y only when detached per-objective facts are present.
+    -- 只有具备分离逐目标事实，Activity 消费者才能自定义 x/y。
     ActivityObjectiveFactsContractVersion = 1,
 }
 P.presentationBoundary = "service_only"
@@ -90,7 +81,7 @@ local function RelatedList(group)
     return type(group) == "table" and type(group.relatedObjectives) == "table" and group.relatedObjectives or {}
 end
 
--- 中文维护注释（2026-09-21，activity-progress-selection-1）：稳定任务身份必须由静态 Quest variant
+-- （2026-09-21，activity-progress-selection-1）稳定任务身份必须由静态 Quest variant
 -- 集合构造，不能用“当前最匹配 QuestId”或本地化标题。Activity 个人进度选择和详情行共用同一 token，
 -- 但 QuestProgressV3 只发布身份/状态事实，不读取用户选择 Store。这样 Service 保持只读 Authority，
 -- Activities Feature 才拥有“哪些事实计入我的 x/y”这一偏好投影。
@@ -255,7 +246,7 @@ function P:BuildQuestSnapshot(key, group, activeIndex, questAvailable)
     local text = available and (tostring(completed) .. "/" .. tostring(total)) or "--"
     local tone = ProgressTone(completed, total, activeCount, readyCount, available)
     if kind == "scoreQuest" and available then
-        -- 中文维护注释（2026-09-22，scoreQuest binary completion）：积分型任务内部虽然有分数/奖励阶段，
+        -- （2026-09-22，scoreQuest binary completion）积分型任务内部虽然有分数/奖励阶段，
         -- 但 Activity 层跟踪的是“这一个每日任务是否完成”。因此紧凑活动行必须保留统一 x/y 合同：
         -- 未接/进行中 = 0/1，可交付/已完成 = 1/1。分数和 Reward Level 只在显式详情读取 Native Journal，
         -- 禁止把积分文本解析塞进 1 秒 Activity 热路径，也禁止把 scoreQuest 改成自定义多阶段分母。
@@ -268,10 +259,8 @@ function P:BuildQuestSnapshot(key, group, activeIndex, questAvailable)
         activeCount = activeCount, readyCount = readyCount,
         relatedActiveCount = relatedActive, relatedReadyCount = relatedReady,
         tailInFlightCount = tailInFlightCount,
-        -- Detached per-objective facts let Activities project a user-selected denominator without
-        -- re-reading X2Quest on the one-second activity presentation cadence. `objectiveSignature`
-        -- participates in equality so a state change inside a selected subset cannot be hidden by
-        -- an unchanged aggregate snapshot. Consumers must treat objectiveStates as immutable data.
+        -- 分离逐目标事实允许 Activities 投影用户选择的分母，不在每秒表现刷新重读 X2Quest。
+        -- objectiveSignature 参与相等性，避免总快照不变掩盖所选子集变化；objectiveStates 必须视为不可变。
         objectiveStates = objectiveStates,
         objectiveSignature = table.concat(signature, "|"),
         progressSelectionEnabled = group.progressSelectionEnabled == true,
@@ -380,12 +369,12 @@ function P:RefreshInstances(nextSnapshots, forceDiscovery)
 end
 
 function P:Refresh(reason, forceInstanceDiscovery)
-    self:ClearJournalCache() -- invalidate objective text on existing quest events/safety, never query it here.
+    self:ClearJournalCache() -- 既有任务事件或安全刷新使目标文本失效，此处不查询。
     local ok, err = xpcall(function()
         local activeIndex, questAvailable = self:BuildActiveIndex()
         self.refreshQuestStateCache = {}
 
-        -- 中文维护注释（quest-active-state-publish-2）：只遍历 Native 当前活动任务（数量有界），记录 membership
+        -- 只遍历 Native 当前活动任务（数量有界），记录 membership
         -- 与 IN_PROGRESS/READY_TO_TURN_IN 状态。居民债券并不一定属于静态 QuestGroups；如果这里只比较固定组，
         -- 交任务/变为可交付时不会发布 v3.quest_progress.updated，只能等别的页面刷新或 15s safety 偶然碰上。
         local nextActiveQuestStates = {}
@@ -434,7 +423,7 @@ function P:Refresh(reason, forceInstanceDiscovery)
         end
         return false, err
     end
-    -- 中文维护注释（2026-09-21，任务详情实时目标刷新）：`v3.quest_progress.updated` 只在主进度/任务状态
+    -- （2026-09-21，任务详情实时目标刷新）`v3.quest_progress.updated` 只在主进度/任务状态
     -- 发生变化时发布，但击杀 17/30 -> 18/30 这类 Journal Objective 文本变化不会改变 BuildQuestSnapshot，
     -- 若详情窗只监听 updated 就会停在旧数字。这里额外发布“成功刷新纪元”，仅表示 QuestProgress Authority
     -- 已完成一次事件驱动/15s safety 读取并清掉 Journal cache；Presentation 可按需重读当前显式详情。
@@ -496,7 +485,7 @@ function P:Start()
 end
 
 function P:Stop()
-    self:ClearJournalCache() -- explicit-detail cache must not survive service quiescence.
+    self:ClearJournalCache() -- 显式详情缓存不能跨服务静止保留。
     if self.running ~= true then return true end
     self.running = false
     if S.Events ~= nil then
@@ -586,7 +575,7 @@ function P:GetQuestProgress(scope, key)
     return value
 end
 
--- 中文维护注释（2026-09-14，任务活动事实只读接口）：DailyAuctionMaterialsV3 需要知道一组已核
+-- （2026-09-14，任务活动事实只读接口）DailyAuctionMaterialsV3 需要知道一组已核
 -- QuestId 当前是否在活动列表中，但 Service 私有 activeIndex 不能被外部直接引用，否则刷新/排序后消费者
 -- 可能持有过期表并反向修改 Authority。这里每次只返回 detached primitive；state 仍由 QuestProgressV3
 -- 的 QuestState 统一判定，不新增任务轮询，也不暴露内部缓存。
@@ -595,7 +584,7 @@ function P:GetActiveQuestState(questId)
     if id == nil or id ~= math.floor(id) or id < 1 then return nil end
     id = math.floor(id)
     local index = type(self.activeIndex) == "table" and tonumber(self.activeIndex[id]) or nil
-    -- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：活动 ID 可能先于标题就绪。
+    -- （2026-09-30，daily-auction-title-recovery-1）活动 ID 可能先于标题就绪。
     -- 生成的“任务 #id”不是 Native 标题事实；显式投影可用性，让消费者在既有 refreshed 纪元
     -- 中只补读缺失标题。保留原字符串 API 与缓存策略，不增加 Native 轮询或伪造进度变化。
     local title = index ~= nil and self:QuestTitle(id, "居民做货任务 #" .. tostring(id)) or nil
@@ -604,7 +593,7 @@ function P:GetActiveQuestState(questId)
         active = index ~= nil,
         index = index ~= nil and math.floor(index) or nil,
         state = self:QuestState(id, self.activeIndex),
-        -- 中文维护注释：标题仍由 QuestProgressV3 经已允许的 X2Quest 能力读取并缓存；只有当前活动任务
+        -- 标题仍由 QuestProgressV3 经已允许的 X2Quest 能力读取并缓存；只有当前活动任务
         -- 才请求标题，批量检查未接任务不会产生额外 Native 调用。消费者拿到的是 detached string。
         title = title,
         titleAvailable = index ~= nil and type(self.questTitleCache[id]) == "string" and self.questTitleCache[id] ~= "",
@@ -620,7 +609,7 @@ function P:GetActiveQuestStates(questIds)
     return out
 end
 
--- 中文维护注释（2026-09-14，活动任务目录只读接口）：今日做货不能只依赖历史 QuestId 白名单，
+-- （2026-09-14，活动任务目录只读接口）今日做货不能只依赖历史 QuestId 白名单，
 -- RU 私服可能存在同语义不同 ID 的区域制作日常。这里只把当前 activeIndex 转成 detached 列表并按
 -- Native 活动列表 index 排序；标题仍由 QuestProgressV3 缓存读取，消费者不能持有/修改 activeIndex。
 function P:GetActiveQuestList()
@@ -720,7 +709,7 @@ function P:ResolveObjectiveDetail(objective, index, related)
     end
     local category = related == true and (role ~= "" and role or "关联")
         or tostring(objective.category or "主任务")
-    -- 中文维护注释（2026-09-21，activity-progress-selection-1）：Presentation 的追踪选择不能用
+    -- （2026-09-21，activity-progress-selection-1）Presentation 的追踪选择不能用
     -- `bestQuest` 作为身份，因为同一逻辑阶段可能按阵营/已接状态切换不同 QuestId；也不能依赖标题，
     -- 否则本地化或官方改名会把用户偏好指向错误任务。这里用静态 variants 的排序集合构造 detached
     -- trackingKey；它只提供稳定身份，不拥有“是否追踪”的业务状态。若未来目录增删变体，必须显式
@@ -749,7 +738,7 @@ local function FindGroup(scope, key)
         return S.Data and S.Data.EventQuestProgress and S.Data.EventQuestProgress[key] or nil
     end
     if scope == "bonds" or scope == "bond" then
-        -- 中文维护注释：支持居民债券条目详情浮窗/弹窗动态查找，从 Bonds Authority 读取行数据
+        -- 支持居民债券条目详情浮窗/弹窗动态查找，从 Bonds Authority 读取行数据
         local bondsFeature = S.Features and S.Features.Bonds or nil
         if type(bondsFeature) == "table" and type(bondsFeature.GetRow) == "function" then
             local row = bondsFeature:GetRow(key)
@@ -791,7 +780,7 @@ local function FindGroup(scope, key)
     return nil
 end
 
--- 中文维护注释（2026-09-21，详情窗 Demand 选项）：Presentation 需要在 Acquire QuestProgress Consumer 之前
+-- （2026-09-21，详情窗 Demand 选项）Presentation 需要在 Acquire QuestProgress Consumer 之前
 -- 知道当前条目是否依赖 InstanceCatalog，否则所有普通活动都被迫唤醒副本目录，违反按需加载。这里只返回
 -- 静态分组 kind，不暴露 group/table，也不读取 Native；具体任务/副本事实仍由 GetGroupDetail/GetProgress 提供。
 function P:GetGroupKind(scope, key)
@@ -800,12 +789,9 @@ function P:GetGroupKind(scope, key)
     return tostring(group.kind or "quest")
 end
 
--- Maintenance (overview-workbench-2): RU officially enabled these two getters
--- on 2026-09-09. Signatures != runtime verification: accept only finite integer
--- counts and plain text. QuestProgress owns Native reads, UI owns no copies of
--- gameplay state. This is explicit-detail-only, NOT part of table projection.
--- The active-list index is identity checked before/after reading so a journal
--- reorder cannot attribute another quest's objectives to the selected quest.
+-- RU 于 2026-09-09 官方开放这两个 getter，签名存在不等于实机验证；只接受有限整数计数和纯文本。QuestProgress
+-- 拥有 Native 读取，UI 不保留 Gameplay 副本；仅显式详情读取，不纳入表投影。读取前后核验活动列表索引身份，防
+-- 止日志重排将其他任务目标归给所选任务。
 local JOURNAL_MAX_QUESTS, JOURNAL_MAX_ROWS, JOURNAL_TEXT_BYTES = 4, 16, 2048
 local JOURNAL_CACHE_MAX, JOURNAL_TTL = 16, 3000
 function P:ClearJournalCache()
@@ -851,7 +837,7 @@ function P:GetJournalObjectives(questId)
     end
     if not SameIdentity() then return Reject("quest_index_changed") end
     local result={available=true,rows=rows,questId=id,count=count,source="native_journal",observedAt=now}
-    -- At most 16 snapshots; deterministic eviction, no periodic cache sweeper.
+    -- 最多 16 快照，确定性驱逐，无周期缓存清扫器。
     local size,oldest,oldAt=0,nil,math.huge
     for key,item in pairs(self.journalCache)do
         size=size+1;if item.at<oldAt or (item.at==oldAt and (not oldest or key<oldest))then oldest,oldAt=key,item.at end
@@ -875,7 +861,7 @@ function P:AppendJournalDetail(children)
                 if journal.available then
                     for _,objective in ipairs(journal.rows)do
                         rows[#rows+1]={key="journal:"..tostring(id)..":"..objective.objectiveIndex,
-                            -- 中文维护注释：目标行属于上方已接任务的显式 Journal 明细，不计入主任务分母；
+                            -- 目标行属于上方已接任务的显式 Journal 明细，不计入主任务分母；
                             -- 使用轻量树形前缀帮助玩家区分“任务”与“任务目标”，不引入第二层 TreeView/缓存。
                             -- parentTrackingKey 让“仅追踪”视图跟随父任务展示目标，但目标本身不是独立追踪项。
                             category="目标",name="└ "..objective.text,status="",tone="default",questId=id,
@@ -943,8 +929,9 @@ function P:GetGroupDetail(scope, key, options)
         if readyCount > 0 then stateText = "可交付"
         elseif total > 0 and completed >= total then stateText = "已完成"
         elseif activeCount > 0 then stateText = "进行中" end
-        -- 中文维护注释（2026-09-22，scoreQuest detail）：详情同时保留两层语义：Activity 完成度是 0/1 -> 1/1，
-        -- score/reward-level 是同一个任务内部目标。这样用户在所有活动里都能用一致的完成度判断，同时不会丢失积分型信息。
+        -- （2026-09-22，scoreQuest detail）详情同时保留两层语义：Activity 完成度是 0/1 -> 1/1，
+        -- score/reward-level 是同一个任务内部目标。这样用户在所有活动里都能用一致的完成度判断，同时不会丢失
+        -- 积分型信息。
         summary = "已完成 " .. tostring(math.min(completed, 1)) .. "/1 · 积分任务 " .. stateText
     else
         summary = total > 0 and ("已完成 " .. tostring(completed) .. "/" .. tostring(total)) or "暂无主任务"
@@ -1003,7 +990,7 @@ function P:GetHealth(scope)
     }
 end
 
--- No Native reads in diagnostic snapshots; messages retain shapes/reasons, not all text.
+-- 诊断快照不读 Native，消息保留形状和原因，不保留全部文本。
 function P:GetJournalHealth()
     local count=0;for _ in pairs(self.journalCache or {})do count=count+1 end
     local d=self.journalDiagnostics or {}

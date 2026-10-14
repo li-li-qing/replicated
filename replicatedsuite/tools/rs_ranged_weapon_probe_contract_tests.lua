@@ -1,6 +1,11 @@
--- Regression: status diagnostics need an explicit equipment probe separate from Buff-field probing.
--- This source-level contract is intentionally narrow because the full BuffDisplay feature requires the live runtime;
--- it verifies the public command/UI wiring and that slot/type/false+true tooltip evidence are all present.
+------------------------------------------------------------------------
+-- Replicated Suite · 远程武器探测契约测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 状态诊断必须提供独立于 Buff 字段探测的显式装备探测。
+-- 完整 BuffDisplay 依赖实时运行环境，因此源码契约仅验证公开命令和 UI 连接，以及槽位、类型和 false/true tooltip 两组证据完整。
+------------------------------------------------------------------------
 local feature=assert(io.open('features/combat/buff_display/rs_buff_display_feature.lua','r')):read('*a')
 local window=assert(io.open('presentation/v3/widgets/rs_v3_module_diagnostics_window.lua','r')):read('*a')
 local page=assert(io.open('presentation/v3/pages/rs_v3_buff_display_page.lua','r')):read('*a')

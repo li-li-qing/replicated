@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- 中文维护：人员备注拥有独立账号 Store；精确完整名字是唯一键，绝不折叠同名跨服身份。
+-- Replicated Suite · 人员备注功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 人员备注拥有独立账号 Store；精确完整名字是唯一键，绝不折叠同名跨服身份。
 -- 只在页面持有 Demand 时复用 TeamRoster，退出即释放；无窗口枚举、io.open 或自己的轮询。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
@@ -14,7 +18,7 @@ local function Clean(value, limit)
 end
 local function Roster() return S.Services and S.Services.TeamRosterV3 end
 local function SyncRoster(feature,count)
-    -- 中文维护：只有可见消费者正在看团队时持有共享Roster；好友/家族/已保存备注不触发整团UnitName扫描，也不另建名单轮询。
+    -- 只有可见消费者正在看团队时持有共享Roster；好友/家族/已保存备注不触发整团UnitName扫描，也不另建名单轮询。
     local wanted=feature.view=="team"and (tonumber(count)or 0)>0
     if wanted and not feature.rosterHeld then
         local roster=Roster();local ok,why=false,"团队名单服务不可用"
@@ -29,23 +33,23 @@ local function SyncRoster(feature,count)
     return true
 end
 local function Refresh(feature, reason) return feature.Authority:Refresh(reason or "notes_changed") end
--- 中文维护（2026-10-13）：四种社交名单与团队/已保存共用唯一备注Store，视图和分页只活在会话。
+-- 四种社交名单与团队/已保存共用唯一备注Store，视图和分页只活在会话。
 local VIEW_LABEL={friends="好友",block="黑名单",family="家族",expedition="远征队",team="团队",saved="已保存"}
 local function NameSort(feature)
     return feature.nameSortByView and feature.nameSortByView[feature.view or "saved"]or ((feature.view=="friends"or feature.view==nil or feature.view=="saved")and "asc"or "none")
 end
 local function SortRows(feature,rows)
-    -- 中文维护：原生好友LISTCTRL首次装载按完整名字升序，远征回包已有服务器排序；各视图显式表头选择仅改变本地只读投影。
+    -- 原生好友LISTCTRL首次装载按完整名字升序，远征回包已有服务器排序；各视图显式表头选择仅改变本地只读投影。
     local direction=NameSort(feature)
     if direction=="asc"then table.sort(rows,function(a,b)return a.name<b.name end)
     elseif direction=="desc"then table.sort(rows,function(a,b)return a.name>b.name end)end
-    -- 中文维护：已保存备注的编号固定按完整名字升序，与 /bzdel 序号共用；其它名单编号仅代表当前显示顺序。
+    -- 已保存备注的编号固定按完整名字升序，与 /bzdel 序号共用；其它名单编号仅代表当前显示顺序。
     for i,row in ipairs(rows)do row.listIndex=row.noteIndex or i end
     return rows
 end
 local function AppendMembers(feature,list,label,onlineIndex)
     local rows,seen,unknown={},{},false
-    -- 中文维护：真正空表才表示无人；未知外壳/稀疏数组不能被Lua长度运算吞成空名单。
+    -- 真正空表才表示无人；未知外壳/稀疏数组不能被Lua长度运算吞成空名单。
     local scanned=0
     for key in pairs(list)do
         scanned=scanned+1
@@ -59,7 +63,7 @@ local function AppendMembers(feature,list,label,onlineIndex)
         if name and name~=""then
             if not seen[name]then
                 local online
-                -- 中文维护：已核expnote好友6/远征7位及命名boolean才是在线事实，缺字段显示未知。
+                -- 已核expnote好友6/远征7位及命名boolean才是在线事实，缺字段显示未知。
                 if type(entry)=="table"then
                     if type(entry.online)=="boolean"then online=entry.online
                     elseif type(entry.isOnline)=="boolean"then online=entry.isOnline
@@ -84,7 +88,7 @@ local function ReadSocialMembers(feature,view,reason)
     if view=="expedition"then
         if observer and type(observer.GetExpeditionListSnapshot)=="function"then list,total,start,count=observer:GetExpeditionListSnapshot()end
         if type(list)~="table"then
-            -- 中文维护：获取失败分清未订阅/未回包/第三参数形态未知；全部来自名单Service冷事实，不另发Native请求。
+            -- 获取失败分清未订阅/未回包/第三参数形态未知；全部来自名单Service冷事实，不另发Native请求。
             local d=observer and type(observer.GetDiagnostics)=="function"and observer:GetDiagnostics()or {}
             local subscribed=d.listSubscriptions and d.listSubscriptions.EXPEDITION_MANAGEMENT_MEMBERS_INFO
             if subscribed==false then return {},"unavailable","远征队成员事件订阅失败；请重新启用人员备注。"end
@@ -93,7 +97,7 @@ local function ReadSocialMembers(feature,view,reason)
         end
     elseif type(list)~="table"then
         if view=="family"then
-            -- 中文维护：名单Service拥有家族Native lazy能力，Feature只把脱离客户端的名字与唯一备注Store汇合。
+            -- 名单Service拥有家族Native lazy能力，Feature只把脱离客户端的名字与唯一备注Store汇合。
             if not observer or type(observer.ReadFamilyList)~="function"then return {},"unavailable","家族名单服务不可用"end
             ok,list,total,why=observer:ReadFamilyList()
         elseif view=="block"then ok,list,why=Factory.Call("X2Friend:GetBlockList",rawget(_G,"X2Friend"),"GetBlockList")
@@ -105,7 +109,7 @@ local function ReadSocialMembers(feature,view,reason)
     local status=unknown and "partial"or (#rows>0 and "ready"or "empty")
     local error=unknown and ("部分"..VIEW_LABEL[view].."名字无法识别")or nil
     if view=="expedition"and (total==nil or start==nil or start~=1 or count~=total)then
-        -- 中文维护：未提供可信分页参数或仅返回局部页，一律说明部分覆盖；不主动请求禁用成员API。
+        -- 未提供可信分页参数或仅返回局部页，一律说明部分覆盖；不主动请求禁用成员API。
         feature.listTotal=total;status="partial"
         error=(unknown and "部分名字未识别；"or "").."已读"..tostring(#rows).."人 / "..tostring(total or "总数未知").."；在原生远征队成员页翻页可查看对应名单。"
     elseif (total or #list)>200 then error="仅显示前200名"..VIEW_LABEL[view];status="partial"end
@@ -117,7 +121,7 @@ local function Commit(feature, name, note)
     local ready, err = Factory.Load(feature); if not ready then return false, err end
     local count = 0; for _ in pairs(feature.State.notes) do count = count + 1 end
     if note ~= "" and feature.State.notes[name] == nil and count >= MAX_NOTES then return false, "备注已达200条上限" end
-    -- 中文维护：清空备注是显式删除，全部变更仍走 Core 事务；保存拒绝不能提前改变界面或覆盖损坏 Store。
+    -- 清空备注是显式删除，全部变更仍走 Core 事务；保存拒绝不能提前改变界面或覆盖损坏 Store。
     local ok, why = Factory.PersistStateMutation(feature, "player_note", function(state)
         state.notes[name] = note ~= "" and note or nil; return true
     end)
@@ -136,7 +140,7 @@ local F = Factory.NewFeature("tools_player_notes", {
     end,
     persistenceBudget={maxDepth=4,maxNodes=1024,maxStringBytes=100000,maxEntriesPerTable=220},
     apply=function(value, state)
-        -- 中文维护：新增独立 Store 无旧文件猜测迁移；非法/超量数据由读取事务拒绝，不能静默截断后写回。
+        -- 新增独立 Store 无旧文件猜测迁移；非法/超量数据由读取事务拒绝，不能静默截断后写回。
         assert(type(value)=="table" and type(value.notes)=="table", "invalid_player_notes")
         local notes, count = {}, 0
         for name, note in pairs(value.notes) do
@@ -152,7 +156,7 @@ local F = Factory.NewFeature("tools_player_notes", {
             if S.Events then S.Events:SubscribeInternal("v3.team_roster.updated",feature,function()
                 if feature.enabled and (feature.consumerCount or 0)>0 and feature.view=="team" then Refresh(feature,"team_changed") end
             end) end
-            -- 中文维护：页面可独立消费名单更新；浮窗未显示时也能刷新当前视图，不另建事件所有者。
+            -- 页面可独立消费名单更新；浮窗未显示时也能刷新当前视图，不另建事件所有者。
             local observer=S.Services and S.Services.PlayerNotesSurfaceV3
             if S.Events and observer then S.Events:SubscribeInternal(observer.topic,feature,function(_,snapshot)
                 if feature.enabled and (feature.consumerCount or 0)>0 and snapshot.listKind==feature.view then Refresh(feature,"notes_list_changed")end
@@ -171,7 +175,7 @@ local F = Factory.NewFeature("tools_player_notes", {
         end
         if feature.view=="team" then
             local roster=Roster();local snapshot=feature.rosterHeld and roster and roster:GetSnapshot() or {}
-            -- 中文维护：原生团队信息请求只在本次打开时选人数较多的联队；初次共享Roster尚未采齐则等首个有效更新，手动筛选立即取消自动选择。
+            -- 原生团队信息请求只在本次打开时选人数较多的联队；初次共享Roster尚未采齐则等首个有效更新，手动筛选立即取消自动选择。
             if feature.autoPickTeam then
                 local counts={0,0};for _,member in ipairs(snapshot.members or {})do
                     local team,index=tonumber(member.teamIndex),tonumber(member.memberIndex)
@@ -180,7 +184,7 @@ local F = Factory.NewFeature("tools_player_notes", {
                 if counts[1]+counts[2]>0 then feature.teamScope=counts[1]>=counts[2]and 1 or 2;feature.autoPickTeam=false end
             end
             for _,member in ipairs(snapshot.members or {}) do
-                -- 中文维护：联合团队筛选只投影共享Roster，队伍号由已核memberIndex每五槽分组，不猜unit token。
+                -- 联合团队筛选只投影共享Roster，队伍号由已核memberIndex每五槽分组，不猜unit token。
                 if (tonumber(member.teamIndex)or 0)>0 and (tonumber(member.memberIndex)or 0)>0
                     and ((feature.teamScope or 0)==0 or tonumber(member.teamIndex)==feature.teamScope)then
                 local group="团"..tostring(member.teamIndex).." · "..tostring(math.ceil(member.memberIndex/5)).."队"
@@ -189,7 +193,7 @@ local F = Factory.NewFeature("tools_player_notes", {
                     partyIndex=math.ceil(member.memberIndex/5),memberName=member.name}
                 end
             end
-            -- 中文维护：共享Roster会把玩家seed放在首位，团队备注按真实团号/成员槽排序，才能与原生每五槽一队一致；不重排共享快照。
+            -- 共享Roster会把玩家seed放在首位，团队备注按真实团号/成员槽排序，才能与原生每五槽一队一致；不重排共享快照。
             table.sort(rows,function(a,b)
                 if a.teamIndex~=b.teamIndex then return a.teamIndex<b.teamIndex end
                 if a.memberIndex~=b.memberIndex then return a.memberIndex<b.memberIndex end
@@ -202,14 +206,14 @@ local F = Factory.NewFeature("tools_player_notes", {
         for i,row in ipairs(rows)do row.noteIndex=i end
         return SortRows(feature,rows),#rows>0 and "ready" or "empty"
     end,
-    -- 中文维护：列表覆盖和团队筛选均为脱离Store的会话标量，旧备注canonical/schema保持不变。
+    -- 列表覆盖和团队筛选均为脱离Store的会话标量，旧备注canonical/schema保持不变。
     projection=function(feature)return {view=feature.view or "saved",viewLabel=VIEW_LABEL[feature.view or "saved"],teamScope=feature.teamScope or 0,nameSort=NameSort(feature),
         listCount=feature.listCount,listTotal=feature.listTotal,listStart=feature.listStart,
         noteCount=(function()local n=0;for _ in pairs(feature.State.notes)do n=n+1 end;return n end)()}end,
     commands={
         SetNameSort=function(feature,direction)
             if direction~="asc"and direction~="desc"and direction~="none"then return false,"未知名字排序方式"end
-            -- 中文维护：排序是各视图会话状态，不写账号Store，不读Native，不改变名字/备注身份键。
+            -- 排序是各视图会话状态，不写账号Store，不读Native，不改变名字/备注身份键。
             feature.nameSortByView=feature.nameSortByView or {};feature.nameSortByView[feature.view or "saved"]=direction
             return Refresh(feature,"notes_sort")
         end,
@@ -241,20 +245,20 @@ local F = Factory.NewFeature("tools_player_notes", {
         end,
     },
 })
--- 中文维护：社交页等读者仅拿标量备注；getter 不读 Native，也不订阅名单或暴露可变 Store 表。
+-- 社交页等读者仅拿标量备注；getter 不读 Native，也不订阅名单或暴露可变 Store 表。
 function F:GetNote(name)
     local ok=Factory.Load(self);if not ok then return "" end
     return self.State.notes[tostring(name or "")] or ""
 end
 function F:HandleChatCommand(sender,message)
-    -- 中文维护：只响应精确命令前缀和当前玩家的聊天回包，不能由别人的同文本修改备注；普通聊天零Native读取。
+    -- 只响应精确命令前缀和当前玩家的聊天回包，不能由别人的同文本修改备注；普通聊天零Native读取。
     if not self.enabled or type(message)~="string"then return false end
     local command=message:match("^(%S+)")
     if command~="/bz"and command~="/bzdel"and command~="/bzlist"then return false end
     local known,player=Factory.Call("X2Unit:UnitName",rawget(_G,"X2Unit"),"UnitName","player")
     if known~=true or type(player)~="string"or sender~=player then return false end
     local function Feedback(ok,text)
-        -- 中文维护：沿用 Suite 的本地系统消息出口，主菜单隐藏时也能看到成功/失败；不调用任何向频道或其他玩家发送消息的 API。
+        -- 沿用 Suite 的本地系统消息出口，主菜单隐藏时也能看到成功/失败；不调用任何向频道或其他玩家发送消息的 API。
         if type(S.SafeChat)=="function"then S.SafeChat("人员备注："..tostring(text or ""))end
         if S.Events then S.Events:Publish("v3.player_notes.command_feedback",{ok=ok==true,text=tostring(text or "")})end
         return ok,text
@@ -265,7 +269,7 @@ function F:HandleChatCommand(sender,message)
     local rest=message:match("^/%w+%s*(.-)%s*$")or ""
     if command=="/bzlist"then
         if rest~=""then return Feedback(false,"用法：/bzlist")end
-        -- 中文维护：命令列表采用同一已保存视图，可滚动查看完整名字/备注；显式意图由Presentation消费，Feature不拥有窗口。
+        -- 命令列表采用同一已保存视图，可滚动查看完整名字/备注；显式意图由Presentation消费，Feature不拥有窗口。
         self.nameSortByView=self.nameSortByView or {};self.nameSortByView.saved="asc"
         if S.Events then S.Events:Publish("v3.player_notes.user_intent",{view="saved"})end
         local count=0;for _ in pairs(self.State.notes)do count=count+1 end

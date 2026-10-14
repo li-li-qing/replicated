@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Analytics Acceptance
+-- Replicated Suite · 战斗分析契约验收
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 战斗分析契约验收。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
@@ -10,7 +14,7 @@ local C=F and F.MetricCommon or nil
 if type(G)~="table" or type(G.RegisterSequenceCase)~="function" or type(F)~="table" or type(A)~="table" or type(C)~="table" then return end
 local function Fail(v) return false,tostring(v or "combat_analytics_acceptance_failed") end
 
--- 中文维护（2026-10-05）：只读数据接入门禁，不触发采集/Native/存储。
+-- 只读数据接入门禁，不触发采集/Native/存储。
 G:RegisterSequenceCase("v3_combat_recognition_reference_contract",function()
     local catalog=S.Data and S.Data.CombatRecognitionCatalog
     local ability=S.Data and S.Data.CombatAbilityCatalog
@@ -27,7 +31,7 @@ end)
 G:RegisterSequenceCase("v3_combat_statistics_personal_history_contract",function()
     local history=F.PersonalHistory
     local store=history and S.Persistence and S.Persistence:GetStore(history.StoreId) or nil
-    -- 中文维护（2026-10-07）：删除NPC击杀后仍保留schema2用于旧档校验；schema1原档仍经Persistence验证后迁移。
+    -- 删除NPC击杀后仍保留schema2用于旧档校验；schema1原档仍经Persistence验证后迁移。
     if store==nil or store.owner~="v3.combat_personal_history" or tonumber(store.schemaVersion)~=2
         or store.scope~=S.Persistence.Scope.Character or store.lifetime~=S.Persistence.Lifetime.Permanent then return Fail("personal_history_store") end
     if type(A.AcquireStatisticsConsumer)~="function" or type(A.GetCollectionScope)~="function" or type(F.Commands.SetCollectionScope)~="function"
@@ -130,9 +134,7 @@ G:RegisterSequenceCase("v3_m16_aura_normalization_contract",function()
     return true
 end)
 G:RegisterSequenceCase("v3_m16_01_empty_consumer_release",function()
-    -- Acceptance must not activate/reset a real user metric. The held->empty
-    -- transition is covered by the pure runtime harness; here we only assert
-    -- that an absent empty consumer can never materialize into Demand.
+    -- 验收不得激活或重置真实用户指标。持有到清空的转换由纯运行时测试覆盖；这里仅断言不存在的空消费端绝不能产生 Demand。
     local token="acceptance_combat_analytics_empty"
     A:ReleaseConsumer(token,"acceptance_cleanup")
     local acquired=A:AcquireConsumer(token,{metrics={}},"acceptance_empty_acquire")

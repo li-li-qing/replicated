@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Instance Browser Authority
+-- Replicated Suite · 副本浏览业务权威
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Presentation projection over InstanceCatalogV3. No Native API calls here.
+-- 基于InstanceCatalogV3的Presentation投影，禁止Native API调用。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

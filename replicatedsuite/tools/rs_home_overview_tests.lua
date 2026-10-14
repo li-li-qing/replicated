@@ -1,5 +1,10 @@
--- .247 migration of home regression: personalization replaces mutually exclusive tabs.
--- Preserve data, lease, explicit-enable, statistics and immediate trade assertions.
+------------------------------------------------------------------------
+-- Replicated Suite · 首页总览测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 首页使用个性化配置替代互斥页签；继续覆盖数据、需求租约、显式启用、统计和即时交易断言。
+------------------------------------------------------------------------
 local pass,fail=0,0
 local function Test(n,f)local ok,e=xpcall(f,debug.traceback);if ok then pass=pass+1;print('PASS home '..n)else fail=fail+1;print('FAIL home '..n..': '..tostring(e))end end
 local Host=dofile('tools/rs_workspace_home_test_host.lua')

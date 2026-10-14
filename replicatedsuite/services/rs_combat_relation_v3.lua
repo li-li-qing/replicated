@@ -1,25 +1,13 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Combat Relation / Classification Facts
+-- Replicated Suite · 战斗关系事实
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Independent relation Domain. It owns ONE question only: is a unit SELF,
--- TEAM, FRIENDLY, OPPONENT or UNKNOWN?
---
--- It deliberately does NOT own:
---   * identity facts        -> UnitIdentityV3 (names, explicit unit kind)
---   * aura/buff facts       -> AuraObservationV3
---   * combat occurrence     -> CombatEventBusV3
---   * DPS/HPS/ranking/PVP-PVE business conclusions -> DPS Domain
---
--- Design rules carried over from the legacy Professional DPS evidence:
---   * relation is resolved AT A TIMESTAMP (faction/team can change mid-fight)
---   * UNKNOWN is a first-class answer; the Domain never guesses
---   * manual user override outranks every inferred source
---   * "friendly attacked friendly" is recorded as a CONFLICT for review
---     (duel / force attack / faction change) instead of silently flipping
---   * soft evidence is forgettable; hard evidence keeps a timestamp
---
--- No Tick, no OnUpdate, no background scan. Consumer Demand owns the lifecycle
--- and all maps are bounded.
+-- 独立战斗关系领域只回答 SELF/TEAM/FRIENDLY/OPPONENT/UNKNOWN。身份归 UnitIdentityV3，Aura 归
+-- AuraObservationV3，战斗发生归 CombatEventBusV3，DPS/HPS/排名/PVP-PVE 业务结论归 DPS。关系按时间戳解析，因
+-- 为团队或阵营可在战斗中变化；UNKNOWN 是正式答案，不猜测。用户手动覆盖高于所有推断；友方攻击友方记录
+-- CONFLICT 供决斗、强攻或阵营变化审查，不能静默翻转。软证据可遗忘，硬证据保留时间戳。无 Tick/OnUpdate/后台
+-- 扫描，消费者 Demand 拥有生命周期，全部 map 有界。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -38,7 +26,7 @@ local R = {
     conflictOrder = {},
     conflictHead = 1,
     conflictMax = 64,
-    -- diagnostics
+    -- 诊断状态。
     reads = 0,
     binds = 0,
     evidenceApplied = 0,
@@ -68,7 +56,7 @@ local function IsSelfName(value)
     return identity:IsPlayerName(value) == true
 end
 
--- Relation values -------------------------------------------------------
+-- 关系枚举值。
 R.Relation = {
     SELF = "SELF",
     TEAM = "TEAM",
@@ -77,19 +65,18 @@ R.Relation = {
     UNKNOWN = "UNKNOWN",
 }
 
--- Evidence sources, ordered by authority (higher wins). MANUAL is the user's
--- explicit mark and can never be displaced by inference.
+-- 证据按权威排序，高值优先；MANUAL 为用户显式标记，绝不能被推断取代。
 R.Evidence = {
     MANUAL = 100,
     SELF = 90,
     TEAM_DATA = 80,
-    STRONG_ATTACK = 70,   -- unit effectively damaged SELF
-    STRONG_ATTACKED = 65, -- unit was effectively damaged by SELF
+    STRONG_ATTACK = 70,   -- 单位确实对 SELF 造成伤害。
+    STRONG_ATTACKED = 65, -- 单位确实受到 SELF 伤害。
     HEAL_RELATION = 50,
     GUILD_ID = 45,
     KIND_NPC = 40,
     KIND_PLAYER = 40,
-    NAME_HINT = 10,       -- RU localisation-only heuristic; low confidence
+    NAME_HINT = 10,       -- 仅基于 RU 本地化的低置信度启发式。
 }
 
 local RELATION_SET = {}
@@ -106,16 +93,13 @@ local function Emit(level, code, message, context)
     end
 end
 
-------------------------------------------------------------------------
--- Bounded unit table
-------------------------------------------------------------------------
+-- 有界单位表。
 local function CompactOrder(self, orderField, headField)
     local order = self[orderField]
     local head = math.max(1, tonumber(self[headField]) or 1)
     if type(order) ~= "table" then self[orderField], self[headField] = {}, 1; return end
-    -- The map is bounded, but repeatedly advancing a head index without
-    -- compacting the backing array still leaks slots over a long raid. Compact
-    -- only after a sizeable stale prefix so this never becomes hot-path churn.
+    -- map 有界，但只推进 head 而不压缩底层数组仍会在长团队活动中泄漏槽位；仅在失效前缀足够大时压缩，避免热
+    -- 路径抖动。
     if head <= 256 or head <= math.floor(#order / 2) then return end
     local nextOrder = {}
     for index = head, #order do
@@ -133,7 +117,7 @@ local function TouchUnit(self, key, now)
         self.unitHead = self.unitHead + 1
         if oldest ~= nil then
             local victim = self.units[oldest]
-            -- Manual overrides are the user's long-term intent; never evict them.
+            -- 手动覆盖是用户长期意图，绝不驱逐。
             if victim == nil or victim.manual ~= true then self.units[oldest] = nil end
         end
     end
@@ -163,25 +147,20 @@ local function KeyFor(name)
     return name ~= "" and name or nil
 end
 
-------------------------------------------------------------------------
--- Public queries
-------------------------------------------------------------------------
+-- 公开只读查询。
 function R:GetUnit(key)
     key = KeyFor(key)
     if key == nil then return nil end
     return self.units[key]
 end
 
--- Relation facts are time-aware because team/faction can change inside one
--- fight. Callers pass the event timestamp.
+-- 团队或阵营可在同一场战斗内改变；调用者须传事件时间戳以查询当时关系。
 function R:GetRelationAt(name, at)
     local key = KeyFor(name)
     if key == nil then return R.Relation.UNKNOWN, nil, 0 end
     self.reads = self.reads + 1
     local row = self.units[key]
-    -- Manual correction remains the highest user-owned Authority. SELF is then
-    -- verified from UnitIdentity; live roster membership is a dynamic TEAM fact
-    -- and is deliberately NOT persisted into the bounded evidence table.
+    -- 手动修正是最高用户权威；随后由 UnitIdentity 验证 SELF。实时 roster 的 TEAM 身份是动态事实，不写入有界证据表。
     if row ~= nil and row.manual == true then return row.relation, row.evidence, row.evidenceAt end
     if IsSelfName(key) then return R.Relation.SELF, "SELF", tonumber(at) or NowMs() end
     local roster = TeamRoster()
@@ -190,8 +169,7 @@ function R:GetRelationAt(name, at)
     end
     if row == nil then return R.Relation.UNKNOWN, nil, 0 end
     at = tonumber(at) or NowMs()
-    -- A hard mark stays valid forever; a soft mark decays so a stale
-    -- provisional classification cannot outlive the fight that produced it.
+    -- 硬标记持续有效；软标记会衰减，避免临时分类超过产生它的战斗寿命。
     if row.hardAt > 0 and at >= row.hardAt then return row.relation, row.evidence, row.evidenceAt end
     if row.softAt > 0 and at - row.softAt <= 60000 and at >= row.softAt then
         return row.relation, row.evidence, row.evidenceAt
@@ -209,9 +187,7 @@ function R:IsOpponentAt(name, at)
     return self:GetRelationAt(name, at) == R.Relation.OPPONENT
 end
 
-------------------------------------------------------------------------
--- Evidence ingestion
-------------------------------------------------------------------------
+-- 证据接入。
 local function ApplyEvidence(self, key, relation, source, at, hard, counterpart)
     if not IsRelation(relation) then return false, "invalid relation" end
     key = KeyFor(key)
@@ -223,8 +199,7 @@ local function ApplyEvidence(self, key, relation, source, at, hard, counterpart)
     local currentWeight = tonumber(R.Evidence[row.evidence]) or 0
 
     if row.manual == true and source ~= "MANUAL" then
-        -- Manual user intent wins. Record that inference tried to disagree so
-        -- the disagreement is visible instead of silently ignored.
+        -- 用户手动意图优先；记录推断尝试提出的分歧，使其可见而非静默忽略。
         self.evidenceRejected = self.evidenceRejected + 1
         return true, row.relation
     end
@@ -280,16 +255,14 @@ function R:ClearManual(key)
     return true
 end
 
--- Identity facts supplied by UnitIdentityV3. Only explicit kinds are accepted;
--- a missing or conflicting kind field stays UNKNOWN (fail-closed).
+-- UnitIdentityV3 只提供显式 kind；缺失或冲突继续 UNKNOWN，失败封闭。
 function R:ApplyKind(name, kind, at)
     local key = KeyFor(name)
     if key == nil then return false, "name required" end
     local row = TouchUnit(self, key, tonumber(at) or NowMs())
     local previous = row.kind
     row.kind = tostring(kind or "")
-    -- Unit kind and combat relation are separate facts. NPC/MATE/SLAVE can be
-    -- friendly, so kind must never silently manufacture OPPONENT evidence.
+    -- unit kind 与战斗关系独立；NPC/MATE/SLAVE 可以友好，kind 不能静默制造 OPPONENT 证据。
     return true, row.relation, previous ~= row.kind
 end
 
@@ -301,9 +274,7 @@ function R:SetGuild(name, guildId, at)
     return true
 end
 
--- RU localisation heuristic: a Chinese-character name is very likely an NPC in
--- the RU client. This is OPTIONAL and LOW confidence; it must never override
--- any stronger evidence and defaults to disabled.
+-- RU 本地化启发式认为中文字符名称很可能是 NPC；此规则可选且低置信度，默认关闭，不能覆盖更强证据。
 function R:ApplyChineseNameHint(name, at)
     if self.nameHintEnabled ~= true then return false, "name hint disabled" end
     local key = KeyFor(name)
@@ -314,25 +285,16 @@ function R:ApplyChineseNameHint(name, at)
     return ApplyEvidence(self, key, R.Relation.OPPONENT, "NAME_HINT", at, false)
 end
 
-------------------------------------------------------------------------
--- Combat-derived evidence
---
--- One combat fact can produce up to two hard marks:
---   * unit damaged SELF          -> OPPONENT
---   * unit was damaged by SELF   -> OPPONENT
---   * unit healed SELF / SELF healed unit -> FRIENDLY (soft: pets and NPCs
---     can inherit friendly-looking heals, so this never outranks hard marks)
---
--- "Friendly attacked friendly" is a conflict, not a silent flip.
-------------------------------------------------------------------------
+-- 战斗推导证据：单位伤害 SELF 或被 SELF 伤害，可产生最多两条 OPPONENT 硬标记；单位治疗 SELF 或 SELF 治疗单
+-- 位产生 FRIENDLY 软标记，因为宠物/NPC 也可能有看似友好治疗，不能高于硬标记。友方攻击友方须记录冲突，不静默
+-- 翻转。
 local MIN_EFFECTIVE_AMOUNT = 1
 
 function R:RecordCombatFact(fact)
     if type(fact) ~= "table" then return false, "fact required" end
     local identity = IdentityService()
     if identity == nil or type(identity.IsPlayerIdentityReady) ~= "function" or identity:IsPlayerIdentityReady() ~= true then
-        -- Without a verified SELF endpoint there is no anchor for any relation
-        -- inference. Returning false keeps the caller's counters honest.
+        -- 没有已验证 SELF 端点就没有关系推断锚点；返回 false 保证调用者计数真实。
         return false, "player identity unavailable"
     end
     local category = tostring(fact.category or "")
@@ -364,9 +326,7 @@ function R:RecordCombatFact(fact)
             ApplyEvidence(self, targetName, R.Relation.FRIENDLY, "HEAL_RELATION", at, false, sourceName)
         end
     end
-    -- Re-read after evidence application. The previous implementation returned
-    -- the pre-hit snapshot, so the very hit that established an opponent was
-    -- classified with stale UNKNOWN relation and disappeared from DPS.
+    -- 应用证据后重新读取；不能返回命中前快照，否则首次确立敌人的该次伤害仍按旧 UNKNOWN 分类并从 DPS 消失。
     if sourceName ~= "" then sourceRel = self:GetRelationAt(sourceName, at) end
     if targetName ~= "" then targetRel = self:GetRelationAt(targetName, at) end
     self.binds = self.binds + 1
@@ -399,13 +359,11 @@ function R:RecordConflict(code, sourceName, targetName, at, reason)
     return true
 end
 
-------------------------------------------------------------------------
--- Lifecycle
-------------------------------------------------------------------------
+-- 生命周期。
 function R:ResetTransient(reason)
     local kept = {}
     for key, row in pairs(self.units) do
-        -- Manual marks are the user's durable intent and survive a session reset.
+        -- 手动标记为用户耐久意图，会话重置后仍保留。
         if row ~= nil and row.manual == true then kept[key] = row end
     end
     self.units = kept

@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI View State v2
+-- Replicated Suite · 数据视图状态
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared presentation state for data surfaces. Business code owns WHY a view
--- is loading/error/unavailable; this layer owns the consistent visual contract.
--- No Tick/OnUpdate: state changes are explicit and layout piggybacks on the
--- owning DataView's existing layout pass.
+-- 业务负责加载/错误/不可用原因，此层统一视觉；无 Tick/OnUpdate，状态明确变化，布局复用所属 DataView 轮次。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -101,7 +100,7 @@ function V:Create(view, spec)
         options = type(options) == "table" and options or {}
         state = NormalizeState(state)
         local defaults = DEFAULTS[state] or DEFAULTS.ready
-        -- 中文维护（performance-cache-1）：同一状态/文案/重试权限不能反复使整张列表布局失效。
+        -- 约束（performance-cache-1）：同一状态/文案/重试权限不能反复使整张列表布局失效。
         -- 比较最终值而非 options 表身份；同值仍走 Setter 的 Native 拒绝重试/读回修复，
         -- 只有连续两轮显隐都被原生接受才省去额外的整表布局失效。
         local title = tostring(options.title ~= nil and options.title or defaults.title or "")
@@ -118,7 +117,7 @@ function V:Create(view, spec)
         self.explicit = explicit
         self.revision = (tonumber(self.revision) or 0) + 1
         local showOverlay = state ~= "ready"
-        local accepted = true -- 中文维护：未被 Native 接受的状态不能成为后续跳过布局的依据。
+        local accepted = true -- 未被 Native 接受的状态不能成为后续跳过布局的依据。
         if self.message ~= nil then
             local text = self.title
             if self.detail ~= "" then text = text ~= "" and (text .. "\n" .. self.detail) or self.detail end

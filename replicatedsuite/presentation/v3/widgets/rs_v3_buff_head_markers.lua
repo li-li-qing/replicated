@@ -1,21 +1,14 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 7 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Plate Head Renderer (v4)
+-- Replicated Suite · 头顶状态与装备标记
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- The health-bar plate is the single layout anchor. Everything is positioned
--- relative to its rectangle:
---
---   InfoRow (class · gear · distance)   ← fixed semantic slot
---   BuffRow(s)                           ← above the plate, maxRows upward
---   [LeftEquip] [    plate    ] [RightEquip]  ← equipment flanks the plate
---   DebuffRow(s)                         ← below the plate, maxRows downward
---   CastBar                              ← fixed semantic slot below plate
---
--- The Feature owns all scheduler lanes; this presenter only keeps bounded
--- widget pools, computes a cached layout per render, and applies diffs.
+-- 合并约束：先检查冲突标记、toc.g 加载清单完整性与 Lua 语法，再做运行时验收。
+-- 权威归属、调用链和存档协议由实现负责，不能通过清配置、跳过加载或恢复 Legacy 绕过错误。
+-- 血条是唯一布局锚点；所有内容均相对其矩形定位：
+-- InfoRow（职业、装备、距离）：固定语义槽；BuffRow(s)：血条上方，最多 maxRows 向上堆叠；[LeftEquip] [plate] [RightEquip]：装备位于血条两侧；
+-- DebuffRow(s)：血条下方，最多 maxRows 向下堆叠；CastBar：血条下方固定语义槽。
+-- Feature 持有全部调度通道；presenter 仅持有有界控件池，按渲染计算缓存布局并应用差异。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -40,12 +33,12 @@ P.calibrationRestoreCount = tonumber(P.calibrationRestoreCount) or 0
 P.LiveHudSuppressionContractVersion = 1
 P.EquipmentIndependentOffsetContractVersion = 1
 P.RangedWeaponVisualOrderContractVersion = 1
-P.SplitInfoTextLayoutContractVersion = 3 -- 中文维护注释（.18.264）：自身/目标使用同一套稳定语义槽位；复制 HUD 不再因 scope 走不同几何分支。
-P.TargetDistanceStableSlotContractVersion = 1 -- .18.262：仅 Presentation 几何契约；target 距离不随职业/装分字段缺失重排。
-P.MirroredInfoSlotContractVersion = 1 -- .18.264：player/target 同 profile + 同 facts 必须得到同一 info 几何。
-P.IndependentHudSlotContractVersion = 1 -- .18.265：组件显隐/数据多少/兄弟尺寸不得改变其它组件的基础槽位。
-P.GearScoreFormatContractVersion = 1 -- .18.226：只格式化现有 Projection 数值，full/compact 不新增事实读取。
-P.TargetAliasHudContractVersion = 2 -- .18.322：目标别名升级为可独立校准的 target-only 固定语义槽；Renderer 仍只消费 Projection。
+P.SplitInfoTextLayoutContractVersion = 3 -- 约束（.18.264）：自身/目标使用同一套稳定语义槽位；复制 HUD 不再因 scope 走不同几何分支。
+P.TargetDistanceStableSlotContractVersion = 1 -- 仅 Presentation 几何契约；target 距离不随职业/装分字段缺失重排。
+P.MirroredInfoSlotContractVersion = 1 -- player/target 同 profile + 同 facts 必须得到同一 info 几何。
+P.IndependentHudSlotContractVersion = 1 -- 组件显隐/数据多少/兄弟尺寸不得改变其它组件的基础槽位。
+P.GearScoreFormatContractVersion = 1 -- 只格式化现有 Projection 数值，full/compact 不新增事实读取。
+P.TargetAliasHudContractVersion = 2 -- 目标别名升级为可独立校准的 target-only 固定语义槽；Renderer 仍只消费 Projection。
 -- Contract 11：目标别名是 target-only 固定语义槽，独立于 Info/Buff/Cast 几何；开关/名单变化只触发 Reconcile，不新增 Native 热路径。
 -- 维护（pvp-hud-1）：内容dirty与运动分离；指标固定规模，不保存/逐帧打印。
 P.PvpPatch = "pvp-hud-1"
@@ -57,7 +50,7 @@ P.cooldownEvidence = {inputRows=0,drawn=0,rejected=0,nonemptyRenders=0}
 
 
 local SCOPES = { "player", "target" }
--- 中文维护注释（2026-09-19，cooldown-only-render-1）：cooldowns 是独立固定槽位，也是合法的
+-- 约束（2026-09-19，cooldown-only-render-1）：cooldowns 是独立固定槽位，也是合法的
 -- HUD 启动理由。旧列表漏掉它，用户只开启“技能 CD”而关闭其它组件时 BuffHeadMarkers 不会 Acquire
 -- Feature Consumer，进而连 CooldownObservationV3 都不会启动。加入启动 gate 不改变其它组件布局/几何。
 local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar", "cooldowns" }
@@ -65,7 +58,7 @@ local UNKNOWN_ICON = "ui/icon/icon_unknown_item.dds"
 
 local function N(v, fallback) return tonumber(v) or tonumber(fallback) or 0 end
 local function Settings()
-    -- 中文维护注释：VisualTick 是 50ms 级热路径，只需要 HUD 运行策略，不再复制
+    -- VisualTick 是 50ms 级热路径，只需要 HUD 运行策略，不再复制
     -- tracked/classification 等大表；scope 几何由 ScopeSettings 单独取轻量投影。
     local value = type(Feature.GetHeadPolicyProjection) == "function" and Feature:GetHeadPolicyProjection() or nil
     if type(value) ~= "table" and type(Feature.GetSettingsProjection) == "function" then value = Feature:GetSettingsProjection() end
@@ -73,10 +66,10 @@ local function Settings()
 end
 local scopeLayoutCache,scopeLayoutRevision={},nil
 local function ScopeSettings(scope)
-    -- 中文维护注释（双 HUD Presentation 读取，2026-09-11）：renderer 不再直接把
+    -- 约束（双 HUD Presentation 读取，2026-09-11）：renderer 不再直接把
     -- player settings.components 套到 target。Feature 是 scope profile 的投影边界；
     -- Presentation 只消费 detached snapshot，避免 Proxy/Presentation 反向改 Authority。
-    -- 中文维护（performance-snapshot-1）：只复用Renderer拥有的独立设置快照，固定两个scope。
+    -- 约束（performance-snapshot-1）：只复用Renderer拥有的独立设置快照，固定两个scope。
     -- 设置代际变化才重新复制；实时单位事实仍每次读取，缺代际的旧宿主保留不缓存路径。
     local revision=tonumber(Feature.settingsRevision)
     if revision==nil or revision~=scopeLayoutRevision then
@@ -96,15 +89,13 @@ end
 local function ScopeEnabled(scope, settings)
     return scope == "player" and settings.headPlayer ~= false or scope == "target" and settings.headTarget ~= false
 end
--- Render gate: the head display starts when headEnabled and at least one
--- component is enabled. Buff/debuff whitelist decisions stay in ProjectPlates;
--- presentation never owns or bypasses tracking policy.
+-- 渲染门：headEnabled 且至少启用一个组件时启动头顶显示；Buff/debuff 白名单由 ProjectPlates 判断，表现层不能持有或绕过追踪策略。
 local function HasRenderableComponents(settings, scope)
     local components = type(settings.components) == "table" and settings.components or {}
     -- 目标自定义名字是独立可见组件。只有 Store 已有至少一条且显示开关开启时才作为启动理由，
     -- 空备注库不会额外持有 Renderer Consumer；位置采集由 Feature 同一 gate 配套开启。
     if scope == "target" and type(Feature.IsTargetAliasHeadEnabled) == "function" and Feature:IsTargetAliasHeadEnabled() then return true end
-    -- 中文维护注释：plate 是“原生血条代理锚点”，renderer 从不绘制它，不能把
+    -- plate 是“原生血条代理锚点”，renderer 从不绘制它，不能把
     -- plate.enabled 当作启动理由；否则用户把所有可视组件关掉后仍会持有 Consumer，
     -- 进而让 Aura lane 因 consumerCount>0 继续运行。真正可见能力只由组件开关决定。
     for _, key in ipairs(RENDERABLE_KEYS) do
@@ -114,7 +105,7 @@ local function HasRenderableComponents(settings, scope)
             local info=type(settings.info)=="table" and settings.info or {}
             if info.enabled~=false and (info.showClass~=false or (component~=nil and component.enabled~=false)) then return true end
         elseif component == nil or component.enabled ~= false then
-            -- 中文维护注释（Info 可见性门，2026-09-11）：distance/gearScore 没有
+            -- 约束（Info 可见性门，2026-09-11）：distance/gearScore 没有
             -- 独立绘制区域，info 关闭后它们不能作为 Renderer/Consumer 的启动理由。职业的双显示门见上方。这样
             -- 与 Feature 的 scope lane gate 保持同一 Authority，避免隐藏 HUD 仍保持 50ms
             -- 数据路径；其他组件继续按自己的 enabled 独立启停。
@@ -130,7 +121,7 @@ local function HasRenderableComponents(settings, scope)
 end
 
 ------------------------------------------------------------------------
--- Pools
+-- 对象池。
 ------------------------------------------------------------------------
 
 local function MakeIcon(scope, index)
@@ -138,9 +129,7 @@ local function MakeIcon(scope, index)
     if root == nil then return nil, err end
     root.rsUiOwner = P.owner
     local icon = root.CreateIconDrawable and root:CreateIconDrawable("artwork") or nil
-    -- Equipment quality uses a second texture over the base item icon. It is
-    -- allocated lazily only when this pooled marker actually renders equipment,
-    -- so ordinary Aura-only slots do not pay an extra drawable allocation.
+    -- 装备品质使用基础物品图标上方的第二层纹理，仅池中标记实际渲染装备时延迟分配，普通 Aura 槽不额外分配 drawable。
     local stack = S.UI:CreateLabel(root, "v3_buff_head_" .. scope .. "_stack_" .. tostring(index), "", 0, 0, 18, 14, 9, "strong", "RIGHT", true)
     local time = S.UI:CreateLabel(root, "v3_buff_head_" .. scope .. "_time_" .. tostring(index), "", 0, 0, 40, 12, 8, "default", "RIGHT", true)
     if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(stack);S.Theme:SetWorldTextPalette(time) end
@@ -201,7 +190,7 @@ local function MakeInfo(scope)
         S.Theme:SetWorldTextPalette(classLabel);S.Theme:SetWorldTextPalette(gearLabel);S.Theme:SetWorldTextPalette(distanceLabel);S.Theme:SetWorldTextPalette(aliasLabel)
     end
     S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner); S.UI:SetVisible(distanceLabel, false, P.owner)
-    -- 中文维护注释（HUD 基础信息拆分，2026-09-17）：旧实现只有一个拼接 label，导致职业名称、
+    -- 约束（HUD 基础信息拆分，2026-09-17）：旧实现只有一个拼接 label，导致职业名称、
     -- 装分和距离只能整体移动/改字号。这里仍保持每 scope 固定 3 个 pooled label，不在 50ms
     -- VisualTick 中创建对象。root 继续别名到 classTextRoot，保护旧测试/诊断引用；gear/distance
     -- 仅消费 Feature 已有投影，不产生新的 Native 查询、Consumer 或 Scheduler。
@@ -223,13 +212,13 @@ local function RequiredIconCount(settings)
     local buffMax = math.max(1, math.min(64, math.floor(N(buff.maxPerRow, 8) * N(buff.maxRows, 2))))
     local debuffMax = math.max(1, math.min(64, math.floor(N(debuff.maxPerRow, 8) * N(debuff.maxRows, 2))))
     local cooldownMax = math.max(1, math.min(64, math.floor(N(cooldown.maxPerRow, 8) * N(cooldown.maxRows, 2))))
-    -- 中文维护注释（2026-09-19，图标池容量）：CD 与 Buff/Debuff 共用既有 marker pool，
+    -- 约束（2026-09-19，图标池容量）：CD 与 Buff/Debuff 共用既有 marker pool，
     -- 只按用户可见几何上限预分配，不为 256 个收藏技能建控件；装备仍保留 8 个固定余量。
     return buffMax + debuffMax + cooldownMax + 8
 end
 
 function P:EnsurePools(settings)
-    -- 中文维护注释：player/target 的 maxPerRow/maxRows 现在可独立；池容量必须取两者
+    -- player/target 的 maxPerRow/maxRows 现在可独立；池容量必须取两者
     -- 最大值，否则目标配置放大后会出现“设置已保存但最后几枚图标没有 pooled marker”。
     local iconCount = 0
     for _, scope in ipairs(SCOPES) do
@@ -302,7 +291,7 @@ function P:HideAll()
 end
 
 ------------------------------------------------------------------------
--- Layout helpers
+-- 布局辅助函数。
 ------------------------------------------------------------------------
 
 -- 维护：内容布局以单位原点(0,0)计算，先记录所有子项边界再统一平移到父容器的正坐标。
@@ -352,7 +341,7 @@ local function Texture(cache, field, drawable, path)
     return false
 end
 
--- 中文维护注释（Buff/Debuff 字体 Authority，2026-09-11）：旧 Renderer 虽然 Store/校准器都
+-- 约束（Buff/Debuff 字体 Authority，2026-09-11）：旧 Renderer 虽然 Store/校准器都
 -- 保存 component.fontSize，但正式渲染始终用 icon size × 固定比例重算字体，造成“校准预览能改、
 -- 保存成功、实机字体却不动”。字体 Authority 应来自当前 scope 的组件配置；plateScale 只负责把
 -- 逻辑字体映射到最终视觉尺寸。fontSize<=0 时保留旧比例回退，兼容装备池等没有字体配置的调用。
@@ -374,9 +363,7 @@ local function LayoutIcon(marker, size, showStacks, showTime, stackFontSize, tim
         and cache.stackFontSize == stackFontSize and cache.timeFontSize == timeFontSize then return end
     cache.size, cache.showStacks, cache.showTime = size, showStacks, showTime
     cache.stackFontSize, cache.timeFontSize = stackFontSize, timeFontSize
-    -- Remaining-time label is embedded at the icon's bottom-right (no extra row
-    -- height) so it is always visible without pushing rows apart; the stack
-    -- counter stays at the top-right.
+    -- 剩余时间标签嵌在图标右下角，不增加行高，始终可见且不撑开行；叠层计数保留在右上角。
     local totalH = size
     S.UI:SetExtent(marker.root, size, totalH, P.owner)
     S.UI:SetExtent(marker.icon, size, size, P.owner)
@@ -399,7 +386,7 @@ local function TextWidth(text, fontSize)
     return math.max(24, math.floor(#tostring(text or "") * (fontSize or 10) * 0.62) + 8)
 end
 
--- 中文维护注释（2026-09-27，target-alias-hud-2）：自定义名字与职业名称/装分/距离一样是
+-- 约束（2026-09-27，target-alias-hud-2）：自定义名字与职业名称/装分/距离一样是
 -- 独立 HUD 组件，但只属于 target。其几何只依赖目标血条中心、target plateScale 与自身 cfg，
 -- 兄弟组件显隐/行数/文字长度绝不能推动它。校准器和正式 Renderer 共用本纯函数，避免“预览一处、
 -- 实机另一处”。这里不访问 Store、不调用 Native API，也不分配持久缓存。
@@ -447,8 +434,7 @@ local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, sca
     end
     marker.stack:SetText((showStacks and N(row.stack, 1) > 1) and tostring(math.floor(N(row.stack, 1))) or "")
     marker.time:SetText(showTime and tostring(row.timeText or "--") or "")
-    -- Group-level clamping already kept the whole row/group inside the screen;
-    -- each icon is placed at its exact computed slot so members never pile up.
+    -- 整行/整组已统一限制在屏幕内，各图标按精确槽位放置，避免成员堆叠。
     Place(P.pools[marker.scope], marker.root, x, y, size, size)
     -- SetVisible 的 false 也表示无需重复写入；EnsureVisible 才能区分已接受与明确拒写。
     -- 记录的是 RSUI 提交状态，不把它当作 GPU 像素读回。无该门面的旧测试宿主仍保持原绘制行为。
@@ -456,8 +442,7 @@ local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, sca
     else S.UI:SetVisible(marker.root,true,P.owner);marker.contentCommitted=nil end
 end
 
--- Render a horizontal icon row for a component; returns how many slots used.
--- The WHOLE row is clamped as one group; individual icons keep exact spacing.
+-- 渲染组件的横向图标行并返回已用槽数；整行作为一组限制边界，各图标保持精确间距。
 local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, showTime, slotOffset, size, gap, scale)
     local used = 0
     size = math.max(8, math.floor(tonumber(size) or N(cfg.size, 24)))
@@ -476,8 +461,7 @@ local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, 
     return used
 end
 
--- Multi-row buff/debuff rendering: rows stack upward (buff) or downward
--- (debuff) from the plate edge, bounded by MaxPerRow and MaxRows.
+-- 多行 Buff/debuff 从血条边缘分别向上/向下堆叠，由 MaxPerRow 与 MaxRows 限制。
 local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStacks, showTime, slotOffset, size, spacing, maxPerRow, maxRows, rowGap, direction, scale)
     local used = 0
     local all = type(rows) == "table" and rows or {}
@@ -496,27 +480,24 @@ local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStac
 end
 
 ------------------------------------------------------------------------
--- Layout geometry (pure)
+-- 纯布局几何。
 ------------------------------------------------------------------------
 
--- Default visual spacing (verified defaults; derived from the legacy
--- Professional Plates section-flow experience, widened for clear layering).
--- Buff/Debuff/Info/equipment are all computed from the bar rect only.
--- Gap constants scaled 1.2× to match the new default icon sizes.
-local BUFF_TO_BAR = 8        -- first buff row bottom -> bar.top
-local BUFF_ROW_GAP = 4       -- between buff rows
-local DEBUFF_TO_BAR = 8      -- first debuff row top -> bar.bottom
-local DEBUFF_ROW_GAP = 4     -- between debuff rows
-local INFO_TO_BUFF = 7       -- info bottom -> top-most actual buff row top
-local INFO_TO_BAR = 9        -- info bottom -> bar.top when no buffs
-local EQUIP_TO_BAR = 7       -- equipment inner edge -> bar side
-local EQUIP_GAP = 4          -- between two equipment icons
+-- 默认视觉间距源于已验证的 Professional Plates 分段布局，并加宽以明确层次。Buff/Debuff/Info/装备均只由血条矩形计算；间距常量按 1.2 倍匹配新默认图标尺寸。
+local BUFF_TO_BAR = 8        -- 首行 Buff 底边到 bar.top。
+local BUFF_ROW_GAP = 4       -- Buff 行间距。
+local DEBUFF_TO_BAR = 8      -- 首行 debuff 顶边到 bar.bottom。
+local DEBUFF_ROW_GAP = 4     -- debuff 行间距。
+local INFO_TO_BUFF = 7       -- Info 底边到实际最上方 Buff 行顶边。
+local INFO_TO_BAR = 9        -- 无 Buff 时 Info 底边到 bar.top。
+local EQUIP_TO_BAR = 7       -- 装备内侧边到血条侧边。
+local EQUIP_GAP = 4          -- 两个装备图标间距。
 
--- 中文维护注释（HUD 独立固定槽位 Authority，2026-09-19）：
--- 问题原因：旧几何会用“当前实际 Buff 行数/当前实际 Debuff 行数/当前实际装备是否存在”
+-- 约束（HUD 独立固定槽位 Authority，2026-09-19）：
+-- 维护原因：不能用实际 Buff/debuff 行数或装备存在性
 -- 推导 Info、Cast 与装备兄弟的位置，所以同一套 HUD 配置在玩家/NPC/Boss、0/多 Buff、
 -- 有/无副手之间会发生视觉跳位；这违反“每个组件只由自己的配置决定位置”的校准语义。
--- Authority/数据流：HealthBarProxy 仍是唯一总锚点；以下常量只定义发行版基础语义槽，
+-- 权威归属/数据流：HealthBarProxy 仍是唯一总锚点；以下常量只定义发行版基础语义槽，
 -- 每个组件最终位置 = 自己的基础槽 + 自己的 x/y。运行时事实只决定 Show/Hide，绝不参与兄弟
 -- 槽位计算。plateScale 是整套 HUD 的全局缩放，允许统一缩放全部槽位，不属于兄弟挤压。
 -- 兼容边界：不改 Store schema、不改已有 x/y 数值。Info 固定在“默认两行 Buff”时的历史
@@ -529,16 +510,11 @@ local CAST_RESERVED_DEBUFF_ROWS = 2
 local CAST_TO_BAR = 6
 local CLASS_TEXT_RESERVED_WIDTH = 96
 
--- Pure layout computation. No widgets, no native reads, no store mutation.
--- Inputs are the projected anchor (unit screen position), settings, and the
--- actual visible row/equipment counts. Returns a geometry table the renderer
--- applies verbatim. This is the single authority for "where does X go".
+-- 纯布局计算：不创建控件、不读 Native、不修改 Store。输入为投影锚点（单位屏幕位置）、设置和实际可见行/装备数；返回渲染器原样应用的几何表，是位置计算唯一权威层。
 --
---   anchorX, anchorY : unit screen projection point (ScreenProjectionV3 space)
---   settings         : BuffDisplay settings projection (plate/info/components)
---   buffCount        : visible buff rows count (already bounded)
---   debuffCount      : visible debuff rows count
---   equip            : { mainHand=bool, offHand=bool, ranged=bool, wings=bool }
+-- anchorX/anchorY：单位屏幕投影点（ScreenProjectionV3 空间）；settings：BuffDisplay 设置投影（plate/info/components）；
+-- buffCount：已限制的可见 Buff 行数；debuffCount：可见 debuff 行数；
+-- equip：{ mainHand=bool, offHand=bool, ranged=bool, wings=bool }。
 local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, equip)
     settings = type(settings) == "table" and settings or {}
     local plateCfg = type(settings.plate) == "table" and settings.plate or {}
@@ -546,8 +522,7 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
     local components = type(settings.components) == "table" and settings.components or {}
     local scale = math.max(0.5, math.min(2, tonumber(settings.plateScale) or 1))
 
-    -- NativeBarProxy rectangle: the single geometric anchor. Only plate.x/y
-    -- offset the bar; nothing else enters this chain.
+    -- NativeBarProxy 矩形是唯一几何锚点；只有 plate.x/y 偏移血条，其它偏移不得进入该链。
     local barW = math.max(24, math.floor(N(plateCfg.width, 180) * scale))
     local barH = math.max(8, math.floor(N(plateCfg.height, 24) * scale))
     local centerX = math.floor((tonumber(anchorX) or 0) + N(plateCfg.x, 0) * scale)
@@ -558,8 +533,7 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
     local bottom = centerY + math.floor(barH / 2)
     local bar = { centerX = centerX, centerY = centerY, left = left, right = right, top = top, bottom = bottom, width = barW, height = barH }
 
-    -- Buff rows: row1.bottom = bar.top - BuffToBarGap; extra rows stack upward
-    -- at BuffRowGap. Component y is a local micro offset only.
+    -- Buff 行：row1.bottom = bar.top - BuffToBarGap，后续行以 BuffRowGap 向上堆叠；组件 y 仅作局部微调。
     local buffCfg = components.buffs or {}
     local buffSize = math.max(8, math.floor(N(buffCfg.size, 29) * scale))
     local buffSpacing = math.max(0, math.floor(N(buffCfg.spacing, 2) * scale))
@@ -567,12 +541,11 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
     local buffMaxRows = math.max(1, math.min(4, math.floor(N(buffCfg.maxRows, 2))))
     local buffGap = BUFF_TO_BAR * scale + math.floor(N(buffCfg.y, 0) * scale)
     local buffRowGap = BUFF_ROW_GAP * scale
-    local buffFirstTop = bar.top - buffGap - buffSize          -- row1.top
+    local buffFirstTop = bar.top - buffGap - buffSize          -- row1 顶边。
     local buffActualRows = math.min(buffMaxRows, math.ceil(buffCount / buffMaxPerRow))
     local buffTopMostTop = buffFirstTop - (buffActualRows - 1) * buffRowGap
 
-    -- Debuff rows: row1.top = bar.bottom + DebuffToBarGap; extra rows stack
-    -- downward at DebuffRowGap.
+    -- debuff 行：row1.top = bar.bottom + DebuffToBarGap，后续行以 DebuffRowGap 向下堆叠。
     local debuffCfg = components.debuffs or {}
     local debuffSize = math.max(8, math.floor(N(debuffCfg.size, 29) * scale))
     local debuffSpacing = math.max(0, math.floor(N(debuffCfg.spacing, 2) * scale))
@@ -582,9 +555,7 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
     local debuffRowGap = DEBUFF_ROW_GAP * scale
     local debuffFirstTop = bar.bottom + debuffGap
 
-    -- Info row: fixed semantic slot. Runtime buff row count must never move it.
-    -- Keep the historical two-row default visual baseline so existing layouts do
-    -- not jump merely because a target currently has 0/1/2 visible buffs.
+    -- Info 行使用固定语义槽，运行 Buff 行数不能移动它；保留两行默认视觉基线，避免目标当前 0/1/2 个 Buff 导致已有布局跳变。
     local infoFont = math.max(8, math.floor(N(infoCfg.fontSize, 12) * scale))
     local infoH = infoFont + 4
     local infoReservedLift = (BUFF_TO_BAR + INFO_RESERVED_BUFF_SIZE
@@ -592,12 +563,8 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
     local infoTop = bar.top - infoReservedLift - infoH
     infoTop = infoTop + math.floor(N(infoCfg.y, 0) * scale)
 
-    -- Equipment flanks. Historical v3 keeps offHand closest -> mainHand -> ranged outermost.
-    -- Release v4 visually reads left-to-right as mainHand -> offHand -> ranged -> plate, so ranged is
-    -- immediately to the RIGHT of offHand as requested by ranged-class players. Right: wings/back only.
-    -- Component x/y are
-    -- local micro offsets. Slots are returned UNCLAMPED with their absolute
-    -- origin; the renderer clamps each group as a whole (never per-icon).
+    -- 装备位于血条两侧：左侧从左到右为 mainHand -> offHand -> ranged -> plate，使远程槽紧靠副手右边；右侧仅 wings/back。组件 x/y 仅作局部微调；
+    -- 槽位返回未钳制的绝对原点，渲染器统一限制整组，不能逐图标钳制。
     local function EquipSlots(edgeStart, direction, keys)
         local slots = {}
         for semanticIndex, key in ipairs(keys) do
@@ -606,7 +573,7 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
             if enabled then
                 local size = math.max(8, math.floor(N(cfg.size, 26) * scale))
                 local gap = math.max(1, math.floor(EQUIP_GAP * scale))
-                -- 中文维护注释（装备固定语义槽位，2026-09-19）：
+                -- 约束（装备固定语义槽位，2026-09-19）：
                 -- 旧实现只遍历“当前存在”的装备并逐项推进 edge，导致缺副手/缺远程时主手会
                 -- 自动补位；同时内侧装备改 size 会继续推动外侧兄弟。现在 semanticIndex 由
                 -- preset 固定，baseX 只依赖“本组件自己的 size + 固定 slot index”，运行时存在性
@@ -625,7 +592,7 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
         end
         return slots
     end
-    -- 中文维护注释（装备排列版本化）：EquipSlots(direction=-1) 的 keys 是“从血条向外”顺序，
+    -- 约束（装备排列版本化）：EquipSlots(direction=-1) 的 keys 是“从血条向外”顺序，
     -- 所以 v4 传 ranged→offHand→mainHand 后，屏幕从左到右正好是 mainHand→offHand→ranged。
     -- v3 继续使用历史顺序，保护曾主动调过 ranged 的旧用户；只有 fresh/reset 或“旧默认未动”
     -- 的兼容升级会进入 v4。单项 cfg.x 仍只影响自己，不恢复旧联动。
@@ -649,8 +616,7 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
         debuff = { firstTop = debuffFirstTop, rowGap = debuffRowGap, size = debuffSize, spacing = debuffSpacing,
                    maxPerRow = debuffMaxPerRow, maxRows = debuffMaxRows, actualRows = math.min(debuffMaxRows, math.ceil(debuffCount / debuffMaxPerRow)) },
         info = { top = infoTop, font = infoFont, height = infoH },
-        -- Cast keeps its own fixed semantic slot. Debuff count still controls
-        -- only debuff rows themselves; it can no longer push the cast bar.
+        -- 读条使用独立固定语义槽；debuff 数量仅控制自身行，不能推动读条。
         cast = { top = bar.bottom + CAST_RESERVED_DEBUFF_ROWS * DEBUFF_ROW_GAP * scale + CAST_TO_BAR * scale },
         equip = { mainHand = equip.mainHand == true, offHand = equip.offHand == true, ranged = equip.ranged == true, wings = equip.wings == true },
         leftGroup = { slots = leftSlots, rect = GroupRect(leftSlots) },
@@ -659,16 +625,15 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
     }
 end
 
--- Expose the pure layout function for acceptance geometry tests and any other
--- consumer that needs the plate geometry without touching widgets.
+-- 公开纯布局函数，供验收几何测试及需要血条几何而不操作控件的 Consumer 使用。
 P.ComputePlateLayout = ComputePlateLayout
 P.CastYOffsetContractVersion = 1
 
 ------------------------------------------------------------------------
--- Render
+-- 渲染。
 ------------------------------------------------------------------------
 
--- 中文维护（dynamic-hud-1）：只提交变化的文字/进度；明确false或异常不提交缓存。
+-- 约束（dynamic-hud-1）：只提交变化的文字/进度；明确false或异常不提交缓存。
 -- 失败先隐藏旧内容，由既有50ms内容重试恢复，不增加任务或Native采集。
 local function CommitDynamicText(widget, cache, key, text)
     if cache[key]==text then return true end
@@ -706,7 +671,7 @@ local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     local showText = cfg.showText ~= false
     local alpha = math.max(0.1, math.min(1, N(cfg.alpha, 1)))
     local x = math.floor(centerX + N(cfg.x, 0) * scale - barW / 2)
-    -- 中文维护注释（施法条 Y Authority，2026-09-11）：旧 renderer 读取 castBar.x 却
+    -- 约束（施法条 Y Authority，2026-09-11）：旧 renderer 读取 castBar.x 却
     -- 完全忽略 castBar.y，导致 HUD 校准器的上下拖动/方向键“保存成功但画面不动”。
     -- castBar.y 与其余 equipment 微调一致，以 plateScale 后的局部像素解释；这里只在
     -- Presentation 几何阶段应用，不改变 CastingObservation 数据或高频采集路径。
@@ -730,8 +695,7 @@ local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     S.UI:SetVisible(bar.root, committed, P.owner)
 end
 
--- Record why a scope's plates were hidden so RU-side triage has a visible
--- trail (projection service down, unit off-screen, depth filtered, ...).
+-- 记录各作用域血条隐藏原因，为 RU 排查保留可见线索，如投影服务不可用、单位离屏、深度过滤。
 local function RecordAnchorFailure(scope, reason)
     local entry = P.metrics.anchorFailures[scope]
     if type(entry) ~= "table" then entry = { count = 0, lastAt = 0, lastErr = nil }; P.metrics.anchorFailures[scope] = entry end
@@ -757,7 +721,7 @@ local function ApplyEquipGroup(scope, pool, plates, components, group, slotStart
     return used
 end
 
--- 中文维护注释（HUD 信息拆分几何 Authority，2026-09-17）：
+-- 约束（HUD 信息拆分几何 Authority，2026-09-17）：
 -- Store schema6 已经持久化 info、components.gearScore、components.distance 三套几何字段；
 -- schema7 只在 info 增加 gearScoreFormat，不改变这些几何 Authority。旧 Renderer 把文本先拼成一个
 -- label，后两套字段事实上从未参与正式 HUD。职业名称继续使用 info.x/y/fontSize；装备分数使用
@@ -767,7 +731,7 @@ end
 -- info.top，因此本函数先还原 baseY，再分别应用三项 Y，确保移动职业名称不拖着装分/距离。
 -- 正式 player/target 使用固定语义槽：职业在左、装分居中、距离在右；字段缺失只隐藏自身。
 
--- 中文维护注释（装备分数显示格式，2026-09-17）：
+-- 约束（装备分数显示格式，2026-09-17）：
 -- Renderer 只格式化 Projection 已提供的 gearScore，不读取 Native、不缓存第二份数值 Authority。
 -- compact 只在 >=1000 时使用 K，一位小数四舍五入并去掉 .0；full 保持整数文本。
 -- 非数字输入 fail-soft 原样显示，避免未来诊断占位被错误吞掉。
@@ -789,7 +753,7 @@ function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontS
     local classCfg = components.class or {}
     local gearCfg = components.gearScore or {}
     local distanceCfg = components.distance or {}
-    -- 中文维护注释（职业名称/图标独立 Authority）：showClass 只控制职业名称；class.enabled 只控制
+    -- 约束（职业名称/图标独立 Authority）：showClass 只控制职业名称；class.enabled 只控制
     -- 职业图标。旧合并 label 曾把二者绑定，拆分后若继续复用同一门会导致“关图标=名字也没了”。
     local classValue = tostring(class.value or "")
     local classText = infoCfg.showClass ~= false and classValue or ""
@@ -805,8 +769,8 @@ function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontS
     if gearText ~= "" then specs[#specs+1] = { key="gearScore", raw=gearText, font=gearFont } end
     if distanceText ~= "" then specs[#specs+1] = { key="distance", raw=distanceText, font=distanceFont } end
     for index, item in ipairs(specs) do
-        -- 中文维护注释（2026-09-19，目标距离文案）：信息行仅用几何间距分隔职业/装分/距离，
-        -- 不再把“· ”写进任何真实显示文本。Authority/数据流：Projection 仍只提供原始 value，
+        -- 约束（2026-09-19，目标距离文案）：信息行仅用几何间距分隔职业/装分/距离，
+        -- 不再把“· ”写进任何真实显示文本。权威归属/数据流：Projection 仍只提供原始 value，
         -- Renderer 只负责排版；去掉装饰字符不会改变距离/装分读取、缓存或存档。兼容边界：
         -- 老配置的 x/y/font/alpha 全部继续生效，零偏移时仍保持原有顺序与视觉间距。
         item.gapBefore = index > 1 and math.max(3, math.floor(item.font * 0.25)) or 0
@@ -824,14 +788,14 @@ function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontS
     local cursorX = rowStartX + iconGap
     local baseY = math.floor(N(y, 0) - N(infoCfg.y, 0) * scale)
 
-    -- 中文维护注释（自身/目标 HUD 稳定槽位统一，2026-09-19）：
-    -- 问题原因：.18.262 为修复“玩家目标与 NPC 目标切换时距离横跳”，只给 target 使用固定
-    -- 语义槽位，而 player 仍走历史流式居中。校准器“复制自身 → 目标”虽然把 profile 完整 Copy，
-    -- Renderer 却按 scope 走两套不同几何，导致相同配置在实机明显错位。
-    -- Authority/数据流：CalibrationDraft/Store 仍只保存一组 component x/y/size/font/alpha；
+    -- 约束（自身/目标 HUD 稳定槽位统一，2026-09-19）：
+    -- 维护原因：player 与 target 必须共用固定
+    -- 语义槽位；校准器“复制自身 → 目标”完整复制 profile 时，
+    -- Renderer 不能按 scope 使用两套几何而让相同配置在实机错位。
+    -- 权威归属/数据流：CalibrationDraft/Store 仍只保存一组 component x/y/size/font/alpha；
     -- Renderer 对真实 player/target scope 统一使用同一套语义槽位：装分居中、距离固定右侧、职业
     -- 向左延展，职业图标跟随职业槽。缺少事实只隐藏内容，不回收槽位。这样复制 HUD 后，同 profile
-    -- + 同 facts 必须得到同几何，同时继续保留 .18.262 的目标距离稳定性。
+    -- + 同 facts 必须得到同几何，同时保持目标距离稳定。
     -- 兼容边界：不改 Store schema、不改 Native 读取、不补造缺失字段；player/target 已保存的局部
     -- x/y/font/alpha 微调全部继续生效。无 scope 的只读兼容调用仍保留旧流式布局，避免历史外部
     -- 工具在未声明 scope 时突然换语义；正式 Renderer/校准预览始终显式传 player/target。
@@ -873,7 +837,7 @@ function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontS
             AddBounds(x, width)
         end
         local size = N(classCfg.size,0)>0 and math.max(8,math.floor(N(classCfg.size,0)*scale)) or automaticSize
-        -- 中文维护注释（职业图标固定槽位，2026-09-19）：
+        -- 约束（职业图标固定槽位，2026-09-19）：
         -- 旧实现把 iconBaseX 锚到 `out.classText.x`，职业名称字数变化就会推动图标；若用户隐藏
         -- 职业名称，图标又退回另一套基准。现在职业名称仍以 classRight 右对齐，图标则占用
         -- classRight 左侧固定 96px 语义槽，二者显隐/文字长度互不改变位置。class.x/y 仍只属于
@@ -1008,13 +972,12 @@ local function RenderScope(scope, settings)
     local showStacks = settings.headShowStacks ~= false
     local showTime = settings.headShowTime ~= false
 
-    -- Equipment visibility: collapse slots that have no item. Ranged remains an independent component;
-    -- fresh/player defaults are ON from layout preset v4, while customized historical profiles keep their stored choice.
+    -- 装备显隐：无物品槽位折叠；远程槽保持独立组件。layout preset v4 的新建/玩家默认启用，历史自定义方案保留已存选择。
     local equip = {}
     for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
         local cfg = components[key] or {}
         local item = plates[key]
-        -- 中文维护：观察到类型但元数据缺图时不借“未知物品”伪装具体装备；待共享元数据补齐再绘制。
+        -- 观察到类型但元数据缺图时不借“未知物品”伪装具体装备；待共享元数据补齐再绘制。
         equip[key] = cfg.enabled ~= false and item ~= nil and item.icon ~= nil
             and (item.source ~= "observed_buff" or item.icon ~= "")
     end
@@ -1026,23 +989,21 @@ local function RenderScope(scope, settings)
     local buffCount = buffEnabled and #buffRows or 0
     local debuffCount = debuffEnabled and #debuffRows or 0
 
-    -- Single pure layout authority.
+    -- 统一纯布局权威层。
     local L = ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, equip)
     local bar = L.bar
     local scale = L.scale
 
     local slot = 0
-    -- Buff rows (stack upward from bar.top).
+    -- Buff 行从 bar.top 向上堆叠。
     if buffEnabled then
         slot = slot + RenderRows(scope, pool, buffRows, components.buffs or {}, bar.centerX, L.buff.firstTop, showStacks, showTime, slot, L.buff.size, L.buff.spacing, L.buff.maxPerRow, L.buff.maxRows, L.buff.rowGap, -1, scale)
     end
-    -- Debuff rows (stack downward from bar.bottom).
+    -- debuff 行从 bar.bottom 向下堆叠。
     if debuffEnabled then
         slot = slot + RenderRows(scope, pool, debuffRows, components.debuffs or {}, bar.centerX, L.debuff.firstTop, showStacks, showTime, slot, L.debuff.size, L.debuff.spacing, L.debuff.maxPerRow, L.debuff.maxRows, L.debuff.rowGap, 1, scale)
     end
-    -- Cooldown rows own a fixed semantic slot relative to the unit anchor.  They
-    -- never participate in Buff/Debuff/Info/Cast sibling geometry, matching the
-    -- HUD rule that one component becoming visible must not push another one.
+    -- 冷却行占单位锚点相对固定槽，不参与 Buff/Debuff/Info/Cast 兄弟几何；组件显现不能推动其它组件。
     local cooldownCfg = components.cooldowns or {}
     local cooldownRows = scope == "player" and (plates.cooldowns or {}) or {}
     if scope=="player" then
@@ -1070,12 +1031,12 @@ local function RenderScope(scope, settings)
         evidence.lastNonemptyAt=S.NowMs and S.NowMs() or 0
         evidence.lastNonemptyInput,evidence.lastNonemptyDrawn=#cooldownRows,evidence.drawn
     end
-    -- Equipment flanks: pre-computed groups applied as whole units (group clamp).
+    -- 装备侧栏使用预计算分组，整组应用边界限制。
     slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.leftGroup, slot, scale)
     slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.rightGroup, slot, scale)
     for index = slot + 1, #pool.icons do HideIcon(pool.icons[index]) end
 
-    -- Info row (class name · gear score · distance), auto-placed above actual rows.
+    -- Info 行（职业名、装备评分、距离）自动置于实际行上方。
     if infoCfg.enabled ~= false then
         RenderInfo(scope, plates, infoCfg, components, bar.centerX, L.info.top, L.info.font, scale)
     else
@@ -1089,9 +1050,7 @@ local function RenderScope(scope, settings)
     end
     RenderTargetAlias(scope, plates, bar.centerX, bar.centerY, scale)
 
-    -- Cast bar owns a fixed semantic slot (hidden when not casting). Debuff
-    -- rows can no longer move it; cfg.y remains the cast bar's only local Y
-    -- adjustment through RenderCastBar.
+    -- 读条使用固定槽，未施法时隐藏；debuff 行不能移动它，RenderCastBar 中 cfg.y 是唯一局部 Y 调整。
     local castCfg = components.castBar or {}
     if castCfg.enabled ~= false and plates.cast ~= nil then
         RenderCastBar(scope, plates.cast, castCfg, bar.centerX, L.cast.top, scale)
@@ -1102,9 +1061,9 @@ local function RenderScope(scope, settings)
     CommitPlacements(pool)
 end
 
--- 中文维护注释（HUD 校准 Presentation suppression，2026-09-11）：
--- 问题原因：独立校准器过去只是在 UIParent 上叠加模拟 Preview，正式 BuffHeadMarkers 仍持续绘制
--- 自己/目标 Buff 与装备，导致用户调整主手/副手时同时看到旧图标，无法判断哪个才是 Draft。
+-- 约束（HUD 校准 Presentation suppression，2026-09-11）：
+-- 维护原因：校准预览期间必须抑制正式 BuffHeadMarkers 绘制，避免同时看到
+-- 自己/目标 Buff 与装备旧图标而无法辨认 Draft。
 -- Authority：Feature/Store/Aura/位置 Lane 继续运行，本开关只属于 Renderer Presentation；禁止用
 -- Feature disable/ReleaseConsumer 来“隐藏”，否则校准器会失去真实单位锚点并改变高频数据生命周期。
 -- 数据流：Calibration Open -> SetCalibrationSuppressed(true) -> VisualTick 只 HideAll；Exit -> false ->
@@ -1179,7 +1138,7 @@ local function MoveRoots()
     end
 end
 
--- 中文维护（dynamic-hud-1）：动态事件不重投影所有图标/装备/布局。只有已提交的布局、
+-- 约束（dynamic-hud-1）：动态事件不重投影所有图标/装备/布局。只有已提交的布局、
 -- 相同设置代际、相同距离字宽和施法可见性才局部更新；结构边沿回到原VisualTick。
 local function UpdateDynamicContent()
     if type(Feature.GetDynamicPlatesProjection)~="function" then return false end
@@ -1192,8 +1151,7 @@ local function UpdateDynamicContent()
             local casting=P.dynamicDirty.cast and layout.castEnabled
             if distance or casting then
                 local facts=Feature:GetDynamicPlatesProjection(scope)
-                -- Empty cast-only scopes may stay idle while another scope updates.
-                -- A newly visible item still requires a committed full layout.
+                -- 仅读条且为空的作用域可在其它作用域更新时保持空闲；新显现条目仍需已提交完整布局。
                 if pool.ready~=true and (distance or facts.cast or layout.castVisible) then return false end
                 if distance then
                     local item=layout.distance
@@ -1226,8 +1184,7 @@ function P:MotionTick()
     local now=S.NowMs and S.NowMs() or 0
     if self.contentDirty or (self.textureRetryAt and now>=self.textureRetryAt) then return self:VisualTick() end
     if self.dynamicDirty.distance or self.dynamicDirty.cast then
-        -- A rejected write may have skipped placement in the full pass. Recover
-        -- through full layout, even if a new fact arrives before the retry time.
+        -- 拒绝写入可能让完整渲染漏掉位置；通过完整布局恢复，即使重试时间之前已有新事实。
         if self.textureRetryAt then return self:VisualTick() end
         if not UpdateDynamicContent() then return self:VisualTick() end
         self.dynamicDirty.distance,self.dynamicDirty.cast=false,false
@@ -1298,8 +1255,7 @@ function P:Stop(reason)
     self.contentDirty, self.textureRetryAt = true, nil
     self:HideAll()
     self.metrics.stops = self.metrics.stops + 1
-    -- Keep consumerHeld true on a failed release so diagnostics/reconcile retain
-    -- evidence of the leaked lease and a later Stop can retry the release.
+    -- 释放失败时保持 consumerHeld=true，供诊断/协调保留泄漏租约证据，并让后续 Stop 重试。
     if releaseOk ~= true then return false, releaseErr or "状态显示 Consumer 释放失败" end
     return true
 end
@@ -1318,8 +1274,7 @@ function P:Reconcile(reason)
     return self:Stop(reason or "reconcile")
 end
 
--- RU-side triage surface: answers "is the head renderer running, and if the
--- plates are hidden, why?" without needing in-game console digging.
+-- RU 排查接口直接说明头顶渲染器是否运行及血条隐藏原因，无需游戏控制台。
 function P:GetDiagnostics()
     local laneData = Feature and Feature.laneData or nil
     local function Lane(scope) return type(laneData) == "table" and laneData[scope] or nil end
@@ -1365,7 +1320,7 @@ function P:GetDiagnostics()
     }
 end
 
--- 中文维护（CD 显示链诊断）：复用模块导出的冷路径，仅取服务/Feature/Renderer缓存。
+-- 约束（CD 显示链诊断）：复用模块导出的冷路径，仅取服务/Feature/Renderer缓存。
 -- 不创建控件、不取 Consumer、不调用 Native 可见性读回，也不写用户存档。
 if S.ModuleDiagnosticsHub and type(S.ModuleDiagnosticsHub.RegisterProvider)=="function" then
     S.ModuleDiagnosticsHub:RegisterProvider("combat_buff_display","cooldown_hud_pipeline",function()
@@ -1383,18 +1338,10 @@ if type(S.Events.SubscribeInternal) == "function" then
     S.Events:SubscribeInternal("v3.buff_display.target_alias.config", P.lifecycleOwner, function() P:Reconcile("target_alias_config") end)
 end
 
--- Contract 6: health-bar proxy anchor layout via pure ComputePlateLayout;
--- class now contributes exact-catalog role icon + localized text; main/off + optional ranged
--- share the left flank, wings/back owns the right flank; x/y are local offsets.
--- Contract 8 adds authoritative Buff/Debuff fontSize consumption. Startup acceptance checks
--- the dedicated BuffIconFontSizeContractVersion too so a stale Renderer cannot silently accept
--- the new calibration UI while ignoring its font controls.
--- Contract 9 keeps equipment default-slot flow but fences every component x/y as a local offset:
--- moving offHand/mainHand/ranged/wings can no longer shift sibling slot bases.
--- Contract 10 makes every HUD component a semantic fixed slot: runtime Buff/Debuff counts,
--- equipment presence, profession text width and sibling icon sizes can only change their own
--- rendering and can no longer move any sibling component. Calibration consumes the same geometry.
--- 中文维护（enemy-loadout-1）：目标武器/防具是可见 Buff 类型投影；现有布局/存档契约不变。
+-- 血条代理锚点通过纯 ComputePlateLayout 布局；职业提供精确目录角色图标与本地化文字。主手/副手/可选远程共用左侧，翅膀/背饰在右侧；x/y 均为局部偏移。
+-- Buff/Debuff 必须消费权威 fontSize，启动验收同时检查 BuffIconFontSizeContractVersion，避免旧渲染器接受校准 UI 却忽略字体。
+-- 装备默认槽位与局部偏移分离，移动任一装备不能改变兄弟基线。每个 HUD 组件均为固定语义槽，运行 Buff/debuff 数量、装备存在、职业字宽和兄弟图标大小只改变自身渲染；校准消费同一几何。
+-- 约束（enemy-loadout-1）：目标武器/防具是可见 Buff 类型投影；现有布局/存档契约不变。
 P.TargetLoadoutPatch = "enemy-loadout-1"
 Feature.BuffHeadMarkerContractVersion = 11
 P:Reconcile("load")

@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Housing Feature Lifecycle
+-- Replicated Suite · 住宅信息功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 住宅功能生命周期。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

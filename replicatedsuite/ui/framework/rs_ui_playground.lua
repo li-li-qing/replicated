@@ -1,14 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Playground / Graduation Harness v1
+-- Replicated Suite · 组件展示与压力工具
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Developer-only, explicit entry points. Nothing in this file creates widgets,
--- scans components, or runs stress work during normal addon startup/Tick.
---
--- Purpose:
---   * prove that complex UI can be composed from primitive/panel widgets;
---   * exercise resolution-safe layout without touching business modules;
---   * stress ListView/TileView virtualization with large logical data counts;
---   * provide reusable composite *examples*, not a new business Authority.
+-- 仅开发者明确入口；正常启动/Tick 不创建控件、扫描组件或执行压力工作。
+-- 用途：证明原语/面板可组合复杂 UI；不触碰业务验证分辨率安全布局；大逻辑数据压力检查 ListView/TileView 虚拟化；提供可复用组合示例，不新增业务权威。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -25,11 +21,9 @@ local function Token(path, fallback)
 end
 
 ------------------------------------------------------------------------
--- Composite examples
+-- 组合示例。
 --
--- These deliberately use existing primitives instead of RegisterType(). The
--- goal is to demonstrate the UMG composition model and keep the standard type
--- registry small/stable at the end of Foundation development.
+-- 使用现有原语而不 RegisterType，展示 UMG 组合模型并保持标准类型表小且稳定。
 ------------------------------------------------------------------------
 function RSUI.Composite.StatusCard(parent, spec)
     spec = type(spec) == "table" and spec or {}
@@ -75,7 +69,7 @@ function RSUI.Composite.AuraSlot(parent, spec)
 end
 
 ------------------------------------------------------------------------
--- Playground showcase
+-- Playground 展示。
 ------------------------------------------------------------------------
 function Playground:Build(parent, spec)
     if parent == nil then return nil, "parent_required" end
@@ -141,7 +135,7 @@ function Playground:Build(parent, spec)
 end
 
 ------------------------------------------------------------------------
--- Explicit virtualization stress harness
+-- 明确调用的虚拟化压力工具。
 ------------------------------------------------------------------------
 function Playground:RunStress(parent, spec)
     if parent == nil then return nil, "parent_required" end

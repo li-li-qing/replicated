@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Healer Recommendation Domain
+-- Replicated Suite · 治疗推荐评分
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Pure Healer business Authority extracted from the proven Professional Healer
--- formula. It owns rule matching, rescue scoring, hysteresis, stable sorting and
--- atomic publication. It performs no Native reads, no scheduling and no UI.
+-- 从已验证 Professional Healer 公式提炼的纯业务权威，负责规则匹配、救援评分、滞回、稳定排序与原子发布；禁止 Native 读取、调度与 UI。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -492,10 +492,7 @@ function D:GetProjection(limit)
     }
 end
 
--- Raid Overlay projection. This restores the legacy whole-roster visual
--- semantics without restoring a second observer: every row is derived only from
--- the already committed Health/Status generations. Presentation receives color,
--- slot and optional recommendation rank, never the mutable Domain caches.
+-- 团队覆盖投影保留全名单视觉语义且不建第二观察者；每行只来自已提交 Health/Status Generation。Presentation 接收颜色、槽位和可选推荐排名，禁止获取可变 Domain 缓存。
 function D:GetRaidDisplayProjection(members, options)
     local settings = Settings()
     members = type(members) == "table" and members or {}
@@ -555,9 +552,7 @@ function D:GetRaidDisplayProjection(members, options)
     }
 end
 
--- Selected-member projection for Presentation. StatusMap remains Domain-owned;
--- callers receive a detached, sorted array so UI code cannot mutate the cache
--- or depend on hash iteration order. This method performs no Native reads.
+-- 选中成员投影：StatusMap 归 Domain，调用方获取独立排序数组，不能修改缓存或依赖哈希遍历顺序；本方法无 Native 读取。
 function D:GetMemberProjection(key)
     key = tostring(key or "")
     if key == "" then return nil end

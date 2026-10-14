@@ -1,5 +1,11 @@
--- 中文维护：真实 Theme/NativePrimitive/RSUI/DiffRenderer；仅 Native 对象为可控替身。
+------------------------------------------------------------------------
+-- Replicated Suite · 浅色主题测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 真实 Theme/NativePrimitive/RSUI/DiffRenderer；仅 Native 对象为可控替身。
 -- 验证配色切换不会变成控件重建、输入/几何事务或业务查询；不冒充 RU 客户端像素实测。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,e=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS light-theme '..name)else failed=failed+1;print('FAIL light-theme '..name..': '..e)end end
 local function Eq(a,b)for i=1,4 do assert(math.abs((a[i] or 1)-(b[i] or 1))<.000001,'color mismatch channel '..i)end end
@@ -165,7 +171,7 @@ Test('late controls use saved active palette and manual HUD points are never rec
  assert(S.Theme:ApplyWorkspacePalette('dark'));assert(S.Theme:ApplyWorkspacePalette('light'));Eq(world.style.rgba,before);Eq(point.style.rgba,custom)
 end)
 Test('transparent readable text reaches existing and lazy wrapped lines without outline or new widgets',function()
- -- 中文维护：使用真实 RSUI 换行池/外观继承/调色板；缺陷反例是 root 已透明而子行仍无描边。
+ -- 使用真实 RSUI 换行池/外观继承/调色板；缺陷反例是 root 已透明而子行仍无描边。
  local h=Boot();local S,R=h.S,h.R
  local c=assert(R:Text({id='transparent_wrap',parent=UIParent,text='first',overflow='wrap',fontSize=12,maxLines=4,nativeLineLimit=4}))
  c:Layout(0,0,180,80);local first=assert(c.lineLabels[1]);assert(R:ApplyOpacityChannels(c,0,1))

@@ -1,9 +1,14 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 技能效果关系数据
+-- 作者：Replicated
+-- QQ群：1104129461
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}
 
---[[ Skill -> Buff/Debuff effect library (Replicated Suite 1.1, v3 2026-08-25)
--- 本版本 (v3) = 仅保留「准确」数据，推断项已全部清空，待游戏内实测补全。
+--[[ 技能到Buff/Debuff的效果关系库
+-- 仅收录已核实数据；未经实测的推断项保持未知，待游戏内证据补全。
 --
 -- 【准确数据】来源: wiki.archerage.to/ru-cn 技能库 (已逐页核对)
 --   * 技能 ID + 中文名
@@ -15,7 +20,7 @@ S.Data = S.Data or {}
 --   * target(self / enemy): 当前全部为 "unknown", 需进游戏确认后填入
 --   * 连锁反应 (A 触发 B): wiki 无结构化数据, 需游戏内记录后补 chains 字段
 --
--- Schema:
+-- 数据结构：
 --   S.Data.SkillEffects.trees[slug] = {
 --     name_cn = "中文天赋名",
 --     skills = { [skillId] = { name="技能名", effects={ {buffId,name,target,kind}, ... } } }
@@ -433,12 +438,12 @@ end
 
 do
     ------------------------------------------------------------------------
-    -- 维护（2026-09-19，状态追踪内置库人工确认 + 控制免疫补充）：
+    --
     -- 原因：自动技能库只保证“ID/名称存在”，kind 长期为 unknown；本批 ID 已由用户明确
     -- 确认 Buff/Debuff 极性。控制免疫补充来自 ArcheRage 4.5 的重复控制规则与当前 Wiki
     -- 的 Buff ID 清单，只收录能明确核对到名称的免疫状态，不把 NPC/装备专属的一次性免疫
     -- 或无法核到 ID 的“石化免疫”猜进来。
-    -- Authority：这里仍只是 Data 静态身份/默认分类 Authority；用户实际追踪选择仍由
+    -- 权威边界：这里仍只是 Data 静态身份/默认分类 Authority；用户实际追踪选择仍由
     -- BuffDisplay Feature/Store Authority 持有，禁止把选择状态反写到 Data。
     -- 数据流：SkillEffects.buffs -> StatusTrackingCatalogV3（TOC 一次编译） -> 管理页面；
     -- ImportBuiltinPack 会分别写入 player/target，因此这里绝不按“自身/目标”复制两份 ID。
@@ -449,7 +454,7 @@ do
     local B = S.Data.SkillEffects.buffs
 
     -- 用户明确确认（Buff / Debuff）。
-    -- 维护（2026-09-20，状态内置库小修）：853 由用户再次实机确认为 Debuff，继续作为
+    -- 853 由用户再次实机确认为 Debuff，继续作为
     -- 静态分类 Authority 收录；“睿明祝福”旧的 2956/7661/13790 及技能 16004 已从
     -- SkillEffects 数据源删除，避免 recommended/all 与爱天赋包继续把过期 ID 导入用户追踪。
     -- 该删除只影响内置目录，不主动清理用户已经手工保存的 tracked ID，保持升级兼容边界。

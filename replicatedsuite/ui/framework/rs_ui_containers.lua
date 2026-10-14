@@ -1,5 +1,7 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Container Components v1.1
+-- Replicated Suite · 容器表面
+-- 作者：Replicated
+-- QQ群：1104129461
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -14,11 +16,9 @@ end
 
 
 ------------------------------------------------------------------------
--- ContainerSurface Authority v1
+-- ContainerSurface 容器表面权威层。
 --
--- Card / Section are RSUI-owned presentation surfaces. This replaces the
--- retired UI.ComponentsV2 layer while preserving historical native root
--- identity suffixes (_card / _section) for upgrade-safe ownership.
+-- Card/Section 属 RSUI 表现表面，替代废弃 UI.ComponentsV2；保留历史 _card/_section 原生身份后缀以安全升级。
 ------------------------------------------------------------------------
 local ContainerSurface = RSUI.ContainerSurface or { version = 1 }
 RSUI.ContainerSurface = ContainerSurface
@@ -105,7 +105,7 @@ RSUI:RegisterType("Section", function(spec)
     if raw == nil or raw.root == nil then return nil, "section_create_failed" end
     local c = RSUI:NewComponent("Section", spec, raw.root)
     c.raw, c.header, c.title, c.body = raw, raw.header, raw.title, raw.body
-    c.appearanceWidgets = { raw.header, raw.title } -- 中文维护（2026-10-09）：标题底板与标题必须共同继承透明度，避免亮字落在不透明浅底。
+    c.appearanceWidgets = { raw.header, raw.title } -- 约束（2026-10-09）：标题底板与标题必须共同继承透明度，避免亮字落在不透明浅底。
     c.padding, c.headerHeight = raw.padding, raw.headerHeight
     c.items = {}
     c.gap = tonumber(spec.gap) or Token("spacing.sm", 8)
@@ -210,8 +210,7 @@ RSUI:RegisterType("SettingsPage", function(spec)
         return form
     end
     function c:Layout(x, y, nextWidth, nextHeight)
-        -- Backwards compatibility: historical callers passed Layout(width,
-        -- height). LayoutIfNeeded uses the standard Layout(x,y,w,h) contract.
+        -- 兼容旧 Layout(width,height)；LayoutIfNeeded 使用标准 Layout(x,y,w,h)。
         local width, height
         if nextWidth ~= nil or nextHeight ~= nil then
             width, height = nextWidth, nextHeight

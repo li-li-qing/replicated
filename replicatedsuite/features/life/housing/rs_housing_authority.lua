@@ -1,10 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Housing Read-only Authority
+-- Replicated Suite · 住宅信息业务权威
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- The RU client exposes these four housing getters without arguments. Their
--- return shape is not stable enough to place in Presentation, so this
--- Authority converts every result into a detached, bounded projection.
--- No polling or write API is used.
+-- RU 客户端四个住宅 getter 均无参数；返回形态不稳定，Authority 将结果转为独立有界投影，禁止 Presentation 直接处理。无轮询或写 API。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -76,7 +75,7 @@ function A:Refresh(reason)
         source = "X2House read-only",
         reason = tostring(reason or "refresh"),
     }
-    -- 中文维护注释：刷新完成后发布轻量事件，通知活跃页面更新，不持有持久化
+    -- 刷新完成后发布轻量事件，通知活跃页面更新，不持有持久化
     if S.Events and type(S.Events.Publish) == "function" then
         S.Events:Publish("v3.housing.updated", { revision = self.revision, reason = reason })
     end

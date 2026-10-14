@@ -1,17 +1,14 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Module Diagnostics Hub
+-- Replicated Suite · 模块诊断
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 中文维护注释（2026-09-18，module-diagnostics-1）：
--- 原因：全局 SelfCheck 随 Feature 增长不断膨胀，用户为了一个模块故障必须复制所有模块、
--- Store 与 UI 证据；同时业务页面各自手写诊断会产生第二套身份/分页/错误池。
--- Authority：FeatureRegistry 是 moduleId/route/name 唯一身份 Authority；DiagnosticsManager
--- 是结构化错误唯一 Authority；本 Hub 只做“可证明归属”的有界投影与用户显式点击时的冷快照。
--- 数据流：DiagnosticsManager:_Append -> Observe(detached entry) -> module ring(<=32)；
--- 用户点击生成诊断 -> BuildReport -> ReportCopyTransport 固定分页。翻页只消费 snapshot，
--- 绝不重新调用 Provider、Persistence、Feature 或 Native API。
--- 兼容边界：无法证明归属的共享错误只进入 system；Provider 不得 Enable Feature/Acquire
--- Consumer；本 Hub 本身也永远不调用 Initialize/Enable。未来禁止把它升级成业务 Authority、
--- 后台轮询器或无界日志仓库。
+-- 模块诊断中心只做可证明归属的有界投影与用户显式点击的冷快照，避免单模块故障要求复制全部证据，也避免页面另
+-- 建身份/分页/错误池。FeatureRegistry 是 moduleId/route/name 唯一身份权威，DiagnosticsManager 是结构化错误
+-- 权威。数据流：DiagnosticsManager:_Append -> Observe(分离 entry) -> module ring<=32；用户生成 ->
+-- BuildReport -> ReportCopyTransport 固定分页。翻页只消费 snapshot，不重调
+-- Provider/Persistence/Feature/Native。无法证明归属的共享错误只入 system；Provider 不 Enable
+-- Feature/Acquire Consumer，Hub 不 Initialize/Enable。不能升级为业务权威、后台轮询器或无界日志库。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -21,7 +18,7 @@ local PROVIDER_MAX = 16
 local REPORT_VALUE_DEPTH = 4
 local REPORT_STRING_MAX = 1200
 
--- 维护（module-controls-diag-2）：重载会保留Suite全局表，错误池/Provider却只属于一次加载。
+-- 重载会保留Suite全局表，错误池/Provider却只属于一次加载。
 -- Generation不同时丢弃旧投影，避免旧故障冒充“本次加载”；旧窗口由Bootstrap统一退役。
 -- 同Generation重复执行文件仍可复用；早期错误留在新DiagnosticsManager，Capture再按身份归属。
 S.ModuleDiagnosticsHub = type(S.ModuleDiagnosticsHub) == "table"
@@ -41,7 +38,7 @@ local function Normalize(value)
     return tostring(value or ""):lower():gsub("[^%w_%.%-]", "_"):gsub("_+", "_"):gsub("^_+", ""):gsub("_+$", "")
 end
 
--- 维护（module-controls-diag-2）：深层快照不得返回原表，避免后续业务修改污染已冻结报告。
+-- 深层快照不得返回原表，避免后续业务修改污染已冻结报告。
 -- 复制仅允许有界 primitive 树；没有 Native/UObject 类引用，也不会递归环形或巨大业务对象。
 local function Copy(value, depth, seen)
     depth = tonumber(depth) or 0
@@ -131,7 +128,7 @@ function H:RegisterStoreOwner(moduleId, value)
     return true
 end
 
--- 维护（module-controls-diag-2）：注册时编译身份索引，错误热路径不再逐模块分词/Tag匹配。
+-- 注册时编译身份索引，错误热路径不再逐模块分词/Tag匹配。
 -- 同一个共享 Authority 被多个模块引用时标记为歧义，保留在 system；明确 moduleId/route 优先。
 function H:_IdentityIndex()
     local registry = Registry()
@@ -240,7 +237,7 @@ function H:GetRecent(moduleId)
 end
 
 function H:_CollectReportRecent(moduleId)
-    -- 中文维护注释（2026-09-18）：Hub 的热路径 Observe 可能早于 FeatureRegistry 加载；此时
+    -- （2026-09-18）Hub 的热路径 Observe 可能早于 FeatureRegistry 加载；此时
     -- 可证明为某 Feature 的 Persistence/UI 错误会先安全落入 system ring。用户点击生成诊断时
     -- 才允许在全局 Diagnostics 最近 80 条的有界缓存上重新归属一次。Authority 仍是
     -- DiagnosticsManager.recent；这里只构造临时报表列表，不搬迁/删除历史、不产生新日志。
@@ -289,7 +286,7 @@ function H:RegisterProvider(moduleId, id, provider, priority, options)
     if #rows >= PROVIDER_MAX then return false, "provider limit" end
     rows[#rows + 1] = { id = id, fn = provider, priority = tonumber(priority) or 100,
         detailOnly = type(options) == 'table' and options.detailOnly == true,
-        -- 中文维护：大原始证据延后序列化；采集仍隔离一次，核心状态优先占用总文件预算。
+        -- 大原始证据延后序列化；采集仍隔离一次，核心状态优先占用总文件预算。
         detailDeferred = type(options) == 'table' and options.detailDeferred == true }
     table.sort(rows, function(a, b) if a.priority ~= b.priority then return a.priority < b.priority end return a.id < b.id end)
     return true
@@ -391,7 +388,7 @@ function H:BuildReport(moduleId, options)
         end
     else lines[#lines + 1] = "not_created_or_other_module" end
 
-    -- 维护（viewport-recovery-1）：只在用户生成报告时采样已存在窗口，按模块隔离。
+    -- 只在用户生成报告时采样已存在窗口，按模块隔离。
     -- 不运行 EnsurePreferences/GetState，不加载未启用业务；当前几何与持久 intent 分列。
     -- 系统诊断额外覆盖主窗及未挂 WidgetHost 的辅助窗，避免 errors=0 掩盖离屏。
     lines[#lines+1]="[WINDOW_PLACEMENT]"
@@ -420,7 +417,7 @@ function H:BuildReport(moduleId, options)
             if not ok then providerFailures=providerFailures+1 end
         end
         local registry=S.Layout and S.Layout.floatingRegistry or {}
-        -- 维护：按需、有界、稳定排序；provider 不得创建窗或读盘，单窗采集失败不丢其它证据。
+        -- 按需、有界、稳定排序；provider 不得创建窗或读盘，单窗采集失败不丢其它证据。
         for _,id in ipairs(Keys(registry))do
             local item=registry[id]
             if item and item.options and type(item.options.getPlacementDiagnostics)=="function" then
@@ -453,7 +450,7 @@ function H:BuildReport(moduleId, options)
     end
 
     lines[#lines + 1] = "[MODULE_STORES]"
-    -- 维护（module-controls-diag-2）：存档/健康/Provider 各自隔离，诊断自身异常必须成为证据而非吞掉报告。
+    -- 存档/健康/Provider 各自隔离，诊断自身异常必须成为证据而非吞掉报告。
     -- Describe 只读现有状态，不做 Load/Recover/Save；异常不影响其他分区的证据输出。
     local describe
     if type(S.Persistence) == "table" and type(S.Persistence.Describe) == "function" then
@@ -490,7 +487,7 @@ function H:BuildReport(moduleId, options)
     lines[#lines + 1] = "activeRoute=" .. tostring(type(host) == "table" and host.activeRoute or "")
         .. "/pageCreated=" .. tostring(pageCreated)
 
-    -- 中文维护注释（2026-09-20，module-toggle-native-trampoline-1）：模块“启动无反应”过去只能看到
+    -- （2026-09-20，module-toggle-native-trampoline-1）模块“启动无反应”过去只能看到
     -- initialized=false，无法区分按钮没收到 Native Click、页面动作未安装、统一 v3.features 写保护，
     -- 还是 Feature 自身初始化失败。这里仅观察现有薄状态，不 Load/Save/Initialize，不改变任何模块生命周期。
     local controlBar = type(host) == "table" and type(host.moduleControls) == "table" and host.moduleControls[route] or nil
@@ -571,7 +568,7 @@ function H:BuildReport(moduleId, options)
             end
         end
         detail:Add('scheduler.ownedTasks', tasks)
-        -- 中文维护：所有核心来源先写；原始挂单超限仍明确 OMITTED，不提高一 MiB 传输上限。
+        -- 所有核心来源先写；原始挂单超限仍明确 OMITTED，不提高一 MiB 传输上限。
         for _,source in ipairs(deferredDetails) do detail:Add(source.label,source.value) end
         local exportReport, detailMeta = detail:Finish(report)
         return report, nil, exportReport, detailMeta
@@ -594,7 +591,7 @@ function H:Capture(moduleId, capacity)
         parts = tonumber(session.parts) or 1, capturedAt = type(S.NowMs) == "function" and S.NowMs() or 0 }
 end
 
--- 维护：仅用户点击“缩短分页”时重切同一份 report，不重新采集或读存档。新分页ID避免混入旧页。
+-- 仅用户点击“缩短分页”时重切同一份 report，不重新采集或读存档。新分页ID避免混入旧页。
 function H:Repage(snapshot, capacity)
     if type(snapshot) ~= "table" or type(snapshot.report) ~= "string" then return nil, "snapshot required" end
     local transport = S.ReportCopyTransport

@@ -1,15 +1,18 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Life vertical-slice pages
-------------------------------------------------------------------------
--- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- Replicated Suite · 生活功能页面
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
 -- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
+------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
 local Host = S.UIV3 and S.UIV3.PageHost or nil
 local WidgetHost = S.UIV3 and S.UIV3.WidgetHost or nil
 if type(RSUI) ~= "table" or type(D) ~= "table" or type(Host) ~= "table" or type(WidgetHost) ~= "table" then return end
--- 中文维护注释（2026-09-25，life-page-consumer-binding-1）：Acceptance 用此只读契约标记阻止
+-- 约束（2026-09-25，life-page-consumer-binding-1）：Acceptance 用此只读契约标记阻止
 -- “新 PageHost + 旧 LifeM16Pages”部分覆盖。它不代表 Consumer 状态，也不得被业务逻辑写入。
 S.UIV3.LifeM16PagesContract = { version = 1, featureConsumerBindingContractVersion = 1, tradeMultiQuoteUiContractVersion = 1 }
 
@@ -19,7 +22,7 @@ local function Items(rows, label)
     return out
 end
 
--- 中文维护注释（2026-09-24，债券筛选下拉）：选项表只在页面脚本加载时构造一次，
+-- 约束（2026-09-24，债券筛选下拉）：选项表只在页面脚本加载时构造一次，
 -- 不在 Refresh/Tick 中反复分配。业务值仍由 Bonds Feature 持久化；Presentation 只提供可读标签。
 local BOND_ORDER_ITEMS = {
     { value = "continent:west_first", text = "按大陆 · 西→东" },
@@ -91,18 +94,16 @@ local function ValidateFeatureContract(feature, kind)
 end
 
 local function Build(parent, route, feature, kind)
-    -- Preflight the public Feature boundary before PageRoot allocates any Native
-    -- controls. A missing facade must fail the build transaction cleanly instead
-    -- of producing a half-built page that only explodes during OnActivated().
+    -- PageRoot 分配原生控件前先检查公开 Feature 边界；缺少 facade 应让构建事务干净失败，不能留下直到 OnActivated() 才报错的半成品页面。
     local contractOk, contractErr = ValidateFeatureContract(feature, kind)
     if contractOk ~= true then return nil, contractErr end
     local root, err = D:PageRoot(parent, "v3_page_" .. tostring(kind))
     if root == nil then return nil, err end
     root.consumerHeld = false
-    -- 中文维护（performance-cache-1）：下拉框 Render 只读页面已取得的 detached 快照，
+    -- 约束（performance-cache-1）：下拉框 Render 只读页面已取得的 detached 快照，
     -- 同一次 Refresh 不为每个标量再构建全量 Trade 投影。每次刷新覆盖，用户动作仍走 Commands。
     local function ControlProjection() return root.controlProjection or feature:GetProjection() or {} end
-    -- 中文维护注释（2026-09-25，life-page-consumer-binding-1）：life.trade / life.bonds / life.treasure /
+    -- 约束（2026-09-25，life-page-consumer-binding-1）：life.trade / life.bonds / life.treasure /
     -- life.fishing 共用本 Builder。18.309 接入 PageHost Feature 生命周期桥时若只替换 Activate/Deactivate，
     -- 却漏掉这个共享 consumerBinding，BindFeatureConsumerLifecycle 会收到 nil 并让所有生活页在激活阶段报
     -- `invalid feature lifecycle binding`。这里保留旧版 token `page:<kind>`，避免升级后同时出现新旧 Demand
@@ -131,9 +132,7 @@ local function Build(parent, route, feature, kind)
 
     local tradeFrom, tradeTo, tradeFavoriteDropdown
     if kind == "trade" then
-        -- Route selection is dropdown-only.  Keep origin/destination on separate
-        -- rows so the controls remain usable at 1024-wide layouts without the
-        -- old four cycle buttons consuming the entire horizontal budget.
+        -- 路线选择仅用下拉框；起点与终点分行摆放，保证 1024 宽布局可用，避免四个循环按钮耗尽横向空间。
         local tradeRouteBox = RSUI:VerticalBox({ id = "v3_trade_route_box", parent = root, gap = 4, slot = { size = "fixed", height = 64, hAlign = "fill" } })
         local fromRow = RSUI:HorizontalBox({ id = "v3_trade_from_row", parent = tradeRouteBox, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
         RSUI:Text({ id = "v3_trade_from_label", parent = fromRow, text = "起点", fontSize = 10, tone = "muted", slot = { size = "fixed", width = 52, hAlign = "fill" } })
@@ -159,10 +158,7 @@ local function Build(parent, route, feature, kind)
             if ok == true then root:Refresh() end
             return ok, favoriteErr
         end
-        -- Sort is one-of-many, not a two-state cycle: three segments share the
-        -- same selected-state contract as DPS/HUD selectors.  The row has no
-        -- fill headroom at 1024 logical width, so the selector reserves fixed
-        -- space and the favorite dropdown fills the rest (minWidth 150).
+        -- 排序从多个选项中选择，不做两态循环；三个分段复用 DPS/HUD 的选中状态契约。1024 逻辑宽度下该行没有额外 fill 空间，因此选择器预留固定宽度，收藏下拉框填充其余空间（minWidth 150）。
         local tradeSortSelector = RSUI:SegmentedSelector({
             id = "v3_trade_sort_mode", parent = favoriteRow, itemWidth = 40, gap = 2, height = 26, fontSize = 9,
             items = {
@@ -208,7 +204,7 @@ local function Build(parent, route, feature, kind)
         local tradeViewHint = RSUI:Text({ id = "v3_trade_view_hint", parent = tradeViewRow, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, minWidth = 80 } })
         root.tradeViewSelector, root.tradeAutoRefreshButton, root.tradeQuoteListButton, root.tradeViewHint = tradeViewSelector, tradeAutoRefreshButton, tradeQuoteListButton, tradeViewHint
 
-        -- 中文维护：两个明确选项只切换同一 Authority 的计算模式；列表不并排显示两套金额。
+        -- 两个明确选项只切换同一 Authority 的计算模式；列表不并排显示两套金额。
         local tradeRatioModeButton = RSUI:SegmentedSelector({ id="v3_trade_ratio_mode",parent=actionRow,
             items={{value="current",text="实时货率"},{value="full",text="满货率"}},itemWidth=74,gap=2,height=26,fontSize=9,
             get=function()return ControlProjection().ratioMode or "current"end,
@@ -252,7 +248,7 @@ local function Build(parent, route, feature, kind)
         })
         root.tradeRatioModeButton, root.tradeCommerceModeButton, root.tradeQuoteListButton, root.tradeDetailButton, root.tradeTrackButton = tradeRatioModeButton, tradeCommerceModeButton, tradeQuoteListButton, tradeDetailButton, tradeTrackButton
     elseif kind == "bonds" then
-        -- 中文维护注释（2026-09-24，债券选项下拉收敛）：旧版 8 个小按钮在 1024/1280 宽度下
+        -- 约束（2026-09-24，债券选项下拉收敛）：旧版 8 个小按钮在 1024/1280 宽度下
         -- 既拥挤又难理解“排序方式/大陆顺序/数量范围/重复策略”的组合关系。现在收敛为 3 个 Dropdown：
         -- 排列、显示范围、重复材料。18.303 的“排列”明确区分大陆、数量与材料三种排序维度，并给数量/材料
         -- 提供正反方向；Dropdown 关闭 popup 后才调用 Feature 原子命令，避免同步 Publish 重入。
@@ -292,7 +288,7 @@ local function Build(parent, route, feature, kind)
         end
         root.bondDetailButton = detailButton
     elseif kind == "fishing" then
-        -- 中文维护：按钮文案只表达会话状态；“暂时不可用”可能来自战斗/恢复/能力门，不能再误导为永久 Runtime Blocked。
+        -- 按钮文案只表达会话状态；“暂时不可用”可能来自战斗/恢复/能力门，不能再误导为永久 Runtime Blocked。
         local autoButton = RSUI:Button({ id = "v3_fishing_auto", parent = actionRow, text = "启用自动 R", compact = true, slot = { size = "fixed", width = 118 } })
         autoButton.onClick = function()
             local ok, actionErr
@@ -304,7 +300,7 @@ local function Build(parent, route, feature, kind)
     end
 
     if kind == "treasure" and type(feature.Commands.SetRefreshMs)=="function" then
-        -- 中文维护：寻宝滑块只调整罗盘绘制，不加快500ms背包/地图观察；旧偏好与选择完整保留。
+        -- 寻宝滑块只调整罗盘绘制，不加快500ms背包/地图观察；旧偏好与选择完整保留。
         root.treasureRefreshField = D:SettingsNumericSlider(root, {
             id="v3_treasure_refresh",label="罗盘绘制间隔",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="ms",
             get=function()return feature:GetProjection().refreshMs or 33 end,
@@ -319,7 +315,7 @@ local function Build(parent, route, feature, kind)
         local target = not enabled
         local ok, enableErr = S.FeatureRuntime:SetPreferredEnabled(feature.Id, target, "life_page_toggle")
         if ok ~= true then return false, enableErr end
-        -- 中文维护注释（page-feature-consumer-lifecycle-1）：生命周期事件会同步恢复当前页面 Consumer；
+        -- 约束（page-feature-consumer-lifecycle-1）：生命周期事件会同步恢复当前页面 Consumer；
         -- 这里再做一次幂等核验只是为了把 Acquire 失败直接反馈给本次点击，并在失败时回滚 Feature。
         -- 禁止继续只写 consumerHeld boolean；真实持有关系以 Feature.Demand token 为准。
         local synced, syncErr = Host:SyncFeatureConsumer(root, consumerBinding, "life_page_toggle")
@@ -364,7 +360,7 @@ local function Build(parent, route, feature, kind)
             { id = "materials", title = "材料", field = "materials", size = "fill", minWidth = 160 },
             { id = "profit", title = "毛利", field = "profit", size = "fixed", width = 100, minWidth = 80 },
         } or kind == "bonds" and {
-            -- 中文维护注释：大陆是同日多快照最关键的身份字段，必须直接展示；否则西/东行同时存在时
+            -- 大陆是同日多快照最关键的身份字段，必须直接展示；否则西/东行同时存在时
             -- 玩家仍无法判断来源。只消费 Authority row.continent，不在 UI 重新推断大陆。
             { id = "continent", title = "大陆", field = "continent", size = "fixed", width = 72, minWidth = 62 },
             { id = "board", title = "材料", field = "name", size = "fixed", width = 96, minWidth = 76 },
@@ -439,7 +435,7 @@ local function Build(parent, route, feature, kind)
             return true
         end
         tableView.onItemActivated = function(item,index)
-            -- 中文维护：TableView 激活契约首参是行对象；不能把它当 index，否则债券详情点击始终无效。
+            -- TableView 激活契约首参是行对象；不能把它当 index，否则债券详情点击始终无效。
             local row = type(item)=="table" and item or tableView:GetItem(index)
             if row == nil then return false end
             local floating = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
@@ -603,7 +599,7 @@ local function Build(parent, route, feature, kind)
                 .. (projection.selected and (" · 当前 " .. tostring(projection.selected.name or "--")) or "")
             local treasureError = root.treasureActionError or projection.lastMapActionError
             if treasureError then treasureStatus = "定位未完成：" .. tostring(treasureError) end
-            if projection.mapActionPending == true then treasureStatus = "地图定位等待中，冷却结束后自动执行" end -- 中文维护：冷却等待不是定位失败；只显示 Feature 请求状态。
+            if projection.mapActionPending == true then treasureStatus = "地图定位等待中，冷却结束后自动执行" end -- 冷却等待不是定位失败；只显示 Feature 请求状态。
             status:SetText(enabled and treasureStatus or "功能已关闭")
             if widgetButton then widgetButton:SetEnabled(enabled); widgetButton:SetText(WidgetHost:IsVisible("life.treasure") and "关闭悬浮窗" or "打开悬浮窗") end
         elseif kind == "fishing" then
@@ -613,7 +609,7 @@ local function Build(parent, route, feature, kind)
             end
             status:SetText(enabled and fishingText or "功能已关闭")
             if root.autoButton then
-                -- 中文维护：战斗中禁止“新写键”不等于禁止用户发出关闭意图。已 armed 时按钮必须保持可点，Disarm 会立即停止新映射并把恢复延迟到脱战后。
+                -- 战斗中禁止“新写键”不等于禁止用户发出关闭意图。已 armed 时按钮必须保持可点，Disarm 会立即停止新映射并把恢复延迟到脱战后。
                 local armed = feature:IsAutoArmed() == true
                 local autoAvailable = enabled and (armed or projection.autoAvailable == true)
                 root.autoButton:SetEnabled(autoAvailable)
@@ -634,7 +630,7 @@ local function Build(parent, route, feature, kind)
             local errorText = projection.error and (" · " .. tostring(projection.error)) or saveText
             status:SetText(enabled and ((projection.status or "--") .. " · " .. currentText .. " · " .. coverageText
                 .. " · " .. tostring(#(projection.rows or {})) .. " 条" .. diagnostic .. errorText) or "功能已关闭")
-            -- Dropdown 的 Binding 直接回读 Feature；Refresh 只 Render authoritative value，
+            -- Dropdown 的 Binding 直接回读 Feature；Refresh 只 渲染权威值，
             -- 不再在 UI 维护第二份筛选状态，也不会因为按钮文本更新造成额外业务 mutation。
             for _, dropdown in ipairs({ root.bondOrderDropdown, root.bondScopeDropdown, root.bondDuplicateDropdown }) do
                 if dropdown then dropdown:SetEnabled(enabled); dropdown:Render() end
@@ -672,7 +668,7 @@ local function Build(parent, route, feature, kind)
     function root:OnActivated()
         local bound, bindErr = self:BindFeatureUpdates()
         if bound ~= true then return false, bindErr end
-        -- Demand 0->1 still owns initial Domain read；本函数只建立当前可见页面的 lease 并渲染投影。
+        -- Demand 0->1 仍负责 Domain 初始读取；本函数只建立当前可见页面租约并渲染投影。
         return Host:SyncFeatureConsumer(self, consumerBinding, "page_activated")
     end
     function root:OnDeactivated()

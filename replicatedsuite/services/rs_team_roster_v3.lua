@@ -1,10 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Team Roster Service
+-- Replicated Suite · 团队名单
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Lightweight read-only roster Authority shared by combat features.
--- Native TEAM_MEMBERS_CHANGED is treated only as an invalidation signal; the
--- actual UnitName scan runs from the unified Scheduler after the native raid UI
--- has settled. There is no Tick / OnUpdate loop and no write-side X2Team call.
+-- 战斗功能共享轻量只读团队名单权威。TEAM_MEMBERS_CHANGED 仅作失效信号，原生 raid UI 稳定后由统一 Scheduler
+-- 扫描 UnitName。没有 Tick/OnUpdate 循环，不调用 X2Team 写接口。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -54,13 +54,9 @@ local function AddName(map, ordered, name, unitToken, teamIndex, memberIndex)
     local full, base = SplitName(name)
     if full == "" then return false end
 
-    -- One canonical row must back both the ordered snapshot and the lookup map.
-    -- The player is intentionally seeded first with the safest native token
-    -- ("player"). When the same identity is later discovered in the real team
-    -- slot, enrich that canonical row in place instead of replacing map[full]
-    -- with a second table. Otherwise GetMember(name) and GetSnapshot().members
-    -- disagree about teamIndex/memberIndex, which is fatal for role/readiness
-    -- consumers even though relation membership still appears correct.
+    -- 有序快照和查找 map 必须共用一个 canonical 行。先用最安全 player token 建种子，后在真实团队槽发现同身
+    -- 份时原地补充，不能另建表替换 map[full]。否则 GetMember(name) 与 GetSnapshot().members 的
+    -- teamIndex/memberIndex 不一致，破坏角色和就绪消费者，虽关系成员看似正确。
     local incomingToken = tostring(unitToken or "")
     local incomingTeam = tonumber(teamIndex) or 0
     local incomingMember = tonumber(memberIndex) or 0
@@ -76,9 +72,8 @@ local function AddName(map, ordered, name, unitToken, teamIndex, memberIndex)
     else
         if Trim(row.name) == "" then row.name = Trim(name) end
 
-        -- Preserve the special "player" token for local-unit reads. It is more
-        -- stable than a raid token across party layout transitions. If the
-        -- player token is discovered after a team token, promote it.
+        -- 本地单位读取保留 player 特殊 token，比 raid token 更能跨队伍布局变化保持稳定；团队 token 后发现
+        -- player 时提升它。
         local currentToken = tostring(row.unitToken or "")
         if incomingToken == "player" then
             row.unitToken = "player"
@@ -86,8 +81,7 @@ local function AddName(map, ordered, name, unitToken, teamIndex, memberIndex)
             row.unitToken = incomingToken
         end
 
-        -- A concrete team slot carries stronger roster metadata than the
-        -- synthetic player seed (0/0). Keep it on the same canonical row.
+        -- 真实团队槽的名单元数据强于合成 player 种子 0/0，但须保留在同一 canonical 行。
         if incomingTeam > 0 and incomingMember > 0 then
             row.teamIndex = incomingTeam
             row.memberIndex = incomingMember
@@ -95,8 +89,7 @@ local function AddName(map, ordered, name, unitToken, teamIndex, memberIndex)
     end
 
     map[full] = row
-    -- COMBAT_MSG often supplies short names while UnitName may return Name@World.
-    -- A short alias is safe only inside the current live roster snapshot.
+    -- COMBAT_MSG 常给短名，UnitName 可给 Name@World；短别名仅在当前实时名单快照内安全。
     if base ~= full then map[base] = row end
     return true
 end
@@ -133,10 +126,8 @@ end
 
 local function DetectVisibleTeamIndex()
     local scores, comparisons = { [1] = 0, [2] = 0 }, 0
-    -- In co-raid mode the unqualified teamN aliases mirror whichever native
-    -- raid tab is currently visible. Compare at most ten aliases against the
-    -- explicit team_1_N / team_2_N identities. This is bounded and only runs
-    -- on roster refresh edges, never per frame.
+    -- 联合团队下无前缀 teamN 跟随当前原生 raid 页签，最多将十个别名与显式 team_1_N/team_2_N 比较。有界且只
+    -- 在名单刷新边沿执行，不逐帧运行。
     for memberIndex = 1, 10 do
         local _, aliasName = ReadSingle(memberIndex)
         if aliasName ~= nil then
@@ -163,12 +154,9 @@ function T:ScheduleRetry(delayMs, reason)
     end, self, "P1", 1)
 end
 
--- Roster identity snapshot comparison. TEAM_MEMBERS_CHANGED fires often while
--- the team layout is stable (combat callbacks, zone transitions, party-role
--- pulses). Publishing "v3.team_roster.updated" for every no-op refresh forces
--- Healer's OnRosterUpdated -> ResetTransient to wipe every recommendation/
--- health color, which the user sees as "all team colors disappear, then slowly
--- come back". Only bump revision and publish when the identity set changed.
+-- 名单稳定时 TEAM_MEMBERS_CHANGED 也常触发（战斗、切区、角色脉冲）；只有身份集合变化才递增 revision 并发布
+-- v3.team_roster.updated。空刷新也发布会令 Healer OnRosterUpdated->ResetTransient 清空推荐/健康色，导致团队
+-- 颜色先消失再缓慢恢复。
 local function SameRosterSnapshot(a, b)
     if type(a) ~= "table" or type(b) ~= "table" or #a ~= #b then return false end
     for index = 1, #a do
@@ -190,9 +178,7 @@ function T:Refresh(reason)
     local nextMembers, nextOrdered = {}, {}
     local playerName = ReadUnitName("player")
     if playerName == nil then
-        -- A transient X2Unit/identity cold start must not erase a previously
-        -- valid roster snapshot. Keep the last good Authority, surface the
-        -- failure, and perform only a small bounded retry burst.
+        -- 暂时 X2Unit/身份冷启动不能擦除有效旧名单，保留最后健康权威、暴露失败，只做小型有界重试。
         self.scanFailures = self.scanFailures + 1
         self.retryStreak = self.retryStreak + 1
         self.lastRefreshAt = NowMs()
@@ -203,9 +189,8 @@ function T:Refresh(reason)
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.retryTask) end
     AddName(nextMembers, nextOrdered, playerName, "player", 0, 0)
 
-    -- Probe one packed co-raid token. If it exists, only scan that layout;
-    -- otherwise scan the ordinary raid/party layout. This work happens only on
-    -- demand start / roster edges, never on combat callbacks.
+    -- 先探测一个联合团队 token，存在则只扫描该布局，否则扫描普通团队/小队；只在需求启动或名单边沿运行，不在
+    -- 战斗回调运行。
     local coToken = ReadCo(1, 1)
     if coToken ~= nil then
         self.visibleTeamIndex, self.visibleTeamDetectionAvailable = DetectVisibleTeamIndex()
@@ -229,8 +214,7 @@ function T:Refresh(reason)
         or tonumber(previousVisibleTeamIndex) ~= tonumber(self.visibleTeamIndex)
     self.members, self.ordered = nextMembers, nextOrdered
     self.lastRefreshAt = NowMs()
-    -- Identity unchanged: keep the snapshot warm but do not churn consumers
-    -- (Healer re-evaluation, UI refreshes) with a fake revision.
+    -- 身份不变时维持温热快照，不通过假 revision 触发 Healer 重算或 UI 刷新。
     if changed ~= true then return true, #nextOrdered end
     self.revision = self.revision + 1
     self.scans = self.scans + 1
@@ -256,11 +240,15 @@ function T:ScheduleSettleRefresh(delayMs, reason, pass)
     if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false, "team roster settle scheduler unavailable" end
     pass = math.max(1, math.floor(tonumber(pass) or 1))
     if pass > math.max(1, tonumber(self.settleMaxPasses) or 2) then return true end
-    -- 中文维护注释（2026-09-16，团队边沿稳定化）：RU 的 TEAM_MEMBERS_CHANGED 可能先于 teamN/native slot 真正就绪。
-    -- TeamRosterV3 是团队身份 Authority，因此“晚到槽位”的补扫也必须留在 Service 内，而不是让 AutoRole/Healer 各自扫描 X2Unit。
-    -- 每个原生边沿只允许最多两次 one-shot 尾随扫描：第1次约700ms、第2次再约900ms；没有 Tick/周期常驻，且新边沿会替换旧链。
-    -- Refresh 仍通过 SameRosterSnapshot 只在身份/槽位真的变化时发布 v3.team_roster.updated，所以正常稳定团队不会引发额外 Consumer 重算。
-    -- 兼容风险：若未来客户端槽位稳定时间超过该有界窗口，只增加此 Authority 的 pass/delay，不要在业务 Feature 新建第二套名单缓存。
+    -- （2026-09-16，团队边沿稳定化）RU 的 TEAM_MEMBERS_CHANGED 可能先于 teamN/native slot 真正就绪。
+    -- TeamRosterV3 是团队身份 Authority，因此“晚到槽位”的补扫也必须留在 Service 内，而不是让
+    -- AutoRole/Healer 各自扫描 X2Unit。
+    -- 每个原生边沿只允许最多两次 one-shot 尾随扫描：第1次约700ms、第2次再约900ms；没有 Tick/周期常驻，且新
+    -- 边沿会替换旧链。
+    -- Refresh 仍通过 SameRosterSnapshot 只在身份/槽位真的变化时发布 v3.team_roster.updated，所以正常稳定团
+    -- 队不会引发额外 Consumer 重算。
+    -- 兼容风险：若未来客户端槽位稳定时间超过该有界窗口，只增加此 Authority 的 pass/delay，不要在业务
+    -- Feature 新建第二套名单缓存。
     if pass == 1 and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.settleTask) end
     local taskReason = tostring(reason or "team_edge") .. ":settle:" .. tostring(pass)
     local scheduled = S.Scheduler:AddOneShot(self.settleTask, math.max(250, tonumber(delayMs) or 700), function()

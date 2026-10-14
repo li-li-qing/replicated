@@ -1,24 +1,12 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Feature Health / Diagnostics Projection Registry
+-- Replicated Suite · 功能健康提供器
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Phase 3 Batch G（2026-09-29，core-feature-decoupling-1）
---
--- 背景：core/rs_diagnostics.lua 原先按 id 直接读具体业务 Feature 的 health / 诊断投影
--- （例如取 BuffDisplay 的 health、取单位连线的 Diagnostics 表）。那是 CORE_FEATURE 债务
--- 在 core 里的最后一块，也是 §25.2 descriptor 里 RuntimeHealthProvider 字段的实际用途。
---
--- 现在改成：**Feature 自己把投影注册进来，Core 只按“用途名”取值** ——
--- Core 不再出现任何业务 Feature 的 id 或实现表访问。
---
--- 边界（刻意保持最小，不做成 DSL）：
---   * 只保存“去调用某个 Feature 的哪个投影”这一层间接。Get 每次**实时调用** provider，
---     不缓存结果 —— 与原先 Core 直接取健康投影的取值时机和新鲜度完全一致，
---     不引入第二份事实、不建立第二个诊断 Authority。
---   * provider 由 Feature 侧注册（写在 features/** 里），所以业务 Feature id 只出现在 Feature 目录。
---   * 注册可覆盖：同一 key 重复注册以最后一次为准；每次重载（Generation 变化）自然重建。
---   * provider 抛错时隔离为 nil 并计入 errors —— 单个模块的诊断投影坏掉不应该让整份
---     Snapshot 崩掉（这是相对旧行为的健壮性改进；正常路径的返回值不变）。
---     注意：这里只做“取值”，不做健康判定；判定仍归各 Feature 的 health 自身。
+-- 功能健康/诊断投影登记表由 Feature 注册 provider，Core 只按用途名读取，不硬编码业务 Feature ID 或访问实现
+-- 表。Get 每次实时调用 provider，不缓存结果，不建立第二事实或诊断权威；provider 在 features/** 注册，同 key
+-- 后者覆盖，Generation 变化自然重建。异常隔离为 nil 并计 errors，单模块投影失败不能使整份 Snapshot 崩溃。这
+-- 里只取值，健康判定仍归 Feature health，不扩张成 DSL。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

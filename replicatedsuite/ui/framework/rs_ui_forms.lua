@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Form Component System v1
+-- Replicated Suite · 表单字段与响应布局
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Platform-level form composition above RSUI primitives/controls.  Business
--- modules declare fields and bindings; this layer owns label/status layout,
--- validation feedback, responsive field grids and form state summaries.
+-- RSUI 原语/控件上的平台表单组合；业务声明字段与绑定，此层负责标签/状态布局、校验反馈、响应网格与状态摘要。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -104,7 +104,7 @@ local function NormalizeDropdownItems(items)
 end
 
 ------------------------------------------------------------------------
--- ValidationMessage
+-- ValidationMessage 校验信息。
 ------------------------------------------------------------------------
 RSUI:RegisterType("ValidationMessage", function(spec)
     local width = math.max(1, N(spec.width, Token("component.form.feedbackW", 96)))
@@ -138,7 +138,7 @@ RSUI:RegisterType("ValidationMessage", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- Shared field frame
+-- 共享字段外框。
 ------------------------------------------------------------------------
 local function CreateFieldFrame(kind, spec)
     local width = math.max(1, N(spec.width, 300))
@@ -365,7 +365,7 @@ RSUI:RegisterType("Field", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- ToggleField
+-- ToggleField 开关字段。
 ------------------------------------------------------------------------
 RSUI:RegisterType("ToggleField", function(spec)
     local c, err = CreateFieldFrame("ToggleField", spec)
@@ -412,7 +412,7 @@ RSUI:RegisterType("ToggleField", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- NumericField: Slider + exact NumericInput; +/- step buttons are opt-in
+-- NumericField：Slider 与精确 NumericInput；+/- 步进按钮需显式启用。
 ------------------------------------------------------------------------
 RSUI:RegisterType("NumericField", function(spec)
     local c, err = CreateFieldFrame("NumericField", spec)
@@ -421,17 +421,14 @@ RSUI:RegisterType("NumericField", function(spec)
     c.useSlider = spec.slider ~= false
     c.useStepButtons = spec.stepButtons == true
     c.useApplyButton = spec.applyButton == true
-    -- Inline numeric rows are the compact settings contract used by dense V3
-    -- pages/HUD appearance editors: Name + Slider + exact NumericInput.  The
-    -- same Binding remains the only business mutation/persistence authority.
+    -- 紧凑数值行组合名称、滑块和精确输入，供密集 V3 页/HUD 外观编辑；同一 Binding 仍是唯一业务修改/持久化权威。
     c.inline = spec.inline == true
     c.inlineResponsiveStack = c.inline and spec.responsiveStack == true
     c.inlineStackBelow = math.max(120, N(spec.stackBelow, Token("settings.numericStackBelow", 250)))
     c.lastInlineLayoutMode = nil
     c.baseMinimum = tonumber(spec.min) or 0
     c.baseMaximum = tonumber(spec.max)
-    -- Sliders require a finite presentation range. Exact-entry-only fields may
-    -- omit max (for example free window dimensions).
+    -- 滑块需要有限表现范围；仅精确输入的字段可省略 max，如自由窗口尺寸。
     if c.baseMaximum == nil and c.useSlider then c.baseMaximum = 100 end
     if c.baseMaximum ~= nil and c.baseMaximum < c.baseMinimum then c.baseMinimum, c.baseMaximum = c.baseMaximum, c.baseMinimum end
     c.minimum, c.maximum = c.baseMinimum, c.baseMaximum
@@ -439,15 +436,9 @@ RSUI:RegisterType("NumericField", function(spec)
     c.stepOrigin = tonumber(spec.stepOrigin) or c.baseMinimum
     c.integer = spec.integer == true
     c.unit = tostring(spec.unit or spec.suffix or "")
-    -- Numeric Adaptive Range Contract v2 (2026-09-15): `min/max` are the
-    -- RECOMMENDED initial slider window, not implicit business limits. Exact
-    -- input may extend either endpoint after the Feature accepts the value.
-    -- `hardMin/hardMax` are reserved for real safety/business envelopes and
-    -- `fixedRange=true` is reserved for normalized quantities such as opacity.
-    -- Domain setters remain authoritative: a clamped/rejected request is read
-    -- back first, so the slider never expands to a value the Feature did not
-    -- actually accept. This keeps Presentation metadata separate from Authority.
-    -- 中文维护：绘制间隔可固定滑块窗口而保留独立精确输入上限；不恢复旧动态端点，也不写回范围元数据。
+    -- 数值自适应契约（2026-09-15）：min/max 是推荐初始滑块窗口，不能隐含业务限制；Feature 接受精确值后可扩端点。
+    -- hardMin/hardMax 仅真实安全/业务边界，fixedRange=true 仅透明度等归一化量。先读回被钳制/拒绝请求的 Domain 权威值，再决定扩展，表现元数据与权威分离。
+    -- 绘制间隔可固定滑块窗口而保留独立精确输入上限；不恢复旧动态端点，也不写回范围元数据。
     c.adaptiveRange = c.useSlider and spec.adaptiveRange ~= false and spec.fixedRange ~= true and spec.fixedSliderRange ~= true
     c.rangePolicy = c.adaptiveRange == true and "adaptive" or "fixed"
     c.hardMinimum = tonumber(spec.hardMin)
@@ -473,8 +464,7 @@ RSUI:RegisterType("NumericField", function(spec)
         return Normalize(BindingValue(c.binding, c.baseMinimum)) or c.baseMinimum
     end
 
-    -- Restore only outward expansion. Saved metadata can never shrink a newer
-    -- code-defined base range after an addon update.
+    -- 仅恢复向外扩展；存档元数据不能在升级后缩小代码定义的新基线范围。
     if c.adaptiveRange == true and c.rangeStore ~= nil and type(c.rangeStore.Get) == "function" and c.rangeKey ~= "" then
         local savedMin, savedMax = c.rangeStore:Get(c.rangeKey)
         if tonumber(savedMin) ~= nil then c.minimum = math.min(c.minimum, tonumber(savedMin)) end
@@ -537,7 +527,7 @@ RSUI:RegisterType("NumericField", function(spec)
     local function Applied(_, source)
         c.transientFeedback, c.transientTone, c.localError = nil, nil, nil
         source = tostring(source or "input")
-        -- 中文维护注释（DraftSession V2 / competing Authority）：Slider 是同一 NumericField 的另一条显式
+        -- 约束（DraftSession V2 / competing Authority）：Slider 是同一 NumericField 的另一条显式
         -- Authority 写路径。若用户先在精确输入框留下未应用草稿，再拖动 Slider，Slider 的最终值必须明确
         -- 取代该草稿，否则页面会长期被 stale draft 栅栏且下一次点击又复活旧文本。这里只取消同字段草稿，
         -- 不影响其它字段的独立 draft session。
@@ -545,8 +535,7 @@ RSUI:RegisterType("NumericField", function(spec)
             and c.input:HasDraftSession() == true and type(c.input.CancelEditing) == "function" then
             c.input:CancelEditing("numeric_field_slider_supersede")
         end
-        -- A Feature setter may clamp the submitted draft. Always read back the
-        -- authoritative Domain value before deciding whether the slider expands.
+        -- Feature setter 可钳制草稿；判断扩滑块之前始终读回权威 Domain 值。
         local actual = Current()
         SyncControls(actual, "commit", source == "input" or source == "numeric_field" or source == "minus" or source == "plus")
         c:SyncFeedback()
@@ -577,7 +566,7 @@ RSUI:RegisterType("NumericField", function(spec)
         suffix = c.unit, maxLength = tonumber(spec.maxLength) or 14,
         binding = c.binding, enabled = spec.enabled ~= false,
         commitOnFinal = spec.commitOnFinal == true,
-        -- 中文维护注释（DraftSession V2）：有明确“应用”按钮的 NumericField 不再把 RU LostFocus
+        -- 约束（DraftSession V2）：有明确“应用”按钮的 NumericField 不再把 RU LostFocus
         -- 当成业务提交；输入草稿由 Lua 持有，只有 Apply/Enter 写 Authority。无 Apply 的旧字段保持 blur commit。
         draftCommitMode = c.useApplyButton and "explicit" or "blur",
         format = spec.format,
@@ -596,9 +585,7 @@ RSUI:RegisterType("NumericField", function(spec)
         local actionSource = tostring(source or "apply_button")
         local draft = type(self.input.GetDraftNumber) == "function" and self.input:GetDraftNumber() or nil
         local actual = Current()
-        -- DraftSession V2: Apply may run after RU has already delivered LostFocus. Explicit fields keep the
-        -- Lua draft across that blur, so Apply reads the same draft and commits exactly once. If draft already
-        -- equals Authority, simply close the transaction without an unnecessary Domain/Persistence write.
+        -- DraftSession V2：RU LostFocus 后 Apply 仍读取跨失焦保留的 Lua 草稿，只提交一次；若草稿已等于权威，仅结束事务，不多写 Domain/Persistence。
         if self.input:IsEditing() ~= true and draft ~= nil and tonumber(draft) == tonumber(actual) then
             if type(self.input.EndEditing) == "function" then self.input:EndEditing(actionSource .. ":already_committed") end
             SyncControls(actual, "commit", true)
@@ -616,9 +603,7 @@ RSUI:RegisterType("NumericField", function(spec)
             width = math.max(34, N(spec.applyButtonWidth, 40)), height = N(spec.controlHeight, Token("size.buttonH", 24)),
             enabled = spec.enabled ~= false,
             onClick = function()
-                -- Explicit Apply is the reliable RU commit affordance. Enter is
-                -- still accepted when the client emits it, but business commit
-                -- never depends on an unverified key event.
+                -- 明确 Apply 是可靠 RU 提交入口；客户端派发 Enter 时仍接受，但业务提交不能依赖未验证按键事件。
                 return c:ApplyDraft("apply_button")
             end,
         })
@@ -630,9 +615,7 @@ RSUI:RegisterType("NumericField", function(spec)
     if c.useStepButtons then
         c.plus = RSUI:Button({ id = spec.id .. "_plus", parent = c, text = "+", compact = true, width = 26, height = Token("size.buttonH", 26), buildOptional = true })
     end
-    -- +/- are a convenience pair. If one optional native button cannot be
-    -- created, hide/release the survivor instead of exposing a one-sided dead or
-    -- misleading control; exact NumericInput remains the authoritative path.
+    -- +/- 为成对便捷控件，一按钮创建失败时隐藏/释放另一按钮，避免单边死控件或误导；精确 NumericInput 保持权威入口。
     if c.useStepButtons and (c.minus == nil or c.plus == nil) then
         if c.minus ~= nil and type(c.minus.Release) == "function" then c.minus:Release() end
         if c.plus ~= nil and type(c.plus.Release) == "function" then c.plus:Release() end
@@ -645,9 +628,7 @@ RSUI:RegisterType("NumericField", function(spec)
     if c.plus ~= nil then c:AddChild(c.plus) end
     if c.apply ~= nil then c:AddChild(c.apply) end
     if c.inline then
-        -- Validation remains available through the Binding state, but compact
-        -- rows deliberately do not reserve a second text line.  This prevents
-        -- dense numeric settings from becoming a grid of oversized cards.
+        -- 校验仍可通过 Binding 状态读取，但紧凑行不预留第二文字行，避免密集数值设置变成过大卡片网格。
         if c.feedback ~= nil then c.feedback:SetVisibility("collapsed") end
         if c.hint ~= nil then c.hint:SetVisibility("collapsed") end
     end
@@ -655,7 +636,7 @@ RSUI:RegisterType("NumericField", function(spec)
     function c:Apply(value, source)
         if self.enabled == false then return false end
         local actionSource = tostring(source or "numeric_field")
-        -- 中文维护注释（DraftSession V2）：+/- 或外部 NumericField API 是明确的 Authority 决策，
+        -- 约束（DraftSession V2）：+/- 或外部 NumericField API 是明确的 Authority 决策，
         -- 应取代本字段尚未应用的精确输入草稿，避免同一字段同时存在两个冲突事实。
         if self.input ~= nil and type(self.input.HasDraftSession) == "function" and self.input:HasDraftSession() == true
             and type(self.input.CancelEditing) == "function" then
@@ -682,8 +663,7 @@ RSUI:RegisterType("NumericField", function(spec)
     if c.minus ~= nil and c.plus ~= nil then
         c.minus.spec.onClick = function() return c:Apply(Current() - c.step, "minus") end
         c.plus.spec.onClick = function() return c:Apply(Current() + c.step, "plus") end
-        -- Step buttons are optional convenience controls. Exact entry remains
-        -- the authority and is always visible.
+        -- 步进按钮可选，精确输入始终可见并保持权威。
         c.minus.Click = function(self) if self.enabled == false then return false end return c:Apply(Current() - c.step, "minus") end
         c.plus.Click = function(self) if self.enabled == false then return false end return c:Apply(Current() + c.step, "plus") end
     end
@@ -759,10 +739,7 @@ RSUI:RegisterType("NumericField", function(spec)
                 or (math.max(labelH, controlH) + self.padding * 2)
             local h = math.max(1, N(nextHeight, self.height or naturalH))
             self:SetBounds(x, y, w, h)
-            -- Both modes use the same control-row width allocator. Stacked mode
-            -- removes the label from the horizontal budget before arranging the
-            -- slider/exact input/apply action, so narrow cards preserve usable
-            -- controls instead of compressing every element into unreadable slivers.
+            -- 两模式共用宽度分配器；堆叠模式先移除横向标签预算，再排列滑块、精确输入、应用按钮，使窄卡片控件仍可用。
             local hasApply = self.apply ~= nil
             local narrow = hasApply and w < N(spec.compactApplyNarrowWidth, 220)
             if narrow then gap = math.min(gap, 3) end
@@ -854,7 +831,7 @@ end, function(spec)
 end)
 
 ------------------------------------------------------------------------
--- DropdownField
+-- DropdownField 下拉字段。
 ------------------------------------------------------------------------
 RSUI:RegisterType("DropdownField", function(spec)
     local c, err = CreateFieldFrame("DropdownField", spec)
@@ -907,8 +884,7 @@ RSUI:RegisterType("DropdownField", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- FieldGroup: responsive field collection. Layout is explicit/low-frequency;
--- there is no per-frame tree reconciliation.
+-- FieldGroup 响应式字段集合；布局明确且低频，无逐帧树协调。
 ------------------------------------------------------------------------
 RSUI:RegisterType("FieldGroup", function(spec)
     local width = math.max(1, N(spec.width, 300))
@@ -972,11 +948,8 @@ RSUI:RegisterType("FieldGroup", function(spec)
         return true
     end
 
-    -- Measure-only height computation. UsedHeight in Grid depends solely on
-    -- the placed span index, cell height and gap, so the natural height can be
-    -- derived without any native write. Without this, containers above (Scroll
-    -- Box / TransformInspector) measured the STALE post-layout height and
-    -- stacked the next section on top of newly-expanded content.
+    -- 纯测量高度：Grid UsedHeight 仅由已放置 span 下标、格高、间距决定，无需 Native 写。
+    -- 父 ScrollBox/TransformInspector 必须测当前自然高，不能用旧布局后高度而把下段压到展开内容上。
     function c:Measure(availableWidth, availableHeight)
         local w = math.max(1, N(availableWidth, self.width or width))
         local resolvedFieldHeight = self.fieldHeight
@@ -1052,7 +1025,7 @@ RSUI:RegisterType("FieldGroup", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- FormSection
+-- FormSection 表单区域。
 ------------------------------------------------------------------------
 RSUI:RegisterType("FormSection", function(spec)
     local width = math.max(1, N(spec.width, 300))
@@ -1066,7 +1039,7 @@ RSUI:RegisterType("FormSection", function(spec)
     if raw == nil or raw.root == nil then return nil, "form_section_create_failed" end
     local c = RSUI:NewComponent("FormSection", spec, raw.root)
     c.raw = raw
-    c.appearanceWidgets = { raw.header, raw.title } -- 中文维护（2026-10-09）：复合表单原生标题条显式继承组件外观通道。
+    c.appearanceWidgets = { raw.header, raw.title } -- 约束（2026-10-09）：复合表单原生标题条显式继承组件外观通道。
     c.padding = raw.padding or N(spec.padding, Token("component.card.padding", 10))
     c.headerHeight = raw.headerHeight or N(spec.headerHeight, Token("size.sectionHeaderH", 28))
     c.fields = {}
@@ -1125,8 +1098,7 @@ RSUI:RegisterType("FormSection", function(spec)
         return true
     end
 
-    -- Pure content-height measurement (no native writes): mirrors Layout's
-    -- content origin + group height + padding exactly.
+    -- 纯内容高度测量，无 Native 写，精确对应 Layout 内容原点、组高和 padding。
     function c:Measure(availableWidth, availableHeight)
         local w = math.max(1, N(availableWidth, self.width or width))
         local contentX, contentY = self.raw:ContentOrigin()
@@ -1161,7 +1133,7 @@ RSUI:RegisterType("FormSection", function(spec)
 end)
 
 ------------------------------------------------------------------------
--- Form
+-- Form 表单。
 ------------------------------------------------------------------------
 RSUI:RegisterType("Form", function(spec)
     local width = math.max(1, N(spec.width, 400))
@@ -1276,9 +1248,7 @@ RSUI:RegisterType("Form", function(spec)
         return committed
     end
 
-    -- Real content measurement: the TransformInspector inside the HUD-layout
-    -- ScrollBox measured its stale post-layout height before this existed, so
-    -- expanding the anchor section pushed the NEXT section on top of it.
+    -- 测量真实内容；HUD 布局 ScrollBox 中 TransformInspector 不能使用旧布局高，避免锚点区展开后下一段重叠。
     function c:Measure(availableWidth, availableHeight)
         local w = math.max(1, N(availableWidth, self.width or width))
         local cursor, sections = 0, 0

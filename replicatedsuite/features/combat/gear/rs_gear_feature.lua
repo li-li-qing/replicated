@@ -1,5 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Gear / Title Feature
+-- Replicated Suite · 装备与称号方案功能入口
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 装备与称号功能生命周期。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -29,8 +33,7 @@ function F:GetQuickHudState()
     return self.State.quickHud
 end
 
--- Presentation must not retain the mutable QuickHud table. Domain code keeps
--- using GetQuickHudState internally; this public read model is detached.
+-- Presentation 禁止持有可变 QuickHud 表；Domain 内部仍使用 GetQuickHudState，公共读模型返回独立副本。
 function F:GetQuickHudProjection()
     return S.Utils.DeepCopy(self:GetQuickHudState())
 end
@@ -57,12 +60,8 @@ function F:MarkQuickRuntimePreferenceLinked(reason)
     end, 0, reason or "gear_quick_runtime_preference_link", true)
 end
 
--- `.18.152` one-time compatibility repair. Older builds could persist a quick
--- button plan while `v3.features.combat_gear=false`; the page's transient lease
--- then made buttons appear only after a manual gear action. Existing visible
--- quick plans are explicit persistent screen-surface intent. Repair that stale
--- preference exactly once; after the link sentinel exists, an explicit false
--- preference is authoritative and will never be overridden on startup.
+-- 旧版可能保存快捷按钮方案但 v3.features.combat_gear=false，仅页面临时租约让按钮出现。已有可见快捷方案是明确持久屏幕意图，可修复陈旧偏好一次。
+-- link 哨兵存在后，用户显式 false 为权威，启动禁止再次覆盖。
 function F:GetStartupEnableIntent(preferred, explicit)
     if preferred == true or explicit ~= true then return false end
     local loaded, loadErr = self:EnsureStoreLoaded()
@@ -105,10 +104,7 @@ local function PublishQuickSettings(feature)
     if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.gear.quick.settings", feature:GetQuickSnapSettings()) end
 end
 
--- Domain-only setters used by RSUI persistent bindings. They mutate the
--- in-memory Feature state and publish the projection, but Persistence dirty/save
--- ownership stays outside this method. Public SetQuick* methods below preserve
--- the existing immediate-save compatibility contract for non-binding callers.
+-- RSUI 持久 Binding 使用仅 Domain 设置器，只修改 Feature 内存并发布投影，Persistence dirty/save 由外部负责；下方公共 SetQuick* 保持非 Binding 调用立即保存兼容契约。
 function F:ApplyQuickSnapEnabled(enabled)
     local loaded, loadErr = self:EnsureStoreLoaded()
     if loaded ~= true then return false, loadErr end
@@ -206,8 +202,7 @@ function F:GetSetCount()
     return #(self.State and self.State.sets or {})
 end
 
--- Public Projection boundary for Active V3. Gear Pages/Widgets use these
--- methods and Commands rather than retaining the mutable Authority object.
+-- 公共投影边界：Gear 页面/Widget 只用这些方法和 Commands，禁止持有可变 Authority 对象。
 function F:GetRows()
     return self.Authority:GetRows()
 end
@@ -258,9 +253,7 @@ function F:EnsurePersistentQuickRuntime(reason)
     if preferred == true then
         if Runtime:IsEnabled(self.Id) ~= true then runtimeOk, runtimeErr = Runtime:Enable(self.Id, reason or "gear_quick_runtime") end
     else
-        -- Creating/showing a per-plan screen button is explicit persistent user
-        -- intent. Persist the Gear runtime preference so the button survives page
-        -- close and the next UI reload instead of existing only during page scope.
+        -- 创建/显示方案屏幕按钮表示明确持久用户意图；必须保存 Gear 运行偏好，让按钮在页面关闭与下次 UI 重载后继续存在。
         runtimeOk, runtimeErr = Runtime:SetPreferredEnabled(self.Id, true, reason or "gear_quick_runtime")
     end
     if runtimeOk ~= true then return false, runtimeErr end
@@ -309,27 +302,17 @@ function F:ReleaseTransient(token)
     return self:MaybeDisableTransient("gear_transient_idle")
 end
 
--- Global screen-button visibility. This is intentionally NOT a large HUD
--- window: each configured quick plan owns one compact independent button.
---
--- Domain only decides *whether* the screen buttons should exist and keeps the
--- transient consumer lease that keeps the Gear service alive. The actual
--- show/hide is a Presentation reaction to `v3.gear.quick.visibility`.
+-- 全局屏幕按钮可见性：每个快捷方案拥有一个独立紧凑按钮。Domain 只决定按钮是否存在并持有维持 Gear 服务的临时消费租约；实际显示/隐藏由 Presentation 响应 v3.gear.quick.visibility。
 function F:ShouldShowQuickButtons()
     if self.enabled ~= true then return false end
-    -- A page-scoped transient lease may temporarily enable Gear even when the
-    -- user explicitly disabled the persistent feature. Screen buttons must not
-    -- resurrect from that transient enable; persistent preference is the
-    -- Authority for persistent screen-surface visibility.
+    -- 页面临时租约可在用户持久禁用时暂时开启 Gear，但不能因此复活屏幕按钮；持久偏好决定常驻屏幕表现可见性。
     if Runtime:GetPreferredEnabled(self.Id) ~= true then return false end
     local state = self:GetQuickHudState()
     return state.visible ~= false and self:HasQuickSets()
 end
 
 function F:SyncQuickButtonsHost(reason)
-    -- Domain never touches WidgetHost. Publishing the fact is idempotent and
-    -- harmless before the Presentation layer has registered the widget; the
-    -- widget resyncs itself when it registers.
+    -- Domain 禁止接触 WidgetHost；事件发布幂等，Presentation 注册前也安全，Widget 注册后自行同步。
     local shouldShow = self:ShouldShowQuickButtons()
     local token = "hud:gear_quick"
     if shouldShow then
@@ -420,7 +403,7 @@ function F:Disable(reason)
     if S.Events ~= nil and type(S.Events.UnsubscribeInternal) == "function" then S.Events:UnsubscribeInternal("v3.gear.updated", self) end
     self.transientConsumers = {}
     self.transientAutoEnabled = false
-    -- Presentation hides the screen buttons from `v3.feature.lifecycle`.
+    -- Presentation 根据 v3.feature.lifecycle 隐藏屏幕按钮。
     if S.Events ~= nil and type(S.Events.Publish) == "function" then
         S.Events:Publish("v3.gear.quick.visibility", false, tostring(reason or "feature_disable"))
     end

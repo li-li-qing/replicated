@@ -1,5 +1,10 @@
--- 2026-09-30: production Trade projection + cold module report. Quotes below are
--- synthetic boundary data, NOT observed RU prices or the user's expected margin.
+------------------------------------------------------------------------
+-- Replicated Suite · 交易收益证据测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用生产 Trade 投影及未启动模块的诊断报告；报价为构造的边界数据，不代表 RU 实际价格或用户预期利润。
+------------------------------------------------------------------------
 dofile("tools/rs_trade_tests.lua")
 local S = ReplicatedSuite
 local Trade, TA = S.Features.Trade, S.Features.Trade.Authority
@@ -145,8 +150,7 @@ Test("registered Trade module provider keeps all 32 bounded material lines", fun
         unitCostCopper=i,totalCostCopper=i*i,priceSource="source",priceFreshness="fresh",priceAgeMinutes=i,
         includeInCost=true,costStatus="quoted"} end
     dofile("core/rs_module_diagnostics.lua")
-    -- Only UI construction boundary is supplied. Loading this file must register,
-    -- not create a legacy diagnostics window or acquire a consumer.
+    -- 仅提供 UI 构建边界；加载文件只应注册定义，不能创建旧诊断窗口或获取消费者需求。
     S.RSUI.FloatingSurface=S.RSUI.FloatingSurface or {}
     S.UIV3.AuxWindowStoreV3=S.UIV3.AuxWindowStoreV3 or {}
     dofile("presentation/v3/widgets/rs_v3_trade_diagnostics.lua")

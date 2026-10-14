@@ -1,6 +1,12 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 首领模拟生命周期测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 开发期回归：真实 Feature / Casting / Aura / Alerts / Scheduler / HUD Presenter。
 -- 仅替换 Native API、绘制和存储宿主；假时钟驱动真实 OnUpdate，不修改标签冒充走秒。
 -- 不访问玩家 UDF，不进入 toc.g；离线通过不代表 RU 客户端验收。
+------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

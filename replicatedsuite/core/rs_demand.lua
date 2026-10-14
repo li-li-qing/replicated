@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Demand / Consumer Lease Foundation
+-- Replicated Suite · 消费者需求与租约
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Shared reference-counted lifecycle primitive.  A Demand owns only consumer
--- intent.  Business/service side effects remain in the owner's reconcile
--- callback.  Transitions are transactional: if reconcile fails, the consumer
--- state is restored and the reconcile callback is invoked in reverse so any
--- downstream lease/start/subscribe side effects can be unwound.
+-- 需求与消费者租约基础层。Demand 只拥有消费者意图，引用计数供共享生命周期使用；业务和服务副作用归拥有者的
+-- reconcile 回调。转换采用事务语义：reconcile 失败时恢复消费者状态，并反向调用 reconcile，撤销下游租约、启
+-- 动及订阅副作用。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -229,9 +229,8 @@ function D:Get(id) return self.registry[tostring(id or "")] end
 
 function D:ClearAll(reason)
     local ok = true
-    -- Demand dependencies are normally created foundation->service->feature.
-    -- Shutdown therefore walks the registry in reverse creation order so
-    -- Feature consumers release before their downstream Services/Foundation.
+    -- Demand 依赖通常按 foundation->service->feature 顺序创建；关闭时逆序遍历，使 Feature 先释放下游
+    -- 服务层和基础层。
     for index = #self.order, 1, -1 do
         local lease = self.registry[self.order[index]]
         if lease ~= nil then

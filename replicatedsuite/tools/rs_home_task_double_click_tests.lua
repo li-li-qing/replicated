@@ -1,4 +1,10 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 首页任务双点击测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 真正 RSUI 行点击链；只替换游戏任务数据与详情服务，非 RU 客户端验收。
+------------------------------------------------------------------------
 local Host=dofile('tools/rs_workspace_home_test_host.lua')
 local passed=0
 local function Test(name,fn)fn();passed=passed+1;print('PASS home-double-click '..name)end

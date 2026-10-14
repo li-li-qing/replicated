@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Activity Personal Progress Selection Store Tests
+-- Replicated Suite · 活动详情追踪测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Development-only offline suite; not loaded by toc.g. The Store owns only the
--- player's selected MAIN objectives. Quest completion truth remains QuestProgressV3.
+-- 开发期离线测试，不进入 toc.g。Store 只保存玩家选中的 MAIN 目标，任务完成事实仍由 QuestProgressV3 提供。
 ------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Check(name, fn)

@@ -1,4 +1,7 @@
 @echo off
+REM Replicated Suite · 开始自动保存诊断
+REM 作者：Replicated
+REM QQ群：1104129461
 setlocal
 chcp 65001 >nul
 if not exist "%~dp0tools\RS-Diagnostic-Exporter.exe" (

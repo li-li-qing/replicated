@@ -1,8 +1,10 @@
 ------------------------------------------------------------------------
--- 2026-09-30 daily-auction-title-recovery-1 (development only; not in toc.g)
--- Real Demand / QuestProgress / DailyAuctionMaterials / static recipe resolver.
--- Only the RU Native host, event delivery and clock/scheduler edges are simulated.
--- 990011/990012 are synthetic test IDs, NOT proposed additions to game data.
+-- Replicated Suite · 每日拍卖称号就绪测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 仅供开发期使用，不进入 toc.g；运行真实 Demand、QuestProgress、DailyAuctionMaterials 和静态配方解析器。
+-- 仅模拟 RU 原生宿主、事件传递及时钟和调度边界；990011/990012 是构造的测试 ID，不能加入游戏数据。
 ------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
@@ -68,7 +70,7 @@ local function Boot()
         if h.titleFailures[qid] then error('simulated title not ready') end
         return h.titles[qid]
     end
-    -- A passive materials projection must never require X2Auction/X2Craft.
+    -- 被动材料投影不能要求 X2Auction 或 X2Craft。
     X2Auction = setmetatable({}, { __index = function() error('daily materials attempted auction IO') end })
     X2Craft = setmetatable({}, { __index = function() error('daily materials attempted craft IO') end })
     dofile('core/rs_demand.lua')
@@ -85,7 +87,7 @@ local function Boot()
     dofile('data/rs_trade_static_v2.lua')
     dofile('data/rs_quest_data.lua')
     assert(S.BootError == nil, tostring(S.BootError))
-    -- Activity/instance definitions remain real, but no instance demand is acquired.
+    -- 活动和副本定义保持真实，但不获取副本需求。
     dofile('services/rs_trade_material_identity_v3.lua')
     dofile('services/rs_quest_progress_v3.lua')
     dofile('services/rs_daily_auction_materials_v3.lua')
@@ -248,8 +250,8 @@ end)
 
 -- 中文维护注释（2026-10-02）：地区名称必须按同一个 CraftId 对照 RU 中英文数据库，
 -- 不能从待测 Zone.nameZh 反造标题，否则错误别名也会获得绿灯。
--- https://wiki.archerage.to/ru-cn/db/crafts/commerce-vocation
--- https://wiki.archerage.to/ru-en/db/crafts/commerce-vocation
+-- 参考来源：https://wiki.archerage.to/ru-cn/db/crafts/commerce-vocation
+-- 参考来源：https://wiki.archerage.to/ru-en/db/crafts/commerce-vocation
 -- 第一列是真实 ZoneId；后面的中文名称/英文配方前缀是独立核对的身份期望。
 local REGION_CASES = {
     {1,'格威尔森林','Gweonid Commercial','标准'}, {2,'玛瑞诺普','Marianople Fine','新鲜'},
@@ -368,8 +370,7 @@ Test('verified product ItemID wins over localized or misleading product text', f
     Eq(identity:ResolveStatic('[棋盘]保存特产', 15, 31874), nil, 'product/route region conflict')
 end)
 
--- Real import manager: title data must not depend on Bonds/Activities having
--- accidentally imported X2Quest first. Only ADDON:ImportAPI itself is simulated.
+-- 使用真实导入管理器，称号数据不能依赖 Bonds 或 Activities 偶然提前导入 X2Quest；仅 ADDON:ImportAPI 调用由替身提供。
 local function InstallImports(h, shouldFail)
     local questHost=X2Quest; X2Quest=nil
     dofile('native/rs_native_contract.lua')

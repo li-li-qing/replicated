@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Static/geometry regressions for Trade optimization .18.317.
+# ---------------------------------------------------------------------
+# Replicated Suite · 交易优化测试
+# 作者：Replicated
+# QQ群：1104129461
+# ---------------------------------------------------------------------
+"""交易优化的静态和几何回归。
 
-These checks intentionally avoid mocking ArcheRage native calls. They protect the
-architecture contracts that can be verified off-client: historical Store
-compatibility, one-lane scheduling, event-driven observation, bounded local
-projection and opt-in TableView tail fitting. RU native acceptance/callback
-semantics still require the module diagnostics captured in game.
-"""
+不模拟 ArcheRage 原生调用，只保护客户端外可验证的架构契约：历史 Store 兼容、
+单通道调度、事件观察、有界局部投影，以及显式启用的 TableView 尾行自适应。
+RU 原生请求受理和回调语义仍需游戏内模块诊断证据。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -58,7 +60,7 @@ def section(text: str, begin: str, end: str) -> str:
 
 
 def adaptive_tail(viewport: float, count: int, base: float, gap: float, soft_min: float, soft_max: float):
-    """Python mirror of RSUI ResolveAdaptiveTailRowHeight for geometry regression."""
+    """RSUI ResolveAdaptiveTailRowHeight 的 Python 对照实现，用于几何回归。"""
     h = max(1.0, float(viewport))
     count = max(0, int(count))
     base = max(12.0, float(base))
@@ -95,13 +97,13 @@ def adaptive_tail(viewport: float, count: int, base: float, gap: float, soft_min
 def main() -> int:
     require('runtime = true' in FEATURE_ACCEPTANCE and 'self:RunRuntimeContracts(report)' in CORE_GATE,
             "migrated Trade contracts remain in live diagnostics, not only skipped offline sequences")
-    # Build/version and historical Store boundary.
+    # 核对构建标识和历史 Store 边界。
     # 中文维护注释（2026-09-28，Phase 2 Step 4）：本条按 §30 分类 B（旧硬编码 version）更新。
     # Authority：BuildTag 已按 Phase 0（.330）、Phase 1（.331）、Phase 2 首轮（.332）连续合法推进。
     require("v3-m1.16.0.18.332-phase2-life-bundle-slice-complete" in BOOT,
             "build tag must carry the current cumulative baseline")
-    # 18.310 regression: a literal backslash-n was appended to a Lua `--` comment,
-    # so `local now = NowMs()` was commented out and the scheduler task crashed.
+    # 覆盖旧 18.310 回归：字面量反斜杠 n 被追加到 Lua 的 -- 注释，
+    # 导致 local now = NowMs() 也进入注释，使调度任务崩溃。
     require('最多一次。\\n    local now = NowMs()' not in PRICE_QUOTE, "price drain local now is not swallowed by comment")
     require("local now = NowMs()" in PRICE_QUOTE, "price drain owns a local time snapshot")
     require('preferenceStoreId = "v3.trade_preferences"' in BUNDLE, "trade preferences split into independent store")
@@ -111,7 +113,7 @@ def main() -> int:
     require('RegisterStore(Trade.preferenceStoreId, "v3.life.trade.preferences"' in BUNDLE, "new preference store registered")
     require('"v3.trade_preferences"' in FOUNDATION, "trade preference store participates in persistence acceptance")
 
-    # .18.312 RU live payout anchor: preserved freshness is a static +3% category multiplier.
+    # 18.312 RU 实测收入基准证明，保鲜是静态 +3% 品类乘数。
     require('{ token = "保存", value = 1.03' in TRADE_PRICES, "preserved freshness multiplier is 1.03")
     require('{ token = "特供", value = 1.30' in TRADE_PRICES, "luxury/特供 freshness multiplier is 1.30")
     require('{ token = "无添加", value = 1.15' in TRADE_PRICES, "no-additive freshness multiplier is 1.15")
@@ -126,7 +128,7 @@ def main() -> int:
     preserved = (291257 / 107) * 113 * (1 + 332000 / 10000 * 0.05) * 1.03
     require(round(preserved) == 842733, "RU live preserved payout anchor is 84g27s33c")
 
-    # Bound/non-market resources retain recipe requirements without auction fan-out.
+    # 绑定或不可交易资源保留配方需求，但不能展开拍卖查询。
     require(re.search(r'\["Gilda Star"\].*includeInCost=false.*auctionable=false.*costKind="bound_resource".*itemType=23633', STATIC) is not None,
             "Gilda Star is a verified bound crafting resource")
     require('materialKeyByItemId' in STATIC and 'function S.Data.TradeStaticV2:GetMaterialByItemId' in STATIC,
@@ -140,7 +142,7 @@ def main() -> int:
     require('row.materialCostBasis = (row.boundResourceCount > 0 or row.nonMarketResourceCount > 0) and "gold_only_with_resources"' in BUNDLE,
             "profit labels gold-only basis when extra resources exist")
 
-    # User-focused local projection; native still returns route bundle.
+    # 面向用户进行局部投影，原生接口仍返回路线合集。
     require("function Trade:SetViewMode" in BUNDLE and "function Trade:ToggleTrackedProduct" in BUNDLE, "tracked/all/cargo commands exist")
     rebuild = section(BUNDLE, "function TA:RebuildDisplayRows", "function TA:RefreshCommerceSkill")
     require('if mode == "all" or Trade:IsTrackedProduct(raw.itemType) then' in rebuild, "tracked view filters before heavy display enrichment")
@@ -156,7 +158,7 @@ def main() -> int:
     require('r.fallbackState~="searching"' in cancel_requester,
             "tokenless fallback search keeps pending ownership until completion or timeout")
 
-    # Route scheduler: one native lane; RU native cooldown is respected, while cached routes render immediately.
+    # 路线调度共用单一原生通道并遵守 RU 原生冷却，缓存路线可立即展示。
     request = section(BUNDLE, "function TA:Request(force, reason)", "function TA:OnCargoRatio")
     require('if self.inFlight ~= nil then' in request and 'self.pendingRoute = { from = from, to = to' in request,
             "SingleFlight keeps latest pending route")
@@ -167,8 +169,8 @@ def main() -> int:
     require('return TA:Request(true, "route_change")' in BUNDLE, "destination switch uses route_change reason")
     require("requestTrace" in BUNDLE and "cooldown_deferred" in request, "cooldown scheduling evidence is diagnosed")
 
-    # Native callback ownership must outlive transient page/widget Consumer churn. The 18.294 field report
-    # proved native_accepted -> no_consumers could otherwise discard the only callback subscription.
+    # 原生回调所有权必须跨越页面或控件消费者的临时变化；18.294 实机报告证明，
+    # native_accepted→no_consumers 可能错误移除唯一回调订阅。
     reconcile = section(BUNDLE, "function Trade:ReconcileDemand", "function Trade:Enable")
     require('Trade.nativeRatioEventOwner = { Id = "life_trade.native_ratio_callback" }' in BUNDLE,
             "trade has a dedicated lightweight native-callback owner")
@@ -181,15 +183,15 @@ def main() -> int:
     require('stale_callback_consumed_no_runtime' in BUNDLE and 'Trade:ShouldRunAutoRefreshBackground() == true' in BUNDLE,
             "late stale callback follows the latest route only while UI or background route runtime still owns it")
 
-    # Automatic refresh leaves user-interaction headroom instead of continuously occupying a 5s native window.
+    # 自动刷新应给用户交互留出空档，不能持续占满 5 秒原生窗口。
     auto = section(BUNDLE, "function TA:GetAutoRefreshTargetMs", "function TA:ArmCargoPump")
     require('TA.autoRefreshTargetMs = 10000' in BUNDLE and 'TA.autoRefreshCooldownFactor = 2' in BUNDLE,
             "automatic route refresh has an explicit interaction headroom budget")
     require('cooldownTarget = math.max(0, tonumber(self.lastNativeCooldownMs) or 0) * math.max(1, tonumber(self.autoRefreshCooldownFactor) or 2)' in auto,
             "automatic refresh waits at least two native cooldown windows")
 
-    # Timeout quarantine: callback has no request id, so a timed-out lane must not be
-    # immediately reused and let its late payload attach to the next route/cargo request.
+    # 回调没有请求 ID，因此超时通道不能立即复用，
+    # 否则迟到数据可能被归给下一条路线或货物请求。
     timeout_arm = section(BUNDLE, "function TA:ArmRequestTimeout", "function TA:Request(force, reason)")
     timeout_drain = section(BUNDLE, "function TA:ArmTimeoutDrain", "function TA:CancelDeferredRequest")
     on_ratio = section(BUNDLE, "function TA:OnRatio", "function TA:DescribeRequestState")
@@ -211,12 +213,12 @@ def main() -> int:
             and 'self:CancelTimeoutDrain()' in on_ratio,
             "late callback is consumed by its timed-out flight and cancels quarantine")
 
-    # Stale-while-refresh: same route is not blanked before request.
+    # 后台刷新期间保留旧数据，同一路线发请求前不能清空结果。
     require('local keepRows = self:HasRawRowsForRoute(from, to)' in request, "same-route refresh detects reusable snapshot")
     require('self.status, self.error = keepRows and "refreshing" or "loading", nil' in request,
             "same-route refresh keeps old rows visible")
 
-    # Event-driven proficiency/backpack updates; never a Trade Tick loop.
+    # 熟练度和背包变化由事件驱动，不能加入 Trade Tick 循环。
     require('SubscribeOptional("UNIT_EQUIPMENT_CHANGED"' in BUNDLE, "equipment change event subscribed")
     require('AddOneShot(self.equipmentRefreshTask, 220' in BUNDLE, "equipment refresh is debounced")
     require('SubscribeOptional("ENTER_ANOTHER_ZONEGROUP"' in BUNDLE, "zone transition event subscribed")
@@ -248,7 +250,7 @@ def main() -> int:
     trade_slice = BUNDLE
     require("OnUpdate" not in trade_slice and "OnTick" not in trade_slice, "trade slice introduces no Tick/OnUpdate polling")
 
-    # Cargo route scan shares the same inFlight lane and is serial/cooldown paced.
+    # 货物路线扫描共用同一 inFlight 通道，并按原生冷却串行执行。
     cargo_start = section(BUNDLE, "function TA:StartCargoNativeRequest", "function TA:ArmRequestTimeout")
     require('if self.inFlight ~= nil then return false, "Native 查询通道占用中" end' in cargo_start,
             "cargo scan cannot overlap native route request")
@@ -270,7 +272,7 @@ def main() -> int:
     cargo_result = section(BUNDLE, "function TA:OnCargoRatio", "function TA:OnRatio")
     require('if cargo.scanning ~= true then return true end' in cargo_result, "late cargo callback cannot re-arm a stopped scan")
 
-    # Localized bounded text must preserve UTF-8 codepoint boundaries.
+    # 截断本地化文本时必须保留 UTF-8 码点边界。
     require('local function TradeUtf8Prefix' in BUNDLE and 'string.byte(text, index + offset)' in BUNDLE,
             "trade material truncation is UTF-8 boundary aware")
     require('string.sub(text, 1, limit)' not in section(BUNDLE, "local function BoundedTradeText", "local function ResolveTradeIngredient"),
@@ -280,7 +282,7 @@ def main() -> int:
     require('timeoutDrainRemainingMs' in DIAGNOSTICS and 'timedOutRoute' in DIAGNOSTICS,
             "trade diagnostics exposes timeout quarantine evidence")
 
-    # Commerce multiplier is owned by TradePayoutV3 and merely projected to both UIs.
+    # 贸易乘数由 TradePayoutV3 管理，两个 UI 只读取投影。
     projection = section(BUNDLE, "function TA:GetProjection", "local function NormalizeTradeState")
     require('commerceMultiplier = payoutService:GetCommerceMultiplier' in projection and 'commerceMultiplier = commerceMultiplier' in projection,
             "trade projection exposes the payout-service commerce multiplier")
@@ -289,14 +291,14 @@ def main() -> int:
     require('commerceMultiplier = commerceMultiplier' in projection,
             "commerce multiplier remains available as detached projection even when compact UI hides it")
 
-    # Sparse live-identity cache must obey its declared memory budget.
+    # 稀疏实时身份缓存必须遵守已声明的内存预算。
     require('#M.liveCache' not in MATERIAL_IDENTITY, "trade live identity cache does not use Lua length on a hash table")
     require('local function TrimLiveCacheForInsert()' in MATERIAL_IDENTITY and 'count = count + 1' in MATERIAL_IDENTITY,
             "trade live identity cache counts sparse entries explicitly")
     require('local evictKey = oldestFailedKey or oldestAnyKey' in MATERIAL_IDENTITY,
             "trade live identity cache remains bounded even when every cached entry is ready")
 
-    # Explicit quotes must accept live-craft materials that have an itemType but no static English key.
+    # 显式询价必须支持有 itemType 但没有静态英文键的实时制作材料。
     quote_slice = section(BUNDLE, "local function ResolveTradeQuoteIdentity", "-- Diagnostics reads describe helpers")
     require('itemType,itemGrade=tonumber(material.itemType),tonumber(material.itemGrade)' in quote_slice,
             "material quote identity prefers projected itemType/itemGrade authority")
@@ -310,7 +312,7 @@ def main() -> int:
             and 'searchName = material.searchName or material.name, singleQuery = true' in MATERIAL_PRICE,
             "Trade single-query transport preserves localized material search identity")
 
-    # .18.299 quote-chain regressions from live .18.298 diagnostics.
+    # 覆盖来自 18.298 实机诊断的询价链回归。
     require('refreshControls = function(instance, projection, rows, Feature)' in WIDGET
             and 'local row = type(Feature.GetSelectedRow) == "function"' in WIDGET,
             "trade HUD refresh receives Feature explicitly instead of indexing a nil global")
@@ -349,7 +351,7 @@ def main() -> int:
             "fallback cost normalizes listing totals to per-unit prices and fails closed without quantity")
     require('1, 0, 0, 1, 0, options.exactMatch == true' in AUCTION_QUERY,
             "auction name search does not retain the stale maxLevel=55 filter")
-    # 2026-09-30: the normalizer now carries bounded recursion depth; keep the numeric/currency guard.
+    # 归一化器限制递归深度，同时保留数值及币种保护。
     require('local function Money(value, depth)' in AUCTION_QUERY
             and 'if depth > 4 then return nil end' in AUCTION_QUERY
             and 'local gold, silver, copper' in AUCTION_QUERY,
@@ -422,7 +424,7 @@ def main() -> int:
             and 'tradeMultiQuoteUiContractVersion' in CORE_GATE,
             "foundation gate blocks mixed old/new multi-row quote packages before user interaction")
 
-    # .18.317 durable material-price Authority + stale-while-revalidate economics.
+    # 覆盖持久化材料价格归属及后台重新验证时的收益计算。
     require('services/rs_price_quote_queue_v3.lua' in TOC and 'services/rs_material_price_service_v3.lua' in TOC
             and TOC.index('services/rs_price_quote_queue_v3.lua') < TOC.index('services/rs_material_price_service_v3.lua') < TOC.index('features/life/trade/rs_trade_feature.lua'),
             "material price Authority loads after Native quote queue and before Trade feature")
@@ -499,8 +501,8 @@ def main() -> int:
             and 'PriorityQueueContractVersion' in CORE_GATE,
             "foundation gate rejects mixed packages missing durable material-price Authority")
 
-    # Automatic route refresh is a low-frequency scheduler watchdog with an independent lightweight Runtime owner.
-    # It survives page/widget visibility changes WITHOUT keeping the ordinary Trade Demand alive.
+    # 自动路线刷新由低频调度监控负责，使用独立、轻量的 Runtime owner；
+    # 页面或控件可见性变化时仍可运行，但不能维持普通 Trade Demand。
     require('requestAutoTask = "v3_trade_route_auto_refresh_watchdog"' in BUNDLE, "auto refresh has dedicated watchdog task")
     require('AddTask(self.requestAutoTask' in BUNDLE and 'TA:Request(false, "auto_refresh")' in BUNDLE
             and 'autoRefreshWatchIntervalMs = 1000' in BUNDLE
@@ -527,7 +529,7 @@ def main() -> int:
             and 'AutoRefreshRuntimeContractVersion' in FEATURE_ACCEPTANCE and 'AutoRefreshWatchdogContractVersion' in FEATURE_ACCEPTANCE,
             "startup gates reject mixed packages missing auto-refresh runtime/watchdog contracts")
 
-    # UI tail-fit is reusable but opt-in; trade surfaces opt in.
+    # UI 尾行自适应能力可复用且须显式启用，交易界面已选择启用。
     require("ResolveAdaptiveTailRowHeight" in TABLE and 'rowFitMode == "adaptive_tail"' in TABLE,
             "TableView exposes reusable adaptive-tail geometry")
     require('rowFitMode = kind == "trade" and "adaptive_tail" or "fixed"' in PAGE, "main trade table opts into adaptive tail")
@@ -591,7 +593,7 @@ def main() -> int:
     require(rows == 2 and h <= 30 and tail > 100,
             "adaptive tail preserves genuine content-shortage whitespace instead of over-stretching a tiny list")
 
-    # Registry metadata matches implementation dependencies.
+    # Registry 元数据必须与实现依赖一致。
     life_trade = section(REGISTRY, 'Add("life_trade"', 'Add("life_bonds"')
     require('"X2Equipment:GetEquippedItemType"' in life_trade and '"X2Equipment:GetEquippedItemTooltipInfo"' in life_trade,
             "feature registry exposes direct and fallback equipment dependencies")

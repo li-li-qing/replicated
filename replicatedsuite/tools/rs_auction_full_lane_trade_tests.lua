@@ -1,4 +1,10 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 拍卖完整通道交易测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 维护（2026-10-01，auction-full-lane-safety-1）：真实 Trade/配方/Query/Queue/材料价联测。
+------------------------------------------------------------------------
 dofile('tools/rs_trade_tests.lua')
 local baseS=ReplicatedSuite
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')

@@ -1,4 +1,10 @@
--- 中文维护：使用真实 Authority、Events、WidgetHost 和死亡窗口；仅替代存档与原生绘制边界。
+------------------------------------------------------------------------
+-- Replicated Suite · 死亡复盘自动show测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用真实 Authority、Events、WidgetHost 和死亡窗口；仅替代存档与原生绘制边界。
+------------------------------------------------------------------------
 local passed = 0
 local function Test(name, fn)
     fn()

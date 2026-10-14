@@ -1,8 +1,14 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 7 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+------------------------------------------------------------------------
+-- Replicated Suite · 批量导入归属测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
+-- 数据归属、调用链和存档协议由原实现管理，
+-- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
+-- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 维护：真实 Core/Store/RSUI Diff；Native 仅模拟键入和第189项起缺失，不宣称RU内部硬上限。
+------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
  local ok,err=xpcall(fn,function(e)return tostring(e)..'\n'..debug.traceback()end)
@@ -84,7 +90,7 @@ Test('first migration preserves verified legacy settings without restamping the 
  assert(fresh.State.settings.showBuffs==false and fresh.State.settings.refreshMs==173 and fresh.State.widgetVisible==true,'empty split settings replaced authenticated legacy settings')
  assert(Equal(legacy,fio.disk[key]),'migration restamped its legacy source')
 end)
--- 中文维护：原章与 seal 是两道独立门禁；前缀后藏着合法 player-only 差异时也不能借 target 覆盖。
+-- 原章与 seal 是两道独立门禁；前缀后藏着合法 player-only 差异时也不能借 target 覆盖。
 Test('first migration rejects invalid legacy seal before establishing new authority',function()
  local _,F,P,io=Boot({loss=false});assert(P:LoadStore('v3.buff_display')=='empty')
  assert(P:SaveStore('v3.buff_display',{durable=true,consumeDirty=true}))
@@ -103,7 +109,7 @@ Test('first migration cannot hide scoped divergence behind observed auto prefix 
  local ok,why=fresh:EnsureStoreLoaded();assert(not ok and tostring(why):find('fingerprint',1,true),why)
  assert(fio.writes==0 and fio.clears==0 and Equal(before,fio.disk),'unproven twin repair committed a new generation')
 end)
--- 中文维护：中断后的首次迁移可能已有 settings Authority；磁盘新读与当前代已加载缓存两条路径
+-- 中断后的首次迁移可能已有 settings Authority；磁盘新读与当前代已加载缓存两条路径
 -- 都必须优先该小 Store，禁止旧候选覆盖。有效 manifest 出现后则不再读取任何 Legacy 字节。
 for _,preloaded in ipairs({false,true})do
  Test('verified split settings take priority during first migration with preloaded='..tostring(preloaded),function()
@@ -336,7 +342,7 @@ Test('schema8 scoped tracking survives observed v4 p-chunk omission with transpo
  assert(#F.State.settings.tracked.player.auto==392 and #F.State.settings.tracked.target.auto==392)
  local _,fresh=Boot({disk=io.disk,loss=false});assert(fresh:EnsureStoreLoaded());assert(#fresh.State.settings.tracked.player.auto==392 and #fresh.State.settings.tracked.target.auto==392)
 end)
--- 中文维护：当前目录推荐 auto=392；一次真实导入先验 inactive 三片，再提交 manifest，共四写。
+-- 当前目录推荐 auto=392；一次真实导入先验 inactive 三片，再提交 manifest，共四写。
 Test('392 recommended auto IDs survive native loss starting at array index 189 through split authority',function()
  local S,F,P,io=Boot();assert(F:EnsureStoreLoaded());local before=io.writes
  local ok,why=F:ImportBuiltinPack('recommended',false);assert(ok,why)
@@ -365,7 +371,7 @@ Test('transport4 physical layout reconstructs exact canonical values and escapes
 end)
 Test('missing chunk is rejected before applying or normalizing a partial list',function()
  local _,F,P,io=Boot();assert(F:EnsureStoreLoaded());local before=Copy(F.State)
- -- 中文维护：真实写入目标是 inactive player 分片；损坏仍必须导致导入回滚与 manifest 不变。
+ -- 真实写入目标是 inactive player 分片；损坏仍必须导致导入回滚与 manifest 不变。
  local manifest=Copy(F:GetTrackingPersistenceHealth())
  io.damage=function(raw)if tostring(raw.__rsmeta.store):find('v3.buff_display.tracking.player.',1,true)then raw.payload.auto.chunks[2]=nil end end
  local ok,why=F:ImportBuiltinPack('recommended',false);assert(not ok and tostring(why):find('transport',1,true),why)

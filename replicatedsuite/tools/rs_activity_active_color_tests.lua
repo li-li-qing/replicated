@@ -1,5 +1,10 @@
--- Offline regression: timeline occurrences that are currently active render red;
--- upcoming timeline rows inside 10 minutes are red; later rows remain neutral, and live-region tones keep their own authority.
+------------------------------------------------------------------------
+-- Replicated Suite · 活动进行中颜色测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 离线回归：当前进行中的时间线活动显示红色，未来 10 分钟内的活动也显示红色；更晚的活动保持中性色，实时区域颜色仍由其自身规则决定。
+------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, why = xpcall(fn, debug.traceback)

@@ -1,28 +1,15 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Layout Editor Gesture Controller v2
+-- Replicated Suite · 布局编辑手势桥
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Finite gesture bridge for editor-style move/resize interactions.
---
--- Authority boundaries:
---   * Native StartMoving/StopMovingOrSizing = proven RU capture mechanism.
---   * RSUI.Pointer = logical pointer coordinates only; no generic capture.
---   * S.Layout RectTransformTransaction = transform math / rollback.
---   * LayoutGuideResolver = bounded snap math against candidates frozen at Begin.
---   * SelectionOverlay / LayoutGuideOverlay = presentation only.
---   * Caller owns persistence and feature state through callbacks.
---
--- Coordinate-space contract:
---   Pointer is sampled in viewport-logical coordinates. If edited rectangles are
---   parent/canvas-local, callers MUST provide pointerToLocal(x,y). Identity
---   conversion is accepted only when coordinateSpace="viewport" is declared.
---
--- Performance contract:
---   * no permanent Tick / OnUpdate;
---   * one ~16 ms InteractiveTask only while a gesture is active;
---   * OnUpdate is gesture-only fallback when Scheduler rejects/unavailable;
---   * snap candidate discovery runs once at gesture Begin, never every pulse;
---   * each pulse is pointer sampling + O(bounded candidates) pure math;
---   * persistence is caller-owned and should occur only in onCommit.
+-- 编辑移动/缩放的有限手势桥。
+-- 边界：Native StartMoving/StopMovingOrSizing 是已验证 RU 捕获；RSUI.Pointer 只提供逻辑坐标，无通用捕获；
+-- S.Layout RectTransformTransaction 负责数学/回滚；LayoutGuideResolver 基于 Begin 冻结候选作有界吸附；
+-- SelectionOverlay/LayoutGuideOverlay 仅表现；持久化与功能状态由调用方回调负责。
+-- Pointer 采样为视口逻辑坐标；rect 若为父/画布局部，调用方必须提供 pointerToLocal(x,y)，仅声明 coordinateSpace="viewport" 时接受恒等转换。
+-- 无永久 Tick/OnUpdate；活跃手势仅借一个约 16 ms InteractiveTask，Scheduler 拒绝/不可用才用手势期 OnUpdate；
+-- 候选只 Begin 查一次，每次脉冲仅采样与 O(有界候选) 数学；持久化只应在调用方 onCommit。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -211,9 +198,7 @@ function GestureController:FreezeSnapState(kind, handle, startRect, constraints)
         rawOptions = value
     end
     local rawCandidates = nil
-    -- Candidate discovery is only needed when alignment snapping is enabled.
-    -- Grid-only or disabled snapping must not walk the page/component tree at
-    -- gesture start merely because a getSnapCandidates callback exists.
+    -- 仅启用对齐吸附才发现候选；仅网格或关闭吸附时不能因存在 getSnapCandidates 就扫描页面树。
     local wantsAlignment = type(rawOptions) ~= "table" or (rawOptions.enabled ~= false and rawOptions.alignmentEnabled ~= false)
     if wantsAlignment and type(self.getSnapCandidates) == "function" then
         local ok, value = SafeCall("rsui_layout_editor_snap_candidates", self.getSnapCandidates, self, kind, handle, CopyRect(startRect))
@@ -244,8 +229,7 @@ function GestureController:Pulse(force)
     if proposed == nil then self.lastError = previewErr; return false, previewErr end
     local resolved, guides, resolveErr = RSUI.LayoutGuideResolver:Resolve(proposed, self.handle or "move", self.frozenSnapOptions or {})
     if resolved == nil then
-        -- Snap is an enhancement, not transform authority. If it cannot resolve,
-        -- keep the valid unsnapped transform instead of freezing the gesture.
+        -- 吸附是增强，不是变换权威；无法解析时保留有效未吸附变换，不能冻结手势。
         resolved, guides = proposed, {}
         self.lastSnapError = resolveErr
     else
@@ -373,9 +357,7 @@ end
 
 function GestureController:Finish(commit)
     if self.active ~= true then return false, "layout_editor_gesture_not_active" end
-    -- Capture the final pointer position before releasing native movement. A
-    -- strict preview rejection forces rollback on release; never commit a rect
-    -- that the projection/persistence adapter already refused.
+    -- 释放 Native 移动前捕获最终指针；严格预览拒绝须在释放时回滚，不能提交投影/持久适配器已拒绝的 rect。
     self:Pulse(true)
     if self.previewRejected == true then commit = false end
     self:StopSampling()

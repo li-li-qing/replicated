@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Native nameplate / HP bar visual settings page
+-- Replicated Suite · 名牌视觉设置页面
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 维护（2026-09-20，nameplate-mark-ratio-3）：Presentation 不访问 X2Option，所有
+-- 约束（nameplate-mark-ratio-3）：Presentation 不访问 X2Option，所有
 -- Native 写入只走 Feature.Commands -> Authority。RU 某些 CVar 允许 Set 但 Get 返回 nil，因此页面
 -- 必须区分 strict / partial / write_only，禁止把“调用 Set 成功”伪装成“全部回读验证成功”。
 ------------------------------------------------------------------------
@@ -129,7 +131,7 @@ local function BuildPage(parent, route)
         return field
     end
 
-    -- 中文维护注释（nameplate-mark-ratio-3）：旧 over_head_marker_width/height/offset 在 RU 实机
+    -- 约束（nameplate-mark-ratio-3）：旧 over_head_marker_width/height/offset 在 RU 实机
     -- Set 成功但无视觉变化，页面不再暴露三个无效控件。百分比仍写 schema1 width/height 兼容字段，
     -- Native Authority 只转换成 name_tag_mark_size_ratio，避免改 Store schema 导致旧用户指纹 fence。
     local markerScale = D:CompactNumericSetting(markerGrid, {

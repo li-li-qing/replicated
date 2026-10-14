@@ -1,7 +1,11 @@
 ------------------------------------------------------------------------
--- ActivityLists: time line + independently scrollable live regions.
--- 维护（2026-09-18，activity-time-audit）：一个长表把鲸鱼/烛台挤出小窗口；
--- 修复的是视口职责，不将未知阶段伪造为0秒塞进时间排序。数据/排序事实仍归
+-- Replicated Suite · 活动时间线与实时区域列表
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- ActivityLists：时间线与可独立滚动的实时区域。
+-- 约束（activity-time-audit）：时间线与实时区域使用独立视口，避免小窗口实时区域被长表挤出；
+-- 仅负责视口分工，不将未知阶段伪造为 0 秒参加时间排序。数据/排序事实仍归
 -- Activity Authority，个人顺序归 Workspace；本组件只稳定分区和分配几何空间。
 -- 无 Native 读取、Tick、持久化或 Consumer。父页面/Widget 仍独占生命周期。
 -- 两个有界 TableView 共用列定义的副本，独立滚动；关闭空分区不预留空白。
@@ -129,7 +133,7 @@ function Lists:Create(spec)
             end
             return accepted,detail
         end or nil
-        -- DataViewSelectionContractVersion=2: index,previousIndex,view,model,reason,key,selected,context。
+        -- DataViewSelectionContractVersion=2：index,previousIndex,view,model,reason,key,selected,context。
         cfg.onSelectionChanged=function(index,previousIndex,view,model,reason,key,selected,context)
             if c.changingSelection then return end
             c.changingSelection=true

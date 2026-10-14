@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Fishing / Auto-R Regression Tests
+-- Replicated Suite · 钓鱼测试
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- Covers the RU-proven fishing action buff mapping and the reversible Auto-R
--- hotkey transaction.  Native calls are mocked at the exact capability shapes
--- used by production; this is not a RU client test.
+-- 钓鱼和自动 R 回归，覆盖 RU 已证明的钓鱼动作 Buff 映射及可撤销热键事务。
+-- 原生替身按生产能力参数形状模拟，不能视为 RU 客户端测试。
 ------------------------------------------------------------------------
-
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -82,8 +82,7 @@ _G.X2Hotkey = {
     SetOptionBindingWithIndex = function(_, action, key, index, slot)
         nativeLog[#nativeLog + 1] = { op = "set", slot = slot, key = key }
         if tonumber(failSetSlot) == tonumber(slot) then return false end
-        -- Mirror the client's one-key-one-binding behavior: assigning a key to a
-        -- new action slot removes that same key from the previous slot.
+        -- 模拟客户端一个键只绑定一个动作的行为：把按键分配到新动作槽时，从旧槽移除该按键。
         for existingSlot, existingKey in pairs(bindings) do
             if tostring(existingKey) == tostring(key) then bindings[existingSlot] = nil end
         end
@@ -102,7 +101,7 @@ _G.X2Hotkey = {
     end,
 }
 
--- Baseline RED gate: r2 had no transaction service and deliberately blocked Auto-R.
+-- 覆盖旧 r2 基线：没有事务服务时必须拒绝自动 R。
 local serviceOk, serviceErr = pcall(dofile, "services/rs_fishing_hotkey_v3.lua")
 assert(serviceOk, "FishingHotkeyV3 service must exist: " .. tostring(serviceErr))
 assert(type(S.Services and S.Services.FishingHotkeyV3) == "table", "FishingHotkeyV3 service must register")
@@ -257,7 +256,7 @@ Test("T4b: Armed Auto-R owns a demand lease after the page consumer closes", fun
     assert(Fishing:ReleaseConsumer("test:page-close"))
     local armedAfterPageClose = Fishing:IsAutoArmed() == true
     local pollStillRunning = S.Scheduler.tasks["v3_life_fishing_poll"] ~= nil
-    -- Clean up both old and new implementations before asserting so one RED case cannot pollute later tests.
+    -- 断言前清理新旧实现，避免一个失败用例污染后续测试。
     if Fishing:IsAutoArmed() then Fishing:DisarmAuto(true) end
     local pollReleasedAfterDisarm = S.Scheduler.tasks["v3_life_fishing_poll"] == nil
     assert(armedAfterPageClose, "Auto-R must remain armed after the main page consumer closes")
@@ -265,7 +264,7 @@ Test("T4b: Armed Auto-R owns a demand lease after the page consumer closes", fun
     assert(pollReleasedAfterDisarm, "disarming the last Auto-R consumer must release the observation task")
 end)
 
--- 中文维护：真实 Events / Scheduler / Demand / Store / 热键服务驱动两条鱼切换。
+-- 真实 Events / Scheduler / Demand / Store / 热键服务驱动两条鱼切换。
 -- Native 桩只模拟“动作栏键位被客户端重设”，不能把离线模型称为 RU 实测。
 local function WithArmedFishing(token, fn)
     resetNative()
@@ -282,7 +281,7 @@ local function WithArmedFishing(token, fn)
 end
 
 local function ResetMappedR()
-    -- Fish A and fish B can request the same action while the native bar changes.
+    -- 原生动作栏变化时，两条鱼可能请求同一动作。
     bindings[4], bindings[1] = "4", "R"
 end
 
@@ -390,7 +389,7 @@ Test("T4j: All five fish actions switch repeatedly in normal and Mirage bars", f
                 setFishBuff(action[1])
                 S.Events:Dispatch("TARGET_CHANGED", "target")
                 assert(Fishing:IsAutoArmed() == true and bindings[slot] == "R")
-                -- Another fish requests exactly the same action after a bar reset.
+                -- 动作栏重置后，另一条鱼再次请求完全相同的动作。
                 bindings[slot], bindings[1] = tostring(slot), "R"
                 S.Events:Dispatch("TARGET_CHANGED", "target")
                 assert(bindings[slot] == "R" and Fishing:GetProjection().slot == slot)
@@ -479,9 +478,7 @@ Test("T8: Hotkey write failure fails closed and restores session", function()
     assert(ok ~= true, "Refresh must surface Auto-R write failure")
     assert(Fishing:IsAutoArmed() == false, "Auto-R must disarm after write failure")
     failSetSlot = nil
-    -- The transaction is allowed to keep recovery pending if compensation could
-    -- not use the failing native API. Once the fault clears, explicit recovery
-    -- must restore the original map without requiring a reload.
+    -- 原生 API 故障导致补偿失败时，允许事务保持待恢复；故障解除后显式恢复必须还原原绑定，无须重载。
     assert(Fishing:ProcessPendingRecovery())
     assertBindings({ [1] = "R", [4] = "4" })
     assert(Fishing:ReleaseConsumer("test:t8"))
@@ -502,7 +499,7 @@ Test("T10: Persisted recovery can be adopted and restored without re-arming", fu
     assert(Fishing:ArmAuto())
     local recovery = Copy(Fishing.State.recovery)
     assert(type(recovery) == "table" and recovery.pending == true)
-    -- Simulate process-local session loss while the durable recovery record survives.
+    -- 模拟进程内会话状态丢失，但持久化恢复记录仍存在。
     Hotkey:ResetSession()
     Fishing.autoArmed = false
     assert(Hotkey:AdoptRecovery(recovery.snapshot))
@@ -571,7 +568,7 @@ Test("T15: Diagnostics exposes fishing observation and hotkey recovery state", f
 end)
 
 Test("T16: Documentation no longer lists fishing Auto-R as SPECIFIC_RUNTIME_BLOCKED", function()
-    local text = ReadText("../Docs/README.md") -- Current documentation root is outside the runtime addon.
+    local text = ReadText("../Docs/README.md") -- 当前文档根目录位于运行时插件目录之外。
     assert(text:find("Fishing full R source-slot enumeration/snapshot | SPECIFIC_RUNTIME_BLOCKED", 1, true) == nil, "README must remove obsolete fishing blocker")
     assert(text:find("HotkeyContractVersion = 3", 1, true) ~= nil, "README must record the v3 reversible transaction contract")
 end)

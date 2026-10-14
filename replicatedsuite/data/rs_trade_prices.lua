@@ -1,6 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Trade payout base tables
--- Ported from user-provided packratio/price.lua. Values are copper per 1% ratio basis.
+-- Replicated Suite · 贸易售价基准数据
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 来源：用户提供的 packratio/price.lua；数值表示每 1% 比价基准对应的铜币。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -701,14 +704,14 @@ S.Data.TradePrices[33] = {
 }
 
 S.Data.TradeOutletNames = { [5]="新月王国", [8]="双冠丘陵", [20]="十字星平原", [4]="索兹里德?", [12]="维拉内尔", [17]="伊尼斯泰尔", [33]="煦日之野" }
--- Freshness/pack category multipliers retained from the supplied working packratio.
--- 中文维护（2026-09-25，trade-preserved-freshness-1）：RU 实机“[保存] 新鲜”明确显示出售奖励 +3%。
+-- 新鲜度/货包分类乘数来源于用户提供的已运行packratio。
+-- RU 实机“[保存] 新鲜”明确显示出售奖励 +3%。
 -- 18.311 漏掉“保存”类别，导致所有“保存特产/保存特制特产”等售价只计算货率×经商熟练度，
 -- 少乘 1.03。以 [黄金]保存特制特产 -> 双冠丘陵 为实机锚点：332000 经商、113% 货率时，
 -- 静态基价 291257/107 × 113 × 2.66 × 1.03 = 842733 铜，正好对应 84金27银33铜。
 -- Authority 边界：货率仍来自 X2Store，经商熟练度来自 X2Ability；本表只保存由物品类别名称确定的
 -- 静态奖励倍率。禁止把实时 UI 金额反推写回静态基价，也不要在 Tick/循环中做模糊名称扫描。
--- 维护（2026-09-27，trade-freshness-matrix-v3）：售价表中的“铜/1%货率”基价不包含贸易品
+-- 售价表中的“铜/1%货率”基价不包含贸易品
 -- 新鲜度/品类奖励，因此这里必须覆盖所有会出现在 TradePrices / Native 名称中的品类标签。此前表中
 -- “特供”误写为 1.15（实际对应 Luxury +30%），同时遗漏“无添加”（无“发酵”后缀）以及原大陆
 -- Coastal/Rich 名称，造成大量货物稳定低估 15%~30%。规则按最长/最具体 token 在前排列，避免

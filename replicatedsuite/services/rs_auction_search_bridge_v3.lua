@@ -1,11 +1,10 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Auction Search Bridge
+-- Replicated Suite · 拍卖搜索桥
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- One explicit-search bridge between player-facing auction helpers and the
--- existing AuctionQueryV3 server-query Authority.  Native Auction EditBox
--- synchronization is an optional presentation enhancement only: it is bounded,
--- read-back verified and fail-closed.  Failure to prove a safe EditBox never
--- blocks the authoritative AuctionQueryV3 search.
+-- 玩家拍卖辅助与 AuctionQueryV3 查询权威之间的显式桥接。同步原生 Auction EditBox 仅是可选表现增强，必须有界
+-- 、读回验证、失败封闭；不能证明安全 EditBox 时也不能阻断权威搜索。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -47,7 +46,7 @@ local function Trim(value) return (tostring(value or ""):match("^%s*(.-)%s*$")) 
 local function SafeCall(object, method, ...)
     if object == nil then return false, nil end
     local args, count = { ... }, select("#", ...)
-    -- 中文维护注释（2026-09-14，Native userdata fail-closed）：RU 原生窗口子对象可能是带受限
+    -- （2026-09-14，Native userdata fail-closed）RU 原生窗口子对象可能是带受限
     -- __index 的 userdata。方法探测本身也可能抛错，不能让可选的搜索框同步打断已经接受的服务器查询；
     -- 因此“取方法 + 调用方法”都置于 pcall 中，任何不透明对象都只视为不可验证候选并降级。
     local ok, value = pcall(function()
@@ -87,7 +86,7 @@ function B:GetSnapshot()
     return out
 end
 
--- 中文维护注释（2026-09-14，Native 搜索框候选生命周期）：原生 Auction widget 引用只允许在
+-- （2026-09-14，Native 搜索框候选生命周期）原生 Auction widget 引用只允许在
 -- 当前拍卖窗口 generation 内缓存，窗口关闭/新一轮打开立即释放。它不是业务 Authority，也绝不写入
 -- Persistence。这样 RU 客户端重建原生窗口后不会继续持有上一代 userdata/table 造成悬空引用。
 function B:ResetNativeCandidate(reason)
@@ -122,7 +121,7 @@ function B:_ProbeNativeCandidate()
         return nil, rootErr
     end
 
-    -- 中文维护注释（2026-09-14，bounded native probe）：RU API 没有已验证的通用 child-enumeration
+    -- （2026-09-14，bounded native probe）RU API 没有已验证的通用 child-enumeration
     -- 方法，因此禁止猜 GetChildren/GetChild。这里只检查 ADDON:GetContent 返回的 Lua content table 及其
     -- 最多 3 层 table 字段；userdata 无法安全枚举就直接降级。最多 128 节点，且只接受同时具备
     -- EditBox 类型 + GetText/SetText + search/keyword 语义证据的候选，防止误写拍卖数量/价格输入框。
@@ -173,8 +172,7 @@ function B:SyncNativeKeyword(keyword)
     self.fallbackCount = (tonumber(self.fallbackCount) or 0) + 1
     self.snapshot.nativeSync = "fallback"; self.snapshot.candidateStatus = "rejected"; self.snapshot.fallbackCount = self.fallbackCount
     self.snapshot.reason = wrote ~= true and "原生搜索框写入异常" or (readOk ~= true and "原生搜索框无法读回" or "原生搜索框读回不一致")
-    -- Reject this candidate for the current generation. A new auction window is
-    -- required before probing again; this avoids repeatedly mutating a wrong UI.
+    -- 当前代际拒绝此候选，需新拍卖窗口才重新探测，避免反复修改错误 UI。
     self.candidate = nil
     return false, self.snapshot.reason
 end
@@ -185,9 +183,7 @@ function B:Search(requester, keyword, options)
     if requester == "" then return false, "查询来源不能为空" end
     if keyword == "" or #keyword > 64 or keyword:find("[%c]") ~= nil then return false, "搜索关键词必须是 1-64 个可见字符" end
     if type(Query) ~= "table" or type(Query.Search) ~= "function" then return false, "AuctionQueryV3 不可用" end
-    -- Server query remains the Authority. Only after it accepts the request do
-    -- we touch the optional native EditBox, so SingleFlight rejection cannot
-    -- leave the native field displaying a keyword that was never queried.
+    -- 服务器查询仍是权威；接受请求后才修改可选原生 EditBox，避免 SingleFlight 拒绝时显示从未查询的关键字。
     local ok, result = Query:Search(requester, keyword, options)
     if ok ~= true then return false, result end
     self.snapshot.keyword = keyword

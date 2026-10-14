@@ -1,18 +1,18 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Status Classification Service
+-- Replicated Suite · 状态分类
+-- 作者：Replicated
+-- QQ群：1104129461
 --
--- 纯分类 Authority：category=buff/debuff/unknown；hidden/special_rule 是来源。
--- 旧接口保留，未知不再默认 Buff，详见下方 v2 维护注释。
+-- 纯状态分类权威：category=buff/debuff/unknown，hidden/special_rule 为来源。保留旧接口，未知不默认正面 Buff
+-- ，分类顺序由下方契约说明。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
 
--- 中文维护注释（分类 v2）：资源类型曾把 393 个 unknown 全部升级为正面 Buff。
--- Authority 仍是本纯服务；Native 事实来自 Aura，用户 override 来自 Feature Store。
--- 顺序：用户 > Native 无冲突 lane > 明确静态极性 > 特殊规则 > unknown。
--- Hidden 只说明探测来源，计时修正规则不证明负面极性。这里不调用 Native、不持久化事实，
--- 不根据名称/ID 规律推断分类；旧 ClassifyId/override 接口保持兼容。
+-- 资源类型不能证明正面 Buff 极性。纯服务拥有分类权威，Native 事实来自 Aura，用户 override 来自 Feature
+-- Store。优先级：用户 > Native 无冲突通道 > 明确静态极性 > 特殊规则 > unknown。Hidden 只说明探测来源，计时
+-- 修正不证明负面；不调用 Native、不持久化事实，不按名称/ID 规律推断，保留 ClassifyId/override 兼容。
 local Classification = {
     version = 2, presentationBoundary = "service_only", registry = {}, overrides = {}, seedCount = 0,
     hits = { user=0, native=0, verified_static=0, special_rule=0, unknown=0 }, conflicts = 0,
@@ -101,8 +101,7 @@ function Classification:GetOverrides()
     return out
 end
 
--- Replace all persisted overrides (used by store apply/migrate). Empty table
--- clears corrections; invalid values are dropped, never preserved.
+-- 替换全部持久 override，供 Store apply/migrate；空表清除修正，无效值直接丢弃不保留。
 function Classification:ApplyOverrides(map)
     local nextOverrides = {}
     if type(map) == "table" then
@@ -116,8 +115,7 @@ function Classification:ApplyOverrides(map)
     return true
 end
 
--- Full classification registry snapshot (export/import support). Returns rows
--- sorted by id with category/detectionSource/name and whether it is a user fix.
+-- 完整分类登记快照供导入/导出，按 ID 排序，包含 category/detectionSource/name 及是否用户修正。
 function Classification:GetRegistrySnapshot(includeSeeds)
     local rows = {}
     if includeSeeds == true then
@@ -143,7 +141,7 @@ end
 
 function Classification:GetHealth()
     local overrideCount, registryCount = 0, 0
-    -- 中文维护注释：统计仅复制固定大小的计数，不把可变内部表交给诊断调用者。
+    -- 统计仅复制固定大小的计数，不把可变内部表交给诊断调用者。
     local hits = {}; for key,value in pairs(self.hits) do hits[key]=value end
     for _ in pairs(self.overrides or {}) do overrideCount = overrideCount + 1 end
     for _ in pairs(self.registry or {}) do registryCount = registryCount + 1 end

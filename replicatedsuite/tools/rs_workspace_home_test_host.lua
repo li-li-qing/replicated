@@ -1,4 +1,10 @@
--- Shared actual RSUI/Persistence home host for .247. Game data is a controlled dependency; no test code enters runtime.
+------------------------------------------------------------------------
+-- Replicated Suite · 工作区首页测试宿主
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 首页共享真实 RSUI/Persistence 宿主；游戏数据为受控依赖，测试代码不进入运行时。
+------------------------------------------------------------------------
 return function(options)
  options=options or {}
  local h=dofile('tools/rs_gear_page_test_host.lua')();local S=h.S;local counts={quotes=0,enabledWrites=0,pauseWrites=0,reads=0,acquired=0,released=0,widgetWrites=0}

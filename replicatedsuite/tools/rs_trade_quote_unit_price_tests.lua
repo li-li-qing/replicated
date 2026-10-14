@@ -1,6 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite - Trade quote listing/unit-price regression (.18.313)
--- Pure logic harness: no Native calls, no files, no persistence writes.
+-- Replicated Suite · 交易报价单位价格测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 交易报价挂牌价与单位价回归，仅运行纯逻辑宿主，不调用原生接口，不读写文件或存档。
 ------------------------------------------------------------------------
 unpack = unpack or table.unpack
 ReplicatedSuite = {
@@ -35,8 +38,7 @@ local function Reset(rows, itemType, name)
     end }
 end
 
--- The selected listing must be the lowest UNIT direct price, not the first row
--- and not the lowest total listing price.
+-- 应选择最低单位直接购买价的挂牌，不能按首行或最低挂牌总价选择。
 Reset({
     { itemType=3603, name="鸡蛋", quantity=1000, directPrice=62573, unitDirectPrice=63 },
     { itemType=3603, name="鸡蛋", quantity=100, directPrice=10000, unitDirectPrice=100 },
@@ -51,7 +53,7 @@ assert(snap.priceSource == "name_search_direct_unit", "wrong fallback source")
 assert(Q.lastFallbackMatch and Q.lastFallbackMatch.matchIndex == 3, "must choose lowest matching unit listing")
 assert(Q.lastFallbackMatch.quantity == 10000, "selected listing quantity missing")
 
--- Fail closed when quantity is absent. Never treat 62573c listing total as 62573c/unit.
+-- 数量缺失时安全拒绝，不能把 62573 铜的挂牌总价当作每单位 62573 铜。
 Reset({ { itemType=3603, name="鸡蛋", directPrice=62573 } }, 3603, "鸡蛋")
 Q:_CheckFallback()
 snap = Q:GetSnapshot("test")
@@ -60,8 +62,7 @@ assert(snap.price == nil, "missing quantity must not fabricate price")
 assert(tostring(snap.error or ""):find("堆叠数量") ~= nil, "failure must explain missing listing quantity")
 
 
--- AuctionQueryV3 must recover the RU/native itemStack field and keep raw listing total
--- separate from the normalized unit price.
+-- AuctionQueryV3 必须提取 RU 原生 itemStack 字段，并将挂牌原始总价与归一化单位价分开。
 S.Api.CallCapability = function(self, capability, api, method, ...)
     if method == "GetSearchedItemCount" then return true, 1, nil end
     if method == "GetSearchedItemInfo" then
@@ -80,8 +81,7 @@ assert(aqRow.quantity == 1000, "itemStack must normalize to quantity")
 assert(aqRow.directPrice == 62573, "listing total must remain raw")
 assert(aqRow.unitDirectPrice == 63, "62573/1000 must normalize to 63 copper/unit")
 
--- 18.312 stored unnormalized name_search_direct totals as long-lived unit references.
--- 18.313 must drop only those poisoned sources while retaining normalized evidence.
+-- 旧 18.312 曾把未归一化的 name_search_direct 总价保存为长期单位参考价；迁移仅清除这些污染来源，保留已归一化证据。
 local fakeStore = { value = { entries = {
     ["3603:1"] = { price=62573, source="name_search_direct", updatedAt=1, samples={} },
     ["30902:1"] = { price=42, source="name_search_direct_unit", updatedAt=2, samples={} },

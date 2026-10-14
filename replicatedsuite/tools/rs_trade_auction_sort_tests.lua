@@ -1,5 +1,11 @@
--- Actual Native boundary / Queue / Query; controlled listing order, not client acceptance.
--- 1813c is the supplied diagnostic observation; 400c is a constructed counterexample, not recovered market data.
+------------------------------------------------------------------------
+-- Replicated Suite · 交易拍卖排序测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
+-- 使用实际原生边界、Queue 和 Query，控制挂牌顺序，不能作为客户端验收。
+-- 1813 铜来自提供的诊断观测，400 铜是构造的反例，不能视为恢复的市场数据。
+------------------------------------------------------------------------
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')
 local passed,failed=0,0
 local function Test(name,fn)

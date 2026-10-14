@@ -1,5 +1,11 @@
+------------------------------------------------------------------------
+-- Replicated Suite · 主外壳可见性测试
+-- 作者：Replicated
+-- QQ群：1104129461
+--
 -- 主窗口显示边沿回归：真实 Shell/Adapter/Diff/Windowing，Native Show 模拟引擎出生定位。
 -- 不进入 toc.g；离线通过不等于 RU 客户端实测。
+------------------------------------------------------------------------
 local Boot = dofile('tools/rs_window_viewport_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)
