@@ -161,9 +161,10 @@ local function Build(parent, route)
     root.rankingSort = { columnId = "damage", direction = "desc" }
     root.detailMode=Settings().mode or "PVE"
 
+    -- 三个子页导航必须先于各自会换行的说明，且使用相同边距；切页时按钮不能随标题高度跳动。
+    local statisticsScope=D:CombatStatisticsControls(root,"damage")
     D:PageHeader(root, "v3_dps_header", "战斗统计与分析 · 战斗总览",
         "每人一行显示伤害、治疗、承伤、击杀玩家、死亡；汇总当前统计期，点击行查看技能明细。")
-    local statisticsScope=D:CombatStatisticsControls(root,"damage")
 
     local function NowMs() return math.max(0, tonumber(S.NowMs and S.NowMs()) or 0) end
     local clear
@@ -508,23 +509,28 @@ local function Build(parent, route)
     function root:RefreshStats()
         local settingsValue = Settings()
         -- 单人一行的汇总先组合/排序，再按显示行数截取。
-        local projection = Feature:GetProjection({ mode = settingsValue.mode, metric = settingsValue.metric, displayRows = 150 })
+        -- 总览名单由 GetCombatOverview 唯一组合；此处只需未确认金额和状态，禁止重复构造四套排行。
+        local projection = Feature:GetProjection({ mode = settingsValue.mode, metric = settingsValue.metric, summaryOnly = true })
         local p = projection.projection or {}
         local sides = type(p.sides) == "table" and p.sides or {}
         local sideUnknown = type(sides.unknown) == "table" and sides.unknown or {}
         local unresolved = type(p.unresolved) == "table" and p.unresolved or {}
         local selfOnly=statisticsScope:GetValue()=="self"
         local overview=Feature:GetCombatOverview()
-        local candidates,totals={},{damage=0,heal=0,taken=0}
-        for _,row in ipairs(overview.rows or {}) do
-            if selfOnly or self.rankingSide=="all" or row.side==self.rankingSide then
-                candidates[#candidates+1]=row
-                for _,key in ipairs({"damage","heal","taken"}) do totals[key]=totals[key]+(tonumber(row[key]) or 0) end
-            end
-        end
-        totals.actorCount=#candidates
-        self.overviewRows=CopyAndSortRows(candidates,self.rankingSort,settingsValue.displayRows)
         local token=tostring(overview.revision)..":"..tostring(self.rankingSort.columnId)..":"..tostring(self.rankingSort.direction)..":"..self.rankingSide..":"..tostring(settingsValue.displayRows)
+        -- 数据版本和排序/过滤均未变化时复用只读列表；不能在 SetItems 的末端才跳过已完成的全量排序。
+        if self.overviewRowsToken~=token then
+            local candidates,totals={},{damage=0,heal=0,taken=0}
+            for _,row in ipairs(overview.rows or {}) do
+                if selfOnly or self.rankingSide=="all" or row.side==self.rankingSide then
+                    candidates[#candidates+1]=row
+                    for _,key in ipairs({"damage","heal","taken"}) do totals[key]=totals[key]+(tonumber(row[key]) or 0) end
+                end
+            end
+            totals.actorCount=#candidates
+            self.overviewRows=CopyAndSortRows(candidates,self.rankingSort,settingsValue.displayRows)
+            self.overviewTotals,self.overviewTotalRows,self.overviewRowsToken=totals,#candidates,token
+        end
         SetTableItems(overviewPanel.table,self.overviewRows,"dps:overview:"..token)
         self:UpdateRankingLayout(selfOnly)
         local found
@@ -541,7 +547,7 @@ local function Build(parent, route)
         end
         local labels={name="名称",damage="伤害",taken="承伤",heal="治疗",kills="击杀玩家",deaths="死亡"}
         local label=(labels[self.rankingSort.columnId] or "伤害")..(self.rankingSort.direction=="asc" and "↑" or "↓")
-        overviewPanel.summary:SetText(TotalsText((selfOnly and "我的战斗总览 · " or "战斗总览 · ")..label,{totals=totals,totalRows=#candidates},#self.overviewRows))
+        overviewPanel.summary:SetText(TotalsText((selfOnly and "我的战斗总览 · " or "战斗总览 · ")..label,{totals=self.overviewTotals,totalRows=self.overviewTotalRows},#self.overviewRows))
 
         local unresolvedTotals = type(unresolved.totals) == "table" and unresolved.totals or {}
         local sideUnknownTotals = type(sideUnknown.totals) == "table" and sideUnknown.totals or {}
@@ -571,8 +577,10 @@ local function Build(parent, route)
     function root:Subscribe()
         if self.subscribed then return true end
         if S.Events and type(S.Events.SubscribeInternal) == "function" then
-            S.Events:SubscribeInternal("v3.dps.updated", self, function() root:RefreshStats() end)
-            S.Events:SubscribeInternal("v3.combat_analytics.updated", self, function() root:RefreshStats() end)
+            -- 采集事件仍全部进入 Domain；仅合并昂贵的整页呈现，避免 PVP 50ms 发布同时驱动大表重绘。
+            local function QueueDataRefresh() return D:RequestCombatStatisticsRefresh(root,root.RefreshStats) end
+            S.Events:SubscribeInternal("v3.dps.updated", self, QueueDataRefresh)
+            S.Events:SubscribeInternal("v3.combat_analytics.updated", self, QueueDataRefresh)
             S.Events:SubscribeInternal("v3.combat_analytics.feature_updated", self, function() root:RefreshStats() end)
             S.Events:SubscribeInternal("v3.dps.settings", self, function(_, key)
                 root:RefreshStats()
@@ -585,6 +593,7 @@ local function Build(parent, route)
     end
 
     function root:Unsubscribe()
+        D:CancelCombatStatisticsRefresh(self) -- 取消本页合并任务，不干预采集和悬浮窗的独立生命周期。
         if not self.subscribed then return true end
         if S.Events and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
         self.subscribed = false
@@ -594,6 +603,7 @@ local function Build(parent, route)
     function root:OnActivated()
         local ok, err = Feature:EnsureStoreLoaded()
         if ok ~= true then return false, err end
+        self.combatStatisticsActive=true -- 仅激活页面接受异步数据刷新，首次显示仍立即读取当前数据。
         self:Subscribe()
         return self:Refresh()
     end

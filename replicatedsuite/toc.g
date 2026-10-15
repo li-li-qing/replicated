@@ -143,6 +143,7 @@ features/combat/analytics/rs_combat_metric_common.lua
 features/combat/analytics/rs_combat_analytics_metrics.lua
 features/combat/analytics/rs_combat_analytics_store.lua
 features/combat/analytics/rs_combat_personal_history.lua
+features/combat/analytics/rs_combat_history_transfer.lua
 features/combat/analytics/rs_combat_analytics_feature.lua
 features/combat/death_review/rs_death_review_store.lua
 features/combat/death_review/rs_death_review_authority.lua

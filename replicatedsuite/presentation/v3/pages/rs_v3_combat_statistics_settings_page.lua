@@ -16,16 +16,21 @@ local GROUPS={
     {title="基础战绩",rows={{"kills","击杀玩家 / 死亡","关闭仅暂停实时战绩排行，个人战绩继续保留。"}}},
 }
 local function Build(parent)
-    local root,err=D:ScrollablePageRoot(parent,{id="v3_statistics_config_page",padding=8,gap=8})
+    -- 三个子页共享导航起点；设置页说明和滚动正文不能影响切换按钮首次显示的位置。
+    local root,err=D:PageRoot(parent,{id="v3_statistics_config_page",padding=4,gap=7})
     if not root then error(err) end
-    D:PageHeader(root,"v3_statistics_config_header","战斗统计设置","采集项目与显示设置即时生效并自动保存；当前角色的个人历史独立保留。")
     local scope=D:CombatStatisticsControls(root,"settings")
+    -- 设置正文可滚动，导航和范围保持固定；切回已滚动的设置页也必须能在原位置继续切换。
+    local content,contentErr=D:ScrollablePageRoot(root,{id="v3_statistics_config_page_body",padding=0,gap=7,
+        slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
+    if not content then error(contentErr or "战斗统计设置滚动正文不可用") end
+    D:PageHeader(content,"v3_statistics_config_header","战斗统计设置","采集项目与显示设置即时生效并自动保存；当前角色的个人历史独立保留。")
     local toggles={};local selectedBoss="";local lastBossToken
     local function Note(parent,id,text)
         return UI:Text({id=id,parent=parent,text=text,fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=18}})
     end
     local function Section(id,title,subtitle)
-        local box=UI:VerticalBox({id=id,parent=root,gap=5,slot={size="auto",hAlign="fill"}})
+        local box=UI:VerticalBox({id=id,parent=content,gap=5,slot={size="auto",hAlign="fill"}}) -- 设置分区只占正文，不挤压固定导航。
         UI:Text({id=id.."_title",parent=box,text=title,fontSize=12,tone="strong",slot={size="fixed",height=23}})
         if subtitle then Note(box,id.."_hint",subtitle) end
         return box

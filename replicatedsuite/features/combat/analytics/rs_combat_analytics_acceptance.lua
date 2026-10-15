@@ -31,11 +31,14 @@ end)
 G:RegisterSequenceCase("v3_combat_statistics_personal_history_contract",function()
     local history=F.PersonalHistory
     local store=history and S.Persistence and S.Persistence:GetStore(history.StoreId) or nil
-    -- 删除NPC击杀后仍保留schema2用于旧档校验；schema1原档仍经Persistence验证后迁移。
-    if store==nil or store.owner~="v3.combat_personal_history" or tonumber(store.schemaVersion)~=2
+    -- schema3 的来源账本与合计原子保存；无同步字段的 schema1/2 原档仍按原 canonical 验证后迁移。
+    if store==nil or store.owner~="v3.combat_personal_history" or tonumber(store.schemaVersion)~=3
         or store.scope~=S.Persistence.Scope.Character or store.lifetime~=S.Persistence.Lifetime.Permanent then return Fail("personal_history_store") end
     if type(A.AcquireStatisticsConsumer)~="function" or type(A.GetCollectionScope)~="function" or type(F.Commands.SetCollectionScope)~="function"
         or type(F.GetPersonalHistoryProjection)~="function" then return Fail("unified_statistics_commands") end
+    -- 纯检查函数/契约存在；诊断不得为了确认导入导出而生成来源、保存或清理用户的临时输入。
+    if history.TransferContractVersion~=1 or type(F.Commands.ExportPersonalHistory)~="function"
+        or type(F.Commands.ImportPersonalHistory)~="function" or type(F.Commands.ClearPersonalHistoryImport)~="function" then return Fail("personal_history_transfer") end
     local metric=A:GetMetric("personal_history")
     if metric==nil or metric.hidden~=true then return Fail("personal_history_metric") end
     local main=S.FeatureRegistry and S.FeatureRegistry:Get("combat_stats")

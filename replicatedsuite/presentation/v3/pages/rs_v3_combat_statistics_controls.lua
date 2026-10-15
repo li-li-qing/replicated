@@ -10,6 +10,25 @@ local S=ReplicatedSuite
 local D,UI=S.UIV3Design,S.RSUI
 local F=S.Features and S.Features.CombatAnalytics
 if not D or not UI or not F then return end
+-- 战斗采集频率与整页绘制频率分离；两个统计事件源共用一次有界合并，不新增周期任务。
+-- 页面退出即取消，隐藏页不继续构造排行/技能图标；按钮、排序和设置操作仍同步响应。
+function D:RequestCombatStatisticsRefresh(page, callback)
+    if page.combatStatisticsActive ~= true then return true end
+    local coordinator = S.RefreshCoordinator
+    if not coordinator or type(coordinator.Request) ~= "function" then return callback(page) end
+    return coordinator:Request({ owner=page, key="combat_statistics_data", moduleId="combat_stats",
+        delayMs=250, maxWaitMs=250, reason="combat_data", priority="P3", cost=2,
+        callback=function()
+            if page.combatStatisticsActive ~= true then return true end
+            return callback(page)
+        end })
+end
+function D:CancelCombatStatisticsRefresh(page)
+    page.combatStatisticsActive = false -- 生命周期标志先失效，已出队的迟到回调也不能绘制隐藏页。
+    if S.RefreshCoordinator and type(S.RefreshCoordinator.Cancel) == "function" then
+        S.RefreshCoordinator:Cancel(page, "combat_statistics_data")
+    end
+end
 function D:CombatStatisticsControls(parent,active)
     local loaded,loadErr=F:EnsureStoreLoaded();if loaded~=true then error(loadErr or "统计设置读取失败") end
     -- 高级分析暂停后只保留总览、历史、设置；采集范围仍独立切换。

@@ -59,6 +59,12 @@ local function Normalize(v,keys)
     return out
 end
 H.state=Normalize(nil)
+-- 同步模块只扩展本 Feature 的历史存档，不另建持久化 Authority；无同步字段的旧档仍保持原 canonical。
+H.TransferHelpers={normalize=Normalize,keys=KEYS,liveKeys=LIVE_KEYS,counter=Counter,counts=Counts,add=Add,validDate=ValidDate,maxDays=MAX_DAYS}
+function H:NormalizeState(value)
+    if type(self.NormalizeTransferState)=="function" then return self:NormalizeTransferState(value) end
+    return Normalize(value)
+end
 -- schema1 没有 NPC 计数。只重建已知旧字段的原规范形式，原指纹精确匹配后由 Core 迁移。
 -- 不改写实际文件、不绕过写保护；未知损坏仍由 Persistence 拒绝。
 local function RebuildSchema1Canonical(value,_,_,raw)
@@ -68,12 +74,13 @@ local function RebuildSchema1Canonical(value,_,_,raw)
 end
 local store,registerErr=P:RegisterV3Store({
     id=H.StoreId,owner=H.StoreId,scope=P.Scope.Character,lifetime=P.Lifetime.Permanent,
-    schemaVersion=2,legacySchemaVersion=0,key=(P.V3KeyPrefix or "rs.v3.").."combat_personal_history",
-    budget={maxDepth=5,maxNodes=38000,maxStringBytes=200000,maxEntriesPerTable=2048},
+    -- schema3 将来源账本和合计放在同一个 Store，导入只需一次耐久提交，不能出现“金额已加、去重标记未存”。
+    schemaVersion=3,legacySchemaVersion=0,key=(P.V3KeyPrefix or "rs.v3.").."combat_personal_history",
+    budget={maxDepth=8,maxNodes=120000,maxStringBytes=1000000,maxEntriesPerTable=2048},
     rebuildCanonicalForIntegrity=RebuildSchema1Canonical,
-    default=function() return Normalize(nil) end,get=function() return Normalize(H.state) end,
-    apply=function(value) H.state=Normalize(value);H.lastDirtyAt=-10000;H.loaded=false;H.revision=H.revision+1 end,
-    migrate=function(value) return Normalize(value) end,
+    default=function() return H:NormalizeState(nil) end,get=function() return H:NormalizeState(H.state) end,
+    apply=function(value) H.state=H:NormalizeState(value);H.lastDirtyAt=-10000;H.loaded=false;H.revision=H.revision+1 end,
+    migrate=function(value) return H:NormalizeState(value) end,
 })
 H.registerError=registerErr
 function H:EnsureLoaded(verifyBinding)
@@ -119,6 +126,11 @@ function H:Record(delta)
         self.lastDirtyAt=now
     end
     local date,stamp=self:Timestamp()
+    -- 来源增量仅做固定字段累加；未启用跨电脑交换的旧历史不额外建表，失败不得改变主合计。
+    if type(self.RecordTransferDelta)=="function" then
+        local accepted,transferErr=self:RecordTransferDelta(delta,date,stamp)
+        if accepted~=true then self.failures=self.failures+1;self.lastError=transferErr;return false,transferErr end
+    end
     local row=self.state.days[date]
     if not row then
         local dates={};for key in pairs(self.state.days) do dates[#dates+1]=key end

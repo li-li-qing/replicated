@@ -704,10 +704,20 @@ local function NormalizeMetric(value)
     return value
 end
 
-local function ProjectBucket(bucket, sharedHealBucket, limit, alwaysShowSelf, metric, includeZero)
+local function ProjectBucket(bucket, sharedHealBucket, limit, alwaysShowSelf, metric, includeZero, summaryOnly)
     metric = NormalizeMetric(metric)
     bucket = type(bucket) == "table" and bucket or NewBucket()
     sharedHealBucket = type(sharedHealBucket) == "table" and sharedHealBucket or nil
+
+    -- 汇总只消费账本已有的金额；不能为了一个“待确认”提示遍历、复制、排序所有历史单位。
+    -- summaryOnly 不改变累计和默认排行契约，完整名单仍由原投影按需生成。
+    local totals = {
+        damage = math.max(0, tonumber(bucket.damage) or 0),
+        heal = math.max(0, tonumber(bucket.heal) or 0) + (sharedHealBucket and math.max(0, tonumber(sharedHealBucket.heal) or 0) or 0),
+        taken = math.max(0, tonumber(bucket.taken) or 0),
+        events = math.max(0, tonumber(bucket.events) or 0) + (sharedHealBucket and math.max(0, tonumber(sharedHealBucket.events) or 0) or 0),
+    }
+    if summaryOnly == true then return { totals = totals } end
 
     local merged, actorCount = {}, 0
     local function TouchMerged(key, name)
@@ -746,6 +756,7 @@ local function ProjectBucket(bucket, sharedHealBucket, limit, alwaysShowSelf, me
         end
     end
 
+    totals.actorCount = actorCount -- 完整排行仍按合并身份去重计数，不能将共享治疗人数重复相加。
     local rows = {}
     for _, row in pairs(merged) do
         if includeZero==true or (tonumber(row[metric]) or 0) > 0 then rows[#rows + 1] = row end
@@ -795,13 +806,7 @@ local function ProjectBucket(bucket, sharedHealBucket, limit, alwaysShowSelf, me
 
     return {
         rows = projected,
-        totals = {
-            damage = math.max(0, tonumber(bucket.damage) or 0),
-            heal = math.max(0, tonumber(bucket.heal) or 0) + (sharedHealBucket ~= nil and math.max(0, tonumber(sharedHealBucket.heal) or 0) or 0),
-            taken = math.max(0, tonumber(bucket.taken) or 0),
-            events = math.max(0, tonumber(bucket.events) or 0) + (sharedHealBucket ~= nil and math.max(0, tonumber(sharedHealBucket.events) or 0) or 0),
-            actorCount = actorCount,
-        },
+        totals = totals,
         metric = metric,
         truncated = totalRows > limit,
         totalRows = totalRows,
@@ -876,10 +881,11 @@ function A:GetProjection(request)
     local metric = NormalizeMetric(request.metric or settings.metric)
 
     local m = EnsureMode(modeName)
-    local friendly = ProjectBucket(m.friendly, self.healing.friendly, limit, settings.alwaysShowSelf == true, metric, request.includeZero)
-    local enemy = ProjectBucket(m.enemy, self.healing.enemy, limit, false, metric, request.includeZero)
-    local unknown = ProjectBucket(m.unknown, self.healing.unknown, limit, false, metric, request.includeZero)
-    local unresolved = ProjectBucket(self.unclassified, nil, limit, false, metric)
+    -- 只有显式汇总请求省略名单；悬浮窗、待确认详情和全模式总览保持原有完整投影。
+    local friendly = ProjectBucket(m.friendly, self.healing.friendly, limit, settings.alwaysShowSelf == true, metric, request.includeZero, request.summaryOnly)
+    local enemy = ProjectBucket(m.enemy, self.healing.enemy, limit, false, metric, request.includeZero, request.summaryOnly)
+    local unknown = ProjectBucket(m.unknown, self.healing.unknown, limit, false, metric, request.includeZero, request.summaryOnly)
+    local unresolved = ProjectBucket(self.unclassified, nil, limit, false, metric, nil, request.summaryOnly)
     local selected = sideName == "enemy" and enemy or (sideName == "unknown" and unknown or friendly)
     local durationMs = m.startedAt > 0 and math.max(0, (tonumber(m.lastEventAt) or 0) - (tonumber(m.startedAt) or 0)) or 0
 

@@ -22,6 +22,8 @@ dofile('features/combat/analytics/rs_combat_metric_common.lua')
 dofile('features/combat/analytics/rs_combat_analytics_metrics.lua')
 dofile('features/combat/analytics/rs_combat_analytics_store.lua')
 dofile('features/combat/analytics/rs_combat_personal_history.lua')
+dofile('core/rs_report_copy_transport.lua') -- 与真实 TOC 的复制协议/历史来源模块保持一致；门禁只检查存在，不实际交换。
+dofile('features/combat/analytics/rs_combat_history_transfer.lua')
 dofile('features/combat/analytics/rs_combat_analytics_feature.lua')
 dofile('features/combat/dps/rs_dps_store.lua')
 dofile('features/combat/dps/rs_dps_feature.lua')
