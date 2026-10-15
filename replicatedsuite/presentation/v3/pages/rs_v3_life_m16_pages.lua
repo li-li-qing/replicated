@@ -118,7 +118,7 @@ local function Build(parent, route, feature, kind)
     local title, subtitle = "", ""
     if kind == "trade" then title, subtitle = "跑商", "选择路线后查看实时货率与预计售价；单击选中货物，双击该行查询它的材料价格并自动计算毛利。"
     elseif kind == "bonds" then title, subtitle = "债券 / 居民板", "分别在西大陆、东大陆（以及原大陆）刷新一次即可保存当天快照；页面会合并显示已读取大陆，排序不会隐藏另一大陆。"
-    elseif kind == "treasure" then title, subtitle = "寻宝", "单击藏宝图切换追踪目标；双击藏宝图，在地图上显示位置。"
+    elseif kind == "treasure" then title, subtitle = "寻宝/海虫/沉船", "按海域找最近点，单击追踪；双击目标或点地图定位，在原生地图显示箭头。"
     else title, subtitle = "钓鱼", "按需识别目标鱼动作并可安全切换 R；关闭、切区、战斗恢复或重载时按持久恢复快照还原原键位。" end
     D:PageHeader(root, "v3_" .. kind .. "_header", title, subtitle, "刷新", function()
         local ok, refreshErr = feature.Commands:Refresh("page_manual")
@@ -300,6 +300,14 @@ local function Build(parent, route, feature, kind)
     end
 
     if kind == "treasure" and type(feature.Commands.SetRefreshMs)=="function" then
+        root.treasureControls=S.UIV3.TreasureControlsV3:Build(root,feature,"v3_treasure_",{
+            onResult=function(ok,why)root.treasureActionError=ok~=true and tostring(why or "操作失败") or nil;root:Refresh()end,
+            onSettings=function()
+                root.treasureSettingsOpen=not root.treasureSettingsOpen
+                if root.treasureRefreshField then root.treasureRefreshField:SetVisible(root.treasureSettingsOpen) end
+                if root.treasureTimerField then root.treasureTimerField:SetVisible(root.treasureSettingsOpen) end
+                root:InvalidateMeasure("treasure_settings");return true
+            end})
         -- 寻宝滑块只调整罗盘绘制，不加快500ms背包/地图观察；旧偏好与选择完整保留。
         root.treasureRefreshField = D:SettingsNumericSlider(root, {
             id="v3_treasure_refresh",label="罗盘绘制间隔",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="ms",
@@ -307,6 +315,16 @@ local function Build(parent, route, feature, kind)
             set=function(value)return feature.Commands:SetRefreshMs(value)end,
             slot={size="fixed",height=42,hAlign="fill"},
         })
+        root.treasureRefreshField:SetVisible(false)
+        local timerItems={{value=0,text="沉船计时：仅记录已过时间（刷新周期待实测）"}}
+        for _,hours in ipairs({1,2,4,6,12,24,48})do
+            timerItems[#timerItems+1]={value=hours*60,text="沉船预估周期："..hours.."小时（手动搜查后起算）"}
+        end
+        root.treasureTimerField=RSUI:Dropdown({id="v3_treasure_timer",parent=root,items=timerItems,popupWidth=380,maxVisible=8,
+            get=function()return feature:GetProjection().shipRespawnMinutes or 0 end,
+            set=function(value)return feature.Commands:SetShipRespawnMinutes(value)end,
+            slot={size="fixed",height=26,hAlign="fill"}})
+        root.treasureTimerField:SetVisible(false)
     end
     status = RSUI:Text({ id = "v3_" .. kind .. "_status", parent = root, text = "尚未读取", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 28, hAlign = "fill" } })
 
@@ -371,9 +389,11 @@ local function Build(parent, route, feature, kind)
             { id = "resourceStatus", title = "资源状态", field = "resourceStatusText", size = "fixed", width = 82, minWidth = 68 },
             { id = "status", title = "任务状态", field = "statusText", size = "fixed", width = 82, minWidth = 68, getTone = function(item) return item and item.tone or "muted" end },
         } or kind == "treasure" and {
-            { id = "name", title = "藏宝图", field = "name", size = "fixed", width = 140, minWidth = 100 },
-            { id = "coord", title = "坐标", field = "text", size = "fill", minWidth = 220 },
-            { id = "direction", title = "方向 / 距离", field = "directionText", size = "fixed", width = 140, minWidth = 110 },
+            { id = "name", title = "目标", field = "name", size = "fixed", width = 112, minWidth = 90 },
+            { id = "region", title = "海域", field = "regionName", size = "fixed", width = 100, minWidth = 80 },
+            { id = "coord", title = "坐标 / 来源", field = "detailText", size = "fill", minWidth = 190 },
+            { id = "direction", title = "方向 / 距离", field = "directionText", size = "fixed", width = 124, minWidth = 100 },
+            { id = "visit", title = "搜查 / 预估计时", field = "searchText", size = "fixed", width = 126, minWidth = 80 },
         } or {
             { id = "status", title = "状态", field = "statusText", size = "fixed", width = 80, minWidth = 60, getTone = function(item) return item and item.tone or "muted" end },
             { id = "message", title = "动作 / 建议", field = "message", size = "fill", minWidth = 220 },
@@ -450,7 +470,12 @@ local function Build(parent, route, feature, kind)
         local projection = feature:GetProjection() or {}
         local rows = projection.rows or projection.maps or {}
         if kind == "treasure" then
-            for _, row in ipairs(rows) do row.directionText = tostring(row.direction or "--") .. (row.distance and (" / " .. tostring(math.floor(row.distance + 0.5))) or "") end
+            for _, row in ipairs(rows) do
+                row.directionText=tostring(row.direction or "--")..(row.distance and (" · "..tostring(math.floor(row.distance+0.5)).."m") or "")
+                row.detailText=tostring(row.text or "")..(row.sourceText and (" · "..row.sourceText) or "")
+                row.regionName=row.regionName or "背包"
+                row.searchText=row.timerText or row.visitText
+            end
         elseif kind == "fishing" then
             local one = { key = "fishing", statusText = projection.status or "--", message = projection.message or "--", slotText = projection.slot and tostring(projection.slot) or "--", tone = projection.status == "ready" and "green" or "muted" }
             rows = { one }
@@ -460,9 +485,21 @@ local function Build(parent, route, feature, kind)
 
     function root:Refresh()
         if self.treasureRefreshField then self.treasureRefreshField:Render() end
+        if self.treasureTimerField then self.treasureTimerField:Render() end
         local rows, projection = Rows()
         root.controlProjection = projection -- 缓存仅属页面这一轮展示；不回写 Feature/Store。
         tableView:SetItems(rows, projection.revision or 0, kind == "trade") -- Trade 行由 revision 提交，其它生活倒计时保留原刷新。
+        if kind == "bonds" then
+            -- 2026-10-15：空列表必须区分未采集和筛选隐藏，原因来自同一 Feature 读模型。
+            if #rows > 0 then
+                tableView:SetViewState("ready")
+            elseif projection.filterHint then
+                tableView:SetViewState("empty", { title = "已缓存的债券被筛选隐藏", detail = projection.filterHint })
+            else
+                tableView:SetViewState(projection.status == "unavailable" and "unavailable" or "empty",
+                    { title = "暂无居民板条目", detail = projection.error or "进入可读取居民板的大陆后点刷新。" })
+            end
+        end
         local enabled = S.FeatureRuntime:IsEnabled(feature.Id) == true
         featureButton:SetText(enabled and "关闭功能" or "启用功能")
         if kind == "trade" then
@@ -593,14 +630,16 @@ local function Build(parent, route, feature, kind)
                 widgetButton:SetText(WidgetHost:IsVisible("life.trade") and "关闭悬浮窗" or "打开悬浮窗")
             end
         elseif kind == "treasure" then
+            if root.treasureControls then root.treasureControls:Refresh(projection) end
             S.UIV3.TreasureMapInteraction:SyncSelection(tableView, projection)
             if not enabled then S.UIV3.TreasureMapInteraction:Reset(root) end
-            local treasureStatus = (projection.status or "--") .. " · " .. tostring(#(projection.maps or {})) .. " 张地图"
+            local treasureStatus = (projection.status or "--") .. " · " .. tostring(#rows) .. (projection.viewKind=="maps" and " 张藏宝图" or " 个资料点")
                 .. (projection.selected and (" · 当前 " .. tostring(projection.selected.name or "--")) or "")
             local treasureError = root.treasureActionError or projection.lastMapActionError
             if treasureError then treasureStatus = "定位未完成：" .. tostring(treasureError) end
             if projection.mapActionPending == true then treasureStatus = "地图定位等待中，冷却结束后自动执行" end -- 冷却等待不是定位失败；只显示 Feature 请求状态。
             status:SetText(enabled and treasureStatus or "功能已关闭")
+            tableView:SetViewState(#rows>0 and "ready" or "empty",{title=projection.viewKind=="maps" and "暂无藏宝图" or "当前区域暂无资料点",detail=projection.error or "可切换分类、区域，或点击刷新。"})
             if widgetButton then widgetButton:SetEnabled(enabled); widgetButton:SetText(WidgetHost:IsVisible("life.treasure") and "关闭悬浮窗" or "打开悬浮窗") end
         elseif kind == "fishing" then
             local fishingText = projection.message or "--"

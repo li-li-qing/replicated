@@ -32,7 +32,7 @@ class TreasureFishingSurfaceContractTests(unittest.TestCase):
     def test_treasure_scan_uses_shared_inventory_authority_not_fixed_bag_zero_name_filter(self):
         # 中文维护注释（2026-09-28，Phase 2 Step 1）：life_treasure 已拆到独立文件，探针随之重定向。
         text = read("features/life/treasure/rs_treasure_feature.lua")
-        block = text.split("-- Treasure maps", 1)[1]
+        block = text
         self.assertIn("InventorySnapshotV3", block)
         self.assertIn(':BuildSnapshot("bag"', block)
         self.assertIn("ReadPhysicalBagSlot", block)
@@ -41,13 +41,13 @@ class TreasureFishingSurfaceContractTests(unittest.TestCase):
 
     def test_treasure_map_key_keeps_legacy_coordinate_slot_shape_for_saved_selection_compatibility(self):
         text = read("features/life/treasure/rs_treasure_feature.lua")
-        block = text.split("-- Treasure maps", 1)[1]
+        block = text
         self.assertIn('key = text .. ":" .. tostring(slot)', block)
         self.assertNotIn('key = text .. ":" .. tostring(row and row.itemType', block)
 
     def test_treasure_feature_exposes_capability_gated_world_map_location_command(self):
         feature = read("features/life/treasure/rs_treasure_feature.lua")
-        block = feature.split("-- Treasure maps", 1)[1]
+        block = feature
         self.assertIn("ShowSelectedOnMap", block)
         self.assertIn('Action("X2Map:ShowWorldmapLocation"', block)
         self.assertIn('"X2Map:ShowWorldmapLocation"', block)
@@ -63,7 +63,7 @@ class TreasureFishingSurfaceContractTests(unittest.TestCase):
         text = read("presentation/v3/widgets/rs_v3_life_economy_widgets.lua")
         block = text.split('featureName = "Treasure"', 1)[1].split('featureName = "Fishing"', 1)[0]
         self.assertIn("buildControls = function", block)
-        self.assertIn("Feature.Commands:ShowSelectedOnMap", block)
+        self.assertIn('Run("ShowSelectedOnMap")', block)
         self.assertIn('text = "地图定位"', block)
 
     def test_acceptance_requires_treasure_map_command_and_widget_contract_revision(self):

@@ -183,6 +183,7 @@ function A:Describe()
         normalLayerApplied = tonumber(self.metrics.normalLayerApplied) or 0,
         layerChanges = tonumber(self.metrics.layerChanges) or 0,
         layerFailures = tonumber(self.metrics.layerFailures) or 0,
+        nativeEscapeCloseEnabled = tonumber(self.metrics.nativeEscapeCloseEnabled) or 0,
         nativeEscapeCloseDisabled = tonumber(self.metrics.nativeEscapeCloseDisabled) or 0,
         nativeModalDisabled = tonumber(self.metrics.nativeModalDisabled) or 0,
         consumedRejects = tonumber(self.metrics.consumedRejects) or 0,

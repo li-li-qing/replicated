@@ -29,6 +29,7 @@ local BONDS_SERVER_DATE_TASK = "life_bonds_server_date"
 local BONDS_LOCATION_DELAYS = { 750, 1500, 3000 }
 Bonds.CrossContinentPatch = "bonds-cross-continent-1"
 Bonds.RegionContinentPatch = "bonds-region-continent-1"
+Bonds.RefreshPatch = "bonds-refresh-evidence-1"
 S.Features.Bonds = Bonds
 Bonds.UpdateTopic = "v3.life.bonds.updated"
 Bonds.State = { sortMode = "continent", continentOrder = "west_first", showCompleted = true, q20 = true, q60 = true, q100 = true, auroria = true, excludeSame = false, priority = "west", completionDateKey = nil, completedMainlandKeys = {}, dailyDateKey = nil, dailySnapshots = {}, widgetVisible = false, widgetWindow = nil }
@@ -134,9 +135,7 @@ local function BondQuestEvidence(materialKey, text, boardIndex)
     if quantity ~= nil then return map[quantity], quantity, token end
     return nil, rawQuantity, token
 end
--- BondDateCache removed 2026-09-02: S.State 永远 nil (replicatedsuite.lua 显式置 nil
--- + foundation_gate 断言), 整个函数返回 nil, 调用方 cache 逻辑不可达.
--- 大陆债券完成状态由 questStatus 直接决定, 无缓存层.
+-- 背包数量是实时资源事实，不可用于推断任务已经交付。
 local function ReadBondResources()
     local totals = {}
     for key in pairs(S.Constants and S.Constants.BondMaterialItemTypes or {}) do totals[key] = 0 end
@@ -321,7 +320,7 @@ local function CurrentBondContinentKey()
     local ok, zoneId = Call("X2Unit:GetCurrentZoneGroup", UnitApi, "GetCurrentZoneGroup")
     zoneId = ok == true and math.floor(Number(zoneId) or 0) or 0
     local zone = BOND_ZONE_CATALOG[zoneId]
-    return zone and zone.continentKey or nil
+    return zone and zone.continentKey or nil, zoneId, zone and zone.nameZh or nil
 end
 
 local function BondBoardLineCount(boards, index)
@@ -688,33 +687,36 @@ function BA:Refresh(reason)
         self.resourceReadStatus = resourceStatus
         self.resourceReads = (tonumber(self.resourceReads) or 0) + 1
     end
-    local zoneHint = CurrentBondContinentKey()
+    local zoneHint, zoneId, zoneName = CurrentBondContinentKey()
+    self.currentLocation = { zoneId = zoneId, zoneName = zoneName, continentKey = zoneHint or "unknown" }
     local currentKey = zoneHint
     local currentSnapshot = currentKey and state.dailySnapshots[currentKey] or nil
     local firstError = nil
 
     local lastReadable, lastContentCount = 0, 0
     local forceRead = reason == "page_manual" or reason == "widget_manual" or reason == "overview_manual" or reason == "manual"
-    -- 重载/重新上线先核对服务器日期；已完整缓存的当前大陆不再探测。
-    -- 未收录地图的区域边界仍可识别新板族；原大陆缺少 5/6/7 时继续增量补读。
+    -- 西/东大陆的同日完整快照可复用；原大陆三个板位各有内容并不能证明地区齐全。
+    -- 原大陆及未收录地区首开与位置事件仍做一次有界读取，以补入关闭页面期间或跨区后才可见的行；筛选/任务投影不读板。
     local boundaryProbe = reason == "zone_changed" or reason == "entered_world" or reason == "location_retry" or reason == "left_loading"
     local projectionOnly = reason == "presentation" or reason == "quest_progress"
-    local anyComplete, hasIncomplete, allComplete = false, false, true
+    local anyComplete, hasIncomplete = false, false
     for _, key in ipairs({ "west", "east", "auroria" }) do
         if BondSnapshotComplete(state.dailySnapshots[key], key) then
             anyComplete = true
         else
-            allComplete = false
             if state.dailySnapshots[key] ~= nil then hasIncomplete = true end
         end
     end
     local needsCurrentSnapshot = zoneHint ~= nil and not BondSnapshotComplete(currentSnapshot, zoneHint)
-    local shouldRead = not projectionOnly and dateReady and (forceRead or needsCurrentSnapshot
-        or (zoneHint == nil and (not anyComplete or hasIncomplete or (boundaryProbe and not allComplete))))
+    local regionProbe = (zoneHint == "auroria" or zoneHint == nil) and (boundaryProbe or reason == "demand_start")
+    local shouldRead = not projectionOnly and dateReady and (forceRead or needsCurrentSnapshot or regionProbe
+        or (zoneHint == nil and (not anyComplete or hasIncomplete)))
     local probe = {
-        reason = reason, zoneHint = zoneHint or "unknown", attempted = shouldRead == true,
+        reason = reason, zoneHint = zoneHint or "unknown", zoneId = zoneId, zoneName = zoneName,
+        atMs = type(S.NowMs) == "function" and S.NowMs() or nil, serverDateKey = self.serverDateKey,
+        attempted = shouldRead == true,
         readable = 0, contentCount = 0, detectedFamily = "none", detectedScope = "none",
-        evidence = "not_probed", captureAction = "cache_reuse", capturedLines = 0, boardCounts = {},
+        evidence = "not_probed", captureAction = "cache_reuse", capturedLines = 0, boardCounts = {}, boards = {},
     }
 
     -- 显式手动刷新仍可探测 1..7。板族由 Native 内容裁决，空读不会删除已有缓存。
@@ -734,6 +736,14 @@ function BA:Refresh(reason)
                 if err ~= nil then firstError = firstError or tostring(err) end
             end
             probe.boardCounts[index] = BondBoardLineCount(boards, index)
+            -- 保留本次已有返回的有界证据，不为诊断另调 Native。原始区域 ID、faction 与文本可区分
+            -- 位置映射错误、加载中的旧板和空板占位；只留最近四次探测，不写入用户存档。
+            local observed = { faction = type(value) == "table" and BoundedBondSnapshotText(value.faction) or "", lines = {} }
+            for _, entry in ipairs(boards[index].contents) do
+                if #observed.lines >= BOND_SNAPSHOT_MAX_LINES then break end
+                observed.lines[#observed.lines + 1] = BoundedBondSnapshotText(BondRowText(entry))
+            end
+            probe.boards[index] = observed
         end
         lastReadable, lastContentCount = readable, contentCount
         probe.readable, probe.contentCount = readable, contentCount
@@ -791,7 +801,12 @@ function BA:Refresh(reason)
             probe.evidence, probe.captureAction, probe.needsRetry = self.dateValidation, "waiting_server_date", true
         end
         self.needsLocationRetry = probe.needsRetry == true
-        if shouldRead or not dateReady then BA.lastBoardProbe = probe end
+        if shouldRead or not dateReady then
+            BA.lastBoardProbe = probe
+            BA.probeHistory = BA.probeHistory or {}
+            BA.probeHistory[#BA.probeHistory + 1] = Copy(probe)
+            if #BA.probeHistory > 4 then table.remove(BA.probeHistory, 1) end
+        end
     end
     BA.lastRefreshReason = reason
     BA.boardScope = currentKey or "cached"
@@ -799,10 +814,79 @@ function BA:Refresh(reason)
 
     local progress = S.Services and S.Services.QuestProgressV3
     local activeIndex = progress and (progress.activeIndex or (type(progress.BuildActiveIndex) == "function" and select(1, progress:BuildActiveIndex()))) or nil
+    local activeAvailable = progress and progress.activeIndexAvailable == true
+    if progress and progress.activeIndexAvailable ~= true and type(progress.BuildActiveIndex) == "function" then
+        activeIndex, activeAvailable = progress:BuildActiveIndex()
+    end
+    -- 旧完成 key 无法区分“今日观察到”与启动时 IsCompleted=true。保留旧存档的完整性形状，
+    -- 只消费带证据版本前缀的新 key；不清用户配置，也不把未证实的历史标记每天重新锁存。
+    local completionEvidence = { patch = "bonds-daily-completion-1", dayKey = state.completionDateKey,
+        unverifiedCount = 0, legacyIgnoredCount = 0, rows = {} }
+    for key in pairs(state.completedMainlandKeys) do
+        if string.sub(key, 1, 9) ~= "today:v1:" then completionEvidence.legacyIgnoredCount = completionEvidence.legacyIgnoredCount + 1 end
+    end
+    if not dateReady or self.completionObservationDate ~= serverDateKey or type(self.completionObservations) ~= "table" then
+        -- 日期未知/回退期间不携带尚未交付的候选证据；已保存的当日交付记录继续受原日期保护。
+        self.completionObservationDate, self.completionObservations = dateReady and serverDateKey or nil, {}
+    end
+    local dailyFacts = {}
+    local function DailyQuestState(questId, completionKey)
+        if questId == nil or completionKey == nil then return "UNKNOWN", false end
+        local fact = dailyFacts[questId]
+        if fact == nil then
+            fact = progress and type(progress.GetQuestCompletionFact) == "function"
+                and progress:GetQuestCompletionFact(questId, activeIndex, activeAvailable) or {}
+            dailyFacts[questId] = fact
+        end
+        local verifiedKey = "today:v1:" .. completionKey
+        local observation = dateReady and self.completionObservations[questId] or nil
+        if dateReady and observation == nil then
+            observation = {}; self.completionObservations[questId] = observation
+        end
+        if observation then
+            if fact.active == true then
+                -- 活动态的 true 可能早于交付，不能沿用接取前的 false 再把弃任务误判为交付。
+                observation.sawActiveIncomplete = fact.completedReadOk and fact.completed == false
+            elseif fact.activeAvailable ~= true or fact.completedReadOk ~= true or fact.completed ~= true then
+                -- 已明确退出但未完成，或中间事实不可读，均中断候选；随后历史标记加载不能借用旧活动证据。
+                observation.sawActiveIncomplete = false
+            end
+        end
+        -- 重新接取会撤销旧锁存和上一轮的跃迁证据；已证实交付后 Native 标记消失不抹掉当日记录。
+        -- 缺失/失败返回不当成 false，也不凭任务消失判断已交付。
+        if dateReady and fact.active == true then
+            if state.completedMainlandKeys[verifiedKey] then
+                observation.sawActiveIncomplete = fact.completedReadOk and fact.completed == false
+                state.completedMainlandKeys[verifiedKey], Bonds.State.completedMainlandKeys[verifiedKey] = nil, nil
+                completionDirty = true
+            end
+        elseif dateReady and fact.activeAvailable and fact.completedReadOk and fact.completed == true
+            and observation.sawActiveIncomplete == true and state.completedMainlandKeys[verifiedKey] ~= true then
+            state.completedMainlandKeys[verifiedKey], Bonds.State.completedMainlandKeys[verifiedKey] = true, true
+            completionDirty = true
+        end
+        if observation and fact.active ~= true then observation.sawActiveIncomplete = false end
+        local status, reason = "UNKNOWN", "completion_unavailable"
+        if fact.active then
+            status, reason = fact.ready == true and "READY_TO_TURN_IN" or "IN_PROGRESS", "active_quest"
+        elseif state.completedMainlandKeys[verifiedKey] == true then
+            status, reason = "COMPLETED", "observed_today"
+        elseif fact.activeAvailable and fact.completedReadOk and fact.completed == false then
+            status, reason = "NOT_ACCEPTED", "native_incomplete"
+        elseif fact.completedReadOk and fact.completed == true then
+            reason = "undated_completion"
+            completionEvidence.unverifiedCount = completionEvidence.unverifiedCount + 1
+        end
+        completionEvidence.rows[tostring(questId)] = { questId = questId, active = fact.active == true,
+            activeAvailable = fact.activeAvailable == true, completed = fact.completed, ready = fact.ready,
+            completedReadOk = fact.completedReadOk == true, state = status, reason = reason }
+        return status, status == "COMPLETED"
+    end
     -- snapshot.continentKey 仅记录采集来源。原生板和旧存档可能
     -- 在东大陆采集时包含西大陆任务，行标签、排序与可选合并必须按任务地区投影。修正不搬动
     -- dailySnapshots、不改变 schema/完整性指纹，也不清缓存；无法唯一识别地区时保留来源并留证据。
     local regionalRows = {}
+    local filteredRowCount, hiddenAuroria = 0, 0
     local classification = { patch = Bonds.RegionContinentPatch, mappedRows = 0, correctedRows = 0,
         fallbackRows = 0, ambiguousRows = 0, familyConflicts = 0, duplicatesRemoved = 0, details = {} }
     local function AppendSnapshot(continentKey, snapshot)
@@ -837,18 +921,8 @@ function BA:Refresh(reason)
                     local haveCount = materialKey and resources[materialKey] or nil
                     local rowStatus = materialKey and resourceStatus or "unknown"
                     if resourceStatus == "unknown" or resourceStatus == "partial" then haveCount = nil end
-                    local questStatus = "UNKNOWN"
-                    if questId ~= nil and progress and type(progress.QuestState) == "function" then
-                        questStatus = tostring(progress:QuestState(questId, activeIndex) or "UNKNOWN")
-                    end
                     local completionKey = BondCompletionKey(materialKey, quantity, taskContinent)
-                    -- 日期未知时可以投影实时完成态，但不得把它持久化到旧日期的完成锁存。
-                    if dateReady and questStatus == "COMPLETED" and completionKey ~= nil and state.completedMainlandKeys[completionKey] ~= true then
-                        state.completedMainlandKeys[completionKey] = true
-                        Bonds.State.completedMainlandKeys[completionKey] = true
-                        completionDirty = true
-                    end
-                    local completed = questStatus == "COMPLETED" or (completionKey ~= nil and state.completedMainlandKeys[completionKey] == true)
+                    local questStatus, completed = DailyQuestState(questId, completionKey)
                     local category = taskContinent == "auroria" and "auroria"
                         or (quantity == 20 and "q20" or quantity == 60 and "q60" or quantity == 100 and "q100" or nil)
                     if (category == nil or state[category]) and (state.showCompleted or completed ~= true) then
@@ -890,6 +964,9 @@ function BA:Refresh(reason)
                             rows[#rows + 1] = row
                             if identity ~= nil then regionalRows[identity] = { row = row, position = #rows, detail = regionDetail } end
                         end
+                    else
+                        filteredRowCount = filteredRowCount + 1
+                        if category == "auroria" and state.auroria ~= true then hiddenAuroria = hiddenAuroria + 1 end
                     end
                 end
             end
@@ -993,6 +1070,14 @@ function BA:Refresh(reason)
     end
     self.rows, self.status, self.resourceStatus, self.error = rows, status, resourceStatus, errorText
     self.regionClassification = classification
+    self.completionEvidence = completionEvidence
+    self.filteredRowCount = filteredRowCount
+    self.filterHint = nil
+    if #rows == 0 and filteredRowCount > 0 then
+        self.filterHint = hiddenAuroria > 0
+            and "已缓存原大陆债券，但显示范围未包含原大陆；请选择包含原大陆的显示范围。"
+            or "已缓存债券被当前筛选隐藏；请调整显示范围或已完成筛选。"
+    end
     self.snapshotDateKey, self.snapshotCount = state.dailyDateKey, capturedCount
     self.revision = self.revision + 1
     local persisted, persistError = true, nil
@@ -1036,6 +1121,7 @@ function BA:GetProjection()
         dailySnapshotStatus = coverage,
         lastBoardProbe = Copy(self.lastBoardProbe),
         regionClassification = Copy(self.regionClassification),
+        filteredRowCount = tonumber(self.filteredRowCount) or 0, filterHint = self.filterHint,
         selectedKey = Bonds.selectedKey,
     }
 end
@@ -1058,10 +1144,10 @@ function Bonds:Initialize() return LoadStore(self) end
 function Bonds:SubscribeProgress()
     if self.progressSubscribed == true then return true end
     if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "quest progress internal event unavailable" end
-    local subscribed = S.Events:SubscribeInternal("v3.quest_progress.updated", self, function()
-        -- 居民板 Store/材料快照仍由 Bonds Authority 持有；这里只在已有
-        -- Bonds Consumer 时重算 questStatus，不新增 ResidentBoard 轮询。QuestProgress 的事件由 Native Quest 事件
-        -- 合并后发布，因此交任务/变为可交付可以在事件后立即刷新主页面与悬浮窗。
+    local subscribed = S.Events:SubscribeInternal("v3.quest_progress.refreshed", self, function()
+        -- 无活动任务时 IsCompleted 变化不一定改变通用分组，updated 不足以通知债券。
+        -- 复用既有 Native 事件/15s safety 的成功刷新纪元核对完成事实，不加定时器、不读居民板；
+        -- 只订阅这一个 topic，避免同次 updated+refreshed 重复重建。
         if Bonds.enabled == true and Bonds.consumerCount > 0 then BA:Refresh("quest_progress") end
     end)
     if subscribed ~= true then return false, "quest progress internal subscribe failed" end
@@ -1137,14 +1223,18 @@ function Bonds:StartServerDateCheck()
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return true end
     self.serverDateEpoch = (tonumber(self.serverDateEpoch) or 0) + 1
     local generation, epoch = S.Generation, self.serverDateEpoch
+    -- 任务/筛选投影也会更新 BA.serverDateKey，但并未采集居民板。日期观察与本定时器已处理的日期
+    -- 必须分开，避免午夜的进度事件抢先更新日期后，将当天首次真实采集永久跳过。
+    local checkedDateKey = BA.serverDateKey
     -- 打开债券时每分钟只核对服务器日期，同日不扫居民板或写盘。
     -- 确认换日才重建每日事实；无 Consumer 时释放任务，旧代回调不能采集新会话。
     local added = S.Scheduler:AddTask(BONDS_SERVER_DATE_TASK, 60000, function()
         if ReplicatedSuite ~= S or S.Generation ~= generation or Bonds.serverDateEpoch ~= epoch or Bonds.enabled ~= true
             or (tonumber(Bonds.consumerCount) or 0) <= 0 then return true end
         local dateKey = S.Utils and type(S.Utils.ServerDateKey) == "function" and tostring(S.Utils.ServerDateKey()) or "unknown"
-        if dateKey ~= BA.serverDateKey then
+        if dateKey ~= checkedDateKey then
             BA:Refresh("server_date_changed")
+            checkedDateKey = dateKey
             if BA.needsLocationRetry then Bonds:ScheduleLocationRefresh("server_date_changed") end
         end
         return true
@@ -1250,6 +1340,9 @@ function Bonds:DescribeDailyCache()
         patch = self.CrossContinentPatch, serverDateKey = BA.serverDateKey or "unknown",
         dateValidation = BA.dateValidation or "not_sampled", snapshotDateVerified = BA.snapshotDateVerified == true,
         regionClassification = Copy(BA.regionClassification),
+        refreshPatch = self.RefreshPatch, currentLocation = Copy(BA.currentLocation), probeHistory = Copy(BA.probeHistory),
+        filteredRowCount = tonumber(BA.filteredRowCount) or 0, filterHint = BA.filterHint,
+        completionEvidence = Copy(BA.completionEvidence),
         coverage = coverage, persistence = persistence, lastSaveIntent = Copy(BA.lastSaveIntent),
         recovery = { status = self.locationRecoveryStatus or "idle", attempt = tonumber(self.locationAttempt) or 0,
             maxAttempts = #BONDS_LOCATION_DELAYS, reason = self.locationReason },
@@ -1260,11 +1353,13 @@ function Bonds:DescribeDailyCache()
         eastLoaded = snapshots.east ~= nil,
         auroriaLoaded = snapshots.auroria ~= nil,
         snapshotCount = (snapshots.west ~= nil and 1 or 0) + (snapshots.east ~= nil and 1 or 0) + (snapshots.auroria ~= nil and 1 or 0),
-        completedCount = (function() local n = 0 for _ in pairs(type(self.State.completedMainlandKeys) == "table" and self.State.completedMainlandKeys or {}) do n = n + 1 end return n end)(),
+        completedCount = (function() local n = 0 for key in pairs(type(self.State.completedMainlandKeys) == "table" and self.State.completedMainlandKeys or {}) do
+            if string.sub(key, 1, 9) == "today:v1:" then n = n + 1 end
+        end return n end)(),
         boardReads = tonumber(self.boardReads) or 0,
         resourceReads = tonumber(BA.resourceReads) or 0,
-        -- 只暴露上一次 bounded 1..7 探测摘要，不复制
-        -- ResidentBoard 原始文本，既能判断“没读/读空/板族未识别/保留旧缓存”，又控制诊断体积。
+        -- 只读最近一次有界板证据；历史最多四次，每板文本沿用四行/160字节预算。
+        -- 导出只复制已观测内存，不能重新读板或把历史内容当成当前服务器事实。
         lastBoardProbe = Copy(BA.lastBoardProbe),
     }
 end

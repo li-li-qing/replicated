@@ -111,8 +111,12 @@ Test('partial unknown-zone Auroria cache continues collecting after reload',func
     assert(r.boardCalls==7 and #r.B:GetProjection().rows==7 and r.B.State.dailySnapshots.west); r:AssertSaved()
 end)
 Test('same-day quest completion is durably retained then cleared at the next day',function()
-    local h=Boot(); h:Mainland(1); X2Quest.IsCompleted=function()return true end
-    assert(h.A:Refresh('manual')); assert(next(h.B.State.completedMainlandKeys)); h:AssertSaved()
+    local h=Boot(); h:Mainland(1); local active,done=true,false
+    X2Quest.GetActiveQuestListCount=function()return active and 1 or 0 end
+    X2Quest.GetActiveQuestType=function(_,i)return active and i==1 and 9044 or nil end
+    X2Quest.IsCompleted=function(_,qid)return done and qid==9044 end
+    assert(h.B:AcquireConsumer('daily_turn_in'));active,done=false,true
+    assert(h.S.Services.QuestProgressV3:Refresh('turn_in')); assert(next(h.B.State.completedMainlandKeys)); h:AssertSaved()
     local r=Boot({disk=h.Copy(h.disk)}); assert(r.B:AcquireConsumer('completion'))
     assert(next(r.B.State.completedMainlandKeys) and r.B:GetProjection().rows[1].completed)
     r.day='2026-10-08'; r.A:Refresh('manual'); assert(next(r.B.State.completedMainlandKeys)==nil); r:AssertSaved()
@@ -178,6 +182,160 @@ Test('old-generation daily date callback cannot capture or save after reload',fu
     local task=assert(h.S.Scheduler.tasks.life_bonds_server_date); local reads,writes,boards=h.reads,h.writes,h.boardCalls
     h.S.Generation=h.S.Generation+1; h.day='2026-10-08'; task.callback()
     assert(h.reads==reads and h.writes==writes and h.boardCalls==boards)
+end)
+-- 跨日时进度/筛选可能先刷新 serverDateKey，但它们不读取居民板，不能消费日期探测的责任。
+Test('quest progress at midnight cannot consume the next daily collection',function()
+    local h=Boot();h:Mainland(1);assert(h.B:AcquireConsumer('progress_midnight'))
+    local task=assert(h.S.Scheduler.tasks.life_bonds_server_date);local before=h.boardCalls
+    h.day='2026-10-08';h.boards[1].contents={'Fabric 60'}
+    h.S.Events:Publish('v3.quest_progress.refreshed',1,'quest_event')
+    assert(h.boardCalls==before,'quest progress must remain projection only')
+    task.callback()
+    assert(h.boardCalls==before+7 and h.B.State.dailySnapshots.west,'date observation suppressed actual next-day collection')
+    assert(h.B:GetProjection().rows[1].quantity==60,'yesterday task survived the new day')
+    h:AssertSaved();before=h.boardCalls;task.callback()
+    assert(h.boardCalls==before,'same day check became permanent resident polling')
+end)
+Test('filter projection at midnight cannot consume the next daily collection',function()
+    local h=Boot();h:Mainland(1);assert(h.B:AcquireConsumer('filter_midnight'))
+    local task=assert(h.S.Scheduler.tasks.life_bonds_server_date);local before=h.boardCalls
+    h.day='2026-10-08';h.boards[1].contents={'Fabric 100'}
+    h.B.Commands:SetFilterMask(15);assert(h.boardCalls==before)
+    task.callback()
+    assert(h.boardCalls==before+7 and h.B:GetProjection().rows[1].quantity==100,'filter update swallowed the daily collection')
+    h:AssertSaved()
+end)
+-- 2026-10-15：没有日期的 Native 完成标记不能证明今日已完成。
+Test('eight undated completion flags never become eight completed daily rows',function()
+    local h=Boot();h:Mainland(1)
+    for i,material in ipairs({'Fabric','Leather','Lumber','Iron'}) do h.boards[i].contents={material..' 20',material..' 60'} end
+    X2Quest.IsCompleted=function()return true end
+    assert(h.B:AcquireConsumer('undated_all'))
+    local p=h.B:GetProjection();assert(#p.rows==8)
+    for _,row in ipairs(p.rows) do assert(row.completed~=true and row.statusText=='待确认','undated flag painted today as completed') end
+    assert(next(h.B.State.completedMainlandKeys)==nil,'historical completion contaminated today latch')
+    local evidence=h.B:DescribeDailyCache().completionEvidence
+    assert(evidence and evidence.unverifiedCount==8,'completion scope is not diagnosable')
+end)
+Test('active daily quest outranks an undated completion flag',function()
+    local h=Boot();h:Mainland(1);local ready=false
+    X2Quest.IsCompleted=function()return true end
+    X2Quest.GetActiveQuestListCount=function()return 1 end
+    X2Quest.GetActiveQuestType=function(_,i)return i==1 and 9044 or nil end
+    X2Quest.IsReadyForCompleteQuest=function()return ready end
+    assert(h.B:AcquireConsumer('active_history'))
+    assert(h.B:GetProjection().rows[1].statusText=='进行中','history hid an active daily quest')
+    ready=true;assert(h.S.Services.QuestProgressV3:Refresh('ready'))
+    assert(h.B:GetProjection().rows[1].statusText=='可交付','history hid ready-to-turn-in daily quest')
+end)
+Test('same-day observed incomplete to complete survives reload but never relatches tomorrow',function()
+    local h=Boot();h:Mainland(1);local active,completed=true,false
+    X2Quest.GetActiveQuestListCount=function()return active and 1 or 0 end
+    X2Quest.GetActiveQuestType=function(_,i)return active and i==1 and 9044 or nil end
+    X2Quest.IsCompleted=function(_,qid)return completed and qid==9044 end
+    assert(h.B:AcquireConsumer('observed_completion'));active,completed=false,true
+    assert(h.S.Services.QuestProgressV3:Refresh('turn_in'))
+    assert(h.B:GetProjection().rows[1].completed and h.B.State.completedMainlandKeys['today:v1:fabric:20'])
+    h:AssertSaved()
+    local r=Boot({disk=h.Copy(h.disk)});r:Mainland(1)
+    X2Quest.IsCompleted=function(_,qid)return qid==9044 end
+    assert(r.B:AcquireConsumer('same_day_reload'));assert(r.B:GetProjection().rows[1].completed)
+    r.day='2026-10-08';assert(r.A:Refresh('manual'))
+    assert(not r.B:GetProjection().rows[1].completed,'constant true relatches yesterday completion on every new day')
+    assert(next(r.B.State.completedMainlandKeys)==nil,'yesterday proof migrated into today')
+end)
+Test('legacy same-day unscoped completion keys cannot prove today after upgrade',function()
+    local h=Boot();h:Capture()
+    h.B.State.completedMainlandKeys={['fabric:20']=true}
+    assert(h.S.Persistence:SaveStore(h.B.storeId,{force=true,verifyAfterSave=true}))
+    local r=Boot({disk=h.Copy(h.disk)});r:Mainland(1);X2Quest.IsCompleted=function()return true end
+    assert(r.B:AcquireConsumer('legacy_completion'))
+    assert(r.B:GetProjection().rows[1].statusText=='待确认','legacy unscoped latch still paints completed')
+    assert(r.B:DescribeDailyCache().completionEvidence.legacyIgnoredCount==1)
+    assert(not r:Store().writeFenced,'valid legacy envelope was rejected')
+end)
+Test('Bonds detail never reinterprets unverified history as a completed daily quest',function()
+    local h=Boot();h:Mainland(1);X2Quest.IsCompleted=function()return true end
+    assert(h.B:AcquireConsumer('detail_history'));local row=h.B:GetProjection().rows[1]
+    local detail=h.S.Services.QuestProgressV3:GetGroupDetail('bonds',row.key)
+    assert(detail and detail.children[1].state=='UNKNOWN' and detail.completed==0,'detail bypassed daily evidence authority')
+    assert(detail.summaryText:find('待确认',1,true),'detail summary claims definite daily progress')
+end)
+Test('reaccepting a verified daily quest revokes its previous observed completion',function()
+    local h=Boot();h:Mainland(1);local active,done=true,false
+    X2Quest.IsCompleted=function(_,qid)return done and qid==9044 end
+    X2Quest.GetActiveQuestListCount=function()return active and 1 or 0 end
+    X2Quest.GetActiveQuestType=function(_,i)return active and i==1 and 9044 or nil end
+    assert(h.B:AcquireConsumer('reaccept'));active,done=false,true;assert(h.S.Services.QuestProgressV3:Refresh('turn_in'))
+    assert(h.B:GetProjection().rows[1].completed)
+    active=true;assert(h.S.Services.QuestProgressV3:Refresh('reaccepted'))
+    assert(h.B:GetProjection().rows[1].statusText=='进行中' and h.B.State.completedMainlandKeys['today:v1:fabric:20']==nil)
+    active=false;assert(h.S.Services.QuestProgressV3:Refresh('abandoned'))
+    assert(h.B:GetProjection().rows[1].statusText=='待确认','abandoning a reaccepted quest was treated as turn-in')
+end)
+Test('missing native completion evidence remains unknown and public facts stay detached',function()
+    local h=Boot();h:Mainland(1);local P=h.S.Services.QuestProgressV3
+    X2Quest.IsCompleted=function()error('native not ready')end
+    assert(h.B:AcquireConsumer('missing_completion'))
+    assert(h.B:GetProjection().rows[1].statusText=='待确认' and next(h.B.State.completedMainlandKeys)==nil)
+    X2Quest.IsCompleted=function()return true end
+    local fact=P:GetQuestCompletionFact(9044);assert(fact.completed==true);fact.completed=false
+    assert(P:GetQuestCompletionFact(9044).completed==true,'consumer mutated shared completion facts')
+    assert(P:GetQuestCompletionFact(0)==nil and P:QuestState(0)=='UNKNOWN','invalid quest query did not fail gracefully')
+end)
+Test('successful quest refresh propagates inactive completion flag changes without manual refresh',function()
+    local h=Boot();h:Mainland(1);local done=false
+    X2Quest.IsCompleted=function(_,qid)return done and qid==9044 end
+    assert(h.B:AcquireConsumer('completion_event'));done=true
+    assert(h.S.Services.QuestProgressV3:Refresh('completion_changed'))
+    assert(h.B:GetProjection().rows[1].statusText=='待确认' and next(h.B.State.completedMainlandKeys)==nil,
+        'history loading was not propagated as unverified completion')
+end)
+Test('active true history cannot borrow incomplete evidence from before acceptance',function()
+    local h=Boot();h:Mainland(1);local active,done=false,false
+    X2Quest.IsCompleted=function(_,qid)return done and qid==9044 end
+    X2Quest.GetActiveQuestListCount=function()return active and 1 or 0 end
+    X2Quest.GetActiveQuestType=function(_,i)return active and i==1 and 9044 or nil end
+    assert(h.B:AcquireConsumer('accept_history'))
+    active,done=true,true;assert(h.S.Services.QuestProgressV3:Refresh('accepted_with_history'))
+    active=false;assert(h.S.Services.QuestProgressV3:Refresh('abandoned_with_history'))
+    assert(h.B:GetProjection().rows[1].statusText=='待确认' and next(h.B.State.completedMainlandKeys)==nil,
+        'pre-acceptance false was reused as proof of turn-in')
+end)
+Test('unknown date discards uncommitted active completion evidence before same-day recovery',function()
+    local h=Boot();h:Mainland(1);local active,done=true,false
+    X2Quest.GetActiveQuestListCount=function()return active and 1 or 0 end
+    X2Quest.GetActiveQuestType=function(_,i)return active and i==1 and 9044 or nil end
+    X2Quest.IsCompleted=function(_,qid)return done and qid==9044 end
+    assert(h.B:AcquireConsumer('unknown_completion_date'))
+    h.day='unknown';done=true;assert(h.S.Services.QuestProgressV3:Refresh('unknown_day_active_true'))
+    active=false;h.day='2026-10-07';assert(h.S.Services.QuestProgressV3:Refresh('known_day_after_abandon'))
+    assert(h.B:GetProjection().rows[1].statusText=='待确认' and next(h.B.State.completedMainlandKeys)==nil,
+        'unknown-day observation failed to revoke earlier completion candidate')
+end)
+Test('abandoned incomplete quest cannot reuse its candidate when history loads later',function()
+    local h=Boot();h:Mainland(1);local active,done=true,false
+    X2Quest.GetActiveQuestListCount=function()return active and 1 or 0 end
+    X2Quest.GetActiveQuestType=function(_,i)return active and i==1 and 9044 or nil end
+    X2Quest.IsCompleted=function(_,qid)return done and qid==9044 end
+    assert(h.B:AcquireConsumer('abandon_before_history'))
+    active=false;assert(h.S.Services.QuestProgressV3:Refresh('abandoned_incomplete'))
+    assert(h.B:GetProjection().rows[1].statusText=='未接')
+    done=true;assert(h.S.Services.QuestProgressV3:Refresh('history_loaded_after_abandon'))
+    assert(h.B:GetProjection().rows[1].statusText=='待确认' and next(h.B.State.completedMainlandKeys)==nil)
+end)
+Test('unavailable completion or active index breaks uncommitted transition evidence',function()
+    for _,kind in ipairs({'completed','active_index'}) do
+        local h=Boot();h:Mainland(1);local active,done,fail=true,false,false
+        X2Quest.GetActiveQuestListCount=function()if fail and kind=='active_index' then error('index not ready')end;return active and 1 or 0 end
+        X2Quest.GetActiveQuestType=function(_,i)return active and i==1 and 9044 or nil end
+        X2Quest.IsCompleted=function(_,qid)if fail and kind=='completed' then error('completion not ready')end;return done and qid==9044 end
+        assert(h.B:AcquireConsumer('broken_evidence_'..kind))
+        active,done,fail=false,true,true;assert(h.S.Services.QuestProgressV3:Refresh('unavailable_evidence'))
+        fail=false;assert(h.S.Services.QuestProgressV3:Refresh('restored_history'))
+        assert(h.B:GetProjection().rows[1].statusText=='待确认' and next(h.B.State.completedMainlandKeys)==nil,
+            'unavailable '..kind..' did not revoke the completion candidate')
+    end
 end)
 print(string.format('BONDS_DAILY_CACHE: %d passed / %d failed (runtime=%s)',passed,failed,_VERSION))
 if failed>0 then os.exit(1) end

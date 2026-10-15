@@ -445,5 +445,74 @@ test('sort and optional merge use task geography while diagnostics remain read o
     assert(h.boardCalls==reads and stateFingerprint(h)==before,'diagnostic mutated/probed')
 end)
 
+-- 2026-10-15：三个板位非空不代表原大陆所有地区均已观测。
+local function auroriaBoards(h)
+    h.zone=54
+    h.boards={[5]={faction='原大陆',contents={'黄金废墟: 杂货 10个'}},
+        [6]={contents={'墟境之口: 袋子 25个'}},[7]={contents={'海之烛台: 杂货 20个'}}}
+end
+test('Auroria zone event adds new regional lines even when all three boards were cached',function()
+    local h=fresh();auroriaBoards(h);assert(h.B:AcquireConsumer('auroria_move'))
+    local before=h.boardCalls
+    h.zone=56;h.boards[6].contents[2]='煦日之野: 杂货 8个'
+    h.S.Events:Dispatch('ENTER_ANOTHER_ZONEGROUP');h:Drain()
+    assert(h.boardCalls==before+7,'complete board shells suppressed the location probe')
+    assert(#h.B:GetProjection().rows==4,'new Auroria region never joined the cache')
+    assert(h.B:DescribeDailyCache().recovery.status=='complete')
+end)
+test('reopening Auroria collects a new region reached while the page was closed',function()
+    local h=fresh();auroriaBoards(h);assert(h.B:AcquireConsumer('before_move'))
+    assert(h.B:ReleaseConsumer('before_move'));local before=h.boardCalls
+    h.zone=103;h.boards[7].contents[2]='鲸鱼歌湾: 杂货 20个'
+    assert(h.B:AcquireConsumer('after_move'))
+    assert(h.boardCalls==before+7 and #h.B:GetProjection().rows==4,'reopen reused incomplete regional coverage')
+end)
+test('unknown location boundaries probe even after all continent board shells are cached',function()
+    for _,reopen in ipairs({false,true}) do
+        local h=fresh();h:Mainland(1,'Nuia');assert(h.A:Refresh('manual'))
+        h:Mainland(4,'Haranya');assert(h.A:Refresh('manual'))
+        auroriaBoards(h);assert(h.B:AcquireConsumer('known'))
+        if reopen then assert(h.B:ReleaseConsumer('known')) end
+        local before=h.boardCalls;h.zone=777;h.boards[7].contents[2]='鲸鱼歌湾: 杂货 20个'
+        if reopen then assert(h.B:AcquireConsumer('unknown'))
+        else h.S.Events:Dispatch('ENTER_ANOTHER_ZONEGROUP');h:Drain() end
+        assert(h.boardCalls==before+7,'all-complete cache suppressed unknown location discovery')
+        assert(#h.B:GetProjection().rows==12 and h:Coverage('west') and h:Coverage('east'),'unknown location lost regional or mainland evidence')
+    end
+end)
+test('hidden Auroria cache reports the actual filter and restores rows without probing',function()
+    local h=fresh();auroriaBoards(h);assert(h.B:AcquireConsumer('hidden'))
+    assert(h.B.Commands:SetFilterMask(7))
+    local p=h.B:GetProjection();local before=h.boardCalls
+    assert(#p.rows==0 and p.filteredRowCount==3,'hidden cached rows not distinguished from absent data')
+    assert(tostring(p.filterHint):find('原大陆',1,true),'missing actionable Auroria filter hint')
+    assert(h.B.Commands:SetFilterMask(15));p=h.B:GetProjection()
+    assert(#p.rows==3 and p.filteredRowCount==0 and p.filterHint==nil and h.boardCalls==before)
+end)
+test('probe diagnostics retain raw zone faction and bounded content without extra native calls',function()
+    local h=fresh();auroriaBoards(h);assert(h.A:Refresh('page_manual'))
+    local before,reads,writes=h.boardCalls,h.reads,h.writes
+    local d=h.B:DescribeDailyCache();local probe=d.lastBoardProbe
+    assert(probe.zoneId==54 and probe.zoneName=='墟境之口','raw location evidence missing')
+    assert(probe.boards[5].faction=='原大陆' and probe.boards[5].lines[1]=='黄金废墟: 杂货 10个','raw board evidence missing')
+    probe.boards[5].lines[1]='mutated diagnostic copy'
+    assert(h.B:DescribeDailyCache().lastBoardProbe.boards[5].lines[1]~='mutated diagnostic copy')
+    assert(h.boardCalls==before and h.reads==reads and h.writes==writes,'diagnostics performed native IO')
+    h:Mainland(1,'Nuia');assert(h.A:Refresh('page_manual'))
+    d=h.B:DescribeDailyCache()
+    assert(#d.probeHistory==2 and d.probeHistory[1].zoneId==54 and d.probeHistory[2].zoneId==1,'prior continent probe was overwritten')
+    for i=1,7 do h.A:Refresh('page_manual') end
+    assert(#h.B:DescribeDailyCache().probeHistory==4,'unbounded diagnostic probe history')
+end)
+test('Marianople raw zone 2 chooses west despite cached Auroria board contents',function()
+    local h=fresh({zone=2});h.boards={[1]={faction='Nuia',contents={'Fabric 20'}},
+        [5]={contents={'黄金废墟: 杂货 10个'}},[6]={contents={'墟境之口: 袋子 25个','煦日之野: 杂货 8个'}},
+        [7]={contents={'海之烛台: 杂货 20个','鲸鱼歌湾: 杂货 20个'}}}
+    assert(h.A:Refresh('page_manual'))
+    local d=h.B:DescribeDailyCache()
+    assert(d.westLoaded and not d.auroriaLoaded and d.lastBoardProbe.zoneId==2,'Marianople mislabeled as Auroria')
+    assert(d.lastBoardProbe.detectedScope=='west' and d.lastBoardProbe.zoneName=='玛瑞诺普')
+end)
+
 print(string.format('BONDS_CROSS_CONTINENT: %d/%d passed (runtime=%s)',passed,total,_VERSION))
 if passed~=total then error('Bonds cross-continent regression failures') end

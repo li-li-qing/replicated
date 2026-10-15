@@ -328,10 +328,11 @@ end)
 
 Test("B4: Real Quest State tracking with activeIndex", function()
     local progress = S.Services.QuestProgressV3
+    local fabricCompleted, fabricActive = true, false
     _G.X2Quest = {
-        IsCompleted = function(_, qid) return qid == 9044 end, -- 20 个布料的任务已完成。
-        GetActiveQuestListCount = function(_) return 1 end,
-        GetActiveQuestType = function(_, idx) return 9152 end, -- 60 个皮革的任务进行中。
+        IsCompleted = function(_, qid) return fabricCompleted and qid == 9044 end,
+        GetActiveQuestListCount = function(_) return fabricActive and 2 or 1 end,
+        GetActiveQuestType = function(_, idx) return idx==1 and 9152 or (fabricActive and 9044 or nil) end,
         GetQuestContextMainTitle = function(_, qid) return qid == 9152 and "[特产-西部] 黄金平原的保存特产" or ("任务 " .. tostring(qid)) end,
         IsReadyForCompleteQuest = function(_, qid) return false end,
     }
@@ -375,9 +376,15 @@ Test("B4: Real Quest State tracking with activeIndex", function()
         elseif r.materialKey == "lumber" then r3 = r end
     end
 
-    assert(r1 ~= nil and r1.statusText == "已完成" and r1.tone == "green", "r1 should be completed")
+    -- 无日期 true 不证明今日交付；必须先观察到本日未完成，再观察完成跃迁。
+    assert(r1 ~= nil and r1.statusText == "待确认" and r1.completed ~= true, "undated r1 completion should remain unverified")
     assert(r2 ~= nil and r2.statusText == "进行中" and r2.tone == "yellow", "r2 should be in progress")
     assert(r3 ~= nil and r3.statusText == "未接" and r3.tone == "muted", "r3 should be not accepted")
+    fabricCompleted, fabricActive = false, true; progress:Refresh('fabric_accepted'); BA:Refresh("quest_progress")
+    fabricCompleted, fabricActive = true, false; progress:Refresh('fabric_turn_in'); BA:Refresh("quest_progress")
+    for _, row in ipairs(BA:GetProjection().rows) do
+        if row.materialKey == "fabric" then assert(row.completed and row.tone == "green", "observed daily completion lost") end
+    end
 end)
 
 Test("B5: Bag material count & shortage computation", function()
@@ -852,6 +859,13 @@ Test("B21: RU Ancestor coinpurse wording resolves the ambiguous 20 requirement",
     end
     assert(matched ~= nil and matched.materialKey == "ancestor_purse" and matched.requiredCount == 20,
         "Russian 'Котомка' wording must resolve ancestor_purse 20 instead of ambiguous UNKNOWN")
+end)
+
+Test('B24: floating filtered state explains hidden Auroria cache', function()
+    local spec=assert(S.UIV3.LifeEconomyContent.specs.Bonds)
+    local hint='已缓存原大陆债券；请选择包含原大陆的显示范围。'
+    local status=spec.status({dailySnapshotStatus={auroria=true},filterHint=hint}, {})
+    assert(status:find(hint,1,true),'floating status omits filter explanation')
 end)
 
 print(string.format("\nBonds Test Results: %d/%d passed", passed, total))

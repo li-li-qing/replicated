@@ -1157,7 +1157,7 @@ local function InstallDropdownFallback(c, spec, reason)
 
     function c:Layout(x, y, nextWidth, nextHeight)
         local nextX, nextY = tonumber(x) or 0, tonumber(y) or 0
-        local nextW = math.max(100, tonumber(nextWidth) or 180)
+        local nextW = math.max(spec.compact==true and 44 or 100, tonumber(nextWidth) or 180)
         local nextH = math.max(22, tonumber(nextHeight) or Token("size.buttonH", 26))
         self.lastLayout = { x = nextX, y = nextY, w = nextW, h = nextH, popupWidth = spec.popupWidth }
         UI:SetAnchor(self.root, spec.parent, nextX, nextY, self.owner)
@@ -1182,7 +1182,9 @@ local function InstallDropdownFallback(c, spec, reason)
 end
 
 RSUI:RegisterType("Dropdown", function(spec)
-    local width = math.max(100, tonumber(spec.width) or 180)
+    -- 窄HUD可显式采用紧凑触发器；弹层仍使用自己的popupWidth，既有表单保留100px下限。
+    local minimumWidth=spec.compact==true and 44 or 100
+    local width = math.max(minimumWidth, tonumber(spec.width) or 180)
     local height = math.max(22, tonumber(spec.height) or Token("size.buttonH", 26))
     local maxVisible = math.max(3, math.min(16, math.floor(tonumber(spec.maxVisible) or 8)))
     local trigger, triggerErr = UI:CreateButton(spec.parent, spec.id .. "_trigger", "请选择  ▼", 0, 0, width, height,
@@ -1476,7 +1478,7 @@ RSUI:RegisterType("Dropdown", function(spec)
 
     function c:Layout(x, y, nextWidth, nextHeight)
         local nextX, nextY = tonumber(x) or 0, tonumber(y) or 0
-        local nextW = math.max(100, tonumber(nextWidth) or width)
+        local nextW = math.max(minimumWidth, tonumber(nextWidth) or width)
         local nextH = math.max(22, tonumber(nextHeight) or height)
         self.lastLayout = { x = nextX, y = nextY, w = nextW, h = nextH, popupWidth = spec.popupWidth }
         UI:SetAnchor(self.root, spec.parent, nextX, nextY, self.owner)

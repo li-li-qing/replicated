@@ -58,5 +58,11 @@ T('Bonds real TableView activation passes the row to the detail surface',functio
  local page=assert(S.UIV3.PageHost.factories['life.bonds'](h.Native(nil,'bonds-click-parent',0,0,820,680),'life.bonds'));assert(page:Refresh())
  assert(page.tableView:ActivateItem(1),'Bonds activation did not open detail')
  assert(opened and opened[1]=='bonds' and opened[2]==row.key and opened[3]==row,'detail received incorrect row identity')
+ -- 已缓存但被筛选隐藏时，真实页面显示 Authority 的原因；恢复条目后清除空态。
+ function F:GetProjection()return {rows={},revision=2,status='ready',filterHint='已缓存原大陆债券；请选择包含原大陆的显示范围。'}end
+ assert(page:Refresh())
+ assert(page.tableView.list.viewState.detail==F:GetProjection().filterHint,'page still presents filtered cache as absent data')
+ function F:GetProjection()return {rows={row},revision=3,status='ready'}end
+ assert(page:Refresh());assert(page.tableView.list.viewState:Get()=='ready','filter empty state survived restored rows')
 end)
 print(('LIST_REFRESH_RESULT passed=%d failed=%d'):format(passed,failed));if failed>0 then error('list refresh tests failed')end

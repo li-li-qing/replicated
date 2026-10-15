@@ -64,8 +64,9 @@ require('for index = 1, 4 do mainlandReady' in bonds and 'for index = 5, 7 do au
 require('forceRead = reason == "page_manual"' in bonds and 'local needsCurrentSnapshot' in bonds
         and 'boundaryProbe = reason == "zone_changed" or reason == "entered_world"' in bonds
         and 'local shouldRead = not projectionOnly and dateReady' in bonds
-        and 'forceRead or needsCurrentSnapshot' in bonds and 'boundaryProbe and not allComplete' in bonds,
-        "board probing excludes projection/undated observations and reuses complete same-day local snapshots")
+        and 'forceRead or needsCurrentSnapshot or regionProbe' in bonds
+        and '(zoneHint == "auroria" or zoneHint == nil) and (boundaryProbe or reason == "demand_start")' in bonds,
+        "board probing reuses mainland caches while Auroria and unknown location boundaries remain observable")
 require('SubscribeOptional("ENTER_ANOTHER_ZONEGROUP"' in bonds and 'SubscribeOptional("ENTERED_WORLD"' in bonds
         and 'SubscribeOptional("LEFT_LOADING"' in bonds and 'BONDS_LOCATION_DELAYS = { 750, 1500, 3000 }' in bonds
         and 'AddOneShot(BONDS_ZONE_REFRESH_TASK, delay' in bonds and 'RemoveTask(BONDS_ZONE_REFRESH_TASK)' in bonds

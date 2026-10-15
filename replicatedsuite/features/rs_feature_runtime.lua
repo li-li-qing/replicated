@@ -24,6 +24,25 @@ S.FeatureRuntime = {
 }
 local F = S.FeatureRuntime
 F.StartupEnableIntentContractVersion = 1
+F.PreferenceDiagnosticsContractVersion = 1
+
+-- 每个已注册模块只保留本代最近一次开关事务和启动恢复证据；不写用户档、不读 Native、不进入 Tick。
+local function RecordPreferenceOperation(id, target, reason, stage, err)
+    local row = F.state[id]
+    if row == nil then return end
+    local before = row.preferenceOperation
+    row.preferenceOperation = {
+        attempt = (tonumber(before and before.attempt) or 0) + (stage == "requested" and 1 or 0),
+        generation = S.Generation, atMs = S.NowMs and S.NowMs() or 0,
+        targetEnabled = target == true, reason = tostring(reason or "user"),
+        stage = stage, error = err and tostring(err) or nil,
+    }
+end
+
+local function CopyPreferenceEvidence(value)
+    if type(value) ~= "table" then return nil end
+    local out = {}; for key, item in pairs(value) do out[key] = item end; return out
+end
 
 local function Emit(level, code, message, context)
     local d = S.DiagnosticsManager
@@ -167,19 +186,24 @@ function F:SetPreferredEnabled(id, enabled, reason)
     id = NormalizeId(id)
     if Registry:Get(id) == nil then return false, "unknown feature" end
     if self.implementations[id] == nil then return false, "feature not implemented" end
-    local loaded, loadErr = self:EnsurePreferencesLoaded()
-    if loaded ~= true then return false, loadErr end
-    if type(P.CanWrite) ~= "function" then return false, "persistence write preflight unavailable" end
-    local writable, writeErr = P:CanWrite(self.preferenceStoreId)
-    if writable ~= true then return false, writeErr or "feature preference store write-fenced" end
-
     local target = enabled == true
+    RecordPreferenceOperation(id, target, reason, "requested")
+    local function Rejected(stage, err)
+        RecordPreferenceOperation(id, target, reason, stage, err)
+        return false, err
+    end
+    local loaded, loadErr = self:EnsurePreferencesLoaded()
+    if loaded ~= true then return Rejected("preflight_rejected", loadErr) end
+    if type(P.CanWrite) ~= "function" then return Rejected("preflight_rejected", "persistence write preflight unavailable") end
+    local writable, writeErr = P:CanWrite(self.preferenceStoreId)
+    if writable ~= true then return Rejected("preflight_rejected", writeErr or "feature preference store write-fenced") end
+
     local previousPreference = self.preferences[id]
     local previousEnabled = self:IsEnabled(id)
     local ok, err
     if target then ok, err = self:Enable(id, reason or "user_enable")
     else ok, err = self:Disable(id, reason or "user_disable") end
-    if ok ~= true then return false, err end
+    if ok ~= true then return Rejected("lifecycle_rejected", err) end
 
     -- 偏好表修改由 MutateStore 快照/回滚事务覆盖；Enable/Disable 副作用无法被持久快照捕获，上方生命周期转换必须在下方手动回滚。
     local persisted, persistErr
@@ -198,7 +222,7 @@ function F:SetPreferredEnabled(id, enabled, reason)
         else persisted, persistErr = false, "durable feature preference save unavailable" end
         if persisted ~= true then self.preferences[id] = previousPreference end
     end
-    if persisted == true then return true end
+    if persisted == true then RecordPreferenceOperation(id, target, reason, "committed"); return true end
 
     -- 生命周期转换后持久意图失败时，MutateStore 已恢复显式偏好；还必须恢复运行状态，不能让 UI 报告成功却在 ReloadAddon 静默还原。
     local rollbackOk, rollbackErr = true, nil
@@ -210,9 +234,9 @@ function F:SetPreferredEnabled(id, enabled, reason)
         Emit("error", "FEATURE_PREF_ROLLBACK_FAILED", "功能开关持久化失败且生命周期回滚失败", {
             feature = id, error = tostring(persistErr or "mark dirty failed"), rollbackError = tostring(rollbackErr or "unknown"),
         })
-        return false, tostring(persistErr or "feature preference persistence failed") .. "; rollback failed: " .. tostring(rollbackErr or "unknown")
+        return Rejected("rollback_failed", tostring(persistErr or "feature preference persistence failed") .. "; rollback failed: " .. tostring(rollbackErr or "unknown"))
     end
-    return false, persistErr or "feature preference persistence failed"
+    return Rejected("persist_rejected", persistErr or "feature preference persistence failed")
 end
 
 -- 功能方案需要一次切换多个
@@ -284,6 +308,7 @@ function F:ApplyPreferenceTargets(targets, reason)
     local previous, transitioned = {}, {}
     for _, id in ipairs(ordered) do
         previous[id] = { enabled = self:IsEnabled(id) }
+        RecordPreferenceOperation(id, normalizedTargets[id], reason or "feature_preference_batch", "requested")
     end
 
     local function RollbackLifecycle(cause)
@@ -315,6 +340,7 @@ function F:ApplyPreferenceTargets(targets, reason)
                 local rollbackOk, rollbackErr = RollbackLifecycle(err)
                 local message = id .. ":" .. tostring(err or "lifecycle transition failed")
                 if rollbackOk ~= true then message = message .. "; rollback failed: " .. tostring(rollbackErr) end
+                for _, member in ipairs(ordered) do RecordPreferenceOperation(member, normalizedTargets[member], reason or "feature_preference_batch", rollbackOk and "lifecycle_rejected" or "rollback_failed", message) end
                 return Failed(message, "lifecycle", id, target, rollbackOk, rollbackErr, #transitioned, err)
             end
             transitioned[#transitioned + 1] = id
@@ -329,9 +355,11 @@ function F:ApplyPreferenceTargets(targets, reason)
         local rollbackOk, rollbackErr = RollbackLifecycle(persistErr)
         local message = persistErr or "feature preference batch persistence failed"
         if rollbackOk ~= true then message = tostring(message) .. "; rollback failed: " .. tostring(rollbackErr or "unknown") end
+        for _, member in ipairs(ordered) do RecordPreferenceOperation(member, normalizedTargets[member], reason or "feature_preference_batch", rollbackOk and "persist_rejected" or "rollback_failed", message) end
         return Failed(message, "persist", nil, nil, rollbackOk, rollbackErr, #transitioned, persistErr)
     end
 
+    for _, id in ipairs(ordered) do RecordPreferenceOperation(id, normalizedTargets[id], reason or "feature_preference_batch", "committed") end
     Emit("info", "FEATURE_PREF_BATCH_APPLIED", "批量功能开关事务已提交", {
         reason = tostring(reason or "batch"), targets = #ordered, changed = #transitioned,
     })
@@ -415,6 +443,7 @@ function F:Enable(id, reason)
     local ok, err = Invoke(id, impl, "Enable", reason or "user")
     if ok ~= true then row.faulted = true; row.lastError = tostring(err); return false, err end
     row.enabled, row.faulted, row.lastError = true, false, nil
+    row.lifecycleReason = tostring(reason or "user")
     PublishLifecycle(id, "enabled", reason or "user")
     return true
 end
@@ -428,6 +457,7 @@ function F:Disable(id, reason)
     local ok, err = Invoke(id, impl, "Disable", reason or "user")
     if ok ~= true then row.faulted = true; row.lastError = tostring(err); return false, err end
     row.enabled = false
+    row.lifecycleReason = tostring(reason or "user")
     PublishLifecycle(id, "disabled", reason or "user")
     return true
 end
@@ -496,6 +526,8 @@ function F:EnableDefaults(reason)
         -- 启动跳过受限模块，保留磁盘偏好；正常隐藏不能制造启动失败或触发旧启用意图修复。
         if impl ~= nil and Registry:IsAccessible(id) then
             local preferred, explicit = self:GetPreferredEnabled(id)
+            local row = self.state[id]
+            if row then row.startupPreference = { preferredEnabled=preferred, explicitPreference=explicit, reason=tostring(reason or "default_enable") } end
 
             -- 早于偏好链接契约的持久屏幕表现可提供 Store 支撑的有界一次性启动修复；Runtime 拥有偏好事务，Feature 只证明历史持久意图。
             -- 已链接用户显式禁用后，任何 Feature 禁止在后续重载静默覆盖它。
@@ -531,6 +563,7 @@ function F:EnableDefaults(reason)
                 local ok, err = self:Enable(id, reason or "default_enable")
                 if ok ~= true then failures[#failures + 1] = id .. ":" .. tostring(err or "failed") end
             end
+            if row then row.startupPreference.enabledAfter=self:IsEnabled(id); row.startupPreference.error=row.lastError end
         end
     end
     if #failures > 0 then return false, table.concat(failures, ";") end
@@ -577,6 +610,24 @@ function F:GetControlState(id)
     return { implemented = self.implementations[id] ~= nil, initialized = row and row.initialized == true or false,
         enabled = row and row.enabled == true or false, faulted = row and row.faulted == true or false,
         lastError = row and row.lastError or nil }
+end
+
+function F:GetPreferenceDiagnostics(id)
+    id = NormalizeId(id)
+    local row, store = self.state[id], P:GetStore(self.preferenceStoreId)
+    local preferred, explicit = self:GetPreferredEnabled(id)
+    return {
+        contractVersion=self.PreferenceDiagnosticsContractVersion, generation=S.Generation,
+        preferencesLoaded=self.preferencesLoaded==true, preferredEnabled=preferred, explicitPreference=explicit,
+        runtimeEnabled=self:IsEnabled(id), lifecycleReason=row and row.lifecycleReason,
+        startup=CopyPreferenceEvidence(row and row.startupPreference),
+        lastOperation=CopyPreferenceEvidence(row and row.preferenceOperation),
+        store=store and { id=store.id, loaded=store.loaded, loadStatus=store.loadStatus,
+            dirty=store.dirty, writeFenced=store.writeFenced, lastError=store.lastError,
+            lastLoadAt=store.lastLoadAt, lastSaveAt=store.lastSaveAt, lastVerifyAt=store.lastVerifyAt,
+            lastVerifyOk=store.lastVerifyOk, lastVerifyError=store.lastVerifyError,
+            lastSavedRevision=store.lastSavedRevision, needsBarrierVerify=store.needsBarrierVerify } or nil,
+    }
 end
 
 function F:Describe()

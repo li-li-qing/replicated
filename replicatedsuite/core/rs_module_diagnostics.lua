@@ -507,6 +507,18 @@ function H:BuildReport(moduleId, options)
         lines[#lines + 1] = "controlToggle=unavailable"
     end
     local runtimeManager = S.FeatureRuntime
+    local preferenceEvidence = type(runtimeManager) == "table" and type(runtimeManager.GetPreferenceDiagnostics) == "function"
+        and runtimeManager:GetPreferenceDiagnostics(meta.controlFeatureId or moduleId) or nil
+    if type(preferenceEvidence) == "table" then
+        local operation = preferenceEvidence.lastOperation or {}
+        lines[#lines + 1] = "controlPreference=preferred:" .. tostring(preferenceEvidence.preferredEnabled)
+            .. "/explicit:" .. tostring(preferenceEvidence.explicitPreference)
+            .. "/runtime:" .. tostring(preferenceEvidence.runtimeEnabled)
+            .. "/lastStage:" .. tostring(operation.stage or "none")
+            .. "/lastTarget:" .. tostring(operation.targetEnabled)
+            .. "/lastReason:" .. tostring(operation.reason or "none")
+        if detail then detail:Add('feature.preference', preferenceEvidence) end
+    end
     local preferenceStore = type(runtimeManager) == "table" and type(S.Persistence) == "table"
         and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore(runtimeManager.preferenceStoreId) or nil
     if type(preferenceStore) == "table" then

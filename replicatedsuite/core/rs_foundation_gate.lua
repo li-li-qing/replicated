@@ -1323,13 +1323,17 @@ function G:Run(options)
 
         local nativeAdapter = S.UIV3NativeAdapter
         local adapterInfo = nativeAdapter and type(nativeAdapter.Describe) == "function" and nativeAdapter:Describe() or nil
+        -- 主 Shell 显式启用原生 Esc，并在 OnHide 交回输入/可见性所有权；两种已接受的策略都有效。
+        -- 不能用“禁用次数为零”否决仅创建主 Shell 的正常启动，缺少原生策略证据仍然阻断。
         AddCheck(report, "v3_native_root_policy", adapterInfo ~= nil and (tonumber(adapterInfo.version) or 0) >= 3
                 and (tonumber(adapterInfo.rootInteractionPolicyContractVersion) or 0) >= 2
                 and (tonumber(adapterInfo.rootsCreated) or 0) >= 1
-                and (tonumber(adapterInfo.nativeEscapeCloseDisabled) or 0) >= 1,
+                and ((tonumber(adapterInfo.nativeEscapeCloseDisabled) or 0)
+                    + (tonumber(adapterInfo.nativeEscapeCloseEnabled) or 0)) >= 1,
             "blocker", adapterInfo and ("version=" .. tostring(adapterInfo.version) .. "/roots=" .. tostring(adapterInfo.rootsCreated)
                 .. "/policy=" .. tostring(adapterInfo.rootInteractionPolicyContractVersion or 0)
-                .. "/escapeFence=" .. tostring(adapterInfo.nativeEscapeCloseDisabled)) or "missing")
+                .. "/escapeFence=" .. tostring(adapterInfo.nativeEscapeCloseDisabled)
+                .. "/escapeEnabled=" .. tostring(adapterInfo.nativeEscapeCloseEnabled or 0)) or "missing")
 
         local design = S.UIV3Design
         AddCheck(report, "v3_scrollable_page_contract", type(design) == "table" and (tonumber(design.version) or 0) >= 4 and type(design.ScrollablePageRoot) == "function",

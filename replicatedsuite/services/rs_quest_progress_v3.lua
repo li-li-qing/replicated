@@ -24,6 +24,7 @@ local P = {
     snapshots = {},
     scopeSnapshots = { daily = {}, weekly = {} },
     activeIndex = {},
+    activeIndexAvailable = false,
     -- （2026-09-14，quest-active-state-publish）除固定 QuestGroups 外，居民债券/拍卖今日任务
     -- 也会消费任意活动任务事实。保存 detached qid->state 快照，只用于判断事件是否需要发布；不暴露 Native 对象。
     activeQuestStates = {},
@@ -37,6 +38,7 @@ local P = {
     ActiveQuestTitleAvailabilityContractVersion = 1,
     -- 只有具备分离逐目标事实，Activity 消费者才能自定义 x/y。
     ActivityObjectiveFactsContractVersion = 1,
+    DailyCompletionEvidenceContractVersion = 1,
 }
 P.presentationBoundary = "service_only"
 S.Services.QuestProgressV3 = P
@@ -155,30 +157,40 @@ function P:BuildActiveIndex()
     return map, true
 end
 
+-- 只读原始完成/活动事实；IsCompleted 没有日期字段，消费者不能据此推断“今日已交付”。
+-- 日常完成证据及持久化仍归各 Feature，不在共享 Service 另建日账本。
+function P:GetQuestCompletionFact(qid, activeIndex, activeAvailable)
+    qid = tonumber(qid)
+    if qid == nil or qid < 1 or qid ~= math.floor(qid) then return nil end
+    local active = type(activeIndex) == "table" and activeIndex or self.activeIndex
+    local fact = { questId = qid, active = type(active) == "table" and active[qid] ~= nil,
+        activeAvailable = activeAvailable == true or (activeAvailable == nil and self.activeIndexAvailable == true),
+        completedReadOk = false, readyReadOk = false }
+    local host = rawget(_G, "X2Quest")
+    if host == nil then return fact end
+    if Capability("X2Quest:IsCompleted") then
+        local ok, value = S.Api:CallCapability("X2Quest:IsCompleted", host, "IsCompleted", qid)
+        if ok == true and type(value) == "boolean" then fact.completedReadOk, fact.completed = true, value end
+    end
+    if fact.active and Capability("X2Quest:IsReadyForCompleteQuest") then
+        local ok, value = S.Api:CallCapability("X2Quest:IsReadyForCompleteQuest", host, "IsReadyForCompleteQuest", qid)
+        if ok == true and type(value) == "boolean" then fact.readyReadOk, fact.ready = true, value end
+    end
+    return fact
+end
+
 function P:QuestState(qid, activeIndex)
     qid = tonumber(qid)
-    if qid == nil then return QS.UNKNOWN end
+    if qid == nil or qid < 1 or qid ~= math.floor(qid) then return QS.UNKNOWN end
     local cache = type(self.refreshQuestStateCache) == "table" and self.refreshQuestStateCache or nil
     if cache ~= nil and cache[qid] ~= nil then return cache[qid] end
 
-    local questHost = rawget(_G, "X2Quest")
-    if questHost == nil then return QS.UNKNOWN end
+    if rawget(_G, "X2Quest") == nil then return QS.UNKNOWN end
     local state = QS.NOT_ACCEPTED
-
-    if Capability("X2Quest:IsCompleted") then
-        local okDone, done = S.Api:CallCapability("X2Quest:IsCompleted", questHost, "IsCompleted", qid)
-        if okDone and done == true then state = QS.COMPLETED end
-    end
-
-    local active = type(activeIndex) == "table" and activeIndex or (type(self.activeIndex) == "table" and self.activeIndex or nil)
-    if state ~= QS.COMPLETED and active ~= nil and active[qid] ~= nil then
-        if Capability("X2Quest:IsReadyForCompleteQuest") then
-            local okReady, ready = S.Api:CallCapability("X2Quest:IsReadyForCompleteQuest", questHost, "IsReadyForCompleteQuest", qid)
-            if okReady and ready == true then state = QS.READY_TO_TURN_IN else state = QS.IN_PROGRESS end
-        else
-            state = QS.IN_PROGRESS
-        end
-    end
+    local fact = self:GetQuestCompletionFact(qid, activeIndex)
+    -- 当前确实在任务日志中的任务优先于无日期完成标记，重复任务重新接取后不能继续显示历史完成。
+    if fact.active then state = fact.ready == true and QS.READY_TO_TURN_IN or QS.IN_PROGRESS
+    elseif fact.completed == true then state = QS.COMPLETED end
     if cache ~= nil then cache[qid] = state end
     return state
 end
@@ -402,6 +414,7 @@ function P:Refresh(reason, forceInstanceDiscovery)
             or SnapshotMapEqual(self.scopeSnapshots and self.scopeSnapshots.weekly, nextScopes.weekly) ~= true
 
         self.activeIndex = activeIndex
+        self.activeIndexAvailable = questAvailable == true
         self.activeQuestStates = nextActiveQuestStates
         self.snapshots = nextSnapshots
         self.scopeSnapshots = nextScopes
@@ -680,8 +693,9 @@ function P:QuestTitle(qid, fallback)
     return tostring(fallback or ("任务 " .. tostring(qid)))
 end
 
-function P:ResolveObjectiveDetail(objective, index, related)
+function P:ResolveObjectiveDetail(objective, index, related, stateOverride)
     objective = type(objective) == "table" and objective or {}
+    stateOverride = DETAIL_STATE_TEXT[stateOverride] ~= nil and stateOverride or nil
     local bestState, bestQuest = QS.UNKNOWN, nil
     local bestPriority = -1
     local variants = {}
@@ -689,7 +703,7 @@ function P:ResolveObjectiveDetail(objective, index, related)
         local qid = tonumber(rawId)
         if qid ~= nil then
             variants[#variants + 1] = qid
-            local state = self:QuestState(qid, self.activeIndex)
+            local state = stateOverride or self:QuestState(qid, self.activeIndex)
             local priority = DETAIL_STATE_PRIORITY[state] or 0
             if priority > bestPriority then
                 bestPriority, bestState, bestQuest = priority, state, qid
@@ -697,7 +711,7 @@ function P:ResolveObjectiveDetail(objective, index, related)
         end
     end
     if bestQuest == nil and variants[1] ~= nil then bestQuest = variants[1] end
-    if bestState == QS.UNKNOWN and bestQuest ~= nil then bestState = self:QuestState(bestQuest, self.activeIndex) end
+    if bestState == QS.UNKNOWN and bestQuest ~= nil and stateOverride == nil then bestState = self:QuestState(bestQuest, self.activeIndex) end
 
     local role = tostring(objective.role or "")
     local curatedTitle = tostring(objective.title or objective.name or "")
@@ -746,6 +760,8 @@ local function FindGroup(scope, key)
                 return {
                     key = key,
                     title = row.text or ("居民债券：" .. tostring(row.name or "") .. tostring(row.quantity or "")),
+                    -- 日常完成证据归 Bonds；详情不能拿通用无日期完成状态覆盖面板的“待确认”。
+                    bondState = DETAIL_STATE_TEXT[row.questStatus] ~= nil and row.questStatus or QS.UNKNOWN,
                     objectives = {
                         {
                             name = tostring(row.text or (tostring(row.name or "") .. " " .. tostring(row.quantity or ""))),
@@ -761,6 +777,7 @@ local function FindGroup(scope, key)
             return {
                 key = tostring(qid),
                 title = "居民委托 #" .. tostring(qid),
+                bondState = QS.UNKNOWN,
                 objectives = {
                     {
                         name = "居民债券任务 #" .. tostring(qid),
@@ -910,7 +927,8 @@ function P:GetGroupDetail(scope, key, options)
     local children = {}
     local completed, activeCount, readyCount = 0, 0, 0
     for index, objective in ipairs(ObjectiveList(group)) do
-        local row = self:ResolveObjectiveDetail(objective, index, false)
+        local row = self:ResolveObjectiveDetail(objective, index, false, group.bondState)
+        if group.bondState == QS.UNKNOWN then row.status, row.tone = "待确认", "muted" end
         children[#children + 1] = row
         if row.state == QS.COMPLETED then completed = completed + 1
         elseif row.state == QS.READY_TO_TURN_IN then completed = completed + 1; readyCount = readyCount + 1
@@ -935,6 +953,7 @@ function P:GetGroupDetail(scope, key, options)
         summary = "已完成 " .. tostring(math.min(completed, 1)) .. "/1 · 积分任务 " .. stateText
     else
         summary = total > 0 and ("已完成 " .. tostring(completed) .. "/" .. tostring(total)) or "暂无主任务"
+        if group.bondState == QS.UNKNOWN then summary = "今日完成状态待确认" end
         if readyCount > 0 then summary = summary .. " · " .. tostring(readyCount) .. " 项可交付" end
         if activeCount > 0 then summary = summary .. " · " .. tostring(activeCount) .. " 项进行中" end
     end

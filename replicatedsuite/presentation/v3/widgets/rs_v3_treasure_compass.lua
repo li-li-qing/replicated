@@ -207,10 +207,10 @@ function P:Render()
         if self:RenderLabel(label, (frame.cardinals or {})[i], "label", 28, 20, ox, oy) then visible = visible + 1 end
     end
     if self.distanceLabel == nil then
-        local err;self.distanceLabel, err = self:CreateLabel("v3_treasure_compass_distance", 180, 24)
+        local err;self.distanceLabel, err = self:CreateLabel("v3_treasure_compass_distance", 260, 24)
         if self.distanceLabel == nil then self:Hide();return false, err end
     end
-    if self:RenderLabel(self.distanceLabel, frame.distanceLabel, "treasure", 180, 24, ox, oy) then visible = visible + 1 end
+    if self:RenderLabel(self.distanceLabel, frame.distanceLabel, "treasure", 260, 24, ox, oy) then visible = visible + 1 end
     return Visibility(self.hostNode, visible > 0)
 end
 if S.Events and type(S.Events.SubscribeInternal) == "function" then

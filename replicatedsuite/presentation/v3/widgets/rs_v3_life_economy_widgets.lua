@@ -105,7 +105,7 @@ end
 local Contents={specs={}}
 S.UIV3.LifeEconomyContent=Contents
 -- 主页面和助手共用同一双击门控，瞬时点击状态只属于各自UI实例。
-local TreasureMapInteraction = { version = 1, hint = "双击藏宝图，在地图上显示位置" }
+local TreasureMapInteraction = { version = 2, hint = "双击目标，在原生地图显示箭头" }
 S.UIV3.TreasureMapInteraction = TreasureMapInteraction
 function TreasureMapInteraction:Reset(instance)
     instance.treasureLastActivateKey, instance.treasureLastActivateAt = nil, nil
@@ -121,7 +121,7 @@ function TreasureMapInteraction:SyncSelection(view, projection)
     return true
 end
 function TreasureMapInteraction:Activate(instance, row, Feature)
-    if type(row) ~= "table" or row.key == nil then self:Reset(instance);return false, "藏宝图已失效" end
+    if type(row) ~= "table" or row.key == nil then self:Reset(instance);return false, "追踪目标已失效" end
     if S.FeatureRuntime:IsEnabled(Feature.Id) ~= true then self:Reset(instance);return false, "寻宝功能已关闭" end
     local now = type(S.NowMs) == "function" and tonumber(S.NowMs()) or nil
     if now == nil then self:Reset(instance);return false, "双击计时不可用" end
@@ -131,7 +131,7 @@ function TreasureMapInteraction:Activate(instance, row, Feature)
     -- 每次真实点击都走同一选择命令，不能依赖某个视图的旧高亮状态。
     -- 先确认选择成功，再记录点击；失败恢复后的下一击不能误判为双击。
     local selected, selectErr = Feature.Commands:Select(row.key)
-    instance.treasureActionError = selected ~= true and tostring(selectErr or "选择藏宝图失败") or nil
+    instance.treasureActionError = selected ~= true and tostring(selectErr or "选择目标失败") or nil
     instance:Refresh()
     if selected ~= true then self:Reset(instance);return false, selectErr end
     instance.treasureLastActivateKey, instance.treasureLastActivateAt = tostring(row.key), now
@@ -147,6 +147,9 @@ end
 local function CloseSettingsChoices(instance)
     local panel=instance.headerSettings
     for _,control in ipairs(panel and panel.choices or {})do if control.open then control:Close()end end
+    for _,key in ipairs({"treasureKindDropdown","treasureRegionDropdown","treasureSettingsDropdown"})do
+        local control=instance[key];if control and control.open then control:Close()end
+    end
     return true
 end
 local function SettingsRow(panel,key,title)
@@ -294,7 +297,7 @@ local function BuildBody(instance,parent,spec,Feature)
         local content = RSUI:VerticalBox({ id = instance.contentPrefix .. "content", parent = parent, gap = instance.headerMode and 2 or 4,
             slot = { size="fill", fill=1, hAlign = "fill", vAlign = "fill" } }) -- 填满卡片余量，否则auto只给空表一行高度。
         instance.content=content
-        if instance.headerMode then
+        if instance.headerMode and spec.featureName~="Treasure" then
             instance.controls=RSUI:HorizontalBox({id=instance.contentPrefix..'controls',parent=instance.headerParent,gap=0,slot={size='fixed',width=50,vAlign='fill'}})
         else instance.controls=RSUI:VerticalBox({id=instance.contentPrefix.."controls",parent=content,gap=3,slot={size="auto",hAlign="fill"}})end
         if type(spec.buildControls) == "function" then
@@ -393,6 +396,8 @@ local function RefreshBody(self,spec,Feature)
             elseif spec.featureName == "Trade" and projection.viewMode == "tracked" and #rows == 0 then
                 -- 维护（2026-09-23，trade-view-help-1）：空的“关注货物”不能伪装成“暂无货率”，否则新用户不知道如何产生数据。
                 self.table:SetViewState("empty", { title = "还没有关注货物", detail = "切回“当前路线全部货物”，单击选择一行后点“关注货物”。" })
+            elseif spec.featureName == "Bonds" and #rows == 0 and projection.filterHint then
+                self.table:SetViewState("empty", { title = "已缓存的债券被筛选隐藏", detail = projection.filterHint })
             elseif #rows == 0 then
                 self.table:SetViewState("empty", { title = spec.emptyTitle, detail = spec.emptyDetail })
             else
@@ -440,7 +445,7 @@ function Contents:Create(parent,name,prefix,options)
         CloseSettingsChoices(self)
         if self.headerSettings and self.headerSettings.surface.visible then self.headerSettings.surface:Close('home_exit')end
         if Contents.openHeaderSettings==self then Contents.openHeaderSettings=nil end
-        for _,key in ipairs({'tradeSettingsDropdown','bondSettingsDropdown'})do
+        for _,key in ipairs({'tradeSettingsDropdown','bondSettingsDropdown','treasureKindDropdown','treasureRegionDropdown','treasureSettingsDropdown'})do
             local dropdown=self[key];if dropdown and dropdown.open==true then dropdown:Close()end
         end
         return true
@@ -595,6 +600,7 @@ local function Register(spec)
             return true
         end
         function instance:Hide(context)
+            CloseSettingsChoices(self)
             local hidden, hideErr = self.surface:Show(false)
             if hidden ~= true then return false, hideErr end
             local released, releaseErr = true, nil
@@ -605,6 +611,7 @@ local function Register(spec)
             return true
         end
         function instance:OnWindowClosed(context)
+            CloseSettingsChoices(self)
             local released, releaseErr = ReleaseConsumer()
             self.visible = false; self:Unsubscribe();TreasureMapInteraction:Reset(self)
             if type(context) ~= "table" or context.persist ~= false then Feature.Commands:SetWidgetVisible(false, "native_close") end
@@ -1027,6 +1034,7 @@ ok, err = Register({
         return tostring(#rows) .. "条 · 当前" .. current .. " · " .. dayText .. " 西" .. (coverage.west and "✓" or "×")
             .. " 东" .. (coverage.east and "✓" or "×") .. " 原" .. (coverage.auroria and "✓" or "×")
             .. saveText
+            .. (projection.filterHint and (" · " .. projection.filterHint) or "")
     end,
 })
 if ok ~= true then error(err) end
@@ -1034,36 +1042,107 @@ if ok ~= true then error(err) end
 ok, err = Register({
     featureName = "Treasure", featureId = "life_treasure", widgetId = "life.treasure", token = "life_treasure", owner = "v3:widget:life_treasure",
     rootId = "v3_life_treasure_widget", contentId = "v3_life_treasure_widget_content", tableId = "v3_life_treasure_widget_table", title = "寻宝助手",
-    emptyTitle = "没有可用藏宝图", emptyDetail = "背包中没有读取到带坐标的藏宝图。", selectable = true,
+    emptyTitle = "暂无追踪条目", emptyDetail = "在上方选择分类和海域，或从设置刷新背包藏宝图。", selectable = true,
     buildControls = function(instance, content, Feature)
         -- 地图按钮与双击均为显式动作，Native X2Map 仍由 Feature Command/Capability Gate 所有；
         -- 不在 Presentation 保存坐标、worldId 或第二份选择状态。按钮自身不启动 Scheduler，也不会因为悬浮窗刷新自动打开地图。
         if type(Feature.Commands.ShowSelectedOnMap) ~= "function" then return false, "寻宝地图定位命令缺失" end
-        instance.treasureInteractionHint = RSUI:Text({ id = (instance.contentPrefix or "v3_life_treasure_widget_") .. "hint",
-            parent = content, text = TreasureMapInteraction.hint, fontSize = 9, tone = "muted", overflow = "ellipsis",
-            slot = { size = "fixed", height = 18, hAlign = "fill" } })
-        local row = RSUI:HorizontalBox({ id = (instance.contentPrefix or "v3_life_treasure_widget_") .. "actions", parent = content, gap = 4, slot = { size = "fixed", height = 28, hAlign = "fill" } })
-        instance.treasureMapButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_treasure_widget_") .. "map", parent = row, text = "地图定位", compact = true, slot = { size = "fill", fill = 1, minWidth = 90 } })
-        instance.treasureMapButton.onClick = function()
+        local function Run(command,...)
             TreasureMapInteraction:Reset(instance)
-            local actionOk, actionErr = Feature.Commands:ShowSelectedOnMap()
+            local ok,why=Feature.Commands[command](Feature.Commands,...)
+            instance.treasureActionError=ok~=true and tostring(why or "操作未完成") or nil
             instance:Refresh()
-            return actionOk, actionErr
+            return ok,why
         end
+        local prefix=instance.contentPrefix or "v3_life_treasure_widget_"
+        local filters=RSUI:HorizontalBox({id=prefix.."filters",parent=content,gap=3,slot={size="fixed",height=24,hAlign="fill"}})
+        local function Projection()return instance.treasureControlProjection or Feature:GetProjection()end
+        instance.treasureKindDropdown=RSUI:Dropdown({id=prefix.."kind",parent=filters,fontSize=9,height=24,compact=true,
+            items={{value="maps",text="寻宝"},{value="seabugs",text="海虫"},{value="ships",text="沉船"}},maxVisible=3,popupWidth=120,
+            get=function()return Projection().viewKind end,set=function(value)return Run("SetViewKind",value)end,
+            slot={size="fixed",width=60}})
+        instance.treasureRegionDropdown=RSUI:Dropdown({id=prefix.."region",parent=filters,fontSize=9,height=24,compact=true,
+            items=Projection().regionItems or {},maxVisible=6,popupWidth=190,
+            get=function()return Projection().region end,set=function(value)return Run("SetRegion",value)end,
+            slot={size="fill",fill=1,minWidth=72}})
+        local function SettingsItems(p)
+            local interval=p.shipRespawnMinutes or 0
+            local items={{value="refresh",text="刷新背包 / 点位"},{value="skip",text="跳过 → 下一处"},
+                {value="undo",text="撤销上次搜查"},{value="round",text="新一轮（保留沉船计时）"},{value="stop",text="停止追踪"},
+                {value="timer:0",text=(interval==0 and "✓ " or "").."沉船：仅显示已过时间"}}
+            for _,hours in ipairs({1,2,4,6,12,24,48})do
+                items[#items+1]={value="timer:"..(hours*60),text=(interval==hours*60 and "✓ " or "").."沉船预估："..hours.."小时"}
+            end
+            items[#items+1]={value="draw:33",text="罗盘绘制：33ms"}
+            items[#items+1]={value="draw:50",text="罗盘绘制：50ms"}
+            items[#items+1]={value="draw:100",text="罗盘绘制：100ms"}
+            return items
+        end
+        instance.treasureSettingsItems=SettingsItems
+        instance.treasureSettingsDropdown=RSUI:Dropdown({id=prefix.."settings",parent=filters,fontSize=9,height=24,compact=true,placeholder="设置",
+            items=SettingsItems(Projection()),maxVisible=8,popupWidth=242,get=function()return "__settings__" end,
+            set=function(value)
+                local minutes=tostring(value):match("^timer:(%d+)$")
+                local draw=tostring(value):match("^draw:(%d+)$")
+                if minutes then return Run("SetShipRespawnMinutes",tonumber(minutes))end
+                if draw then return Run("SetRefreshMs",tonumber(draw))end
+                if value=="refresh" then return Run("Refresh")end
+                if value=="skip" then return Run("VisitAndNext","skipped")end
+                if value=="undo" then return Run("UndoVisit")end
+                if value=="round" then return Run("ResetRound")end
+                if value=="stop" then return Run("StopTracking")end
+                return false,"未知设置"
+            end,onChanged=function(_,_,control)control:Render()end,slot={size="fixed",width=48}})
+        local row=RSUI:HorizontalBox({id=prefix.."actions",parent=content,gap=3,slot={size="fixed",height=24,hAlign="fill"}})
+        instance.treasureNextButton=RSUI:Button({id=prefix.."next",parent=row,text="已搜 → 下一处",fontSize=9,compact=true,
+            slot={size="fill",fill=1,minWidth=84},onClick=function()return Run("VisitAndNext","searched")end})
+        instance.treasureNearestButton=RSUI:Button({id=prefix.."nearest",parent=row,text="最近点",fontSize=9,compact=true,slot={size="fixed",width=54}})
+        instance.treasureNearestButton.onClick=function()return Run("TrackNearest")end
+        instance.treasureMapButton=RSUI:Button({id=prefix.."map",parent=row,text = "地图定位",fontSize=9,compact=true,
+            slot={size="fixed",width=62},onClick=function()return Run("ShowSelectedOnMap")end})
+        instance.treasureInteractionHint=RSUI:Text({id=prefix.."hint",parent=content,text=TreasureMapInteraction.hint,fontSize=9,
+            tone="muted",overflow="ellipsis",slot={size="fixed",height=18,hAlign="fill"}})
         return true
     end,
     refreshControls = function(instance, projection)
         TreasureMapInteraction:SyncSelection(instance.table, projection)
-        if instance.treasureMapButton then instance.treasureMapButton:SetEnabled(type(projection.selected) == "table") end
+        instance.treasureControlProjection=projection
+        local sea=projection.viewKind=="seabugs" or projection.viewKind=="ships"
+        local selected=projection.selected
+        local same=selected and selected.kind==projection.viewKind and (projection.region=="all" or selected.region==projection.region)
+        if instance.treasureMapButton then instance.treasureMapButton:SetEnabled(type(projection.selected)=="table") end
+        if instance.treasureNearestButton then instance.treasureNearestButton:SetEnabled(sea) end
+        if instance.treasureNextButton then instance.treasureNextButton:SetVisible(sea);instance.treasureNextButton:SetEnabled(same==true) end
+        if instance.treasureNearestButton then instance.treasureNearestButton:SetVisible(sea)end
+        instance.treasureKindDropdown:Render()
+        if instance.treasureLastKind~=projection.viewKind then
+            instance.treasureRegionDropdown:SetItems(projection.regionItems or {});instance.treasureLastKind=projection.viewKind
+        end
+        instance.treasureRegionDropdown:SetEnabled(sea);instance.treasureRegionDropdown:Render()
+        if instance.treasureLastInterval~=projection.shipRespawnMinutes then
+            instance.treasureSettingsDropdown:SetItems(instance.treasureSettingsItems(projection));instance.treasureLastInterval=projection.shipRespawnMinutes
+        end
+        instance.treasureSettingsDropdown:Render()
         if instance.treasureInteractionHint then
             local errorText = instance.treasureActionError or projection.lastMapActionError
-            instance.treasureInteractionHint:SetText(errorText and ("定位未完成：" .. tostring(errorText)) or TreasureMapInteraction.hint)
+            local hint=TreasureMapInteraction.hint
+            if sea then
+                hint="本轮 已搜 "..tostring(projection.roundSearched or 0).."/"..tostring(projection.roundTotal or 0)
+                    .." · 待搜 "..tostring(projection.roundRemaining or 0)
+                if (projection.roundSkipped or 0)>0 then hint=hint.." · 跳过 "..tostring(projection.roundSkipped) end
+                if (projection.recheckCount or 0)>0 then hint=hint.." · 可复查 "..projection.recheckCount end
+            end
+            instance.treasureInteractionHint:SetText(errorText and ("操作未完成：" .. tostring(errorText)) or hint)
             if projection.mapActionPending == true then instance.treasureInteractionHint:SetText("地图定位等待中，冷却结束后自动执行") end -- 助手复用同一待执行请求，不另启计时器。
         end
     end,
     rows = function(projection)
-        local rows = projection.maps or {}
-        for _, row in ipairs(rows) do row.directionText = tostring(row.direction or "--") .. (row.distance and (" · " .. tostring(math.floor(row.distance + 0.5)) .. "m") or "") end
+        local rows = projection.rows or projection.maps or {}
+        for _, row in ipairs(rows) do
+            row.directionText=tostring(row.direction or "--")..(row.distance and (" · "..tostring(math.floor(row.distance+0.5)).."m") or "")
+            row.targetText=(row.regionName and (row.regionName.." · ") or "")..tostring(row.name or "")
+            row.searchText=row.timerText or row.visitText
+        end
         return rows
     end,
     onItemActivated = function(instance, row, Feature)
@@ -1071,13 +1150,14 @@ ok, err = Register({
         return TreasureMapInteraction:Activate(instance, row, Feature)
     end,
     columns = {
-        { id="name", title="藏宝图", field="name", size="fill", minWidth=120, fill=1 },
-        { id="direction", title="方向 / 距离", field="directionText", size="fixed", width=110, minWidth=90 },
+        { id="name", title="追踪目标", field="targetText", size="fill", minWidth=88, fill=1 },
+        { id="direction", title="方向 / 距离", field="directionText", size="fixed", width=86, minWidth=60 },
+        { id="visit", title="搜查 / 估时", field="searchText", size="fixed", width=96, minWidth=60 },
     },
     status = function(projection, rows)
         if projection.lastMapActionError ~= nil then return "地图定位失败 · " .. tostring(projection.lastMapActionError) end
         local selected = projection.selected
-        return selected and (tostring(selected.direction or "--") .. (selected.distance and (" · " .. tostring(math.floor(selected.distance + 0.5)) .. "m") or "")) or (tostring(#rows) .. " 张")
+        return selected and ((selected.regionName and (selected.regionName.." · ") or "")..tostring(selected.name or "").." · "..tostring(selected.direction or "--")..(selected.distance and (" · "..tostring(math.floor(selected.distance+0.5)).."m") or "")..(selected.timerText and (" · "..selected.timerText) or "")) or (tostring(#rows)..(projection.viewKind=="maps" and " 张" or " 个资料点"))
     end,
 })
 if ok ~= true then error(err) end

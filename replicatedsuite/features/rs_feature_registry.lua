@@ -457,12 +457,12 @@ Add("life_tasks", "life.tasks", "任务追踪", "life", 40, "用户选择的日�
     currentImplementation = "日常/周常独立选择、父任务逐项加入/取消追踪、仅追踪筛选与悬浮窗复用同一持久追踪集合；.18.119 将逐项操作直接显示为‘✓ 已追踪 / ＋ 可添加’，不再隐藏在选中后的按钮语义里",
     evidence = "V3 QuestProgressService shared projection; no legacy QuestService runtime dependency",
 })
-Add("life_treasure", "life.treasure", "寻宝", "life", 50, "藏宝图坐标、方向、距离与原生世界地图定位。", {
+Add("life_treasure", "life.treasure", "寻宝/海虫/沉船", "life", 50, "藏宝图、海虫、沉船共用指针；海域筛选、最近点与原生地图箭头定位。", {
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.life.treasure", widgetCapable = true, settingsCapable = true,
     -- InventorySnapshotV3 仍只提供共享背包事实；ShowWorldmapLocation 仅由用户点击触发。
     -- 声明与实现保持一致；UnitScreen 只用于罗盘锚定，位置任务核对单槽，地图写仍须显式点击。
     apiDependencies = { "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetUnitScreenPosition", "X2Unit:GetCurrentZoneGroup", "X2Map:ShowWorldmapLocation" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_plus_explicit_ui_action",
-    currentImplementation = "InventorySnapshotV3 有限扫描 + 坐标字段识别 + 500ms 单槽核对/方向/距离 + 3 秒补采 + 33ms 共享刚性投影圆环/箭头；地图定位仅显式点击，Consumer=0 立即停两条任务并隐藏标记",
+    currentImplementation = "藏宝图走 InventorySnapshotV3 单槽核对与有界补采；60 海虫/444 沉船静态资料点支持海域筛选、最近点、列表选择；目标区域组来自原包显式映射，地图按钮/双击复用 ShowWorldmapLocation 原生小箭头；共享 500ms 位置更新与 33ms 指针，关图继续导航，停止或 Consumer=0 清理任务；诊断保留目标/目录/指针及原生地图请求",
     evidence = "V3 Treasure map-location contract v2 + RU API ShowWorldmapLocation(zoneGroupId,globalX,globalY,z) + reference TreasureMapHunter targetZone,targetX,targetY call; fixed context-id 2 removed",
 })
 Add("life_fishing", "life.fishing", "钓鱼", "life", 60, "目标鱼动作识别、技能栏推荐与可逆自动 R；完整写键链已恢复。", {

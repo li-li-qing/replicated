@@ -180,6 +180,8 @@ RELEASE_READINESS_TESTS = [
     "tools/rs_diagnostic_export_tests.lua",
     "tools/rs_boss_simulation_lifetime_tests.lua",
     "tools/rs_main_shell_visibility_tests.lua",
+    "tools/rs_native_root_policy_tests.lua",
+    "tools/rs_treasure_preference_reload_tests.lua",
     "tools/rs_bag_settings_page_tests.lua",
 ]
 

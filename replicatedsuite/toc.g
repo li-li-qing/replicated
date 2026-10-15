@@ -185,6 +185,8 @@ features/life/tasks/rs_task_feature.lua
 -- 语义与 Phase 1 工厂不同（migrate/canonical/budget 是 §24.3 冻结契约），故为独立模块。
 features/life/shared/rs_life_slice_factory.lua
 -- 2026-09-28 Phase 2 Step 1：life_treasure 已拆出；后续 Fishing/Bonds/Trade 逐批跟进。
+data/rs_treasure_sea_points.lua
+features/life/treasure/rs_treasure_sea_catalog.lua
 features/life/treasure/rs_treasure_feature.lua
 -- 2026-09-28 Phase 2 Step 2：life_fishing 拆出（Auto-R 事务契约冻结）。
 features/life/fishing/rs_fishing_feature.lua
@@ -238,6 +240,7 @@ presentation/v3/widgets/rs_v3_widget_host.lua
 presentation/v3/widgets/rs_v3_alert_hud.lua
 presentation/v3/widgets/rs_v3_combat_visual_guides.lua
 presentation/v3/widgets/rs_v3_facing_indicator.lua
+presentation/v3/widgets/rs_v3_treasure_controls.lua
 presentation/v3/widgets/rs_v3_life_economy_widgets.lua
 -- 中文维护（2026-10-09）：寻宝圈/箭头在 Feature 与 UI Primitive 就绪后订阅独立帧，不引入另一套插件入口。
 presentation/v3/widgets/rs_v3_treasure_compass.lua
