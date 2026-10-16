@@ -365,5 +365,69 @@ Test('ingress has bounded detached read only snapshots preserved on stop',functi
     h.bus:_OnKillNotice('UNIT_KILL_STREAK',{killerName='Self',victimName='Stopped'})
     assert(h.bus:GetDiagnosticDetail().killNotifications.received==80,'stopped host recorded ingress')
 end)
+-- 2026-10-16：实机战争通知使用此参数形状；只驱动真实 Bus，不把荣誉金额作为击杀输入。
+local function WarKill(h,name,count,mode)
+    h.bus:_OnKillNotice('UNIT_KILL_STREAK',{killerName='Self',victimName=name,killerKillStreak=count,gameType=mode or 5})
+end
+-- 取证运行真实身份服务，只替换 Native API 返回；任意字段名都保留，不能把测试造出的字段名当正式 ABI。
+Test('system kill evidence captures allowed native fields without changing statistics',function()
+    local h=Boot();local calls=0
+    local raw={unverified_native_field=1147,zero=0,flag=false,nested={raw_value='1147'},opaque=function()end}
+    local previousUnit=X2Unit;X2Unit={}
+    h.S.Api={IsCapabilityAllowed=function()return true end,CallCapability=function(_,cap,host,method,arg)
+        assert(host==X2Unit and ((method=='UnitInfo' and arg=='player') or (method=='GetUnitInfoById' and arg=='self-id')))
+        calls=calls+1;return true,raw
+    end}
+    dofile('services/rs_unit_identity_v3.lua')
+    local identity=h.S.Services.UnitIdentityV3;identity.player={id='self-id',name='Self',normalizedName='self',reliable=true}
+    WarKill(h,'First',1);WarKill(h,'Second',2);h:Advance(300)
+    assert(calls==2,'burst should coalesce into one sample of the two allowed getters')
+    local d=h.F:DescribeDiagnosticDetail();local sample=assert(d.systemKillEvidence.samples[1])
+    assert(sample.unitInfo.fields.unverified_native_field==1147 and sample.unitInfo.fields.zero==0
+        and sample.unitInfo.fields.flag==false and sample.unitInfo.fields['nested.raw_value']=='1147','raw primitives or nested evidence lost')
+    assert(sample.unitInfo.fields.opaque==nil and sample.unitInfo.verifiedKillCounter==nil,'unknown field was promoted into an authoritative counter')
+    sample.unitInfo.fields.unverified_native_field=-1
+    local before=h.writes;local text=ExportReport(h)
+    assert(calls==2 and h.writes==before and text:find('1147',1,true),'export sampled Native, wrote history or lost system evidence')
+    assert(h.F:DescribeDiagnosticDetail().systemKillEvidence.samples[1].unitInfo.fields.unverified_native_field==1147,'diagnostics expose cached native evidence')
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==2,'lifetime native field was imported into session kills')
+    WarKill(h,'Third',3);assert(calls==2);h:Advance(5000);assert(calls==4,'trailing sample did not refresh after the rate limit')
+    X2Unit=previousUnit
+end)
+-- 禁用能力不能通过方法存在绕过；停止统计必须撤掉未执行的原生采样，报告仍可读已留存快照。
+Test('system evidence respects capabilities bounds and collection lifecycle',function()
+    local h=Boot();local calls=0;local previousUnit=X2Unit;X2Unit={}
+    h.S.Api={IsCapabilityAllowed=function(_,cap)return cap=='X2Unit:UnitInfo'end,CallCapability=function()
+        calls=calls+1;local out={} for i=1,400 do out['field'..i]=i end;return true,out
+    end}
+    dofile('services/rs_unit_identity_v3.lua')
+    local identity=h.S.Services.UnitIdentityV3;identity.player={id='self-id',name='Self',normalizedName='self',reliable=true}
+    WarKill(h,'First',1);h:Advance(300)
+    local sample=h.F:DescribeDiagnosticDetail().systemKillEvidence.samples[1]
+    assert(calls==1 and sample.byId.status=='capability_unavailable' and sample.unitInfo.truncated,'capability gate or bounded capture bypassed')
+    WarKill(h,'Second',2);assert(h.F:Disable());h:Advance(6000)
+    assert(calls==1,'stopped statistics ran a pending Native sample')
+    X2Unit=previousUnit
+end)
+-- 真实1/2/5/6只证明中间通知不完整；累计口径未验证前明确标记缺口，不把候选证据写进永久战绩。
+Test('native sequence gaps are diagnosed without fabricating historical kills',function()
+    local h=Boot()
+    for _,entry in ipairs({{name='First',count=1},{name='Second',count=2},{name='Fifth',count=5},{name='Sixth',count=6}})do
+        WarKill(h,entry.name,entry.count);h:Advance(2000)
+    end
+    local d=h.F:DescribeDiagnosticDetail().kills;local found=false
+    for _,row in ipairs(d.events)do if row.reason=='native_counter_gap' then
+        assert(row.previousCount==2 and row.nativeCount==5 and row.missingNotifications==2 and row.credited==false);found=true
+    end end
+    assert(found and h.F:GetPersonalHistoryProjection().totals.kills==4,'unverified counter gap fabricated permanent kills')
+end)
+-- 首次计数不是缺口；停止/恢复以后重新取证，不能把采集前和暂停期间的序号当作漏记补入。
+Test('native gap evidence resets across inactive collection without backfilling',function()
+    local h=Boot();WarKill(h,'First',6)
+    assert(h.F:DescribeDiagnosticDetail().kills.counters.native_counter_gap==nil)
+    assert(h.F:Disable());assert(h.F:Enable('resume'));h:Advance(2000);WarKill(h,'AfterPause',12)
+    assert(h.F:DescribeDiagnosticDetail().kills.counters.native_counter_gap==nil)
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==2,'evidence collection changed permanent history')
+end)
 print(string.format('KILL DIAGNOSTICS RESULT %d passed / %d failed (%s)',passed,failed,_VERSION))
 assert(failed==0,'kill diagnostic regression failures: '..failed)

@@ -145,6 +145,8 @@ do
     end
     local function Init(state) state.targets={};state.targetOrder=C:NewBoundedQueue(512);state.targetCount=0;state.deathOrder=C:NewBoundedQueue(512);state.lastDeath={};state.deathByName={};state.notices={};state.noticeCount=0;state.noticeScheduled=false end
     Init(metric.state)
+    -- 原生战争序号只用于定位漏通知；字段生命周期尚待系统累计验证，绝不能据此补写永久历史。
+    local nativeCounter=nil
     local function EnsureTarget(state,name)
         name=C:Trim(name); if name=="" then return nil end
         local row=state.targets[name]; if row then return row end
@@ -300,8 +302,30 @@ do
     Analytics:RegisterMetric({id="kills",title="击杀玩家 / 死亡",category="combat",order=20,factCategories={"damage","death"},state=metric.state,
         description="玩家击杀仅计明确归属；自身和所有人模式缺少击杀者时均不计击杀，两种模式均不计算助攻。",
         OnFact=function(self,fact)
+            -- 首个可见事实建立系统资料证据；伤害热路径只检查一次标记，不为每条伤害安排 Native 采样。
+            if not self.state.systemEvidenceStarted then
+                self.state.systemEvidenceStarted=true
+                if type(Feature.ScheduleSystemKillEvidence)=="function" then Feature:ScheduleSystemKillEvidence("first_combat_fact") end
+            end
             if fact.category=="damage" then return RecordDamage(self.state,fact) end
             local now=At(fact);local victim=TargetName(fact)
+            if fact.kind=="kill_notice" and Analytics:IsSelfActor(fact.sourceName,fact.sourceId) then
+                if type(Feature.ScheduleSystemKillEvidence)=="function" then Feature:ScheduleSystemKillEvidence("self_kill_notice") end
+                if fact.rawEventType=="UNIT_KILL_STREAK" and fact.rawNotice3==5 then
+                    local count=C:Finite(fact.rawNotice2,nil)
+                    if count and count>=1 and count==math.floor(count) and count<=2147483647 then
+                        if nativeCounter and count>nativeCounter.high+1 then
+                            Evidence(fact,"notice","native_counter_gap",victim,fact.sourceName,
+                                {previousCount=nativeCounter.high,nativeCount=count,missingNotifications=count-nativeCounter.high-1,credited=false})
+                        end
+                        -- 下降可能是新一轮或迟到通知，原样留证，不能把未知生命周期包装成确定的补记。
+                        if nativeCounter and count<nativeCounter.high then
+                            Evidence(fact,"notice","native_counter_decreased",victim,fact.sourceName,{previousCount=nativeCounter.high,nativeCount=count,credited=false})
+                        end
+                        nativeCounter={high=count,at=now}
+                    end
+                end
+            end
             -- NPC击杀已删除；只忽略NPC作为死者，自身被怪物击杀仍记录死亡。
             if KnownKind(victim,fact.targetKind)=="NPC" and not Analytics:IsSelfActor(victim,fact.targetId) then return false end
             if fact.kind=="death_notice" and not Analytics:IsSelfActor(victim) then
@@ -325,6 +349,7 @@ do
             for key,value in pairs(evidence.counters) do counters[key]=value end
             return {available=true,scope=Analytics:GetCollectionScope(),events=rows,counters=counters,
                 evicted=evidence.events.evicted,limit=32,pendingNotices=self.state.noticeCount,trackedTargets=self.state.targetCount,
+                nativeCounter=nativeCounter and {high=nativeCounter.high,at=nativeCounter.at} or nil,
                 coverage="本次加载保留的死亡/击杀判定；缺失来源不补算击杀；未收到或已淘汰事件不能恢复。"}
         end,
         GetProjection=function(self,opt)
@@ -337,6 +362,8 @@ do
         end,
         Reset=function(self,reason,resetKind)
             if S.Scheduler then S.Scheduler:RemoveTask("v3_combat_kills_notices") end
+            if type(Feature.CancelSystemKillEvidence)=="function" then Feature:CancelSystemKillEvidence() end
+            nativeCounter=nil;self.state.systemEvidenceStarted=nil -- 停止/清空/换范围均切断取证基线，不补采未观测区间。
             -- 停用仅释放最近一击和通知任务，五项总览的实时战绩保留；显式清空或换范围才归零。
             if resetKind=="inactive" then Init(self.state);return true end
             local revision=(tonumber(self.state.revision) or 0)+1

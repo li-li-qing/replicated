@@ -312,6 +312,65 @@ function I:ClearCache(reason)
     return true
 end
 
+-- 2026-10-16：角色提示的 UFT_PVPKILL 是模板占位符，并非返回数值的 Lua getter。
+-- 只在战斗模块明确请求时，通过已有 X2Unit 能力门禁取本人两份原始资料；不猜字段名，不把累计值写成当场击杀。
+local function EvidenceText(value,limit)
+    if #value<=limit then return value end
+    local finish=limit
+    while finish>0 and (value:byte(finish+1) or 0)>=128 and (value:byte(finish+1) or 0)<192 do finish=finish-1 end
+    return value:sub(1,finish).."<clipped>"
+end
+local function CapturePlayerFields(capability,method,argument)
+    local out={status="capability_unavailable",fields={},fieldCount=0,truncated=false}
+    if argument==nil then out.status="player_identity_unavailable";return out end
+    if not S.Api or type(S.Api.CallCapability)~="function" or X2Unit==nil
+        or S.Api:IsCapabilityAllowed(capability)~=true then return out end
+    local ok,value=S.Api:CallCapability(capability,X2Unit,method,argument)
+    if ok~=true then out.status="read_failed";return out end
+    if type(value)~="table" then out.status="unexpected_"..type(value);return out end
+    out.status="captured_raw_fields"
+    -- 最多两层、256个字段；不保存原生 table/函数/对象，也不因异常嵌套扩大诊断和热路径工作量。
+    local visited=0
+    local function CopyFields(source,prefix,depth)
+        for key,item in pairs(source) do
+            visited=visited+1;if visited>256 then out.truncated=true;return end
+            if type(key)=="string" or type(key)=="number" then
+                local path=prefix..EvidenceText(tostring(key),96);local kind=type(item)
+                if kind=="number" or kind=="boolean" or kind=="string" then
+                    out.fields[path]=kind=="string" and EvidenceText(item,256) or item;out.fieldCount=out.fieldCount+1
+                elseif kind=="table" and depth<1 then CopyFields(item,path..".",depth+1) end
+            end
+        end
+    end
+    CopyFields(value,"",0);return out
+end
+function I:CapturePlayerKillEvidence(reason)
+    local now=NowMs()
+    if self.playerKillEvidenceAt and now-self.playerKillEvidenceAt<5000 then return false,"rate_limited" end
+    self.playerKillEvidenceAt=now
+    local player=self.player;local id=player and ValidId(player.id) or nil
+    local sample={at=now,reason=tostring(reason or "combat"),playerId=id,
+        unitInfo=CapturePlayerFields("X2Unit:UnitInfo","UnitInfo","player"),
+        byId=CapturePlayerFields("X2Unit:GetUnitInfoById","GetUnitInfoById",id)}
+    self.playerKillEvidence=self.playerKillEvidence or {};local samples=self.playerKillEvidence
+    samples[#samples+1]=sample;if #samples>4 then table.remove(samples,1) end
+    return true
+end
+function I:GetPlayerKillEvidence()
+    -- 报告只复制已有的最多4个快照；不读 Native、不绑定新消费者、不尝试把任何字段自动认作1147。
+    local samples={}
+    for _,sample in ipairs(self.playerKillEvidence or {}) do
+        local copy={at=sample.at,reason=sample.reason,playerId=sample.playerId}
+        for _,key in ipairs({"unitInfo","byId"}) do
+            local row=sample[key];local fields={};for path,value in pairs(row.fields) do fields[path]=value end
+            copy[key]={status=row.status,fields=fields,fieldCount=row.fieldCount,truncated=row.truncated}
+        end
+        samples[#samples+1]=copy
+    end
+    return {available=#samples>0,samples=samples,limit=4,fieldLimit=256,
+        coverage="系统原始资料候选证据；UFT_PVPKILL为原生提示占位符。字段及敌方势力击杀口径需与面板实数核对，尚未用于自动计数。"}
+end
+
 function I:GetHealth()
     return {
         version = self.version,

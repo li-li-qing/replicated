@@ -60,12 +60,34 @@ end
 function F:Enable(reason)
     if self.enabled==true then return true end
     local ok,err=self:_AcquireOrUpdate(reason or "feature_enable");if ok~=true then return false,err end
-    self.enabled=true;EmitUpdated("enabled");return true
+    self.enabled=true;self:ScheduleSystemKillEvidence("collection_start");EmitUpdated("enabled");return true
 end
 function F:Disable(reason)
     if self.enabled~=true then return true end
     local ok,err=self:_Release(reason or "feature_disable");if ok~=true then return false,err end
     self.enabled=false;EmitUpdated("disabled");return true
+end
+
+-- 系统累计只做取证：沿已有 Scheduler 合并一次尾部采样，每5秒最多读一组本人资料，无循环轮询。
+function F:ScheduleSystemKillEvidence(reason)
+    local identity=S.Services and S.Services.UnitIdentityV3;local scheduler=S.Scheduler
+    if not identity or type(identity.CapturePlayerKillEvidence)~="function" or not scheduler then return false end
+    if self.systemKillSampleScheduled then return true end
+    local now=tonumber(S.NowMs and S.NowMs()) or 0
+    local delay=math.max(250,(tonumber(identity.playerKillEvidenceAt) or -5000)+5000-now)
+    self.systemKillSampleScheduled=true;local generation=S.Generation
+    local ok=scheduler:AddOneShot("v3_combat_system_kill_evidence",delay,function()
+        self.systemKillSampleScheduled=false
+        local a=Analytics()
+        if generation~=S.Generation or not a or a.activeMetrics.kills~=true then return true end
+        identity:CapturePlayerKillEvidence(reason);return true
+    end,self,"P3",1)
+    if ok~=true then self.systemKillSampleScheduled=false end
+    return ok==true
+end
+function F:CancelSystemKillEvidence()
+    if S.Scheduler then S.Scheduler:RemoveTask("v3_combat_system_kill_evidence") end
+    self.systemKillSampleScheduled=false;return true
 end
 
 local function PersistTransaction(apply,reason)
@@ -144,6 +166,9 @@ function F:DescribeDiagnosticDetail()
     local hub=S.ModuleDiagnosticsHub
     return {available=true,scope=a and a:GetCollectionScope(),enabled=self.enabled==true,
         analytics=a and a:GetHealth(),
+        -- 本人资料由身份服务按业务事件有界采样；导出只看缓存，不在诊断 getter 中触发 Native 查询。
+        systemKillEvidence=S.Services and S.Services.UnitIdentityV3 and type(S.Services.UnitIdentityV3.GetPlayerKillEvidence)=="function"
+            and S.Services.UnitIdentityV3:GetPlayerKillEvidence() or {available=false},
         -- 只读连接 Bus 原生入口→Analytics 过滤→kills 结算；生成报告不能补计或启动采集。
         ingress=a and type(a.GetDeathIngressDiagnostics)=="function" and a:GetDeathIngressDiagnostics() or {available=false},
         kills=kills and type(kills.GetDiagnosticDetail)=="function" and kills:GetDiagnosticDetail() or {available=false},
