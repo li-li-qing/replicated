@@ -393,7 +393,7 @@ local function BuildPage(parent, route)
         slot={size="fixed",height=30,hAlign="fill"}})
     local visibilityControls, visibilityScopeSelector = {}, nil
     local visibilityStatus = RSUI:Text({ id="v3_buff_visibility_status", parent=tabVisibility,
-        text="显隐修改立即保存；位置、字号和尺寸点击“调整 HUD”。",fontSize=9,tone="muted",
+        text="显隐修改立即保存；位置、字号、尺寸和颜色点击“调整 HUD”。",fontSize=9,tone="muted",
         overflow="wrap",maxLines=2,slot={size="fixed",height=26,hAlign="fill"} })
     -- 每个滚动条目独立Measure；不把整个显隐表和布局卡片塞成一个无法滚到末尾的大条目。
     local contentScroll=RSUI:ScrollBox({id="v3_buff_display_content_scroll",parent=tabVisibility,orientation="vertical",gap=6,

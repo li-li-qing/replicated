@@ -14,6 +14,7 @@ local P, D, T = S.Persistence, S.DiagnosticsManager, S.ReportCopyTransport
 if type(P) ~= 'table' or type(D) ~= 'table' or type(T) ~= 'table' then return end
 local KEY, MAX_BYTES, CHUNK_BYTES, PAGE_BYTES = 'replicated_suite_v1_diagnostic_export', 1048576, 1024, 4096
 local PROTOCOL = 'RS-DIAGNOSTIC-FILE-2'
+local HISTORY_KEY, HISTORY_PROTOCOL = 'replicated_suite_v1_combat_history_export', 'RS-COMBAT-HISTORY-FILE-1'
 S.DiagnosticExport = { version = 2, key = KEY, maxBytes = MAX_BYTES }
 local E = S.DiagnosticExport
 
@@ -22,15 +23,15 @@ local E = S.DiagnosticExport
 local function Hex(text)
     return (text:gsub('.', function(c) return string.format('%02X', string.byte(c)) end))
 end
-local function Build(text, meta)
+local function Build(text, meta, protocol)
     if type(text) ~= 'string' or #text == 0 or #text > MAX_BYTES then return nil, '报告为空或超过 1 MiB 安全上限' end
     local count = math.ceil(#text / PAGE_BYTES)
-    local out = { protocol = PROTOCOL, report_id = tostring(type(meta) == 'table' and meta.id or 'report'),
+    local out = { protocol = protocol, report_id = tostring(type(meta) == 'table' and meta.id or 'report'),
         byte_count = tostring(#text), page_count = tostring(count), page_bytes = tostring(PAGE_BYTES), checksum = T:CopyChecksum(text) }
     local pages = {}
     for index = 1, count do
         local part = text:sub((index - 1) * PAGE_BYTES + 1, index * PAGE_BYTES)
-        local page = { protocol = PROTOCOL .. '-PAGE', page_index = tostring(index),
+        local page = { protocol = protocol .. '-PAGE', page_index = tostring(index),
             report_checksum = out.checksum, byte_count = tostring(#part), checksum = T:CopyChecksum(part),
             chunk_count = tostring(math.ceil(#part / CHUNK_BYTES)) }
         for chunk = 1, tonumber(page.chunk_count) do
@@ -44,8 +45,8 @@ end
 -- Persistence 是 Native 持久化唯一入口。此 key 是用户显式导出的传输快照，
 -- 不注册业务 Store、不 Apply/default/migrate、不绕过任何已有业务 Store 的 write fence。
 -- SaveData 返回成功仍须逐字段逐块完整回读；失败状态只属于本次导出，不能污染业务健康度。
-function P:SaveDiagnosticExport(text, meta)
-    local payload, err, pages = Build(text, meta)
+local function SaveTextExport(key, protocol, text, meta)
+    local payload, err, pages = Build(text, meta, protocol)
     if payload == nil then return false, err end
     local api = S.Api
     if type(api) ~= 'table' or type(api.SaveData) ~= 'function' or type(api.LoadData) ~= 'function' then return false, '客户端保存/回读接口不可用' end
@@ -64,12 +65,19 @@ function P:SaveDiagnosticExport(text, meta)
     -- 每页逐字段回读通过后，最后才提交总清单。本地端还须验证页号、各页及全文校验，
     -- 因此半途失败或两次导出交错不会被当成完整文件，也不从旧清单拼出新旧混合报告。
     for index, page in ipairs(pages) do
-        local ok, reason = WriteVerified(KEY .. string.format('_page_%04d', index), page, '第' .. index .. '块')
+        local ok, reason = WriteVerified(key .. string.format('_page_%04d', index), page, '第' .. index .. '块')
         if ok ~= true then return false, reason end
     end
-    local ok, reason = WriteVerified(KEY, payload, '清单')
+    local ok, reason = WriteVerified(key, payload, '清单')
     if ok ~= true then return false, reason end
     return true, { id = payload.report_id, bytes = #text, checksum = payload.checksum }
+end
+function P:SaveDiagnosticExport(text, meta)
+    return SaveTextExport(KEY, PROTOCOL, text, meta)
+end
+function P:SaveHistoryExport(text, meta)
+    -- 复用已验证的小块保存/回读机制，历史有独立清单与页面，不能覆盖用户刚导出的诊断。
+    return SaveTextExport(HISTORY_KEY, HISTORY_PROTOCOL, text, meta)
 end
 
 -- 展示端提交 immutable 原文，而非 Native 编辑框可能被截断的当前页；

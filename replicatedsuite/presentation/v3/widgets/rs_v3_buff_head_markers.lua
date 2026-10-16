@@ -57,6 +57,12 @@ local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", 
 local UNKNOWN_ICON = "ui/icon/icon_unknown_item.dds"
 
 local function N(v, fallback) return tonumber(v) or tonumber(fallback) or 0 end
+local function TextColor(widget,scope,key)
+    if not widget or type(Feature.GetHudColor)~='function' then return end
+    local r,g,b=Feature:GetHudColor(scope,key)
+    widget.rsManualTextColor=true -- 颜色属于HUD配置；工作台主题不覆盖。widget alpha仍由原组件独立控制。
+    S.UI:SetColor(widget,r,g,b,1,P.owner)
+end
 local function Settings()
     -- VisualTick 是 50ms 级热路径，只需要 HUD 运行策略，不再复制
     -- tracked/classification 等大表；scope 几何由 ScopeSettings 单独取轻量投影。
@@ -386,6 +392,17 @@ local function TextWidth(text, fontSize)
     return math.max(24, math.floor(#tostring(text or "") * (fontSize or 10) * 0.62) + 8)
 end
 
+-- 成组职业名不按 UTF-8 字节数预留空白；中日韩全宽字与拉丁/西里尔字分别估宽。
+-- 只用于用户明确选择的成组模式，保留历史固定槽的文字几何。
+local function PairedNameWidth(text,font)
+    local width,index=0,1
+    while index<=#text do
+        local byte=text:byte(index);local bytes=byte<128 and 1 or byte<224 and 2 or byte<240 and 3 or 4
+        width=width+font*(bytes>=3 and 1 or .62);index=index+bytes
+    end
+    return math.max(2,math.ceil(width)+2)
+end
+
 -- 约束（2026-09-27，target-alias-hud-2）：自定义名字与职业名称/装分/距离一样是
 -- 独立 HUD 组件，但只属于 target。其几何只依赖目标血条中心、target plateScale 与自身 cfg，
 -- 兄弟组件显隐/行数/文字长度绝不能推动它。校准器和正式 Renderer 共用本纯函数，避免“预览一处、
@@ -403,7 +420,7 @@ function P.ComputeTargetAliasLayout(text, cfg, centerX, centerY, scale)
     return { text=text, x=x, y=y, width=width, height=height, font=font, alpha=alpha, enabled=cfg.enabled ~= false }
 end
 
-local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, scale)
+local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, scale,channel)
     local stackFontSize = ResolveIconFontSize(cfg, scale, size, "stack")
     local timeFontSize = ResolveIconFontSize(cfg, scale, size, "time")
     LayoutIcon(marker, size, showStacks, showTime, stackFontSize, timeFontSize)
@@ -434,6 +451,10 @@ local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, sca
     end
     marker.stack:SetText((showStacks and N(row.stack, 1) > 1) and tostring(math.floor(N(row.stack, 1))) or "")
     marker.time:SetText(showTime and tostring(row.timeText or "--") or "")
+    if channel then
+        TextColor(marker.time,marker.scope,channel..'Time')
+        if showStacks then TextColor(marker.stack,marker.scope,channel..'Stacks')end
+    end
     -- 整行/整组已统一限制在屏幕内，各图标按精确槽位放置，避免成员堆叠。
     Place(P.pools[marker.scope], marker.root, x, y, size, size)
     -- SetVisible 的 false 也表示无需重复写入；EnsureVisible 才能区分已接受与明确拒写。
@@ -443,7 +464,7 @@ local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, sca
 end
 
 -- 渲染组件的横向图标行并返回已用槽数；整行作为一组限制边界，各图标保持精确间距。
-local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, showTime, slotOffset, size, gap, scale)
+local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, showTime, slotOffset, size, gap, scale,channel)
     local used = 0
     size = math.max(8, math.floor(tonumber(size) or N(cfg.size, 24)))
     gap = math.max(0, math.floor(tonumber(gap) or N(cfg.spacing, 2)))
@@ -455,18 +476,30 @@ local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, 
     for index = 1, count do
         local marker = pool.icons[slotOffset + index]
         if marker == nil then break end
-        ApplyIcon(marker, rows[index], size, cfg, startX + (index - 1) * (size + gap), startY, showStacks, showTime, scale)
+        ApplyIcon(marker, rows[index], size, cfg, startX + (index - 1) * (size + gap), startY, showStacks, showTime, scale,channel)
         used = used + 1
     end
     return used
 end
 
 -- 多行 Buff/debuff 从血条边缘分别向上/向下堆叠，由 MaxPerRow 与 MaxRows 限制。
-local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStacks, showTime, slotOffset, size, spacing, maxPerRow, maxRows, rowGap, direction, scale)
+local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStacks, showTime, slotOffset, size, spacing, maxPerRow, maxRows, rowGap, direction, scale,channel)
     local used = 0
     local all = type(rows) == "table" and rows or {}
     local total = math.min(#all, maxPerRow * maxRows)
     if total <= 0 then return 0 end
+    if (cfg.orientation=='horizontal'or cfg.orientation=='vertical')and type(Feature.ComputeHudIconGrid)=='function' then
+        local grid=Feature.ComputeHudIconGrid(total,size,spacing,maxPerRow,maxRows,cfg.orientation=='vertical',direction<0)
+        local xOffset=N(cfg.x,0)*(channel=='cooldown'and scale or 1)
+        local left=math.floor(centerX+xOffset+grid.left)
+        local top=math.floor(firstRowTop+grid.top)
+        for index,position in ipairs(grid.slots)do
+            local marker=pool.icons[slotOffset+index];if not marker then break end
+            ApplyIcon(marker,all[index],size,cfg,left+position.x,top+position.y,showStacks,showTime,scale,channel)
+            used=used+1
+        end
+        return used
+    end
     for r = 0, maxRows - 1 do
         local start = r * maxPerRow + 1
         local count = math.min(maxPerRow, total - r * maxPerRow)
@@ -474,7 +507,7 @@ local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStac
         local rowTop = firstRowTop + direction * (r * rowGap)
         local slice = {}
         for i = 1, count do slice[i] = all[start + i - 1] end
-        used = used + RenderIconRow(scope, pool, slice, cfg, centerX, rowTop, showStacks, showTime, slotOffset + used, size, spacing, scale)
+        used = used + RenderIconRow(scope, pool, slice, cfg, centerX, rowTop, showStacks, showTime, slotOffset + used, size, spacing, scale,channel)
     end
     return used
 end
@@ -665,6 +698,7 @@ local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     local pool = P.pools[scope]
     if pool == nil or pool.cast == nil or cast == nil then return end
     local bar = pool.cast
+    TextColor(bar.text,scope,'castName')
     scale = tonumber(scale) or 1
     local barW = math.max(24, math.floor(N(cfg.width, 120) * scale))
     local barH = math.max(4, math.floor(N(cfg.size, 6) * scale))
@@ -814,7 +848,7 @@ function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontS
             maxX = math.max(maxX or (x + width), x + width)
         end
         if classText ~= "" then
-            local width = TextWidth(classText, classFont)
+            local width = classCfg.nameLinked==true and PairedNameWidth(classText,classFont)or TextWidth(classText, classFont)
             local x = math.floor(classRight - width + N(infoCfg.x,0))
             local yPos = math.floor(baseY + N(infoCfg.y,0) * scale)
             out.classText = { text=classText, displayText=classText, x=x, y=yPos, width=width, height=math.max(12,classFont+4), font=classFont, alpha=1 }
@@ -848,6 +882,13 @@ function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontS
         out.iconY = baseY + math.floor(N(classCfg.y,0)*scale)
         out.iconSize = size
         out.iconAlpha = math.max(.1,math.min(1,N(classCfg.alpha,1)))
+        if classCfg.nameLinked==true then
+            local width=PairedNameWidth(classValue,classFont)
+            local name=out.classText or {x=math.floor(classRight-width+N(infoCfg.x,0)),
+                y=math.floor(baseY+N(infoCfg.y,0)*scale),height=math.max(12,classFont+4)}
+            out.iconX=name.x-math.max(2,math.floor(4*scale))-size+math.floor(N(classCfg.x,0)*scale)
+            out.iconY=name.y+math.floor((name.height-size)/2)+math.floor(N(classCfg.y,0)*scale)
+        end
         if icon ~= nil then AddBounds(out.iconX, size) end
         out.x = minX or distanceLeft
         out.width = math.max(1, (maxX or (out.x + 1)) - out.x)
@@ -911,6 +952,7 @@ local function RenderInfo(scope, plates, infoCfg, components, centerX, y, fontSi
     if pool == nil or pool.info == nil then return end
     local info = pool.info
     local g = P.ComputeInfoItemsLayout(plates,infoCfg,components,centerX,y,fontSize,scale,scope)
+    TextColor(info.classTextRoot,scope,'classText');TextColor(info.gearRoot,scope,'gearScore');TextColor(info.distanceRoot,scope,'distance')
     pool.dynamicLayout.distance=g.distance
     RenderTextItem(pool,info.classTextRoot,info,"classText",g.classText)
     RenderTextItem(pool,info.gearRoot,info,"gearText",g.gearScore)
@@ -938,6 +980,7 @@ local function RenderTargetAlias(scope, plates, centerX, centerY, scale)
     local info = pool and pool.info or nil
     local root = info and info.aliasRoot or nil
     if root == nil then return end
+    TextColor(root,scope,'alias')
     local alias = scope == "target" and type(plates.alias) == "table" and plates.alias or nil
     local text = alias and tostring(alias.value or "") or ""
     local cfg = alias and type(alias.hud) == "table" and alias.hud or nil
@@ -997,11 +1040,11 @@ local function RenderScope(scope, settings)
     local slot = 0
     -- Buff 行从 bar.top 向上堆叠。
     if buffEnabled then
-        slot = slot + RenderRows(scope, pool, buffRows, components.buffs or {}, bar.centerX, L.buff.firstTop, showStacks, showTime, slot, L.buff.size, L.buff.spacing, L.buff.maxPerRow, L.buff.maxRows, L.buff.rowGap, -1, scale)
+        slot = slot + RenderRows(scope, pool, buffRows, components.buffs or {}, bar.centerX, L.buff.firstTop, showStacks, showTime, slot, L.buff.size, L.buff.spacing, L.buff.maxPerRow, L.buff.maxRows, L.buff.rowGap, -1, scale,'buff')
     end
     -- debuff 行从 bar.bottom 向下堆叠。
     if debuffEnabled then
-        slot = slot + RenderRows(scope, pool, debuffRows, components.debuffs or {}, bar.centerX, L.debuff.firstTop, showStacks, showTime, slot, L.debuff.size, L.debuff.spacing, L.debuff.maxPerRow, L.debuff.maxRows, L.debuff.rowGap, 1, scale)
+        slot = slot + RenderRows(scope, pool, debuffRows, components.debuffs or {}, bar.centerX, L.debuff.firstTop, showStacks, showTime, slot, L.debuff.size, L.debuff.spacing, L.debuff.maxPerRow, L.debuff.maxRows, L.debuff.rowGap, 1, scale,'debuff')
     end
     -- 冷却行占单位锚点相对固定槽，不参与 Buff/Debuff/Info/Cast 兄弟几何；组件显现不能推动其它组件。
     local cooldownCfg = components.cooldowns or {}
@@ -1020,7 +1063,7 @@ local function RenderScope(scope, settings)
         local cdTop = bar.centerY + math.floor(N(cooldownCfg.y, 90) * scale)
         local firstSlot=slot+1
         slot = slot + RenderRows(scope, pool, cooldownRows, cooldownCfg, bar.centerX, cdTop,
-            false, true, slot, cdSize, cdSpacing, cdMaxPerRow, cdMaxRows, cdRowGap, 1, scale)
+            false, true, slot, cdSize, cdSpacing, cdMaxPerRow, cdMaxRows, cdRowGap, 1, scale,'cooldown')
         -- 常数规模计数，不保存所有图标/Native 对象；仅用户导出时读取这一份现有绘制证据。
         for index=firstSlot,slot do
             if pool.icons[index].contentCommitted==true then P.cooldownEvidence.drawn=P.cooldownEvidence.drawn+1

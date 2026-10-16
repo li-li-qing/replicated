@@ -279,7 +279,7 @@ Add("combat_buff_display", "combat.buff_display", "状态显示", "combat", 40, 
     -- 旧 v3.buff_display 已降级为 migration-only 证据源；当前配置
     -- Authority 是 settings/layout/aliases/manifest 指向的 tracking slot。这里必须写清，避免维护者依据 Registry
     -- 又把 HUD/Tracking 保存接回旧单体 Store。AuraObservation 仍只负责运行时事实，不持有用户配置。
-    status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.buff_display.settings + v3.buff_display.layout + v3.buff_display.aliases + v3.buff_display.tracking.manifest + v3.aura_observation (legacy v3.buff_display migration-only)", diagnosticSources = { "buff_display_v3" },
+    status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.buff_display.settings + v3.buff_display.layout + v3.buff_display.aliases + v3.buff_display.colors + v3.buff_display.arrangement + v3.buff_display.tracking.manifest + v3.aura_observation (legacy v3.buff_display migration-only)", diagnosticSources = { "buff_display_v3" },
     widgetCapable = true, settingsCapable = true, defaultEnabled = false,
     apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitBuffTooltip", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitDeBuffTooltip", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff", "X2Unit:UnitHiddenBuffTooltip", "X2Unit:UnitName", "X2Ability:GetBuffTooltip", "X2Equipment:GetEquippedItemType", "X2Equipment:GetEquippedItemTooltipInfo" },
     apiReadiness = "shared_service_partial", apiPolicy = "read_only_bounded",

@@ -76,6 +76,7 @@ return function(options)
     -- 当前校准包括独立 Alias HUD Store；完整宿主加载实际 Authority，不能以缺服务冒充保存失败。
     dofile('features/combat/buff_display/rs_buff_display_alias_store.lua')
     dofile('core/rs_report_copy_transport.lua')
+    for _,path in ipairs(options.featureFiles or {})do dofile(path)end
     dofile('presentation/v3/widgets/rs_v3_buff_hud_calibration.lua')
     local C=S.UIV3.BuffHudCalibrationV3;h.C=C
     assert(C:Open())

@@ -1619,6 +1619,19 @@ RSUI:RegisterType("ColorField", function(spec)
     end
     local function To255(v) return math.floor(Clamp01(v) * 255 + 0.5) end
 
+    function c:HexOf(color)
+        color = CopyColor(color, self.color)
+        local function hx(x) return string.format("%02X", To255(x)) end
+        return "#" .. hx(color[1]) .. hx(color[2]) .. hx(color[3])
+    end
+    function c:Hex() return self:HexOf(self.color) end
+    function c:ParseHex(s)
+        s = (tostring(s or ""):match("^%s*(.-)%s*$") or ""):gsub("^#", "")
+        if not s:match("^%x%x%x%x%x%x$") then return nil end
+        local r, g, b = tonumber(s:sub(1, 2), 16), tonumber(s:sub(3, 4), 16), tonumber(s:sub(5, 6), 16)
+        return { r / 255, g / 255, b / 255 }
+    end
+
     c.defaultColor = CopyColor(c.defaultColor)
 
     -- Trigger swatch：只表示“已经应用”的 Authority，Draft 调整不提前污染设置列表。
@@ -1699,24 +1712,41 @@ RSUI:RegisterType("ColorField", function(spec)
     local previewInfo = RSUI:VerticalBox({ id = spec.id .. "_preview_info", parent = previewRow, gap = 2,
         slot = { size = "fill", fill = 1, hAlign = "fill" } })
     if previewInfo == nil then return FailColorBuild("colorfield_preview_info_create_failed") end
-    local currentLabel = RSUI:Text({ id = spec.id .. "_current_label", parent = previewInfo, text = "当前颜色",
+    local currentLabel = RSUI:Text({ id = spec.id .. "_current_label", parent = previewInfo,
+        text = spec.enableHexInput == true and "HEX 色值（如 #FFFFFF）" or "当前颜色",
         fontSize = 9, tone = "muted", slot = { size = "fixed", height = 16, hAlign = "fill" } })
     if currentLabel == nil then return FailColorBuild("colorfield_current_label_create_failed") end
-    local previewHex = RSUI:Text({ id = spec.id .. "_preview_hex", parent = previewInfo, text = "#FFFFFF",
-        fontSize = 11, tone = "strong", slot = { size = "fixed", height = 20, hAlign = "fill" } })
-    if previewHex == nil then return FailColorBuild("colorfield_preview_hex_create_failed") end
-    c.previewHex = previewHex
+    if spec.enableHexInput == true then
+        local hexInput = RSUI:TextInput({ id = spec.id .. "_hex_input", parent = previewInfo, maxLength = 7,
+            draftCommitMode = "explicit", allowEmpty = false, slot = { size = "fixed", height = 24, hAlign = "fill" },
+            get = function() return c:HexOf(c.draftColor) end,
+            set = function(value)
+                if c._syncingHex == true then return true end
+                return c:AcceptHexDraft(value)
+            end,
+        })
+        if hexInput == nil or hexInput.rsUiDegraded == true then return FailColorBuild("colorfield_hex_input_create_failed") end
+        c.hexInput = hexInput
+    else
+        local previewHex = RSUI:Text({ id = spec.id .. "_preview_hex", parent = previewInfo, text = "#FFFFFF",
+            fontSize = 11, tone = "strong", slot = { size = "fixed", height = 20, hAlign = "fill" } })
+        if previewHex == nil then return FailColorBuild("colorfield_preview_hex_create_failed") end
+        c.previewHex = previewHex
+    end
 
     local presetsRow = RSUI:HorizontalBox({ id = spec.id .. "_presets", parent = body, gap = 4,
         slot = { size = "fixed", height = 28, hAlign = "fill" } })
     if presetsRow == nil then return FailColorBuild("colorfield_presets_create_failed") end
     c.presetButtons = {}
+    c.presetColors,c.presetDrawables={},{}
     for index, preset in ipairs(COLORFIELD_PRESETS) do
         local presetRef = { preset[1], preset[2], preset[3] }
+        c.presetColors[index]=presetRef
         local btn = RSUI:Button({ id = spec.id .. "_preset_" .. tostring(index), parent = presetsRow, text = "",
             compact = true, gradient = false,
             onClick = function()
-                c:SetDraftColor(presetRef[1], presetRef[2], presetRef[3], true)
+                local selected=c.presetColors[index]
+                c:SetDraftColor(selected[1], selected[2], selected[3], true)
                 return true
             end,
             slot = { size = "fill", fill = 1, minWidth = 20, hAlign = "fill" },
@@ -1727,6 +1757,7 @@ RSUI:RegisterType("ColorField", function(spec)
                 return btn.root:CreateColorDrawable(presetRef[1], presetRef[2], presetRef[3], 1, "overlay")
             end)
             if ok and draw ~= nil then
+                c.presetDrawables[index]=draw
                 pcall(function()
                     if draw.AddAnchor ~= nil then
                         draw:AddAnchor("TOPLEFT", btn.root, 3, 3)
@@ -1795,34 +1826,38 @@ RSUI:RegisterType("ColorField", function(spec)
         slot = { size = "fixed", width = 62 } })
     if applyBtn == nil then return FailColorBuild("colorfield_apply_button_create_failed") end
 
-    function c:HexOf(color)
-        color = CopyColor(color, self.color)
-        local function hx(x) return string.format("%02X", To255(x)) end
-        return "#" .. hx(color[1]) .. hx(color[2]) .. hx(color[3])
-    end
-    function c:Hex() return self:HexOf(self.color) end
-    function c:ParseHex(s)
-        s = tostring(s or ""):gsub("#", ""):gsub("%s+", "")
-        if #s ~= 6 then return nil end
-        local r, g, b = tonumber(s:sub(1, 2), 16), tonumber(s:sub(3, 4), 16), tonumber(s:sub(5, 6), 16)
-        if r == nil or g == nil or b == nil then return nil end
-        return { r / 255, g / 255, b / 255 }
-    end
     function c:SyncTrigger()
         if self.swatch ~= nil then UI:SetColor(self.swatch, self.color[1], self.color[2], self.color[3], 1, self.owner) end
         UI:SetText(self.root, self.label .. "  " .. self:Hex(), self.owner)
         return true
     end
-    function c:SyncDraftPreview(syncSliders)
+    function c:AcceptHexDraft(text)
+        local color = self:ParseHex(text)
+        if color == nil then
+            currentLabel:SetText("HEX 格式错误：请输入 6 位色值")
+            return false, "colorfield_invalid_hex"
+        end
+        self.draftColor = color
+        currentLabel:SetText("HEX 色值（如 #FFFFFF）")
+        return self:SyncDraftPreview(true, true)
+    end
+    function c:SyncDraftPreview(syncSliders, preserveHexDraft)
         local draft = CopyColor(self.draftColor, self.color)
         self.draftColor = draft
         if self.previewSwatch ~= nil then UI:SetColor(self.previewSwatch, draft[1], draft[2], draft[3], 1, self.owner) end
         if self.previewHex ~= nil then self.previewHex:SetText(self:HexOf(draft)) end
+        if self.hexInput ~= nil and preserveHexDraft ~= true then
+            self._syncingHex = true
+            self.hexInput:SetValue(self:HexOf(draft), false, "colorfield_draft_sync")
+            self._syncingHex = false
+            currentLabel:SetText("HEX 色值（如 #FFFFFF）")
+        end
         local values = { r = To255(draft[1]), g = To255(draft[2]), b = To255(draft[3]) }
         for key, value in pairs(values) do
             if self.channelValues[key] ~= nil then self.channelValues[key]:SetText(tostring(value)) end
             if syncSliders == true and self.sliders[key] ~= nil then self.sliders[key]:Render(value, "colorfield_draft_sync") end
         end
+        if type(spec.onPreview)=='function' then RSUI:Callback('rsui:'..self.id..':color_preview',spec.onPreview,CopyColor(draft),self)end
         return true
     end
     function c:SetDraftColor(r, g, b, syncSliders)
@@ -1844,6 +1879,11 @@ RSUI:RegisterType("ColorField", function(spec)
     end
     function c:ApplyDraft()
         if self.enabled == false then return false end
+        -- 按钮可能先于 LostFocus 派发；读取显式输入草稿，不能只读已提交 Binding。
+        if self.hexInput ~= nil then
+            local accepted, hexErr = self:AcceptHexDraft(self.hexInput:GetActionValue())
+            if accepted ~= true then return false, hexErr end
+        end
         local nextColor = CopyColor(self.draftColor, self.color)
         local ok = Write(self.binding, nextColor, true, "colorfield_apply", spec)
         if ok ~= true then
@@ -1926,6 +1966,19 @@ RSUI:RegisterType("ColorField", function(spec)
         if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
         self:Render() -- 打开前重新读取 Authority，避免其他页面已改色而本 Popup 仍显示旧值。
         self:BeginDraft()
+        if type(spec.getRecentColors)=='function' then
+            local recent=spec.getRecentColors() or {};local choices,seen={},{}
+            local function Add(color)
+                local hex=self:HexOf(color)
+                if not seen[hex] and #choices<#COLORFIELD_PRESETS then choices[#choices+1]=CopyColor(color);seen[hex]=true end
+            end
+            for _,color in ipairs(recent)do Add(color)end
+            for _,color in ipairs(COLORFIELD_PRESETS)do Add(color)end
+            for index,color in ipairs(choices)do
+                self.presetColors[index]=color
+                if self.presetDrawables[index]then UI:SetColor(self.presetDrawables[index],color[1],color[2],color[3],1,self.owner)end
+            end
+        end
         local layoutOk, layoutErr = self:ApplyPopupLayout()
         if layoutOk ~= true then return false, layoutErr end
         local repickOk, _, repickErr = UI:EnsurePickable(self.popup, true, self.owner)
@@ -1955,6 +2008,7 @@ RSUI:RegisterType("ColorField", function(spec)
         return true
     end
     function c:Close()
+        if self.hexInput ~= nil then self.hexInput:CancelEditing("colorfield_close") end
         if self.open ~= true then
             self.draftColor = CopyColor(self.color)
             self:SyncDraftPreview(true)

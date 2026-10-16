@@ -143,6 +143,7 @@ features/combat/analytics/rs_combat_metric_common.lua
 features/combat/analytics/rs_combat_analytics_metrics.lua
 features/combat/analytics/rs_combat_analytics_store.lua
 features/combat/analytics/rs_combat_personal_history.lua
+data/rs_combat_history_import.lua
 features/combat/analytics/rs_combat_history_transfer.lua
 features/combat/analytics/rs_combat_analytics_feature.lua
 features/combat/death_review/rs_death_review_store.lua
@@ -167,6 +168,8 @@ features/combat/buff_display/rs_buff_display_projection.lua
 features/combat/buff_display/rs_buff_display_feature.lua
 features/combat/buff_display/rs_buff_display_management.lua
 features/combat/buff_display/rs_buff_display_transfer_v2.lua
+features/combat/buff_display/rs_buff_display_colors.lua
+features/combat/buff_display/rs_buff_display_arrangement.lua
 -- 2026-09-20 nameplate-mark-ratio-3：头标使用 name_tag_mark_size_ratio；Store schema1 保持兼容，禁止页面直写 X2Option。
 features/combat/nameplate_visuals/rs_nameplate_visuals_store.lua
 features/combat/nameplate_visuals/rs_nameplate_visuals_authority.lua
@@ -262,6 +265,7 @@ presentation/v3/widgets/rs_v3_death_review_content.lua
 presentation/v3/widgets/rs_v3_death_review_widget.lua
 presentation/v3/widgets/rs_v3_dps_widget.lua
 presentation/v3/widgets/rs_v3_buff_display_widget.lua
+presentation/v3/widgets/rs_v3_buff_color_settings.lua
 presentation/v3/widgets/rs_v3_buff_head_markers.lua
 presentation/v3/widgets/rs_v3_buff_hud_calibration.lua
 presentation/v3/widgets/rs_v3_healer_head_marker.lua

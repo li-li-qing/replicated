@@ -72,7 +72,7 @@ Test("normal user actions expose restore cancel apply", function()
     assert(colorBlock:find('text = "取消"', 1, true), "cancel button missing")
     assert(colorBlock:find('text = "应用"', 1, true), "apply button missing")
     assert(colorBlock:find('text = "选择颜色"', 1, true), "human-readable popup title missing")
-    assert(colorBlock:find('text = "当前颜色"', 1, true), "current-color label missing")
+    assert(colorBlock:find('"当前颜色"', 1, true), "current-color label missing")
 end)
 
 Test("popover includes preset palette and large current preview", function()

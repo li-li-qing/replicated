@@ -20,6 +20,7 @@ import json
 import time
 import hashlib
 import tempfile
+import os
 
 
 def addon_root():
@@ -31,8 +32,14 @@ def addon_root():
 def report_folder():
     return addon_root() / '诊断报告'
 
+
+def history_folder():
+    return addon_root() / '战斗历史'
+
 MAX_BLOCK = 16 * 1024 * 1024
 MAILBOX = b'addon_replicatedsuite_replicated_suite_v1_diagnostic_export'
+HISTORY_MAILBOX = b'addon_replicatedsuite_replicated_suite_v1_combat_history_export'
+HISTORY_PROTOCOL = 'RS-COMBAT-HISTORY-FILE-1'
 POLY = 0x82F63B78
 CRC_TABLE = []
 for _i in range(256):
@@ -314,12 +321,12 @@ def export_scalar(text, name):
     return found[0]
 
 
-def decode_mailbox(text, records=None, key=None):
+def decode_mailbox(text, records=None, key=None, *, expected_protocol='RS-DIAGNOSTIC-FILE-2'):
     """Native 缩进文本只解析本工具拥有的 ASCII 字段；不解释或执行 Lua。"""
     def scalar(name):
         return export_scalar(text, name)
     protocol = scalar('protocol')
-    if protocol == 'RS-DIAGNOSTIC-FILE-2':
+    if protocol == expected_protocol and protocol in ('RS-DIAGNOSTIC-FILE-2', HISTORY_PROTOCOL):
         # 中文维护：每个 Native key 低于实机 16383 字节截断边界；清单只在所有页回读后写入。
         # 严格按本次清单校验页号/长度/局部和全文校验，半写与混合旧页均拒绝生成 txt。
         size, count = int(scalar('byte_count')), int(scalar('page_count'))
@@ -359,7 +366,7 @@ def decode_mailbox(text, records=None, key=None):
         data.decode('utf-8', errors='strict')
         identity = re.search(r'\bstr_report_id\s+"?str_([^\s"]+)', text)
         return data, identity.group(1).rstrip('.') if identity else 'report'
-    if protocol != 'RS-DIAGNOSTIC-FILE-1':
+    if protocol != 'RS-DIAGNOSTIC-FILE-1' or expected_protocol != 'RS-DIAGNOSTIC-FILE-2':
         raise ValueError('unsupported diagnostic protocol')
     size, count = int(scalar('byte_count')), int(scalar('chunk_count'))
     if not 0 < size <= 1048576 or not 0 < count <= 1024 or count != (size + 1023) // 1024:
@@ -391,15 +398,21 @@ def find_udf(game):
     # 中文维护：仅选择最近有提交记录的账号库；新账号没有快照时不兜底输出旧账号报告。
     return max(candidates, key=lambda p: max(f.stat().st_mtime_ns for f in p.iterdir() if f.is_file()))
 
-def save_report(udf, output=None, cache=None):
-    records = read_database(udf, cache)
-    matches = [(key, row) for key, row in records.items() if key.endswith(MAILBOX)]
+def save_report(udf, output=None, cache=None, *, kind='diagnostic', _records=None):
+    if kind not in ('diagnostic', 'history'):
+        raise ValueError('unsupported file export kind')
+    history = kind == 'history'
+    records = read_database(udf, cache) if _records is None else _records
+    matches = [(key, row) for key, row in records.items() if key.endswith(HISTORY_MAILBOX if history else MAILBOX)]
     if len(matches) != 1:
-        raise ValueError('当前账号尚无唯一完整诊断快照。请先在游戏诊断页点“导出文件”；若客户端尚未落盘，请稍后重试。')
+        raise ValueError('当前账号尚无唯一完整' + ('历史快照。请先在个人历史页点“导出TXT”。' if history else '诊断快照。请先在游戏诊断页点“导出文件”。') + '若客户端尚未落盘，请稍后重试。')
     key, row = matches[0]
-    data, identity = decode_mailbox(row[2].decode('utf-8', errors='strict'), records, key)
+    data, identity = decode_mailbox(row[2].decode('utf-8', errors='strict'), records, key,
+                                    expected_protocol=HISTORY_PROTOCOL if history else 'RS-DIAGNOSTIC-FILE-2')
+    if history:
+        validate_history_file(data)
     receipt = str(udf.resolve()) + ':' + key.decode() + ':' + str(row[0]) + ':' + f'{zlib.adler32(data):08X}'
-    folder = report_folder()
+    folder = history_folder() if history else report_folder()
     state_path = folder / '.last-export.json'
     if output is None and state_path.is_file():
         # 中文维护：接收器索引损坏不应阻止新导出；旧 txt 也须仍与完整正文一致才可复用。
@@ -411,7 +424,8 @@ def save_report(udf, output=None, cache=None):
         except (OSError, ValueError, TypeError):
             pass
     safe_id = re.sub(r'[^A-Za-z0-9_.-]', '_', identity)[:48]
-    target = output or folder / f'RS-{datetime.now():%Y%m%d-%H%M%S-%f}-{safe_id}.txt'
+    prefix = 'RS-HISTORY' if history else 'RS'
+    target = output or folder / f'{prefix}-{datetime.now():%Y%m%d-%H%M%S-%f}-{safe_id}.txt'
     target.parent.mkdir(parents=True, exist_ok=True)
     # 中文维护：只创建新文件，禁止覆盖已有报告；UTF-8 原始字节保留正文换行及完整校验。
     with target.open('xb') as stream:
@@ -420,8 +434,92 @@ def save_report(udf, output=None, cache=None):
         raise ValueError('txt write verification failed')
     if output is None:
         state_path.write_text(json.dumps({'receipt': receipt, 'path': str(target)}, ensure_ascii=False), encoding='utf-8')
-    print(f'已生成完整诊断报告：{target}\n字节数：{len(data)}；正文校验通过。', flush=True)
+    label = '战斗历史' if history else '诊断报告'
+    print(f'已生成完整{label}：{target}\n字节数：{len(data)}；正文校验通过。', flush=True)
     return target
+
+
+def validate_history_file(data):
+    """只认完整历史TXT；验证传输，不代替游戏内角色/来源/累计校验。"""
+    if not 0 < len(data) <= 1048576:
+        raise ValueError('历史TXT为空或超过1MiB')
+    data = data.removeprefix(b'\xef\xbb\xbf').replace(b'\r\n', b'\n')
+    header, separator, payload = data.partition(b'\n')
+    found = re.fullmatch(rb'RSCH-FILE-1\|([0-9A-F]{8})\|([1-9][0-9]{0,6})', header)
+    if not separator or not found or int(found[2]) != len(payload):
+        raise ValueError('历史TXT头或长度不完整，请重新导出')
+    if f'{zlib.adler32(payload):08X}'.encode('ascii') != found[1]:
+        raise ValueError('历史TXT正文校验失败，请重新传送原文件')
+    if not re.match(rb'RS-HISTORY-1\|[0-9A-F]+\n', payload) or not payload.endswith(b'\nEND'):
+        raise ValueError('不是完整的战斗历史TXT')
+    payload.decode('ascii', errors='strict')
+    return data
+
+
+def prepare_history_import(source):
+    """仅写插件自己的待导入数据文件，不打开/修改UDF；通过原有重载加载后由用户点击合并。"""
+    source = Path(source)
+    if source.stat().st_size > 1048576:
+        raise ValueError('历史TXT超过1MiB')
+    data = validate_history_file(source.read_bytes())
+    target = addon_root() / 'replicatedsuite/data/rs_combat_history_import.lua'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # 输入仅能变成HEX字面量；不拼接用户代码、不执行TXT、不自动合并。
+    lines = ['-- Replicated Suite: generated pending history import; HEX data only.',
+             'if ReplicatedSuite then ReplicatedSuite.CombatHistoryImportFile={',
+             'protocol="RS-COMBAT-HISTORY-IMPORT-1",', f'byte_count="{len(data)}",',
+             f'checksum="{zlib.adler32(data):08X}",', 'chunks={']
+    lines += ['"' + data[index:index + 1024].hex().upper() + '",' for index in range(0, len(data), 1024)]
+    lines += ['}} end', '']
+    expected = '\r\n'.join(lines).encode('ascii')
+    fd, name = tempfile.mkstemp(prefix='.history-import-', suffix='.tmp', dir=target.parent)
+    staged = Path(name)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(expected)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if staged.read_bytes() != expected:
+            raise ValueError('待导入数据文件回读校验失败')
+        os.replace(staged, target)
+    finally:
+        if staged.exists():
+            staged.unlink()
+    print(f'已准备完整历史TXT：{source}\n请在游戏中重新加载插件文件，再到个人历史页点“导入TXT”。', flush=True)
+    return target
+
+
+def select_history_file():
+    """Windows原生文件选择器，无Python/Tk运行时安装要求。"""
+    import ctypes
+    from ctypes import wintypes as w
+    class OpenFileName(ctypes.Structure):
+        _fields_ = [('lStructSize', w.DWORD), ('hwndOwner', w.HWND), ('hInstance', w.HINSTANCE),
+                    ('lpstrFilter', w.LPCWSTR), ('lpstrCustomFilter', w.LPWSTR), ('nMaxCustFilter', w.DWORD),
+                    ('nFilterIndex', w.DWORD), ('lpstrFile', w.LPWSTR), ('nMaxFile', w.DWORD),
+                    ('lpstrFileTitle', w.LPWSTR), ('nMaxFileTitle', w.DWORD), ('lpstrInitialDir', w.LPCWSTR),
+                    ('lpstrTitle', w.LPCWSTR), ('Flags', w.DWORD), ('nFileOffset', w.WORD),
+                    ('nFileExtension', w.WORD), ('lpstrDefExt', w.LPCWSTR), ('lCustData', w.LPARAM),
+                    ('lpfnHook', ctypes.c_void_p), ('lpTemplateName', w.LPCWSTR), ('pvReserved', ctypes.c_void_p),
+                    ('dwReserved', w.DWORD), ('FlagsEx', w.DWORD)]
+    path = ctypes.create_unicode_buffer(32768)
+    request = OpenFileName()
+    request.lStructSize = ctypes.sizeof(request)
+    request.lpstrFilter = 'Replicated Suite 战斗历史 (*.txt)\0*.txt\0\0'
+    request.lpstrFile = ctypes.cast(path, w.LPWSTR)
+    request.nMaxFile = len(path)
+    request.lpstrTitle = '选择另一台电脑导出的完整战斗历史TXT'
+    request.lpstrInitialDir = str(history_folder())
+    request.Flags = 0x1000 | 0x800 | 0x8  # 文件必须存在、路径必须存在、不改变工作目录。
+    dialog = ctypes.windll.comdlg32
+    dialog.GetOpenFileNameW.argtypes = [ctypes.POINTER(OpenFileName)]
+    dialog.GetOpenFileNameW.restype = w.BOOL
+    if dialog.GetOpenFileNameW(ctypes.byref(request)):
+        return Path(path.value)
+    error = dialog.CommDlgExtendedError()
+    if error:
+        raise OSError(f'文件选择窗口失败：{error}')
+    return None
 
 def watch(game, specified_udf=None):
     """一次启动后自动接收显式导出。只在数据库文件发生变化后重新读，不持续扫描全文。"""
@@ -441,11 +539,11 @@ def watch(game, specified_udf=None):
     except OSError:
         print('诊断自动接收器已在运行。', flush=True)
         return 0
-    print(f'诊断自动接收器已启动。请保留此窗口。\n在游戏中点“导出文件”后，完整 txt 将保存到：{folder}', flush=True)
+    print(f'文件自动接收器已启动。请保留此窗口。\n诊断TXT：{folder}\n战斗历史TXT：{history_folder()}', flush=True)
     stop_path = folder / '.stop-receiver'
     if stop_path.exists():
         stop_path.unlink()
-    last_signature, last_error, cache, last_output = None, None, {}, None
+    last_signature, last_error, cache, last_outputs = None, None, {}, []
     try:
         while True:
             if stop_path.exists():
@@ -457,10 +555,23 @@ def watch(game, specified_udf=None):
                              for p in udf.iterdir() if p.is_file() and (p.suffix in ('.sst', '.log') or p.name.startswith('MANIFEST') or p.name == 'CURRENT'))))
                 # 中文维护：报告被清空时即使客户端没有新写入，也可重新提取同一完整快照。
                 # 空闲时只检查一个已生成文件；不读全文、不重新解压未改变的库。
-                if signature != last_signature or (last_output is not None and not last_output.is_file()):
+                if signature != last_signature or any(not p.is_file() for p in last_outputs):
                     # 中文维护：失败也记住已观察文件身份；等待真实写入再重读，避免空闲全库轮询。
                     last_signature = signature
-                    last_output = save_report(udf, cache=cache)
+                    records = read_database(udf, cache)
+                    outputs, errors = [], []
+                    for kind, mailbox in (('diagnostic', MAILBOX), ('history', HISTORY_MAILBOX)):
+                        if not any(key.endswith(mailbox) for key in records):
+                            continue
+                        try:
+                            outputs.append(save_report(udf, kind=kind, _records=records))
+                        except (OSError, ValueError, UnicodeError) as error:
+                            errors.append(str(error))
+                    last_outputs = outputs
+                    if errors:
+                        raise ValueError('；'.join(errors))
+                    if not outputs:
+                        raise ValueError('当前账号没有导出快照，请先在游戏中点击导出。')
                     last_signature, last_error = signature, None
             except (OSError, ValueError, UnicodeError) as error:
                 # 中文维护：保存未落盘、并发压缩、暂时缺块只重试，不输出伪成功；同一原因不刷日志。
@@ -479,7 +590,16 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--watch', action='store_true', help='自动接收；游戏内每次点击导出后自动保存 txt')
     parser.add_argument('--stop', action='store_true', help='停止本工具的自动接收，不影响游戏或存档')
+    parser.add_argument('--history', action='store_true', help='提取个人战斗历史TXT')
+    parser.add_argument('--import-history', nargs='?', const='', help='选择/指定历史TXT，准备供插件重载后导入')
     args = parser.parse_args()
+    if args.import_history is not None:
+        source = Path(args.import_history) if args.import_history else select_history_file()
+        if source is not None:
+            prepare_history_import(source)
+        else:
+            print('已取消选择，原待导入文件保持不变。')
+        return 0
     if args.stop:
         folder = report_folder()
         folder.mkdir(parents=True, exist_ok=True)
@@ -489,7 +609,7 @@ def main():
     if args.watch:
         return watch(args.game, args.udf)
     udf = args.udf or find_udf(args.game)
-    save_report(udf, args.output)
+    save_report(udf, args.output, kind='history' if args.history else 'diagnostic')
     return 0
 
 if __name__ == '__main__':

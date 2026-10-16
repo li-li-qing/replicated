@@ -167,9 +167,12 @@ RELEASE_READINESS_TESTS = [
     "tools/rs_combat_basic_statistics_tests.lua",
     "tools/rs_combat_basic_statistics_ui_tests.lua",
     "tools/rs_combat_history_integrity_tests.lua",
+    "tools/rs_combat_history_transfer_tests.lua",  # 历史导出首段回读、无损重分页及失败进入模块TXT，不能只验Store完整性。
     "tools/rs_combat_kill_diagnostics_tests.lua",
     "tools/rs_combat_statistics_layout_tests.lua",
     "tools/rs_hud_all_preview_tests.lua",
+    "tools/rs_buff_hud_colors_tests.lua",  # 任意RGB、双HUD独立、交换、校准取消与失败回滚。
+    "tools/rs_hud_layout_presets_tests.lua",  # 布局预设、横纵排列、共享网格和独立存档。
     "tools/rs_gear_score_format_tests.lua",
     "tools/rs_hud_default_template_tests.lua",
     "tools/rs_pvp_hud_tests.lua",

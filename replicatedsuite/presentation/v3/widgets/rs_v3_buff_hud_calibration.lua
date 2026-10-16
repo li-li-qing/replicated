@@ -60,7 +60,7 @@ C.Diagnostics = C.Diagnostics or {
 
 -- 已有生产职业目录使用的资源；仅补校准缺项，不查询技能/物品元数据。
 local SAMPLE_ICONS = {
-    buffs={"ui/icon/icon_skill_love01.dds","ui/icon/icon_skill_romance15.dds","ui/icon/icon_skill_adamant15.dds","ui/icon/icon_skill_wild35.dds"},
+    buffs={"ui/icon/icon_skill_love01.dds","ui/icon/icon_skill_romance15.dds","ui/icon/icon_skill_adamant15.dds","ui/icon/icon_skill_wild35.dds","ui/icon/icon_skill_fight37.dds","ui/icon/icon_skill_pleasure02.dds"},
     debuffs={"ui/icon/icon_skill_hatred25.dds","ui/icon/icon_skill_magic40.dds","ui/icon/icon_skill_assassin43.dds","ui/icon/icon_skill_madness07.dds"},
     cooldowns={"ui/icon/icon_skill_fight37.dds","ui/icon/icon_skill_wild35.dds","ui/icon/icon_skill_magic40.dds","ui/icon/icon_skill_pleasure02.dds"},
 }
@@ -463,6 +463,15 @@ local function FindEquipSlot(layout, key)
     return nil
 end
 
+local function PreviewCount(key,profile)
+    profile=profile or Profile()
+    local components=profile.components or {}
+    if key=='buffs'and (components.class or {}).nameLinked==true then
+        return math.max(1,math.min(6,N((components.buffs or {}).maxPerRow,6)))
+    end
+    return 4
+end
+
 -- 每次用户动作只读取当前 scope 的既有公开投影一次，再有界复制供全部组件共用。
 -- 不激活 Consumer/Lane，不读 Feature 私有事实，不把自身装备/CD借给目标，也不写 Draft。
 local function CapturePreviewContent()
@@ -474,7 +483,7 @@ local function CapturePreviewContent()
     for _,key in ipairs({"buffs","debuffs","cooldowns"}) do
         out[key]={}
         for i,row in ipairs(type(plates[key])=="table" and plates[key] or {}) do
-            if i>4 then break end
+            if i>6 then break end
             out[key][i]=Copy(row)
         end
     end
@@ -522,6 +531,11 @@ local function PreviewRect(key,previewProfile)
     elseif key == "buffs" or key == "debuffs" then
         local region = key == "buffs" and layout.buff or layout.debuff
         local cfg = profile.components[key] or {}
+        if (cfg.orientation=='horizontal'or cfg.orientation=='vertical')and Feature.ComputeHudIconGrid then
+            local grid=Feature.ComputeHudIconGrid(PreviewCount(key,profile),region.size,region.spacing,cfg.maxPerRow,cfg.maxRows,cfg.orientation=='vertical',key=='buffs')
+            return {x=math.floor(layout.bar.centerX+N(cfg.x,0)+grid.left),y=math.floor(region.firstTop+grid.top),
+                width=grid.width,height=grid.height,grid=grid},liveAnchor
+        end
         local count = math.min(4, math.max(1, Round(N(cfg.maxPerRow, 8))))
         local width = count * region.size + math.max(0, count - 1) * region.spacing
         local x = layout.bar.centerX + N(cfg.x, 0) - width / 2
@@ -534,6 +548,12 @@ local function PreviewRect(key,previewProfile)
         local cfg = profile.components.cooldowns or {}
         local size = math.max(8, Round(N(cfg.size,29) * scale))
         local spacing = math.max(0, Round(N(cfg.spacing,2) * scale))
+        if (cfg.orientation=='horizontal'or cfg.orientation=='vertical')and Feature.ComputeHudIconGrid then
+            size=math.max(8,math.floor(N(cfg.size,29)*scale));spacing=math.max(0,math.floor(N(cfg.spacing,2)*scale))
+            local grid=Feature.ComputeHudIconGrid(4,size,spacing,cfg.maxPerRow,cfg.maxRows,cfg.orientation=='vertical',false)
+            return {x=math.floor(layout.bar.centerX+N(cfg.x,0)*scale+grid.left),y=layout.bar.centerY+math.floor(N(cfg.y,90)*scale)+grid.top,
+                width=grid.width,height=grid.height,grid=grid},liveAnchor
+        end
         local count = math.min(4, math.max(1, Round(N(cfg.maxPerRow,8))))
         local width = count * size + math.max(0,count-1) * spacing
         local x = layout.bar.centerX + N(cfg.x,0) * scale - width / 2
@@ -630,7 +650,7 @@ local function EnsureSelectedPreviewVisuals()
     if S.Theme and S.Theme.SetWorldTextPalette then
         S.Theme:SetWorldTextPalette(preview.infoLabel);S.Theme:SetWorldTextPalette(preview.castText)
     end
-    for i=1,4 do
+    for i=1,6 do
         local icon=preview.icons[i] or {};preview.icons[i]=icon
         if not icon.root then icon.root=S.UI:CreateEmptyWidget(parent,prefix.."_icon_"..i,0,0,29,29,false,C.owner) end
         if not icon.root then return false,"校准图标框创建失败" end
@@ -676,7 +696,7 @@ local function EnsureAllPreviewVisuals(item,key)
         end
         if not preview.castBg or not preview.castFill or not preview.castText then return false,"全部模拟施法条创建失败" end
     elseif key~="plate" then
-        local count=(key=="buffs" or key=="debuffs" or key=="cooldowns") and 4 or 1
+        local count=key=='buffs'and 6 or (key=="debuffs" or key=="cooldowns") and 4 or 1
         for i=1,count do
             local icon=preview.icons[i] or {};preview.icons[i]=icon
             if not icon.root then icon.root=S.UI:CreateEmptyWidget(parent,prefix.."_icon_"..i,0,0,29,29,false,C.owner) end
@@ -891,6 +911,20 @@ function C:BuildTemplateSnapshotLines(meta)
         -- class 的 enabled 与 BASE.info.class 均保留，维护者按现有双开关语义重建，不在导出时做归一化写入。
         lines[#lines+1] = "HUD_TEMPLATE_V1|"..scopeName.."|CLASS|"
             ..TemplateComponent(profile,"class",{size=0})
+        if C.colorDraft then
+            local palette=C.colorDraft[scopeName=='PLAYER'and 'player'or 'target'];local fields={}
+            for _,definition in ipairs(Feature:GetHudColorDefinitions())do
+                local color=palette[definition.key]
+                fields[#fields+1]=definition.key..'='..string.format('%02X%02X%02X',Round(color[1]*255),Round(color[2]*255),Round(color[3]*255))
+            end
+            lines[#lines+1]='HUD_TEMPLATE_V1|'..scopeName..'|COLORS|'..table.concat(fields,',')
+        end
+        if type(Feature.GetHudArrangementProjection)=='function'then
+            local fields={}
+            for _,key in ipairs({'buffs','debuffs','cooldowns'})do fields[#fields+1]=key..'='..tostring((components[key]or {}).orientation or 'default')end
+            lines[#lines+1]='HUD_TEMPLATE_V1|'..scopeName..'|ARRANGE|'..table.concat(fields,',')
+            lines[#lines+1]='HUD_TEMPLATE_V1|'..scopeName..'|IDENTITY|paired='..TemplateBool((components.class or {}).nameLinked,false)
+        end
         if scopeName == "TARGET" then
             local alias = AliasDraft(); local hud = AliasHud()
             lines[#lines+1] = "HUD_TEMPLATE_V1|TARGET|ALIAS|alias{x="..TemplateNumber(hud.x,0)
@@ -1129,6 +1163,11 @@ local function ApplyPreviewTexture(drawable,path)
     return ok==true
 end
 
+local function PreviewTextColor(widget,key)
+    local palette=C.colorDraft and C.colorDraft[C.scope]
+    local color=palette and palette[key]
+    if widget and color then widget.rsManualTextColor=true;S.UI:SetColor(widget,color[1],color[2],color[3],1,C.owner)end
+end
 local function RenderPreviewIcon(icon,row,key,size,fields)
     row=type(row)=="table" and row or {}
     if icon.texture then
@@ -1149,6 +1188,8 @@ local function RenderPreviewIcon(icon,row,key,size,fields)
     local content=C.previewContent or {}
     local time=tostring(row.timeText or "")
     SafeText(icon.time,time);SafeVisible(icon.time,content.showTime~=false and time~="")
+    local channel=key=='debuffs'and 'debuff'or key=='cooldowns'and 'cooldown'or 'buff'
+    PreviewTextColor(icon.time,channel..'Time');PreviewTextColor(icon.stack,channel..'Stacks')
     local font=math.max(8,Round((fields.font or 11)*N(Profile().plateScale,1)))
     local labelH=math.max(10,font+2)
     S.UI:SetFontSize(icon.time,font,C.owner)
@@ -1168,15 +1209,18 @@ RenderPreviewVisuals = function(preview,key,rect)
     LayoutPreviewOutline(preview,rect,preview==C.preview or key=="plate")
     if key=="buffs" or key=="debuffs" or key=="cooldowns" then
         SetPreviewChildrenVisible(preview,"icons")
-        local size=math.max(8,Round(rect.height))
+        local grid=rect.grid
+        local size=grid and grid.size or math.max(8,Round(rect.height))
         local spacing=math.max(0,Round((fields.spacing or 2)*N(Profile().plateScale,1)))
         local rows=(C.previewContent or {})[key] or {}
-        local count=math.min(4,math.max(1,Round(fields.perRow or 8)))
+        local count=grid and grid.count or math.min(4,math.max(1,Round(fields.perRow or 8)))
         for i,icon in ipairs(preview.icons) do
             SafeVisible(icon.root,i<=count)
             if i<=count then
-                S.UI:SetAnchor(icon.root,preview.root,(i-1)*(size+spacing),0,C.owner);S.UI:SetExtent(icon.root,size,size,C.owner)
-                local row=rows[i] or {iconPath=SAMPLE_ICONS[key][i],timeText=({"12.4","8.0","25.7","1.2"})[i],stack=(i==1 and key~="cooldowns") and 3 or 1}
+                local position=grid and grid.slots[i]
+                S.UI:SetAnchor(icon.root,preview.root,position and position.x or (i-1)*(size+spacing),position and position.y or 0,C.owner);S.UI:SetExtent(icon.root,size,size,C.owner)
+                local sample=(i-1)%#SAMPLE_ICONS[key]+1
+                local row=rows[i] or {iconPath=SAMPLE_ICONS[key][sample],timeText=({"12.4","8.0","25.7","1.2"})[(i-1)%4+1],stack=(i==1 and key~="cooldowns") and 3 or 1}
                 RenderPreviewIcon(icon,row,key,size,fields)
             end
         end
@@ -1194,6 +1238,7 @@ RenderPreviewVisuals = function(preview,key,rect)
         SetPreviewChildrenVisible(preview,"info")
         local fallback=key=="alias" and AliasPreviewText() or (key=="info" and "职业预览" or (key=="gearScore" and "12345" or "28.4m"))
         SafeText(preview.infoLabel,rect.text and rect.text~="" and rect.text or fallback)
+        PreviewTextColor(preview.infoLabel,key=='info'and 'classText'or key)
         S.UI:SetFontSize(preview.infoLabel,math.max(8,Round((fields.font or 12)*N(Profile().plateScale,1))),C.owner)
         S.UI:SetAnchor(preview.infoLabel,preview.root,0,0,C.owner);S.UI:SetExtent(preview.infoLabel,rect.width,rect.height,C.owner)
     elseif key=="castBar" then
@@ -1204,6 +1249,7 @@ RenderPreviewVisuals = function(preview,key,rect)
         S.UI:SetAnchor(preview.castBg,preview.root,0,0,C.owner);S.UI:SetExtent(preview.castBg,rect.width,barH,C.owner)
         S.UI:SetAnchor(preview.castFill,preview.root,0,0,C.owner);S.UI:SetExtent(preview.castFill,math.max(1,Round(rect.width*fraction)),barH,C.owner)
         SafeText(preview.castText,tostring(cast.spellName or "")~="" and cast.spellName or "施法预览")
+        PreviewTextColor(preview.castText,'castName')
         SafeVisible(preview.castText,(Profile().components.castBar or {}).showText~=false)
         S.UI:SetFontSize(preview.castText,math.max(8,Round((fields.font or 12)*N(Profile().plateScale,1))),C.owner)
         S.UI:SetAnchor(preview.castText,preview.root,0,barH+1,C.owner);S.UI:SetExtent(preview.castText,rect.width,15,C.owner)
@@ -1232,7 +1278,8 @@ function C:LayoutPreview()
     if self.component=="class" then hint="尺寸0随字号；XY只移动图标，不移动职业名称"
     elseif self.component=="alias" then
         local d=AliasDraft(); hint=d.targetAvailable and ("当前目标："..tostring(d.targetName or "").." · 下方可保存自定义名字") or "当前无可读目标；仍可先调整自定义名字 HUD 位置"
-    elseif self.component=="info" then hint="职业名称独立位置/字号；不会拖动装备分数和距离"
+    elseif self.component=="info" then
+        hint=(Profile().components.class or {}).nameLinked==true and '职业名与图标一起移动；装分和距离保持原位' or '职业名称独立位置/字号；不会拖动装备分数和距离'
     elseif self.component=="gearScore" then hint="装备分数独立位置/字号/透明度；下方可选完整数值或 K 简写"
     elseif self.component=="distance" then hint="距离独立位置/字号/透明度"
     else hint=liveAnchor and "锚点：游戏实时位置" or "锚点：当前无单位，使用校准预览位置" end
@@ -1352,6 +1399,54 @@ local function LayoutContextFields()
     return y
 end
 
+function C:RefreshArrangementControls()
+    local supported=self.component=='buffs'or self.component=='debuffs'or self.component=='cooldowns'
+    local cfg=supported and Component()or {}
+    for mode,button in pairs(self.orientationButtons or {})do
+        SafeVisible(button,supported)
+        S.UI:SetEnabled(button,supported and not Feature.HudArrangementError,self.owner)
+        S.UI:SetButtonActive(button,supported and (mode=='vertical')==(cfg.orientation=='vertical'),self.owner)
+    end
+    if self.fieldRows then
+        SafeText(self.fieldRows.perRow and self.fieldRows.perRow.label,cfg.orientation=='vertical'and '每列'or '每行')
+        SafeText(self.fieldRows.rows and self.fieldRows.rows.label,cfg.orientation=='vertical'and '列数'or '行数')
+    end
+    if self.layoutPreset then self.layoutPreset:Render()end
+    return true
+end
+function C:SetGroupOrientation(mode)
+    if not self.visible or not self.draft then return false,'HUD校准未开启'end
+    if self.component~='buffs'and self.component~='debuffs'and self.component~='cooldowns'then return false,'当前组件不支持横纵排列'end
+    if mode~='horizontal'and mode~='vertical'then return false,'排列方向无效'end
+    if Feature.HudArrangementError then return false,Feature.HudArrangementError end
+    if self.colorPanel then self.colorPanel:CancelPickers()end
+    if self.colorPreset then self.colorPreset:Close()end
+    Component().orientation=mode;self.layoutDirty,self.dirty=true,true
+    if self.layoutPresetSelections then self.layoutPresetSelections[self.scope]=nil end
+    self:RefreshArrangementControls();SafeText(self.dirtyLabel,'● 未保存修改')
+    Trace('orientation_preview',{orientation=mode,clearError=true})
+    self:LayoutPreview();return self:LayoutGlobalPreview()
+end
+function C:ApplyLayoutPreset(name)
+    if not self.visible or not self.draft then return false,'HUD校准未开启'end
+    local profile,alias
+    if name=='original'then
+        profile=self.openingDraft and Copy(self.openingDraft[self.scope]);alias=Copy(self.openingAliasHud)
+    else profile,alias=Feature:GetHudLayoutPreset(name,self.scope,Profile())end
+    if not profile then return false,alias or '进入时布局不可用'end
+    if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
+    self.draft[self.scope]=profile
+    if self.scope=='target'and type(alias)=='table'and AliasDraft().available==true then
+        local hud=AliasHud();for _,key in ipairs({'x','y','fontSize'})do if alias[key]~=nil then hud[key]=alias[key]end end
+        self.aliasConfigDirty=true
+    end
+    self.layoutPresetSelections=self.layoutPresetSelections or {};self.layoutPresetSelections[self.scope]=name
+    self.layoutDirty,self.dirty=true,true;self.globalPreviewEnabled,self.allPreviewEnabled=true,true
+    Trace('layout_preset_preview',{preset=name,clearError=true})
+    SafeText(self.statusLabel,'布局已预览；保存并退出后生效。可选择“恢复进入时布局”。')
+    return self:RefreshControls()
+end
+
 function C:RefreshControls()
     if self.visible ~= true then return true end
     CapturePreviewContent()
@@ -1367,7 +1462,17 @@ function C:RefreshControls()
         SafeVisible(self.syncButton, self.scope == "target")
         S.UI:SetButtonActive(self.syncButton, self.scope == "target", self.owner)
     end
-    LayoutContextFields()
+    local nextFieldY=LayoutContextFields()
+    self:RefreshArrangementControls()
+    local actionY=458
+    if S.UIV3.BuffColorSettings then
+        local colorHeight=S.UIV3.BuffColorSettings:LayoutCalibration(self,nextFieldY+4)
+        if colorHeight>0 then actionY=math.max(actionY,nextFieldY+4+colorHeight+4)end
+    end
+    S.UI:SetAnchor(self.enabledButton,self.panel,126,actionY,self.owner)
+    S.UI:SetAnchor(self.applyInputsButton,self.panel,220,actionY,self.owner)
+    -- Buff/Debuff 两行配色占用底部空间；此时收起重复的锚点提示，避免叠在动作按钮上。
+    SafeVisible(self.anchorHint,actionY+28<=522)
     local f = CurrentFields()
     FieldText("x", Round(f.x)); FieldText("y", Round(f.y)); FieldText("size", f.size and Round(f.size) or "--")
     FieldText("font", f.font and Round(f.font) or "--")
@@ -1509,6 +1614,8 @@ function C:Adjust(name, delta)
 end
 
 function C:SetScope(scope)
+    if self.layoutPreset then self.layoutPreset:Close()end
+    if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
     scope = scope == "target" and "target" or "player"
     self.scope = scope
     -- target-only 自定义名字不能泄漏到自身 HUD；切回自身时选择一个通用组件并隐藏编辑框。
@@ -1520,6 +1627,8 @@ end
 function C:SetComponent(key)
     if COMPONENT_LABEL[key] == nil then return false, "未知 HUD 组件" end
     if key == "alias" and self.scope ~= "target" then return false, "自定义名字仅属于目标 HUD" end
+    if self.layoutPreset then self.layoutPreset:Close()end
+    if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
     self.component = key
     if key == "alias" then self:RefreshAliasEditorSnapshot(false) end
     if type(self.Diagnostics) == "table" then self.Diagnostics.lastComponent = key end
@@ -1527,11 +1636,21 @@ function C:SetComponent(key)
     return self:RefreshControls()
 end
 function C:SyncPlayerToTarget()
+    if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
     if type(self.draft) ~= "table" or type(self.draft.player) ~= "table" then
         Trace("sync_failed", { error="自身 HUD 草稿不存在" })
         return false, "自身 HUD 草稿不存在"
     end
     self.draft.target = Copy(self.draft.player)
+    if Feature.GetHudArrangementProjection then
+        for _,key in ipairs({'buffs','debuffs','cooldowns'})do
+            local cfg=self.draft.target.components[key];if cfg.orientation==nil then cfg.orientation='default'end
+        end
+    end
+    if self.colorDraft then
+        local alias=Copy(self.colorDraft.target.alias)
+        self.colorDraft.target=Copy(self.colorDraft.player);self.colorDraft.target.alias=alias;self.colorsDirty=true
+    end
     self.scope = "target"; self.layoutDirty = true; self.dirty = true
     self.Diagnostics.syncCount = (tonumber(self.Diagnostics.syncCount) or 0) + 1
     Trace("sync_player_to_target", { clearError=true })
@@ -1539,6 +1658,7 @@ function C:SyncPlayerToTarget()
     return self:RefreshControls()
 end
 function C:ResetCurrentComponent()
+    if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
     local defaults = Feature.Commands:GetDefaultHudCalibrationSnapshot()
     local defaultProfile = type(defaults) == "table" and defaults[self.scope] or nil
     if type(defaultProfile) ~= "table" then
@@ -1546,6 +1666,11 @@ function C:ResetCurrentComponent()
         return false, "默认 HUD 配置不可用"
     end
     local profile = Profile()
+    local colorKeys={info={'classText'},alias={'alias'},gearScore={'gearScore'},distance={'distance'},castBar={'castName'},
+        buffs={'buffTime','buffStacks'},debuffs={'debuffTime','debuffStacks'},cooldowns={'cooldownTime'}}
+    if self.colorDraft then
+        for _,key in ipairs(colorKeys[self.component]or {})do self.colorDraft[self.scope][key]={1,1,1};self.colorsDirty=true end
+    end
     if self.component == "alias" then
         local defaultAlias = type(Feature.Commands.GetDefaultTargetAliasHudConfig) == "function" and Feature.Commands:GetDefaultTargetAliasHudConfig()
             or { enabled=true, x=0, y=-94, fontSize=12, alpha=1.0 }
@@ -1578,12 +1703,14 @@ function C:ResetCurrentComponent()
 end
 
 function C:ResetCurrentScope()
+    if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
     local defaults = Feature.Commands:GetDefaultHudCalibrationSnapshot()
     if type(defaults) ~= "table" or type(defaults[self.scope]) ~= "table" then
         Trace("reset_failed", { error="默认 HUD 配置不可用" })
         return false, "默认 HUD 配置不可用"
     end
     self.draft[self.scope] = Copy(defaults[self.scope])
+    if self.colorDraft then self.colorDraft[self.scope]=Feature:GetHudColorPreset('white');self.colorsDirty=true end
     if self.scope == "target" then
         local defaultAlias = type(Feature.Commands.GetDefaultTargetAliasHudConfig) == "function" and Feature.Commands:GetDefaultTargetAliasHudConfig()
             or { enabled=true, x=0, y=-94, fontSize=12, alpha=1.0 }
@@ -1615,6 +1742,8 @@ local function RestoreShell()
 end
 
 function C:HideOverlay()
+    if self.layoutPreset then self.layoutPreset:Close()end
+    if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
     -- 维护（hud-template-copy-2）：取消/保存/重载退出均释放本校准的导出快照与键盘，不触碰其他报告。
     self:CloseTemplateCopy()
     -- 维护（2026-09-22，geometry-gesture-authority-1）：隐藏/保存/取消不等于 Native 拖动自然结束。
@@ -1653,7 +1782,7 @@ function C:HideOverlay()
     return true
 end
 
-function C:Exit(save)
+local function ExitGeometry(self,save)
     -- 约束（target-alias-hud-2，双 Store 提交）：HUD Layout 与 Alias HUD 是两个独立
     -- 小 Store。Save 先提交 alias，再提交 layout；若 layout 事务失败则把 alias HUD 配置回滚到 Open
     -- 时快照。名字映射不在本事务内，因为“保存名字/删除名字”是用户显式即时动作。取消退出两份几何
@@ -1720,6 +1849,7 @@ function C:Exit(save)
     end
     local exitCallback = self.exitCallback
     self.draft, self.previousShell, self.exitCallback, self.dirty = nil, nil, nil, false
+    self.openingDraft,self.openingAliasHud,self.layoutPresetSelections=nil,nil,nil
     self.layoutDirty, self.aliasConfigDirty = false, false
     self.aliasDraft, self.aliasPersistedConfig, self.aliasConfigInitialized = nil, nil, false
     self.Diagnostics.dirty = false; self.Diagnostics.visible = false
@@ -1728,6 +1858,33 @@ function C:Exit(save)
         pcall(exitCallback, save == true, restored ~= false, restoreErr)
     end
     return restored ~= false, restoreErr
+end
+
+function C:ApplyColorPatch(patch)
+    if not self.visible or not self.colorDraft then return false,'HUD配色校准未开启'end
+    local valid,err=Feature:ValidateHudColors(patch);if not valid then return false,err end
+    for scope,palette in pairs(patch)do for key,color in pairs(palette)do self.colorDraft[scope][key]=Copy(color)end end
+    self.colorsDirty,self.dirty=true,true
+    -- 调色只更新草稿和预览；全量刷新几何编辑框会抹掉尚未“应用输入值”的文字。
+    SafeText(self.dirtyLabel,'● 未保存修改');Trace('colors_preview',{clearError=true})
+    self:LayoutPreview();return self:LayoutGlobalPreview()
+end
+function C:Exit(save)
+    local before,committed
+    if save and self.colorsDirty and self.colorDraft then
+        before=Feature:GetHudColorsProjection()
+        local ok,err=Feature.Commands:PersistHudColors(self.colorDraft,'hud_calibration_colors')
+        if not ok then SafeText(self.statusLabel,'颜色保存失败：'..tostring(err));return false,err end
+        committed=true
+    end
+    local ok,err=ExitGeometry(self,save)
+    -- 几何保存失败时编辑器仍持有draft；Shell恢复失败但draft已清理则属于提交后的表现失败。
+    if not ok and committed and self.draft then
+        local rollback,rollbackErr=Feature.Commands:PersistHudColors(before,'hud_calibration_colors_rollback')
+        if not rollback then err=tostring(err)..'；配色回滚失败：'..tostring(rollbackErr);SafeText(self.statusLabel,err)end
+    end
+    if not self.draft then self.colorDraft,self.colorsDirty=nil,false end
+    return ok,err
 end
 
 function C:EnsureCreated()
@@ -1781,6 +1938,22 @@ function C:EnsureCreated()
     self.stepButtons[1] = MakeButton(panel, "v3_buff_hud_calibration_step_1", "1", rx+146, 134, 34, 24, function() return C:SetStep(1) end)
     self.stepButtons[5] = MakeButton(panel, "v3_buff_hud_calibration_step_5", "5", rx+183, 134, 34, 24, function() return C:SetStep(5) end)
     self.stepButtons[10] = MakeButton(panel, "v3_buff_hud_calibration_step_10", "10", rx+220, 134, 38, 24, function() return C:SetStep(10) end)
+    if type(Feature.GetHudLayoutPresets)=='function'and S.RSUI and S.RSUI.Dropdown then
+        local items={}
+        for _,preset in ipairs(Feature:GetHudLayoutPresets())do items[#items+1]={value=preset.id,text=preset.label}end
+        items[#items+1]={value='original',text='恢复进入时布局'}
+        self.layoutPreset=S.RSUI:Dropdown({id='v3_buff_hud_layout_preset',parent=panel,width=182,height=22,maxVisible=5,
+            placeholder='布局预设 · 点击试看',items=items,popupWidth=200,
+            get=function()return C.layoutPresetSelections and C.layoutPresetSelections[C.scope]or false end,
+            set=function(value)return C:ApplyLayoutPreset(value)end})
+        if not self.layoutPreset or self.layoutPreset.rsUiDegraded then return false,'布局预设控件创建失败'end
+        self.layoutPreset:Layout(126,32,182,22)
+        S.UI:SetExtent(self.scopeLabel,108,18,self.owner)
+        S.UI:SetAnchor(self.dirtyLabel,panel,314,36,self.owner);S.UI:SetExtent(self.dirtyLabel,94,18,self.owner)
+        self.orientationButtons={}
+        self.orientationButtons.horizontal=MakeButton(panel,'v3_buff_hud_orientation_horizontal','横排',rx,170,38,26,function()return C:SetGroupOrientation('horizontal')end)
+        self.orientationButtons.vertical=MakeButton(panel,'v3_buff_hud_orientation_vertical','纵排',rx+88,170,38,26,function()return C:SetGroupOrientation('vertical')end)
+    end
 
     self.fieldRows = {}
     local function Field(name, label)
@@ -1802,7 +1975,7 @@ function C:EnsureCreated()
         if C.component == "plate" then return true end
         return SetCurrentEnabled(not CurrentEnabled())
     end)
-    MakeButton(panel, "v3_buff_hud_calibration_apply_inputs", "应用输入值", rx+94, 458, 112, 28, function() return C:ApplyInputFields() end)
+    self.applyInputsButton=MakeButton(panel, "v3_buff_hud_calibration_apply_inputs", "应用输入值", rx+94, 458, 112, 28, function() return C:ApplyInputFields() end)
     self.auxButtons = self.auxButtons or {}
     for i = 1, 3 do
         local index = i
@@ -2018,10 +2191,14 @@ function C:Open(context)
     end
     self.draft=Copy(snapshot); self.scope=type(context)=="table" and context.scope=="target" and "target" or "player"; self.component="buffs"; self.step=1; self.dirty=false
     self.layoutDirty, self.aliasConfigDirty = false, false
+    self.colorDraft=type(Feature.GetHudColorsProjection)=='function'and not Feature.HudColorsError and Feature:GetHudColorsProjection()or nil
+    self.colorsDirty=false
+    self.openingDraft=Copy(self.draft);self.layoutPresetSelections={}
     self.aliasDraft, self.aliasPersistedConfig, self.aliasConfigInitialized = nil, nil, false
     -- Alias Store 故障不能阻断整个状态显示 HUD 校准；这里只尽力读取，小 Store 不可用时对应组件
     -- 会显示错误并禁用名字保存，其他 HUD 组件仍可正常调整/保存。
     self:RefreshAliasEditorSnapshot(true)
+    self.openingAliasHud=Copy(AliasHud())
     self.globalPreviewEnabled = true
     self.allPreviewEnabled = false
     self.Diagnostics.globalPreviewEnabled = true

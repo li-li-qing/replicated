@@ -23,6 +23,32 @@ local function Whole(v)
     local n=tonumber(v);if not n or n>MAX_COUNTER then return nil end
     return n
 end
+-- 历史交换失败曾只显示在页面，模块诊断却始终errors=0。这里保留本次操作的有界标量证据，绝不保存正文或写入历史Store。
+function H:RecordTransferDiagnostic(stage,err,fields)
+    self.transferDiagnostic=self.transferDiagnostic or {attempts=0,failures=0,readbackFailures=0,repages=0}
+    local d=self.transferDiagnostic;d.stage=tostring(stage or 'unknown');d.at=tonumber(S.NowMs and S.NowMs()) or 0
+    d.lastError=err and tostring(err):sub(1,512) or nil
+    if err then d.failures=d.failures+1;if stage=='readback' then d.readbackFailures=d.readbackFailures+1 end end
+    for _,key in ipairs({'action','packageId','partIndex','partCount','expectedBytes','actualBytes','actualType',
+        'declaredCapacity','rawBytes','chunkBytes','ready','lastReadbackExpectedBytes','lastReadbackActualBytes'})do
+        local value=fields and fields[key];local kind=type(value)
+        if kind=='number' or kind=='boolean' then d[key]=value elseif kind=='string' then d[key]=value:sub(1,128) end
+    end
+end
+function H:GetTransferDiagnostics()
+    -- 报告只读已有证据；不能为补错误详情重新导出、读存档、生成来源或查询Native文本框。
+    local out={available=self.transferDiagnostic~=nil}
+    for key,value in pairs(self.transferDiagnostic or {})do out[key]=value end
+    return out
+end
+function H:ReportTransferFailure()
+    -- 只把最终失败送进已有模块错误环；首段容量探测后成功重分页不应留下伪业务告警。
+    local d=self.transferDiagnostic;local diagnostics=S.DiagnosticsManager
+    if not d or not d.lastError or not diagnostics then return end
+    local context={stage=d.stage,expectedBytes=d.expectedBytes,actualBytes=d.actualBytes,partIndex=d.partIndex}
+    if type(diagnostics.Emit)=='function' then diagnostics:Emit('warn','combat_analytics','HISTORY_TRANSFER_FAILED',d.lastError,context)
+    elseif type(diagnostics.Warn)=='function' then diagnostics:Warn('combat_analytics','HISTORY_TRANSFER_FAILED',d.lastError,context) end
+end
 local function Check(text)
     local transport=S.ReportCopyTransport
     if not transport or type(transport.CopyChecksum)~='function' then return nil,'历史复制编码器不可用' end
@@ -182,23 +208,60 @@ function H:RecordTransferDelta(delta,date,stamp)
     source.firstAt=source.firstAt or stamp;source.lastAt=stamp or source.lastAt
     return true
 end
-function H:ExportTransfer()
+local function ExportParts(payload,hash,totals,chunkBytes)
+    local count=math.ceil(#payload/chunkBytes);local parts={}
+    for index=1,count do
+        local chunk=payload:sub((index-1)*chunkBytes+1,index*chunkBytes)
+        parts[index]=table.concat({'RSCH1',hash,#payload,index,count,#chunk,assert(Check(chunk))},'|')..'\n'..chunk
+    end
+    return {parts=parts,partCount=count,packageId=hash,totals=Copy(totals),payload=payload,chunkBytes=chunkBytes}
+end
+local function ExportTransfer(self)
+    self:RecordTransferDiagnostic('load')
     local ok,err=self:EnsureLoaded(true);if ok~=true then return nil,err end
+    self:RecordTransferDiagnostic('identity')
     local identity;identity,err=Binding();if not identity then return nil,err end
+    self:RecordTransferDiagnostic('enroll')
     local value;value,err=Enroll(self.state);if not value then return nil,err end
+    self:RecordTransferDiagnostic('encode')
     local lines={'RS-HISTORY-1|'..Hex(identity)}
     for _,id in ipairs(Sorted(value.sync.sources))do AppendSource(lines,id,value.sync.sources[id])end
     lines[#lines+1]='END';local payload=table.concat(lines,'\n')
     if #payload>MAX_BYTES then return nil,'历史超过单次导出容量，未生成不完整备份' end
     local hash;hash,err=Check(payload);if not hash then return nil,err end
     -- 第一次导出先耐久保存来源身份，重载后导出才会沿用同一条来源而非重复建账。
+    self:RecordTransferDiagnostic('save')
     ok,err=Commit(value,'personal_history_export');if ok~=true then return nil,err end
-    local count=math.ceil(#payload/PART_BYTES);local parts={}
-    for index=1,count do
-        local chunk=payload:sub((index-1)*PART_BYTES+1,index*PART_BYTES)
-        parts[index]=table.concat({'RSCH1',hash,#payload,index,count,#chunk,assert(Check(chunk))},'|')..'\n'..chunk
+    self:RecordTransferDiagnostic('packet')
+    return ExportParts(payload,hash,value.totals,PART_BYTES)
+end
+function H:ExportTransfer()
+    local previous=self.transferDiagnostic or {}
+    self.transferDiagnostic={attempts=(previous.attempts or 0)+1,failures=previous.failures or 0,
+        readbackFailures=0,repages=0,action='export',ready=false}
+    -- 连同意外Lua异常也记录到真实阶段；按钮不能只留下“导出失败”而没有可导出的错误证据。
+    local ok,packet,err=xpcall(function()return ExportTransfer(self)end,S.SafeTraceback or tostring)
+    if not ok then err=packet;packet=nil end
+    if not packet then
+        err=err or '历史导出未生成完整文本';self:RecordTransferDiagnostic(self.transferDiagnostic.stage,err,{ready=false})
+        self:ReportTransferFailure();return nil,err
     end
-    return {parts=parts,partCount=count,packageId=hash,totals=Copy(value.totals)}
+    self:RecordTransferDiagnostic('packet_ready',nil,{packageId=packet.packageId,partCount=packet.partCount,
+        rawBytes=#packet.payload,chunkBytes=packet.chunkBytes})
+    return packet
+end
+function H:RepageExport(packet,chunkBytes)
+    -- 只重切同一次冻结导出；不再次Commit、不产生来源ID，也不修改已经保存的历史或整包校验。
+    if type(packet)~='table' or type(packet.payload)~='string' or #packet.payload<1 or #packet.payload>MAX_BYTES
+        or type(packet.packageId)~='string' or not packet.packageId:match('^%x%x%x%x%x%x%x%x$')
+        or Check(packet.payload)~=packet.packageId or type(packet.totals)~='table'
+        or type(chunkBytes)~='number' or chunkBytes~=math.floor(chunkBytes) or chunkBytes<128 or chunkBytes>PART_BYTES then
+        return nil,'历史导出重分页参数无效'
+    end
+    local result=ExportParts(packet.payload,packet.packageId,packet.totals,chunkBytes)
+    self:RecordTransferDiagnostic('repage',nil,{partCount=result.partCount,chunkBytes=chunkBytes})
+    self.transferDiagnostic.repages=self.transferDiagnostic.repages+1 -- 允许冷路径重新显示已冻结的有效包，不要求当前页面之前调用过导出。
+    return result
 end
 local function ReadCounts(text)
     local fields=Split(text,',');if #fields~=#C.keys then return nil end
@@ -283,16 +346,22 @@ function H:ImportTransfer(text,options)
     local fields=Split(header or '','|')
     if #fields~=7 or fields[1]~='RSCH1' or not fields[2]:match('^%x%x%x%x%x%x%x%x$') or not fields[7]:match('^%x%x%x%x%x%x%x%x$') then return false,'历史导出头不完整或格式不支持' end
     local size,index,count,bytes=Whole(fields[3]),Whole(fields[4]),Whole(fields[5]),Whole(fields[6])
-    if not size or size<1 or size>MAX_BYTES or not index or not count or index<1 or index>count or count~=math.ceil(size/PART_BYTES)
-        or not bytes or bytes~=math.min(PART_BYTES,size-(index-1)*PART_BYTES) or not body or #body<bytes
+    -- RSCH1头已携带总段数和每段长度，不应假定每段必为7000字节；仍兼容所有旧导出，整包长度/校验最终守门。
+    if not size or size<1 or size>MAX_BYTES or not index or not count or index<1 or index>count
+        or count<math.ceil(size/PART_BYTES) or count>math.min(size,8192)
+        or not bytes or bytes<1 or bytes>PART_BYTES or bytes>size or not body or #body<bytes
         or not body:sub(bytes+1):match('^%s*$') then return false,'历史分段长度不完整，请重新复制该段' end
     body=body:sub(1,bytes)
     if Check(body)~=fields[7] then return false,'历史分段校验失败，可能被截断或改写' end
     local session=self.importSession
     if session and (session.id~=fields[2] or session.size~=size or session.count~=count) then return false,'正在接收另一份历史，请先点“清除输入”再换一份' end
-    if not session then session={id=fields[2],size=size,count=count,parts={},received=0};self.importSession=session end
+    if not session then session={id=fields[2],size=size,count=count,parts={},received=0,receivedBytes=0};self.importSession=session end
     if session.parts[index] and session.parts[index]~=body then return false,'同一分段的内容冲突' end
-    if not session.parts[index] then session.parts[index]=body;session.received=session.received+1 end
+    if not session.parts[index] then
+        -- 可变分段仍受整包声明大小约束，不能用大量合法小段头把临时接收缓冲撑过1MiB。
+        if session.receivedBytes+#body>size then return false,'历史分段累计长度超过整包声明，未合并' end
+        session.parts[index]=body;session.received=session.received+1;session.receivedBytes=session.receivedBytes+#body
+    end
     if session.received<count then return true,{complete=false,received=session.received,total=count} end
     local payload=table.concat(session.parts)
     if #payload~=size or Check(payload)~=session.id then self.importSession=nil;return false,'整份历史校验失败，未合并' end
@@ -301,7 +370,69 @@ function H:ImportTransfer(text,options)
     if ok~=true or (result and result.complete) then self.importSession=nil end
     return ok,result
 end
+function H:ExportFile()
+    -- 从Authority冻结原文直接交给专用文件信箱；不经过Native编辑框，也不依赖剪贴板。
+    local packet,err=self:ExportTransfer();if not packet then return false,err end
+    self:RecordTransferDiagnostic('file_save',nil,{action='export_file',ready=false})
+    local text='RSCH-FILE-1|'..packet.packageId..'|'..#packet.payload..'\n'..packet.payload
+    if type(P.SaveHistoryExport)~='function' then err='历史文件出口未加载，请更新完整插件'
+    elseif #text>MAX_BYTES then err='历史文件超过1MiB安全上限，未导出不完整文件'
+    else
+        local called,ok,result=pcall(P.SaveHistoryExport,P,text,{id=packet.packageId})
+        if called and ok==true then
+            self:RecordTransferDiagnostic('file_snapshot_ready',nil,{ready=true,rawBytes=#text})
+            return true,'历史快照已就绪。运行插件目录的“导出战斗历史.cmd”，完整TXT会保存到 Addon/战斗历史。',result
+        end
+        err=tostring(called and result or ok)
+    end
+    self:RecordTransferDiagnostic('file_save',err,{ready=false});self:ReportTransferFailure();return false,err
+end
+local function ReadPreparedFile(value)
+    -- 本地工具只生成固定结构的HEX数据；插件仍逐块校验，绝不load/loadstring用户TXT。
+    if type(value)~='table' or value.protocol~='RS-COMBAT-HISTORY-IMPORT-1' then
+        return nil,'尚未加载待导入文件。请运行“导入战斗历史.cmd”选择TXT，再重新加载插件文件。'
+    end
+    local bytes=Whole(value.byte_count)
+    if not bytes or bytes<1 or bytes>MAX_BYTES or type(value.chunks)~='table'
+        or #value.chunks~=math.ceil(bytes/1024) then return nil,'待导入文件长度或分块不完整' end
+    local pieces={}
+    for index=1,#value.chunks do
+        local encoded=value.chunks[index]
+        if type(encoded)~='string' then return nil,'待导入文件分块类型无效' end
+        local piece=Unhex(encoded,1024)
+        if not piece or #piece~=math.min(1024,bytes-(index-1)*1024) then return nil,'待导入文件分块被截断或改写' end
+        pieces[index]=piece
+    end
+    local text=table.concat(pieces)
+    if type(value.checksum)~='string' or Check(text)~=value.checksum then return nil,'待导入文件校验失败' end
+    local id,size,payload=text:match('^RSCH%-FILE%-1|(%x%x%x%x%x%x%x%x)|(%d+)\n(.*)$')
+    if not id or Whole(size)~=#payload or Check(payload)~=id then return nil,'历史TXT头、长度或正文校验失败' end
+    local parsed,err=ParsePayload(payload);if not parsed then return nil,err end
+    return parsed,nil,id
+end
+function H:ImportFile(options)
+    local previous=self.transferDiagnostic or {}
+    self.transferDiagnostic={attempts=(previous.attempts or 0)+1,failures=previous.failures or 0,
+        readbackFailures=0,repages=0,action='import_file',ready=false}
+    self:RecordTransferDiagnostic('file_validate')
+    local called,ok,result=xpcall(function()
+        local parsed,err,id=ReadPreparedFile(S.CombatHistoryImportFile)
+        if not parsed then return false,err end
+        self:RecordTransferDiagnostic('file_merge',nil,{packageId=id})
+        return self:MergeTransfer(parsed,id,options)
+    end,S.SafeTraceback or tostring)
+    if not called then result=ok;ok=false end
+    if ok~=true then
+        self:RecordTransferDiagnostic(self.transferDiagnostic.stage,tostring(result),{ready=false})
+        self:ReportTransferFailure();return false,result
+    end
+    self:RecordTransferDiagnostic(result.complete and 'file_import_ready' or 'file_confirm',nil,{ready=result.complete==true})
+    return true,result
+end
 F.Commands=F.Commands or {}
 function F.Commands:ExportPersonalHistory() return H:ExportTransfer() end
+function F.Commands:RepagePersonalHistoryExport(packet,chunkBytes) return H:RepageExport(packet,chunkBytes) end
 function F.Commands:ImportPersonalHistory(text,options) return H:ImportTransfer(text,options) end
+function F.Commands:ExportPersonalHistoryFile() return H:ExportFile() end
+function F.Commands:ImportPersonalHistoryFile(options) return H:ImportFile(options) end
 function F.Commands:ClearPersonalHistoryImport() H.importSession=nil;return true end -- 只丢弃未提交的复制缓冲，不删除历史。

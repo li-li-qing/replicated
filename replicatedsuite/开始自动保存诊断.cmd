@@ -9,7 +9,7 @@ if not exist "%~dp0tools\RS-Diagnostic-Exporter.exe" (
   pause
   exit /b 1
 )
-echo 请保留此窗口。游戏里点击“导出文件”后，完整 txt 会保存到 Addon\诊断报告。
+echo 请保留此窗口。诊断“导出文件”保存到 Addon\诊断报告；个人历史“导出TXT”保存到 Addon\战斗历史。
 echo 无需安装 Python 或 Codex。关闭此窗口即可停止接收。
 "%~dp0tools\RS-Diagnostic-Exporter.exe" --game "%~dp0..\.." --watch
 pause

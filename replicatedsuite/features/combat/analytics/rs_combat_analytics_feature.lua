@@ -177,6 +177,7 @@ function F:DescribeDiagnosticDetail()
         relatedErrors=hub and type(hub.GetRecent)=="function" and hub:GetRecent(self.Id) or {},
         history={storeId=history and history.StoreId,loaded=history and history.loaded==true,revision=history and history.revision,
             error=history and history.lastError,failures=history and history.failures,
+            transfer=history and type(history.GetTransferDiagnostics)=='function' and history:GetTransferDiagnostics() or {available=false}, -- 覆盖历史导出/原生展示失败，纯读缓存。
             totals={kills=totals.kills,inferredKills=totals.inferredKills,
                 deaths=totals.deaths,damage=totals.damage,taken=totals.taken,healing=totals.healing}}}
 end
