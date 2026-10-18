@@ -63,7 +63,7 @@ local function CreateWidget()
         return ok,err
     end
     instance.listFreezeButton.onClick=function()
-        -- 页面与悬浮窗共用 Feature 会话快照；冻结名单后仍能设置四个追踪通道，HUD 继续实时更新。
+        -- 与页面共用会话名单：新增继续加入，失效不移除；追踪选择和 HUD 仍实时更新。
         local ok,err=Feature.Commands:SetManagementListFrozen(not Feature:GetManagementListFreezeState().active)
         if ok then instance:Refresh()else instance.surface:SetStatus(tostring(err),"warn")end
         return ok,err
@@ -137,14 +137,14 @@ local function CreateWidget()
             self.table:SetViewState(#rows>0 and "ready" or "empty",{title="此视图暂无状态",detail="当前：观察状态；留存：保留短状态；已追踪：管理收藏。"})
         end
         local capture=Feature:GetManagementFreezeState()
-        local listFrozen=Feature:GetManagementListFreezeState().active
+        local listFreeze=Feature:GetManagementListFreezeState();local listFrozen=listFreeze.active
         self.listFreezeButton:SetVisible(self.view=="live");self.listFreezeButton:SetText(listFrozen and "解冻列表" or "冻结列表")
         if type(self.listFreezeButton.SetSelected)=="function" then self.listFreezeButton:SetSelected(listFrozen)end
         self.captureButton:SetText(capture.active and "停止并清空" or "开始记录")
         self:RefreshSelectedControls()
         local selected=self.selectedRow and (" · 所选 "..tostring(self.selectedRow.name or self.selectedRow.id).."："..tostring(self.selectedTrackingText or "不可设置")) or ""
         self.surface:SetStatus((self.view=="tracked" and "已追踪 " or self.view=="frozen" and "留存 " or "当前 ")..#rows
-            ..selected..(self.view=="live" and listFrozen and " · 已冻结" or "")..(capture.active and " · 持续留存中" or "")..(capture.overflow and " · 留存已达上限" or ""),capture.overflow and "warn" or "accent")
+            ..selected..(self.view=="live" and listFrozen and " · 新增继续，失效保留" or "")..(capture.active and " · 持续留存中" or "")..((capture.overflow or self.view=="live" and listFreeze.overflow) and " · 留存已达上限" or ""),(capture.overflow or self.view=="live" and listFreeze.overflow) and "warn" or "accent")
         return true
     end
     function instance:Subscribe()

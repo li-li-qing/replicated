@@ -159,6 +159,7 @@ RELEASE_READINESS_TESTS = [
     "tools/rs_status_tracking_grid_tests.lua",
     "tools/rs_unified_cooldown_tests.lua",
     "tools/rs_batch_import_authority_tests.lua",
+    "tools/rs_draft_session_v2_tests.lua", # 无焦点getter/无OnClick的Native缓冲交接，普通标签/外owner保留严格门禁。
     "tools/rs_signed_readback_tests.lua",
     "tools/rs_transport4_dual_loss_recovery_tests.lua",
     "tools/rs_cooldown_auto_discovery_tests.lua",
@@ -173,6 +174,10 @@ RELEASE_READINESS_TESTS = [
     "tools/rs_hud_all_preview_tests.lua",
     "tools/rs_buff_hud_colors_tests.lua",  # 任意RGB、双HUD独立、交换、校准取消与失败回滚。
     "tools/rs_hud_layout_presets_tests.lua",  # 布局预设、横纵排列、共享网格和独立存档。
+    "tools/rs_fixed_status_hud_tests.lua",  # 固定/悬浮双布局、屏幕锚点、校准草稿、分享与失败补偿。
+    "tools/rs_component_placement_tests.lua",  # 逐组件固定，存档/校准/分享与独立属性。
+    "tools/rs_component_placement_page_tests.lua",  # 实际页面选择组件与模式，不带动同组组件。
+    "tools/rs_component_placement_renderer_tests.lua",  # 真实渲染分层、动态距离、独立锚点与生命周期。
     "tools/rs_gear_score_format_tests.lua",
     "tools/rs_hud_default_template_tests.lua",
     "tools/rs_pvp_hud_tests.lua",
@@ -354,6 +359,8 @@ def main() -> int:
         required = ["tools/rs_foundation_lifecycle_tests.lua"]
         if not require_test_files(required): return 2
         source = prelude + lua_dofiles(required)
+    elif "--fixed-hud" in sys.argv:
+        source = prelude + 'dofile("tools/rs_fixed_status_hud_tests.lua"); dofile("tools/rs_component_placement_tests.lua"); dofile("tools/rs_component_placement_page_tests.lua"); dofile("tools/rs_component_placement_renderer_tests.lua")'
     elif "--hud-defaults" in sys.argv:
         # 维护：用户完整11行模板、真实Store/校准/复制往返及旧schema4/5/6指纹；只替换Native/磁盘。
         # 此独立入口不进入toc.g；新默认不等同强制迁移已有布局，也不等同RU实机验收。

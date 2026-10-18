@@ -6,9 +6,12 @@
 -- 共享模块诊断悬浮窗契约：验证单实例、显式采集、固定分页和 CopyBox 生命周期。
 ------------------------------------------------------------------------
 local passed,failed=0,0
-local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS module-diag-window '..name)else failed=failed+1;print('FAIL module-diag-window '..name..': '..tostring(err))end end
+local forbiddenFocusReads=0
+local function Test(name,fn)local ok,err=pcall(fn);if ok and forbiddenFocusReads>0 then ok=false;err='not_allowed focus getter was invoked'end;if ok then passed=passed+1;print('PASS module-diag-window '..name)else failed=failed+1;print('FAIL module-diag-window '..name..': '..tostring(err))end end
 local function Boot(options)
     options=options or {}
+    GetFocusedWidgetId=function()forbiddenFocusReads=forbiddenFocusReads+1;error('not_allowed focus getter')end
+    X2Util={GetFocusedWidgetId=GetFocusedWidgetId}
     ReplicatedSuite={Generation=1,RSUI={},UI={},UIV3={},FeatureRegistry={features={
         feature_a={id='feature_a',name='模块A',route='combat.a'},feature_b={id='feature_b',name='模块B',route='life.b'}}}}
     local S=ReplicatedSuite
@@ -73,7 +76,11 @@ local function Boot(options)
     end
     if options.realCopyBox then
         -- 使用生产 CopyBox 和 Window，仅原生编辑对象为模型；原有全局报告测试同样模拟获取焦点会清空缓冲区的边界，模块诊断也必须遵守。
-        GetFocusedWidgetId=function()return calls.focusId end
+        S.UI.IsInputWidgetFocused=function(_,widget)
+            -- 仅已知选择排序单元fixture注入焦点结果；默认RU查询仍not_allowed。
+            if options.knownFocusFixture then return calls.focusId==widget.rsNativePhysicalId,nil end
+            return false,'get_focus_not_allowed'
+        end
         S.UI.CreateMultiEditBox=function(_,parent,id)
             local edit={text='',events={},rsNativePhysicalId='native_'..id,rsNativeGeneration=1}
             function edit:SetText(v)self.text=v;self.selected=false;calls.setText=calls.setText+1 end
@@ -86,7 +93,7 @@ local function Boot(options)
                 if options.rejectFocus then return false end
                 return true
             end
-            function edit:ClearFocus()calls.focusId=nil end
+            function edit:ClearFocus()calls.nativeClear=(calls.nativeClear or 0)+1;calls.focusId=nil end
             calls.edit=edit;return edit
         end
         S.UI.SafeHandler=function(_,edit,event,fn)edit.events[event]=fn;return true end
@@ -180,7 +187,7 @@ Test('activation failure does not pretend copy-ready or lose report navigation',
     assert(W:ShowPage(2) and c.capture==1)
 end)
 Test('real copy box commits text after focus promotion not before it',function()
-    local S,W,c=Boot({realCopyBox=true});assert(W:Open('feature_a'));assert(W:Generate())
+    local S,W,c=Boot({realCopyBox=true,knownFocusFixture=true});assert(W:Open('feature_a'));assert(W:Generate())
     assert(c.edit.text=='feature_a:PAGE1','focus cleared the already-verified report buffer')
     assert(W.copyPageValid==true and W.copyBox:GetDiagnostics().actualBytes==#c.edit.text)
     c.edit.selected=true;c.edit.events.OnClick()
@@ -190,6 +197,16 @@ Test('real next-page focus promotion cannot erase the frozen page',function()
     local S,W,c=Boot({realCopyBox=true});assert(W:Open('feature_a'));assert(W:Generate())
     c.focusId='next_button';assert(W:ShowPage(2))
     assert(c.edit.text=='feature_a:PAGE2' and c.capture==1,'page focus erased data or caused recapture')
+    assert(W.copyBox:GetDiagnostics().focusKnown==false,'not_allowed query invented known focus')
+end)
+Test('unknown focus lifecycle disarms copy keyboard without clearing own or external focus',function()
+    for _,external in ipairs({false,true})do
+        local S,W,c=Boot({realCopyBox=true});assert(W:Open('feature_a'));assert(W:Generate())
+        if external then c.focusId='native_chat'end
+        local id=c.focusId;assert(W:Close())
+        assert(c.edit.keyboard==false and c.focusId==id and (c.nativeClear or 0)==0)
+        assert(W.copyBox:GetDiagnostics().focusKnown==false)
+    end
 end)
 Test('rejected focus still publishes complete text without false activation success',function()
     local S,W,c=Boot({realCopyBox=true,rejectFocus=true});assert(W:Open('feature_a'));assert(W:Generate())

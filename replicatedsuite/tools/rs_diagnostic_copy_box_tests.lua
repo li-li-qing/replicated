@@ -6,13 +6,22 @@
 -- 诊断专用复制框契约：验证它不复用普通 Draft/Input LostFocus 生命周期；离线模型不声称 RU 剪贴板 API 存在。
 ------------------------------------------------------------------------
 local passed,failed=0,0
-local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS diagnostic-copy-box '..name)else failed=failed+1;print('FAIL diagnostic-copy-box '..name..': '..tostring(err))end end
-local function Boot()
+local forbiddenFocusReads=0
+local function Test(name,fn)local ok,err=pcall(fn);if ok and forbiddenFocusReads>0 then ok=false;err='not_allowed focus getter was invoked'end;if ok then passed=passed+1;print('PASS diagnostic-copy-box '..name)else failed=failed+1;print('FAIL diagnostic-copy-box '..name..': '..tostring(err))end end
+local function Boot(options)
+    options=options or {}
     local calls={text=0,keyboard=0,focus=0,clear=0,readonly=0,bindOrdinary=0,extent=0,anchor=0,schedule=0}
     local focusId=nil
-    GetFocusedWidgetId=function()return focusId end
+    GetFocusedWidgetId=function()forbiddenFocusReads=forbiddenFocusReads+1;error('not_allowed focus getter')end
+    X2Util={GetFocusedWidgetId=GetFocusedWidgetId}
     ReplicatedSuite={Generation=5,NowMs=function()return 100 end,UI={}}
     local S=ReplicatedSuite;local UI=S.UI
+    UI.IsInputWidgetFocused=function(_,widget)
+        -- 已知焦点只在排序单元fixture注入；默认真实RU契约始终未知/not_allowed。
+        if options.knownFocusFixture then return focusId==widget.rsNativePhysicalId or focusId==widget.rsNativeLogicalId,nil end
+        return false,'get_focus_not_allowed'
+    end
+    calls.SetFocusIdentityForTest=function(value)focusId=value end
     S.Scheduler={AddHighFrequencyOneShot=function()calls.schedule=calls.schedule+1;return true end}
     UI.BindDeferredInputActivation=function()calls.bindOrdinary=calls.bindOrdinary+1;return true end
     UI.SafeHandler=function(_,widget,event,fn)widget.handlers[event]=fn;return true end
@@ -58,12 +67,12 @@ Test('same page text and same geometry are diffed',function()
     local S,UI,box,c=Boot();assert(box:SetPageText('PAGE'));local writes=c.text;assert(box:SetPageText('PAGE'));assert(c.text==writes)
     assert(box:Layout(4,4,600,320));local extent,anchor=c.extent,c.anchor;assert(box:Layout(4,4,600,320));assert(c.extent==extent and c.anchor==anchor)
 end)
-Test('deactivate is the lifecycle boundary that releases keyboard and own focus',function()
+Test('deactivate releases keyboard without clearing unknown Native focus',function()
     local S,UI,box,c,focus=Boot();box:SetPageText('PAGE');c.edit.handlers.OnClick();c.edit:SelectForTest();assert(box:Deactivate('window_close'))
-    assert(not c.edit.keyboard and focus()==nil and c.clear==1);assert(c.edit.text=='PAGE','deactivate must not erase frozen report')
+    assert(not c.edit.keyboard and focus()==c.edit.rsNativePhysicalId and c.clear==0);assert(c.edit.text=='PAGE','deactivate must not erase frozen report')
 end)
 Test('external focus is never cleared on deactivate',function()
-    local S,UI,box,c=Boot();c.edit.handlers.OnClick();GetFocusedWidgetId=function()return 'native-chat' end;local clear=c.clear;assert(box:Deactivate('module_switch'));assert(c.clear==clear and not c.edit.keyboard)
+    local S,UI,box,c,focus=Boot();c.edit.handlers.OnClick();c.SetFocusIdentityForTest('native-chat');local clear=c.clear;assert(box:Deactivate('module_switch'));assert(c.clear==clear and not c.edit.keyboard and focus()=='native-chat')
 end)
 Test('telemetry never includes report body',function()
     local S,UI,box,c=Boot();box:SetPageText('SECRET_REPORT_BODY');c.edit.handlers.OnClick();c.edit.handlers.OnLostFocus();local d=box:GetDiagnostics()
@@ -71,41 +80,41 @@ Test('telemetry never includes report body',function()
 end)
 -- 原生边界在 SetFocus 时主动收起选区，与普通报告宿主一致；验证逻辑不依赖重复获取焦点恰好无害。
 Test('repeat click does not replay focus or keyboard while selection belongs to this box',function()
-    local S,UI,box,c=Boot();box:SetPageText('PERSIST_SELECTION');box:Activate('page_ready');c.edit:SelectForTest()
+    local S,UI,box,c=Boot({knownFocusFixture=true});box:SetPageText('PERSIST_SELECTION');box:Activate('page_ready');c.edit:SelectForTest()
     local f,k=c.focus,c.keyboard;assert(c.edit.handlers.OnClick())
     assert(c.edit:CopyForTest()=='PERSIST_SELECTION','repeat OnClick destroyed selected report')
     assert(c.focus==f and c.keyboard==k,'repeat activation must perform zero Native focus/keyboard writes')
 end)
 Test('many duplicate activation notifications do not collapse a selected page',function()
-    local S,UI,box,c=Boot();box:SetPageText('ALL_BYTES');box:Activate();c.edit:SelectForTest()
+    local S,UI,box,c=Boot({knownFocusFixture=true});box:SetPageText('ALL_BYTES');box:Activate();c.edit:SelectForTest()
     for i=1,20 do assert(box:Activate('click'));assert(c.edit.handlers.OnLostFocus()) end
     assert(c.edit:CopyForTest()=='ALL_BYTES','selection collapsed by duplicate activation')
     assert(c.schedule==0 and c.text==1)
 end)
 Test('focus published before keyboard promotion still requires a new SetFocus',function()
-    local S,UI,box,c=Boot();GetFocusedWidgetId=function()return c.edit.rsNativePhysicalId end
+    local S,UI,box,c=Boot({knownFocusFixture=true});c.SetFocusIdentityForTest(c.edit.rsNativePhysicalId)
     c.edit.rsUiKeyboardArmed=false;local f=c.focus
     assert(box:Activate());assert(c.focus==f+1 and c.edit.keyboard,'first promotion skipped edit-mode focus')
 end)
 Test('known logical focus identity preserves selection without replay',function()
-    local S,UI,box,c=Boot();c.edit.rsNativeLogicalId='logical_diag';box:SetPageText('LOGICAL');box:Activate();c.edit:SelectForTest()
-    GetFocusedWidgetId=function()return 'logical_diag' end
+    local S,UI,box,c=Boot({knownFocusFixture=true});c.edit.rsNativeLogicalId='logical_diag';box:SetPageText('LOGICAL');box:Activate();c.edit:SelectForTest()
+    c.SetFocusIdentityForTest('logical_diag')
     local f,k=c.focus,c.keyboard;assert(box:Activate());assert(c.focus==f and c.keyboard==k,'logical focus was not recognised')
 end)
 Test('external focus requires explicit reacquisition but not another keyboard toggle',function()
-    local S,UI,box,c=Boot();box:Activate();GetFocusedWidgetId=function()return 'native_chat' end
+    local S,UI,box,c=Boot();box:Activate();c.SetFocusIdentityForTest('native_chat')
     local f,k=c.focus,c.keyboard;assert(box:Activate('click'))
     assert(c.focus==f+1 and c.keyboard==k,'reacquire must not replay keyboard true')
 end)
-Test('focus query failure never invents an already focused fast path',function()
-    local S,UI,box,c=Boot();box:Activate();GetFocusedWidgetId=function()error('focus unavailable')end
+Test('forbidden focus getter is never called and cannot invent a focused fast path',function()
+    local S,UI,box,c=Boot();box:Activate()
     local f=c.focus;assert(box:Activate());assert(c.focus==f+1)
     assert(box:GetDiagnostics().focusKnown==false,'unknown focus must be explicit')
 end)
 Test('diagnostics distinguishes selected-buffer readiness from clipboard success',function()
     local S,UI,box,c=Boot();box:SetPageText('NO_BODY_EXPORT');box:Activate();box:Activate()
-    local d=box:GetDiagnostics();assert(d.patch=='diagnostic-copy-selection-1' and d.focusKnown==true and d.focused==true)
-    assert(d.reusedFocus==1 and d.text==nil and d.clipboardVerified==false,'must not claim OS clipboard verification')
+    local d=box:GetDiagnostics();assert(d.patch=='diagnostic-copy-selection-1' and d.focusKnown==false and d.focused==false)
+    assert(d.reusedFocus==0 and d.text==nil and d.clipboardVerified==false,'must not invent known focus or OS clipboard verification')
 end)
 Test('retired copy widget cannot rearm from a delayed click',function()
     local S,UI,box,c=Boot();box:Activate();box:Destroy();local f,k=c.focus,c.keyboard

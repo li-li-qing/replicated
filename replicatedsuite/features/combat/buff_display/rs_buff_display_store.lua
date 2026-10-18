@@ -2511,6 +2511,12 @@ end
 -- PersistHudCalibrationSnapshot 才进入 Store MutateStore durable transaction；取消编辑不会
 -- 触碰 F.State。player 使用旧字段 Authority，target 使用 targetLayout Authority。
 -- 兼容边界：此接口只负责视觉 profile，不复制 headShowAll/追踪 ID/敌我过滤等业务规则。
+-- 独立固定布局复用当前几何限幅，不改历史 Store 的 canonical/默认值。
+-- 调用者仅取得副本；排列扩展仍由其所属小 Store/固定 profile 叠加。
+function F:NormalizeHudVisualProfile(value, fallback)
+    return NormalizeHudProfile(value, fallback)
+end
+
 function F:GetScopeLayoutSettings(scope)
     local settings = self.State.settings
     local player = HudProfileFromSettings(settings)
@@ -3151,7 +3157,7 @@ function F:SetTrackedId(id, category, enabled)
     return ok, err
 end
 
-function F:ClearTrackedIds(category, scope)
+function F:ClearTrackedIds(category, scope, includeCooldowns)
     local ok, err = self:MutateTrackingStore(function()
         local scopes = (scope == "player" or scope == "target") and { scope } or TRACKING_SCOPES
         for _, scopeKey in ipairs(scopes) do
@@ -3159,6 +3165,8 @@ function F:ClearTrackedIds(category, scope)
             if category == "buff" or category == "debuff" or category == "auto" then scoped[category] = {}
             else for _, bucket in ipairs(TRACKING_CATEGORIES) do scoped[bucket] = {} end end
         end
+        -- 全部取消使用同一 tracking 事务提交状态和两种旧 CD 路由；保留分类、库元数据和显示配置。
+        if includeCooldowns == true then self.State.settings.trackedCooldowns = { skill = {}, mate = {} } end
         return true
     end, "tracked_clear")
     if ok ~= true then return false, err or "清空追踪状态保存失败" end

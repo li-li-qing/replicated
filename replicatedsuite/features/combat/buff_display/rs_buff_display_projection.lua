@@ -200,9 +200,9 @@ function F.ProjectDynamicPlates(laneData)
     local distance = tonumber(laneData.distance)
     if distance ~= nil then
         if distance < 1000 then
-            out.distance = { value = string.format("%.1f", distance) .. "m" }
+            out.distance = { value = string.format("%.1f", distance) .. "m", meters=distance }
         else
-            out.distance = { value = string.format("%.2f", distance / 1000) .. "km" }
+            out.distance = { value = string.format("%.2f", distance / 1000) .. "km", meters=distance }
         end
     end
     if type(laneData.cast) == "table" and laneData.cast.casting == true then
@@ -225,6 +225,7 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
     local out = { components = components, buffs = {}, debuffs = {}, cooldowns = {} }
     local dynamic=F.ProjectDynamicPlates(laneData)
     out.distance,out.cast=dynamic.distance,dynamic.cast
+    if out.distance==nil and type(settings.placement)=='table'and settings.placement.mode=='fixed'then out.distance={value='--m',unknown=true}end
     out.buffs = BoundedTracked(laneData.buffRows, settings, "buff", trackedIndex, scope)
     out.debuffs = BoundedTracked(laneData.debuffRows, settings, "debuff", trackedIndex, scope)
     -- cooldownRows 已由 CooldownObservationV3

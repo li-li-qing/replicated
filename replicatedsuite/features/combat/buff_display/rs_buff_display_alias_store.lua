@@ -216,13 +216,13 @@ end
 
 function F:ResolveTargetAlias(name)
     name = CleanName(name)
-    if name == "" or self.TargetAliasState.enabled == false then return nil end
+    if name == "" or self:GetTargetAliasHudConfigProjection().enabled == false then return nil end
     local alias = self.TargetAliasIndex[name]
     return type(alias) == "string" and alias ~= "" and alias or nil
 end
 
 function F:IsTargetAliasHeadEnabled()
-    return self.TargetAliasState.enabled ~= false and #(self.TargetAliasState.entries or {}) > 0
+    return self:GetTargetAliasHudConfigProjection().enabled ~= false and #(self.TargetAliasState.entries or {}) > 0
 end
 
 local function Commit(mutator, reason)

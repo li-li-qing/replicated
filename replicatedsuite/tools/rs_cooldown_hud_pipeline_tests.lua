@@ -141,5 +141,14 @@ Test('CD alone starts its real projection lane and stopping releases its own dem
     assert(h.P:Stop());assert(h.F:ReleaseConsumer('test:observer'))
     assert(not h.C.taskActive and not h.C.probeTaskActive and not h.F.cooldownHeld,'last observer retained CD tasks')
 end)
+Test('clear all removes active own and mate cooldowns from the HUD while keeping discovery enabled',function()
+    local h=Boot();h.remaining[37493]=12000;h.mateRemaining[37172]={[1]=17000}
+    assert(h.F:SetTrackedCooldownId(37493,'skill',true));assert(h.F:SetTrackedCooldownId(37172,'mate',true))
+    h:Advance();assert(#h:VisibleCooldowns()==2,'seeded active cooldowns never reached the HUD')
+    local writes,scans=h.writes,h.scans;assert(h.F.Commands:ClearAllTracking())
+    assert(#h.F.laneData.player.cooldownRows==0 and h.writes==writes+4 and h.scans==scans,'clear did not update the live CD lane or rescanned Aura')
+    h:Advance();assert(#h:VisibleCooldowns()==0,'old service facts reappeared as tracked HUD cooldowns')
+    assert(h.F:GetSettingsProjection().components.cooldowns.enabled==true,'clear disabled the cooldown display policy')
+end)
 print(string.format('cooldown HUD pipeline tests: %d passed, %d failed',passed,failed))
 if failed>0 then os.exit(1)end

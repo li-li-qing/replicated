@@ -458,9 +458,16 @@ Test('cancel and rejected input restore committed text without false-authority v
  local h=RealDiffHost();local c=h.widgets.v3_gear_create_edit;assert(c:BeginEditing());c.root.text='取消草稿';assert(c:CancelEditing())
  assert(c:GetDraftValue()=='' and h.UI:GetAuthoritySnapshot().violations==0)
 end)
-Test('inactive external edits remain strict-authority violations',function()
- local h=RealDiffHost();local c=h.widgets.v3_gear_create_edit;c.root.text='外部篡改';h.UI:SetText(c.root,'',c.owner)
+Test('unmarked inactive input text remains a strict-authority violation',function()
+ -- RU焦点getter不可用；keyboard未arm不能证明受管EditBox未被用户编辑。
+ -- 严格审计边界是未登记编辑缓冲，而非未收到OnClick的正常RSUI输入。
+ local h=RealDiffHost();local c=h.widgets.v3_gear_create_edit;c.root.rsUiDraftInput=false;c.root.text='外部篡改';h.UI:SetText(c.root,'',c.owner)
  assert(h.UI:GetAuthoritySnapshot().violations==1,'fix must not globally suppress authority checks')
+end)
+Test('managed input without keyboard activation retains its Native draft during ambient Render',function()
+ local h=RealDiffHost();local c=h.widgets.v3_gear_create_edit;c.root.text='合法未激活草稿';c:Render(nil,'binding_refresh')
+ assert(c:HasDraftSession() and c.root.text=='合法未激活草稿' and c:GetValue()=='')
+ assert(h.UI:GetAuthoritySnapshot().violations==0 and c.root.rsUiKeyboardArmed~=true)
 end)
 Test('foreign owner cannot adopt a keyboard draft',function()
  local h=RealDiffHost();local c=h.widgets.v3_gear_create_edit;assert(c:BeginEditing());c.root.text='草稿'

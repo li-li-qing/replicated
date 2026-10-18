@@ -469,11 +469,9 @@ function UI:BindDeferredInputActivation(widget, owner, label, options)
 end
 
 local function ReadFocusedWidgetId()
-    if type(GetFocusedWidgetId) ~= "function" then return nil, "get_focus_unavailable" end
-    local ok, value = pcall(GetFocusedWidgetId)
-    if ok ~= true then return nil, "get_focus_failed" end
-    if value == nil or tostring(value) == "" then return nil, nil end
-    return tostring(value), nil
+    -- RU清单将X2Util:GetFocusedWidgetId列为not allowed；裸全局也没有允许证据。
+    -- 不调用/探测此API。焦点诊断保持未知，编辑草稿由受控Native缓冲交接。
+    return nil, "get_focus_not_allowed"
 end
 
 local function ResolveTrackedFocusedInput(focusedId)
@@ -495,6 +493,16 @@ function UI:IsInputWidgetFocused(widget)
     if focusErr ~= nil then return false, focusErr end
     if focusedId == nil then return false, nil end
     return ResolveTrackedFocusedInput(focusedId) == widget, nil
+end
+
+-- 只解析当前generation已收养输入的精确Native焦点；供草稿协调器在刷新边界接纳，
+-- 不扫描窗口、不猜焦点字符串，也不抢回Native焦点。
+function UI:GetFocusedInputWidget()
+    local focusedId,focusErr=ReadFocusedWidgetId()
+    if focusErr~=nil then return nil,focusErr end
+    local widget=ResolveTrackedFocusedInput(focusedId)
+    if widget==nil or widget.rsUiInputLifecycleRetired==true or WidgetUsable(widget)~=true then return nil end
+    return widget
 end
 
 -- 维护（report-selection-1）：只读有界状态供打印使用，禁止复制整个Native对象/正文，
@@ -562,6 +570,8 @@ end
 function UI:RetireInputWidget(widget, owner, reason)
     if not IsInputTarget(widget) then return true end
     if widget.rsUiInputLifecycleRetired == true then return true end
+    local drafts=S.RSUI and S.RSUI.InputDraftCoordinator
+    if type(drafts)=='table' and type(drafts.RetireNative)=='function' then drafts:RetireNative(widget) end
     self:ReleaseFocusWithin(widget, owner, reason or "input_retire")
     local failures = {}
     local disarmed, _, disarmErr = self:DisarmInputWidget(widget, owner, reason or "input_retire")
@@ -854,13 +864,43 @@ function UI:GetAuthoritySnapshot()
 end
 
 
--- 维护（gear draft authority）：Native键入会改变text，旧Diff缓存仍是空串；成功新建清空
--- 输入时被误报外部写入。只在已明确arm的键盘输入、相同owner、未退役的生命周期内
--- 读取并接纳草稿text；不提交Binding/Store，不修改可见性/几何，不清除历史违规计数。
--- 非输入控件、未激活编辑框、其他owner仍走原严格校验。无OnTextChanged假设/轮询。
+local function EditableDraftUsable(widget,owner,explicitDiscard)
+    if not IsInputTarget(widget) or widget.rsUiDraftInput~=true or WidgetUsable(widget)~=true
+        or widget.rsUiInputLifecycleRetired==true then return false end
+    local claim=authorityClaims[widget]
+    if NormalizeOwner(owner)~=OwnerOf(widget) or (claim and NormalizeOwner(owner)~=tostring(claim.owner)) then return false end
+    if explicitDiscard==true then return true end
+    local node,guard=widget,0
+    while node~=nil and node~=UIParent and guard<64 do
+        local row=stateCache[node]
+        if row and (row.visible==false or row.enabled==false) then return false end
+        node=node.rsUiParent;guard=guard+1
+    end
+    return node==nil or node==UIParent
+end
+
+function UI:IsEditableInputBufferUsable(widget,owner)
+    return EditableDraftUsable(widget,owner)
+end
+
+-- 明确取消/离页可以在Shell已经隐藏后发生：本输入owner已决定丢弃缓冲，
+-- 先交接当前Native文字再恢复Authority，避免把合法取消报成外部违规。
+-- 只给明确取消入口使用；环境观察仍完整拒绝隐藏/禁用输入，标签无法进入此通道。
+function UI:PrepareInputDraftDiscard(widget,owner)
+    if not EditableDraftUsable(widget,owner,true) then return false end
+    local text,known=TryNativeText(widget)
+    if not known then return false end
+    GetState(widget).text=text
+    return true
+end
+
+-- Native输入文字交回Diff缓存；RSUI编辑缓冲使用与观察入口相同的可用性/owner检查，
+-- 其它输入仍须明确arm。普通标签/外owner保留严格审计，不清除历史违规计数。
 function UI:AdoptInputDraftText(widget,owner)
     if not IsInputTarget(widget) or widget.rsUiInputLifecycleRetired==true
-        or widget.rsUiKeyboardArmed~=true or lifecycle.armedInputs[widget]~=true then return false end
+        or WidgetUsable(widget)~=true then return false end
+    if widget.rsUiDraftInput~=true and (widget.rsUiKeyboardArmed~=true or lifecycle.armedInputs[widget]~=true) then return false end
+    if widget.rsUiDraftInput==true and not EditableDraftUsable(widget,owner) then return false end
     local claim=authorityClaims[widget]
     if claim and NormalizeOwner(owner)~=tostring(claim.owner) then return false end
     if not claim and NormalizeOwner(owner)~=OwnerOf(widget) then return false end
@@ -868,6 +908,17 @@ function UI:AdoptInputDraftText(widget,owner)
     if not known then return false end
     GetState(widget).text=text
     return true
+end
+
+-- 可编辑Native正文天然可由用户修改，不能拿标签Diff的旧缓存覆盖它。
+-- 仅RSUI明确登记的输入、同owner、本代际且可见启用时接纳差异；不推断焦点、
+-- 不启键盘、不写Binding。baseline来自组件最后一次渲染/捕获，首次Render不接管。
+function UI:AdoptEditableInputDraftText(widget,owner,baseline)
+    if baseline==nil or not EditableDraftUsable(widget,owner) then return false end
+    local text,known=TryNativeText(widget)
+    if not known or text==tostring(baseline) then return false end
+    GetState(widget).text=text
+    return true,text
 end
 
 function UI:SetText(widget, value, owner)

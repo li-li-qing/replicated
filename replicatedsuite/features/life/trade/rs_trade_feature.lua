@@ -221,6 +221,7 @@ local function TradeZoneName(id)
 end
 
 -- 路线收藏仅为本地持久偏好；路线真实有效性与实时特产比价以 X2Store 为唯一权威。列表有界且仅存数值路线 ID，名称本地化变化不能破坏身份。
+local TRADE_FAVORITE_LIMIT = 64 -- 2026-10-18：主页面/悬浮窗、添加及回读共用上限，避免扩容后重载仍截回旧的 12 条。
 function Trade:NormalizeFavorites(value)
     local result, seen = {}, {}
     for _, favorite in ipairs(type(value) == "table" and value or {}) do
@@ -231,7 +232,7 @@ function Trade:NormalizeFavorites(value)
             if seen[key] ~= true then
                 seen[key] = true
                 result[#result + 1] = { fromZone = from, toZone = to }
-                if #result >= 12 then break end
+                if #result >= TRADE_FAVORITE_LIMIT then break end
             end
         end
     end
@@ -2546,7 +2547,7 @@ local function NormalizeTradeState(value)
     value = type(value) == "table" and value or {}
     local favorites = {}
     for _, raw in ipairs(type(value.favorites) == "table" and value.favorites or {}) do
-        if #favorites >= 64 then break end
+        if #favorites >= TRADE_FAVORITE_LIMIT then break end
         if type(raw) == "table" then favorites[#favorites + 1] = Copy(raw) end
     end
     return {
@@ -2591,6 +2592,7 @@ local function RebuildTradeWindowDecimalCanonical(decoded, stampedFingerprint, c
     return candidate, domain
 end
 
+-- 64 条路线本身已超过共享的 320 节点预算；只扩 Trade 的节点预算，保留 schema1/canonical 与其它生活 Store 契约。
 RegisterStore(Trade.storeId, "v3.life.trade", function() return NormalizeTradeState(nil) end,
     function() return Copy(Trade.State) end,
     function(value)
@@ -2602,7 +2604,7 @@ RegisterStore(Trade.storeId, "v3.life.trade", function() return NormalizeTradeSt
         Trade.State.commerceMode = TRADE_COMMERCE_MODES[value.commerceMode] and value.commerceMode or "observe"
         Trade.State.widgetVisible = value.widgetVisible == true
         Trade.State.widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil
-    end, NormalizeTradeState, nil, RebuildTradeWindowDecimalCanonical) -- schema1 不变，先精确验旧章才应用恢复。
+    end, NormalizeTradeState, { maxDepth = 6, maxNodes = 512, maxStringBytes = 8192, maxEntriesPerTable = 160 }, RebuildTradeWindowDecimalCanonical) -- schema1 不变，先精确验旧章才应用恢复。
 
 -- 新显示/刷新策略使用独立 Store，避免改变历史
 -- v3.life.trade 的 schema1 canonical。trackedProducts 只保存 itemType，禁止保存本地化货物名。
@@ -3063,7 +3065,7 @@ function Trade:ToggleCurrentFavorite()
         end
     end
     if not removed then
-        if #nextFavorites >= 12 then return false, "收藏路线最多保存 12 条，请先取消一条旧收藏" end
+        if #nextFavorites >= TRADE_FAVORITE_LIMIT then return false, "收藏路线最多保存 " .. tostring(TRADE_FAVORITE_LIMIT) .. " 条，请先取消一条旧收藏" end
         nextFavorites[#nextFavorites + 1] = { fromZone = math.floor(Number(self.State.fromZone)), toZone = math.floor(Number(self.State.toZone)) }
     end
     local persisted, persistErr = PersistLifeMutation(self, "trade_favorite_toggle", function(state) state.favorites = self:NormalizeFavorites(nextFavorites); return true end)

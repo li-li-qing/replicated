@@ -12,14 +12,18 @@
 -- 模拟同尺寸布局时 Native getter 抖动、迟到失焦通知；无自造键盘事件/API。
 ------------------------------------------------------------------------
 local passed,failed=0,0
+local forbiddenFocusReads=0
 local function Test(name,run)
     local ok,err=pcall(run)
+    if ok and forbiddenFocusReads>0 then ok=false;err='not_allowed focus getter was invoked'end
     if ok then passed=passed+1;print('PASS report-selection '..name)
     else failed=failed+1;print('FAIL report-selection '..name..': '..tostring(err)) end
 end
-local function Boot()
+local function Boot(options)
+    options=options or {}
     local calls={now=0,reads=0,writes=0,checks=0,text=0,focus=0,clear=0,extent=0,anchor=0,cursor=0,keyboard=0}
-    UIParent={};GetFocusedWidgetId=function()return calls.focusId end
+    UIParent={};GetFocusedWidgetId=function()forbiddenFocusReads=forbiddenFocusReads+1;error('not_allowed focus getter')end
+    X2Util={GetFocusedWidgetId=GetFocusedWidgetId}
     ADDON={ChatLog=function()return true end};X2Chat=nil
     ReplicatedSuite={Generation=1,Features={},Services={},RSUI={},NowMs=function()return calls.now end,
         SafeTraceback=function(e)return tostring(e)end,SafeChat=function()return true end,
@@ -35,6 +39,10 @@ local function Boot()
         'core/rs_diagnostics.lua','core/rs_scheduler.lua','core/rs_report_copy_transport.lua','core/rs_self_check_report.lua',
         'ui/rs_ui_native_primitives.lua','ui/rs_ui_framework.lua'})do dofile(f)end
     local UI=S.UI;local binder=UI.BindDeferredInputActivation
+    -- 已知焦点排序仅为独立单元fixture，绝不借伪Native getter绕过RU not_allowed。
+    if options.knownFocusFixture then
+        UI.IsInputWidgetFocused=function(_,widget)return calls.focusId==widget.rsNativePhysicalId,nil end
+    end
     local h=dofile('tools/rs_status_ui_test_host.lua')(S);UI.BindDeferredInputActivation=binder
     UI.SetEditBoxFocusVisual=function()return true end
     S.FoundationGate={Run=function()calls.checks=calls.checks+1;return {status='PASS',checks={}}end}
@@ -107,15 +115,15 @@ Test('changed viewport still resizes and failed size transaction is retried',fun
     c.failExtent=false;host:Layout(0,0,900,450);assert(h.edit.width==892 and h.edit.height==442)
 end)
 Test('late lost-focus notification cannot disable the still-owned copy input',function()
-    local S,UI,page,h,c=Boot();h.edit:SelectForTest();local before=h.edit.text
+    local S,UI,page,h,c=Boot({knownFocusFixture=true});h.edit:SelectForTest();local before=h.edit.text
     local f,k=c.focus,c.keyboard;c.now=2100;h.edit.handlers.OnLostFocus()
     assert(h.edit:CopyForTest()==before,'still-focused report was disarmed')
     assert(c.focus==f and c.keyboard==k,'guard rewrote focus or keyboard instead of preserving it')
 end)
--- Native失焦通知与GetFocusedWidgetId更新可有两种次序；必须用一次性复核区分，
--- 禁止长期保活输入、复位SetFocus或挂周期轮询。这里驱动真实Scheduler任务。
+-- 单元fixture明确注入已知焦点两种次序；生产查询不允许时不会进入复核分支。
+-- 禁止长期保活输入、复位SetFocus或挂周期轮询。这里仍驱动真实Scheduler任务。
 Test('early lost-focus notification disarms after native focus changes without a second event',function()
-    local S,UI,page,h,c=Boot();local f,clear=c.focus,c.clear
+    local S,UI,page,h,c=Boot({knownFocusFixture=true});local f,clear=c.focus,c.clear
     h.edit.handlers.OnLostFocus()
     local task=h.edit.rsUiCopyFocusTask
     assert(task and S.Scheduler.tasks[task],'ambiguous focus must schedule one recheck')
@@ -124,7 +132,7 @@ Test('early lost-focus notification disarms after native focus changes without a
     assert(not S.Scheduler.tasks[task] and not h.edit.rsUiCopyFocusTask)
 end)
 Test('bounded focus recheck preserves late notifications and coalesces duplicate events',function()
-    local S,UI,page,h,c=Boot();h.edit:SelectForTest();local body=h.edit.text
+    local S,UI,page,h,c=Boot({knownFocusFixture=true});h.edit:SelectForTest();local body=h.edit.text
     for i=1,12 do h.edit.handlers.OnLostFocus()end
     local task=h.edit.rsUiCopyFocusTask;assert(task,'missing bounded recheck')
     local n=0;for _ in pairs(S.Scheduler.tasks)do n=n+1 end;assert(n==1,'unbounded deferred focus work')
@@ -133,18 +141,18 @@ Test('bounded focus recheck preserves late notifications and coalesces duplicate
     assert(not S.Scheduler.tasks[task] and not h.edit.rsUiCopyFocusTask)
 end)
 Test('hide cancels deferred check and stale callback cannot reactivate input',function()
-    local S,UI,page,h,c=Boot();h.edit.handlers.OnLostFocus();local task=h.edit.rsUiCopyFocusTask
+    local S,UI,page,h,c=Boot({knownFocusFixture=true});h.edit.handlers.OnLostFocus();local task=h.edit.rsUiCopyFocusTask
     assert(task);local callback=S.Scheduler.tasks[task].callback
     page:OnDeactivated();assert(not S.Scheduler.tasks[task] and not h.edit.rsUiCopyFocusTask)
     local f,k=c.focus,c.keyboard;callback()
     assert(not h.edit.keyboard and c.focus==f and c.keyboard==k)
 end)
 Test('missing scheduler fails closed on ambiguous lost focus',function()
-    local S,UI,page,h,c=Boot();S.Scheduler=nil;h.edit.handlers.OnLostFocus()
+    local S,UI,page,h,c=Boot({knownFocusFixture=true});S.Scheduler=nil;h.edit.handlers.OnLostFocus()
     assert(not h.edit.keyboard and not h.edit.rsUiCopyFocusTask)
 end)
 Test('failed one-shot registration cannot leave copy keyboard armed',function()
-    local S,UI,page,h,c=Boot();S.Scheduler.AddHighFrequencyOneShot=function()return false end
+    local S,UI,page,h,c=Boot({knownFocusFixture=true});S.Scheduler.AddHighFrequencyOneShot=function()return false end
     h.edit.handlers.OnLostFocus();assert(not h.edit.keyboard and not h.edit.rsUiCopyFocusTask)
 end)
 Test('external chat focus releases copy keyboard without stealing or clearing chat',function()
@@ -152,22 +160,38 @@ Test('external chat focus releases copy keyboard without stealing or clearing ch
     c.focusId='native_chat';h.edit.handlers.OnLostFocus()
     assert(not h.edit.keyboard and c.focusId=='native_chat' and c.focus==f and c.clear==clear)
 end)
-Test('unavailable focus identity fails closed rather than arming keyboard indefinitely',function()
-    local S,UI,page,h,c=Boot();GetFocusedWidgetId=nil;h.edit.handlers.OnLostFocus()
-    assert(not h.edit.keyboard)
+Test('not_allowed focus never invokes an available throwing getter and fails closed',function()
+    local S,UI,page,h,c=Boot();local clear=c.clear;local ownId=c.focusId
+    local focused,err=UI:IsInputWidgetFocused(h.edit)
+    assert(focused==false and err=='get_focus_not_allowed')
+    h.edit.handlers.OnLostFocus()
+    assert(not h.edit.keyboard and not h.edit.rsUiCopyFocusTask)
+    assert(c.focusId==ownId and c.clear==clear,'unknown focus cannot be cleared even when physically owned in the fixture')
+end)
+Test('unknown focus release cannot clear own or chat focus while deactivation still disarms keyboard',function()
+    for _,external in ipairs({false,true})do
+        local S,UI,page,h,c=Boot();local clear=c.clear
+        if external then c.focusId='native_chat'end
+        local id=c.focusId
+        local ok,changed,err=UI:ReleaseFocusWithin(h.edit,h.edit.rsUiOwner,'unknown_release')
+        assert(ok==true and changed==false and err=='get_focus_not_allowed')
+        assert(c.focusId==id and c.clear==clear and h.edit.keyboard,'unknown release touched Native ownership')
+        assert(UI:DeactivateInputWidget(h.edit,h.edit.rsUiOwner,'unknown_deactivate'))
+        assert(not h.edit.keyboard and c.focusId==id and c.clear==clear,'deactivation failed keyboard-only cleanup')
+    end
 end)
 Test('ordinary input bindings keep their existing lost-focus policy',function()
     local S,UI,page,h,c=Boot();assert(UI:BindDeferredInputActivation(h.edit,h.edit.rsUiOwner,'ordinary_input'))
     h.edit.handlers.OnLostFocus();assert(not h.edit.keyboard,'copy-only policy leaked to regular input')
 end)
 Test('repeat click while armed preserves existing selection without extra SetFocus',function()
-    local S,UI,page,h,c=Boot();h.edit:SelectForTest();local before=h.edit.text;local f=c.focus
+    local S,UI,page,h,c=Boot({knownFocusFixture=true});h.edit:SelectForTest();local before=h.edit.text;local f=c.focus
     h.edit.handlers.OnClick();assert(h.edit:CopyForTest()==before and c.focus==f)
 end)
-Test('hide clears report and releases owned keyboard despite copy-focus guard',function()
-    local S,UI,page,h,c=Boot();h.edit:SelectForTest();page:OnDeactivated()
+Test('hide clears report and keyboard while unknown Native focus is left untouched',function()
+    local S,UI,page,h,c=Boot();h.edit:SelectForTest();local id,clear=c.focusId,c.clear;page:OnDeactivated()
     assert(not h.edit.keyboard and h.edit.text=='' and not h.edit.visible and not page.selfCheckText)
-    assert(c.focusId==nil)
+    assert(c.focusId==id and c.clear==clear)
 end)
 Test('hide does not clear external chat focus',function()
     local S,UI,page,h,c=Boot();c.focusId='native_chat';local clear=c.clear
@@ -181,8 +205,8 @@ Test('copy diagnostics are bounded metadata and never contain report body',funct
     local S,UI,page,h,c=Boot();assert(type(page.GetReportInputSnapshot)=='function','copy state provider missing')
     h.edit:SelectForTest();c.now=2001;h.edit.handlers.OnLostFocus()
     local snapshot=page:GetReportInputSnapshot()
-    assert(snapshot.patch=='report-selection-1' and snapshot.input.stillFocusedNotifications==1)
-    assert(snapshot.input.focused==true and snapshot.input.keyboardArmed==true)
+    assert(snapshot.patch=='report-selection-1' and snapshot.input.stillFocusedNotifications==0)
+    assert(snapshot.input.focusKnown==false and snapshot.input.focused==false and snapshot.input.keyboardArmed==false)
     assert(snapshot.text==nil and snapshot.report==nil and snapshot.raw==nil and snapshot.input.text==nil)
     local text=assert(S.DiagnosticsManager:BuildPagedSelfCheckReport())
     assert(text:find('[REPORT_INPUT]',1,true) and text:find('report-selection-1',1,true))

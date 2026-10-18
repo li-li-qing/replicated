@@ -82,6 +82,10 @@ local function Aura() return S.Services and S.Services.AuraObservationV3 or nil 
 local function Casting() return S.Services and S.Services.CastingObservationV3 or nil end
 local function Cooldowns() return S.Services and S.Services.CooldownObservationV3 or nil end
 local function Settings() return F.State and F.State.settings or {} end
+local function ManagementRetaining()
+    return (F.managementFreeze and F.managementFreeze.active==true)
+        or (F.managementListFreeze and F.managementListFreeze.active==true)
+end
 local function Classification() return S.Services and S.Services.StatusClassificationV3 or nil end
 local function Projection() return S.Services and S.Services.ScreenProjectionV3 or nil end
 local function Api() return S.Api or nil end
@@ -176,11 +180,12 @@ local function EnsureScopeSettingsCache()
             headShowStacks = settings.headShowStacks ~= false, headShowTime = settings.headShowTime ~= false,
             -- 装备槽视觉顺序是 Store 的布局代际，不属于 target/player 独立几何；
             -- 必须随轻量 scope projection 进入 Renderer，否则 v4 新排列在 50ms HUD 路径会退回 v3。
-            layoutPresetVersion = tonumber(settings.layoutPresetVersion) or 3,
+            layoutPresetVersion = tonumber(profile.layoutPresetVersion) or tonumber(settings.layoutPresetVersion) or 3,
             plateScale = profile.plateScale,
             plate = S.Utils.DeepCopy(profile.plate or {}),
             info = S.Utils.DeepCopy(profile.info or {}),
             components = S.Utils.DeepCopy(profile.components or {}),
+            placement = S.Utils.DeepCopy(profile.placement),
         }
         -- 自定义名字只存在于目标 HUD。
         -- 几何 Authority 位于独立 alias Store，不能塞回 v3.buff_display/layout 的既有 schema；这里
@@ -245,7 +250,7 @@ end
 local function LaneInterval(laneKey)
     local settings = Settings()
     -- 留存短状态时复用 aura lane 的50ms兜底；停止留存恢复用户间隔，不写配置。
-    if laneKey == "aura" then return F.managementFreeze and F.managementFreeze.active and 50 or settings.refreshMs or 120 end
+    if laneKey == "aura" then return ManagementRetaining() and 50 or settings.refreshMs or 120 end
     -- 位置 lane 仅两次原生屏幕点读取，由既有单 OnUpdate 调度器每渲染帧最多执行一次。
     -- 1ms 是请求每帧，不是保证 1000Hz；这里严禁 Buff/装备/职业读取与布局重建。
     if laneKey == "position" then return 1 end
@@ -313,7 +318,7 @@ function F:RefreshScope(scope, forceRefresh)
     end
     local settings = Settings()
     -- 快照 TTL 为通道间隔的一半。TTL 等于完整间隔会令缓存再旧一个间隔，使最坏 Buff 延迟加倍；TTL < interval 保证每次通道 Tick 重采事实，Tick 间其他消费者仍可合并扫描。
-    local retaining=self.managementFreeze and self.managementFreeze.active==true
+    local retaining=ManagementRetaining()
     local snapshotTtlMs = math.max(1, math.floor((tonumber(LaneInterval("aura")) or 120) / 2))
     local snapshot, snapshotErr = aura:GetSnapshot(scope, {
         buff = true, debuff = true, hidden = true, limit = retaining and 128 or 64, ttlMs = snapshotTtlMs, forceRefresh=forceRefresh==true or (scope=="target" and self.targetInvalidated==true),
@@ -442,6 +447,9 @@ local function ScopeHeadEnabled(scope)
 end
 
 local function ProjectScope(scope)
+    -- 固定屏幕只消费单位内容；不采样头顶 Native 坐标，避免屏外/背面投影否决固定 HUD。
+    local placement=ScopeLayout(scope).placement or {}
+    if placement.needsHead==false or (placement.slots==nil and placement.mode=="fixed")then return false end
     local projection = Projection()
     if type(projection) ~= "table" or type(projection.ProjectUnit) ~= "function" then
         local lane = F.laneData[scope] or {}
@@ -481,6 +489,11 @@ function F:PositionTick()
             self.viewportWidth, self.viewportHeight = service:GetUiParentViewport()
         end
         self.viewportAt = now
+        local api=Api()
+        if api and type(api.GetUiMetrics)=='function'then
+            local _,_,_,logicalWidth,logicalHeight=api:GetUiMetrics()
+            self.fixedViewportWidth,self.fixedViewportHeight=logicalWidth,logicalHeight
+        end
     end
     self.pvpMetrics.positionTicks = self.pvpMetrics.positionTicks + 1
     BumpLane("position")
@@ -490,6 +503,7 @@ function F:PositionTick()
 end
 
 function F:GetHeadViewport() return self.viewportWidth, self.viewportHeight end
+function F:GetFixedHudViewport() return self.fixedViewportWidth,self.fixedViewportHeight end
 
 local function NormalizeDistance(value)
     if type(value) == "table" then value = value.distance end
@@ -572,11 +586,23 @@ end
 function F:RefreshTargetAliasIdentity(reason)
     self.laneData.target = self.laneData.target or {}
     local lane = self.laneData.target
+    -- 仅在已有身份刷新边读取两个受能力门保护的ID；不以名字/零距离猜自身，不进入逐帧查询。
+    local isSelf,targetPresent=false,false
+    local api=Api()
+    if api and type(api.CallCapability)=='function'and X2Unit~=nil then
+        local okPlayer,playerId=api:CallCapability('X2Unit:GetUnitId',X2Unit,'GetUnitId','player')
+        local okTarget,targetId=api:CallCapability('X2Unit:GetUnitId',X2Unit,'GetUnitId','target')
+        local playerText,targetText=tostring(playerId or ''),tostring(targetId or '')
+        isSelf=okPlayer==true and okTarget==true and playerText~=''and playerText~='0'and playerText~='nil'and playerText==targetText
+        targetPresent=okTarget==true and targetText~=''and targetText~='0'and targetText~='nil'
+    end
     local name = ReadCurrentTargetName()
     local alias = nil
     if name ~= nil and type(self.ResolveTargetAlias) == "function" then alias = self:ResolveTargetAlias(name) end
-    local changed = lane.targetName ~= name or lane.targetAlias ~= alias
-    lane.targetName, lane.targetAlias = name, alias
+    local changed = lane.targetName ~= name or lane.targetAlias ~= alias or lane.isSelf~=isSelf
+    lane.targetName, lane.targetAlias, lane.isSelf = name, alias, isSelf
+    -- 复用身份事件边的现有 getter 结果；固定模式的显隐不得靠头顶投影或零距离猜目标存在。
+    lane.targetPresent = targetPresent or name ~= nil
     self.laneData.target = lane
     if changed then
         BumpLane("metadata") -- 仅复用内容 revision；不触发 Metadata Native 读取。
@@ -584,6 +610,14 @@ function F:RefreshTargetAliasIdentity(reason)
     end
     Publish("v3.buff_display.target_alias", tostring(reason or "target_alias"))
     return true, name
+end
+
+function F:IsTargetSelf()
+    return type(self.laneData.target)=='table'and self.laneData.target.isSelf==true
+end
+
+function F:IsHudUnitAvailable(scope)
+    return scope == "player" or (scope == "target" and type(self.laneData.target) == "table" and self.laneData.target.targetPresent == true)
 end
 
 function F:GetCurrentTargetAliasEditorSnapshot()
@@ -921,7 +955,7 @@ local function LaneNeeds(laneKey, settings)
     local positionActive = HeadScopeActive()
     if laneKey == "aura" then
         -- 管理留存与HUD开关独立，否则隐藏Buff组件会让短状态无机会进入留存列表。
-        if F.managementFreeze and F.managementFreeze.active then return true end
+        if ManagementRetaining() then return true end
         -- 目标类型组件消费同一个 Aura 租约；隐藏 Buff 行不能意外停掉类型识别。
         if positionActive and ScopeHeadEnabled("target")
             and (ComponentEnabled("mainHand", "target") or ComponentEnabled("offHand", "target")) then return true end
@@ -1157,7 +1191,10 @@ end
 
 -- 原生UIParent屏幕坐标，不除以UI缩放；第五返回为只读失败原因，前四参保持兼容。
 function F:GetDynamicPlatesProjection(scope)
-    return self.ProjectDynamicPlates(self.laneData[tostring(scope or "player")] or {})
+    local result=self.ProjectDynamicPlates(self.laneData[tostring(scope or "player")] or {})
+    local placement=ScopeLayout(scope).placement or {}
+    if result.distance==nil and (placement.distanceFixed==true or (placement.slots==nil and placement.mode=='fixed'))then result.distance={value='--m',unknown=true}end
+    return result
 end
 
 function F:GetPlatesAnchor(scope)
@@ -1307,7 +1344,7 @@ function F:_StartEvents()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
         -- 留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
         -- forceRefresh 仅绕过共享Aura本次缓存，不遍历静态库；无消费者/关闭时不读Native。
-        if F.managementFreeze and F.managementFreeze.active and F.enabled and (F.consumerCount or 0)>0 then
+        if ManagementRetaining() and F.enabled and (F.consumerCount or 0)>0 then
             return F:Refresh("capture_buff_update",true)
         end
         return F:_QueueEventRefresh("buff_update", 120)
@@ -1316,7 +1353,7 @@ function F:_StartEvents()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
         -- 留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
         -- forceRefresh 仅绕过共享Aura本次缓存，不遍历静态库；无消费者/关闭时不读Native。
-        if F.managementFreeze and F.managementFreeze.active and F.enabled and (F.consumerCount or 0)>0 then
+        if ManagementRetaining() and F.enabled and (F.consumerCount or 0)>0 then
             return F:Refresh("capture_debuff_update",true)
         end
         return F:_QueueEventRefresh("debuff_update", 120)
@@ -1334,7 +1371,7 @@ function F:_StartEvents()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
         -- 留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
         -- forceRefresh 仅绕过共享Aura本次缓存，不遍历静态库；无消费者/关闭时不读Native。
-        if F.managementFreeze and F.managementFreeze.active and F.enabled and (F.consumerCount or 0)>0 then
+        if ManagementRetaining() and F.enabled and (F.consumerCount or 0)>0 then
             F:Refresh("capture_target_changed",true)
         end
         return F:_QueueEventRefresh("target_changed", 80)
@@ -2165,6 +2202,15 @@ F.Commands = {
             -- 重新刷新的是实时事实；冻结行保留，管理装饰层只更新其追踪标记。
             F:RefreshScope("player")
             F:RefreshScope("target")
+        end
+        return ok, err
+    end,
+    ClearAllTracking = function()
+        local ok, err = F:ClearTrackedIds(nil, nil, true)
+        if ok == true then
+            -- 只更新已有事实上的选择标记；settings 事件负责重建 Demand，不为取消追踪重扫 Native。
+            F.trackedIndex = F:BuildTrackedIndex(Settings())
+            F:SyncTrackedProjectionFlags()
         end
         return ok, err
     end,

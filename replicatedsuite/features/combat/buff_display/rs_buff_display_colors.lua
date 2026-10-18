@@ -30,6 +30,31 @@ local function RGB(hex)
     hex=type(hex)=='string' and hex or 'FFFFFF'
     return (tonumber(hex:sub(1,2),16) or 255)/255,(tonumber(hex:sub(3,4),16) or 255)/255,(tonumber(hex:sub(5,6),16) or 255)/255
 end
+-- 距离规则按上限匹配原始米数：选第一个大于等于距离的阈值；超过最大档延用最大档，未知距离用固定色。
+-- 阈值取整数米，避免 RU float32 回读改变规则边界；不读取 Native、不增加调度任务。
+local function Rules(value,stored)
+    if type(value)~='table'then return nil,'距离颜色数组必须是表'end
+    local count=0
+    for key in pairs(value)do
+        if type(key)~='number'or key~=math.floor(key)or key<1 or key>8 then return nil,'距离颜色最多8档，数组不能有空位'end
+        count=count+1
+    end
+    local out,seen={},{}
+    for i=1,count do
+        local row=value[i]
+        if type(row)~='table'then return nil,'距离颜色数组不能有空位'end
+        local meters=row.meters
+        if type(meters)~='number'or meters~=meters or meters<0 or meters>10000 or meters~=math.floor(meters)then return nil,'距离阈值须为0到10000的整数米'end
+        if seen[meters]then return nil,'距离阈值不能重复'end
+        local hex,err
+        if stored then hex=type(row.hex)=='string'and row.hex:match('^%x%x%x%x%x%x$')and row.hex:upper()
+        else hex,err=Hex(row.color)end
+        if not hex then return nil,err or '距离颜色无效'end
+        seen[meters]=true;out[#out+1]={meters=meters,hex=hex}
+    end
+    table.sort(out,function(a,b)return a.meters<b.meters end)
+    return out
+end
 local function Normalize(v)
     v=type(v)=='table' and v or {};local out={player={},target={},recent={}}
     for _,scope in ipairs({'player','target'})do
@@ -37,6 +62,7 @@ local function Normalize(v)
             local value=type(v[scope])=='table' and v[scope][key]
             out[scope][key]=type(value)=='string' and value:match('^%x%x%x%x%x%x$') and value:upper() or 'FFFFFF'
         end
+        out[scope].distanceRules=Rules(type(v[scope])=='table'and v[scope].distanceRules or {},true)or {}
     end
     local seen={}
     for _,hex in ipairs(type(v.recent)=='table' and v.recent or {})do
@@ -56,8 +82,18 @@ local function Changed()
 end
 if not P:GetStore(ID) then
     local store,err=P:RegisterV3Store({id=ID,owner=ID,scope=P.Scope.Account,lifetime=P.Lifetime.Permanent,
-        schemaVersion=1,transportVersion=3,key=P.V3KeyPrefix..'buff_display_colors',
-        budget={maxDepth=4,maxNodes=160,maxStringBytes=2048,maxEntriesPerTable=32},
+        schemaVersion=2,transportVersion=3,key=P.V3KeyPrefix..'buff_display_colors',
+        budget={maxDepth=5,maxNodes=256,maxStringBytes=4096,maxEntriesPerTable=32},
+        -- schema1 原始配色先由 Persistence 验真，再补空规则；保留原 RGB 与最近颜色。
+        migrate=function(value)return Normalize(value)end,
+        rebuildCanonicalForIntegrity=function(decoded,_stamp,_canonical,raw)
+            local meta=type(raw)=='table'and raw.__rsmeta
+            if type(meta)~='table'or meta.store~=ID or meta.owner~=ID or tonumber(meta.schema)~=1 then return nil end
+            -- schema1 没有 migrate/codec，canonical 就是原始 Domain；不补字段、不猜颜色。
+            -- Core 必须精确匹配这个旧指纹，才可采用第二返回值并迁移到 schema2。
+            local historical=Copy(decoded)
+            return historical,Normalize(historical)
+        end,
         default=function()return Normalize(nil)end,get=function()return Normalize(F.HudColorsState)end,
         apply=function(value)F.HudColorsState=Normalize(value);return true end})
     if not store then error(err)end
@@ -71,13 +107,25 @@ function F:EnsureHudColorsLoaded()
     if ok=='empty' then self.HudColorsState=Normalize(nil)end
     self.HudColorsError=nil;return true
 end
-function F:GetHudColor(scope,key)
+function F:GetHudColor(scope,key,meters)
     local palette=self.HudColorsState[scope]
+    if key=='distance'and type(meters)=='number'and meters==meters and meters>=0 and meters<math.huge then
+        local rules=palette and palette.distanceRules or {}
+        local selected=rules[#rules]
+        for _,row in ipairs(rules)do if meters<=row.meters then selected=row;break end end
+        if selected then return RGB(selected.hex)end
+    end
     return RGB(palette and palette[key]) -- 纯读内存，无Native查询、无数组分配。
 end
 function F:GetHudColorsProjection()
     local out={player={},target={}}
-    for _,scope in ipairs({'player','target'})do for _,key in ipairs(KEYS)do out[scope][key]={self:GetHudColor(scope,key)}end end
+    for _,scope in ipairs({'player','target'})do
+        for _,key in ipairs(KEYS)do out[scope][key]={self:GetHudColor(scope,key)}end
+        out[scope].distanceRules={}
+        for _,row in ipairs(self.HudColorsState[scope].distanceRules or {})do
+            out[scope].distanceRules[#out[scope].distanceRules+1]={meters=row.meters,color={RGB(row.hex)}}
+        end
+    end
     return out
 end
 function F:GetRecentHudColors()
@@ -94,9 +142,14 @@ function F:ValidateHudColors(value)
         if type(palette)~='table'then return nil,'配色范围必须是表' end
         normalized[scope]={}
         for key,color in pairs(palette)do
-            if not KNOWN[key]then return nil,'未知文字配色项目：'..tostring(key)end
-            local hex,err=Hex(color);if not hex then return nil,err end
-            normalized[scope][key]=hex
+            if key=='distanceRules'then
+                local rules,err=Rules(color,false);if not rules then return nil,err end
+                normalized[scope][key]=rules
+            else
+                if not KNOWN[key]then return nil,'未知文字配色项目：'..tostring(key)end
+                local hex,err=Hex(color);if not hex then return nil,err end
+                normalized[scope][key]=hex
+            end
         end
     end
     return normalized
@@ -105,7 +158,7 @@ function F:PersistHudColors(value,reason,remember)
     local patch,err=self:ValidateHudColors(value);if not patch then return false,err end
     if not remember then
         local count,only=0,nil
-        for _,palette in pairs(patch)do for _,hex in pairs(palette)do count=count+1;only=hex end end
+        for _,palette in pairs(patch)do for key,hex in pairs(palette)do if key~='distanceRules'then count=count+1;only=hex end end end
         if count==1 then remember=only end
     end
     local ready;ready,err=self:EnsureHudColorsLoaded();if not ready then return false,err end
@@ -175,6 +228,13 @@ function F:SerializeExport(data)
         for _,scope in ipairs({'player','target'})do for _,key in ipairs(KEYS)do
             if patch[scope] and patch[scope][key]then lines[#lines+1]='HUDCOLOR='..scope..':'..key..':'..patch[scope][key]end
         end end
+        for _,scope in ipairs({'player','target'})do
+            local rules=patch[scope]and patch[scope].distanceRules
+            if rules then
+                if #rules==0 then lines[#lines+1]='HUDDISTANCE='..scope..':OFF'end
+                for _,row in ipairs(rules)do lines[#lines+1]='HUDDISTANCE='..scope..':'..row.meters..':'..row.hex end
+            end
+        end
         text=table.concat(lines,'\n')
     end
     return text
@@ -184,13 +244,30 @@ function F:ParseImportText(text)
     local pass,colors,errors,seen={},nil,{},{}
     for raw in (text..'\n'):gmatch('([^\n]*)\n')do
         local line=raw:gsub('\r$',''):match('^%s*(.-)%s*$')
-        if line:upper():match('^HUDCOLOR%s*=') then
+        if line:upper():match('^HUDDISTANCE%s*=')then
+            local scope,meters,hex=line:match('^[^=]+=([%a]+):(%d+):(%x%x%x%x%x%x)$')
+            local off=line:match('^[^=]+=([%a]+):OFF$')
+            scope=scope or off
+            if not scope or(scope~='player'and scope~='target')or seen['off:'..scope]
+                or(off and seen['ranges:'..scope])or(meters and seen['range:'..scope..':'..tonumber(meters)])then
+                errors[#errors+1]='距离配色行无效或重复'
+            else
+                colors=colors or {};colors[scope]=colors[scope]or {};colors[scope].distanceRules=colors[scope].distanceRules or {}
+                seen['ranges:'..scope]=true
+                if off then seen['off:'..scope]=true
+                else
+                    seen['range:'..scope..':'..tonumber(meters)]=true
+                    local rows=colors[scope].distanceRules;rows[#rows+1]={meters=tonumber(meters),color={RGB(hex)}}
+                end
+            end
+        elseif line:upper():match('^HUDCOLOR%s*=') then
             local scope,key,hex=line:match('^[^=]+=([%a]+):([%w]+):(%x%x%x%x%x%x)$')
             if not scope or (scope~='player'and scope~='target')or not KNOWN[key]or seen[scope..':'..key]then errors[#errors+1]='文字配色行无效或重复'
             else colors=colors or {};colors[scope]=colors[scope]or {};colors[scope][key]={RGB(hex)};seen[scope..':'..key]=true end
         else pass[#pass+1]=raw end
     end
     local parsed=ParseImportText(self,table.concat(pass,'\n'))
+    if colors then local valid,err=self:ValidateHudColors(colors);if not valid then errors[#errors+1]=err end end
     for _,err in ipairs(errors)do parsed.errors[#parsed.errors+1]=err end
     parsed.data.colors=colors;parsed.data._parseErrors=#parsed.errors
     return parsed

@@ -29,7 +29,10 @@ local function EmptyCapture(revision,active)
         byId={player={},target={}},coverage={},count=0,overflow=false,rejectedObservations=0}
 end
 F.managementFreeze=EmptyCapture(0,false)
-F.managementListFreeze={active=false,revision=0,rows={player={},target={}},coverage={}}
+local function EmptyListFreeze(revision,active)
+    local state=EmptyCapture(revision,active);state.nextOrder=0;return state
+end
+F.managementListFreeze=EmptyListFreeze(0,false)
 local function Copy(value)
     if type(value)~="table" then return value end
     local out={};for key,item in pairs(value) do out[key]=Copy(item) end;return out
@@ -174,10 +177,12 @@ local function InvalidateManagement()
 end
 function F:GetManagementListFreezeState()
     local state=self.managementListFreeze
-    return {active=state.active,revision=state.revision}
+    return {active=state.active,revision=state.revision,count=state.count,overflow=state.overflow,capacityPerScope=RETAIN_MAX}
 end
+local ObserveCapture
 function F:SetManagementListFrozen(value)
-    -- 当前列表冻结与持续留存分开。只复制已取得的有界 Aura 投影，不暂停 HUD、扫描 Native 或保存永久配置。
+    -- 冻结的是删除/重排：新状态继续追加，失效行留在原位便于追踪。
+    -- 使用已取得的 Aura 事实和现有刷新通道，不暂停 HUD，不写永久 Store；解冻丢弃本次名单。
     local previous=self.managementListFreeze;local active=value==true
     if previous.active==active then return true end
     if active and self.enabled~=true then return false,"请先启用状态显示" end
@@ -187,8 +192,19 @@ function F:SetManagementListFrozen(value)
             return false,"当前状态尚未取得，无法冻结列表"
         end
     end
-    self.managementListFreeze={active=active,revision=previous.revision+1,
-        rows=active and Copy(self.projections) or {player={},target={}},coverage=active and Copy(self.coverage) or {}}
+    local state=EmptyListFreeze(previous.revision+1,active)
+    if active then
+        local initial={}
+        for _,scope in ipairs({'player','target'})do
+            ObserveCapture(state,scope,self.projections[scope],(self.coverage or {})[scope],S.NowMs and S.NowMs()or 0)
+            for _,row in ipairs(state.rows[scope])do initial[#initial+1]=row end
+        end
+        -- 初次冻结沿用 ID 排序；以后无论新 ID 大小或追踪开关，都只追加到已有名单之后。
+        table.sort(initial,function(a,b)if a.id~=b.id then return a.id<b.id end;return tostring(a.key)<tostring(b.key)end)
+        for order,row in ipairs(initial)do row.listOrder=order end
+    end
+    self.managementListFreeze=state
+    if self.enabled and (self.consumerCount or 0)>0 then self:ReconcileLanes()end
     InvalidateManagement();Publish(active and "management_list_frozen" or "management_list_unfrozen")
     return true
 end
@@ -214,8 +230,7 @@ function F:DropFrozenRows(_id)
     -- 取消追踪只改变用户选择，不删除已观察事实；清空记录是单独明确命令。
     return true
 end
-function F:ObserveManagementRows(scope,rows,coverage,at)
-    local state=self.managementFreeze
+ObserveCapture=function(state,scope,rows,coverage,at)
     if not state.active or not state.rows[scope] then return false end
     local changed=false;local oldCoverage=state.coverage[scope] or {}
     state.coverage[scope]=Copy(coverage or {available=false,complete=false,reliable=false})
@@ -231,6 +246,7 @@ function F:ObserveManagementRows(scope,rows,coverage,at)
                     if #state.rows[scope]<RETAIN_MAX then
                         row=Copy(raw);row.scope=scope;row.frozen=true;row.present=true
                         row.firstSeenAt=at;row.lastSeenAt=at;row.timeText="已留存";row.capturedAt=at
+                        if state.nextOrder~=nil then state.nextOrder=state.nextOrder+1;row.listOrder=state.nextOrder end
                         index[id]=row;state.rows[scope][#state.rows[scope]+1]=row;state.count=state.count+1;changed=true
                     else
                         if not state.overflow then changed=true end
@@ -257,6 +273,12 @@ function F:ObserveManagementRows(scope,rows,coverage,at)
     state.capturedAt=state.capturedAt or at
     if changed then state.revision=state.revision+1 end
     return changed
+end
+function F:ObserveManagementRows(scope,rows,coverage,at)
+    -- 两种会话入口共用有界去重/留存规则，各自开关与缓存代际独立；实时 HUD 从不消费这些旧行。
+    local listChanged=ObserveCapture(self.managementListFreeze,scope,rows,coverage,at)
+    local captureChanged=ObserveCapture(self.managementFreeze,scope,rows,coverage,at)
+    return listChanged or captureChanged
 end
 function F:CaptureManagementFreeze()
     local aura=S.Services and S.Services.AuraObservationV3
@@ -421,7 +443,7 @@ function F:GetManagementProjection(options)
     local listFreeze=self.managementListFreeze
     -- 小窗有明确“当前/留存”两个入口；保留旧页面live随冻结切换的兼容行为。
     if view=="live" and not listFreeze.active and frozen.active and options.preserveLive~=true and options.compact~=true then view="frozen" end
-    local revision=(view=="live" and (listFreeze.active and ("snapshot:"..listFreeze.revision) or self.revision)) or (view=="frozen" and frozen.revision) or Catalog.version
+    local revision=(view=="live" and (listFreeze.active and ("retained_list:"..listFreeze.revision) or self.revision)) or (view=="frozen" and frozen.revision) or Catalog.version
     local metaService=S.Services and S.Services.BuffMetadataV3
     local metaRevision=metaService and type(metaService.GetRevision)=="function" and metaService:GetRevision() or 0
     local cooldownService=S.Services and S.Services.CooldownObservationV3
@@ -523,6 +545,7 @@ function F:GetManagementProjection(options)
             if view=="cooldowns" or (raw.kind~="skill" and raw.kind~="mate" and Matches(raw,options)) then
                 local row=byId[raw.id]
                 if not row then row=Copy(raw);row.key=(view=="cooldowns" and "cooldown:local:" or "effect:")..raw.id;row.observedTimes={};byId[raw.id]=row;merged[#merged+1]=row end
+                if raw.listOrder and (not row.listOrder or raw.listOrder<row.listOrder)then row.listOrder=raw.listOrder end
                 if view=="cooldowns" then
                     if raw.active==true or row.active~=true and raw.ready==true then
                         row.timeText,row.timeLeft,row.remainingMs,row.active,row.ready=raw.timeText,raw.timeLeft,raw.remainingMs,raw.active,raw.ready
@@ -545,8 +568,9 @@ function F:GetManagementProjection(options)
         rows=merged
     end
     local filtered={};for _,row in ipairs(rows) do if Matches(row,options) then filtered[#filtered+1]=row end end
-    local sort=view=="live" and listFreeze.active and "id" or options.sort or "tracked" -- 冻结期间点击追踪不按 tracked 重排行序，避免下一次点击落到别的状态。
+    local sort=view=="live" and listFreeze.active and "listOrder" or options.sort or "tracked" -- 新项追加，追踪操作不重排已有行。
     table.sort(filtered,function(a,b)
+        if sort=="listOrder" and a.listOrder~=b.listOrder then return (a.listOrder or math.huge)<(b.listOrder or math.huge)end
         if sort=="tracked" and a.tracked~=b.tracked then return a.tracked==true end
         if sort=="category" and a.category~=b.category then return tostring(a.category)<tostring(b.category) end
         if sort=="source" and a.scopeText~=b.scopeText then return tostring(a.scopeText)<tostring(b.scopeText) end

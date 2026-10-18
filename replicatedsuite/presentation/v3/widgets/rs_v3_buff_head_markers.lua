@@ -5,7 +5,7 @@
 --
 -- 合并约束：先检查冲突标记、toc.g 加载清单完整性与 Lua 语法，再做运行时验收。
 -- 权威归属、调用链和存档协议由实现负责，不能通过清配置、跳过加载或恢复 Legacy 绕过错误。
--- 血条是唯一布局锚点；所有内容均相对其矩形定位：
+-- 头顶层以血条为布局锚点；分组件固定层只消费 Feature 的独立屏幕坐标：
 -- InfoRow（职业、装备、距离）：固定语义槽；BuffRow(s)：血条上方，最多 maxRows 向上堆叠；[LeftEquip] [plate] [RightEquip]：装备位于血条两侧；
 -- DebuffRow(s)：血条下方，最多 maxRows 向下堆叠；CastBar：血条下方固定语义槽。
 -- Feature 持有全部调度通道；presenter 仅持有有界控件池，按渲染计算缓存布局并应用差异。
@@ -50,6 +50,9 @@ P.cooldownEvidence = {inputRows=0,drawn=0,rejected=0,nonemptyRenders=0}
 
 
 local SCOPES = { "player", "target" }
+local POOL_KEYS = { "player", "target", "player_fixed", "target_fixed" }
+local function UnitScope(scope) return (scope == "target" or scope == "target_fixed") and "target" or "player" end
+local function FixedLayer(scope) return scope == "player_fixed" or scope == "target_fixed" end
 -- 约束（2026-09-19，cooldown-only-render-1）：cooldowns 是独立固定槽位，也是合法的
 -- HUD 启动理由。旧列表漏掉它，用户只开启“技能 CD”而关闭其它组件时 BuffHeadMarkers 不会 Acquire
 -- Feature Consumer，进而连 CooldownObservationV3 都不会启动。加入启动 gate 不改变其它组件布局/几何。
@@ -57,9 +60,9 @@ local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", 
 local UNKNOWN_ICON = "ui/icon/icon_unknown_item.dds"
 
 local function N(v, fallback) return tonumber(v) or tonumber(fallback) or 0 end
-local function TextColor(widget,scope,key)
+local function TextColor(widget,scope,key,meters)
     if not widget or type(Feature.GetHudColor)~='function' then return end
-    local r,g,b=Feature:GetHudColor(scope,key)
+    local r,g,b=Feature:GetHudColor(UnitScope(scope),key,meters)
     widget.rsManualTextColor=true -- 颜色属于HUD配置；工作台主题不覆盖。widget alpha仍由原组件独立控制。
     S.UI:SetColor(widget,r,g,b,1,P.owner)
 end
@@ -89,6 +92,20 @@ local function ScopeSettings(scope)
     end
     return Settings()
 end
+local function LayerSettings(poolKey)
+    local scope=UnitScope(poolKey)
+    local base=ScopeSettings(scope)
+    -- 无 slots 的历史存档完整保留整体 head/fixed 路径；不为它构造第二套控件。
+    local split=type(base.placement)=='table' and type(base.placement.slots)=='table'
+    if not split then return not FixedLayer(poolKey) and base or nil end
+    if type(Feature.GetHudLayerSettingsProjection)~='function' then return not FixedLayer(poolKey) and base or nil end
+    local revision=tonumber(Feature.settingsRevision)
+    local key=poolKey..':layer'
+    if revision~=nil and scopeLayoutCache[key] then return scopeLayoutCache[key] end
+    local value=Feature:GetHudLayerSettingsProjection(scope,FixedLayer(poolKey) and 'fixed' or 'head')
+    if revision~=nil then scopeLayoutCache[key]=value end
+    return value
+end
 local function FeatureEnabled()
     return S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("combat_buff_display") == true
 end
@@ -100,7 +117,11 @@ local function HasRenderableComponents(settings, scope)
     local components = type(settings.components) == "table" and settings.components or {}
     -- 目标自定义名字是独立可见组件。只有 Store 已有至少一条且显示开关开启时才作为启动理由，
     -- 空备注库不会额外持有 Renderer Consumer；位置采集由 Feature 同一 gate 配套开启。
-    if scope == "target" and type(Feature.IsTargetAliasHeadEnabled) == "function" and Feature:IsTargetAliasHeadEnabled() then return true end
+    if scope == "target" then
+        if settings.componentLayer==true then
+            if type(settings.targetAlias)=='table' and settings.targetAlias.enabled==true then return true end
+        elseif type(Feature.IsTargetAliasHeadEnabled) == "function" and Feature:IsTargetAliasHeadEnabled() then return true end
+    end
     -- plate 是“原生血条代理锚点”，renderer 从不绘制它，不能把
     -- plate.enabled 当作启动理由；否则用户把所有可视组件关掉后仍会持有 Consumer，
     -- 进而让 Aura lane 因 consumerCount>0 继续运行。真正可见能力只由组件开关决定。
@@ -171,42 +192,42 @@ local function MakeCastBar(scope)
     return { root=root, bg=bg, fill=fill, text=text, barW=120, layout={} }
 end
 
-local function MakeInfo(scope)
+local function MakeInfo(scope, settings, info)
     local parent = P.pools[scope].root
-    local classLabel, err = S.UI:CreateLabel(parent, "v3_buff_head_" .. scope .. "_info_class", "", 0, 0, 120, 16, 10, "default", "CENTER", true)
-    if classLabel == nil then return nil, err end
-    local gearLabel, gearErr = S.UI:CreateLabel(parent, "v3_buff_head_" .. scope .. "_info_gear", "", 0, 0, 90, 16, 10, "default", "CENTER", true)
-    if gearLabel == nil then S.UI:SetVisible(classLabel, false, P.owner); return nil, gearErr end
-    local distanceLabel, distanceErr = S.UI:CreateLabel(parent, "v3_buff_head_" .. scope .. "_info_distance", "", 0, 0, 90, 16, 10, "default", "CENTER", true)
-    if distanceLabel == nil then
-        S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner)
-        return nil, distanceErr
+    settings=type(settings)=='table' and settings or {}
+    -- 固定层按启用组件延迟建子控件；仅固定距离时不创建职业图标、别名或施法条。
+    -- 已创建对象始终留在原父链，后续切换只隐藏或复用，不 reparent Native。
+    local selective=FixedLayer(scope) and settings.componentLayer==true
+    local cfg=type(settings.info)=='table' and settings.info or {}
+    local components=type(settings.components)=='table' and settings.components or {}
+    info=info or {classText='',gearText='',distanceText='',aliasText=''}
+    local function Label(field,suffix,width,font,needed)
+        if info[field] or not needed then return true end
+        local alias=field=='aliasRoot'
+        local root,err=S.UI:CreateLabel(parent,'v3_buff_head_'..scope..suffix,'',0,0,width,alias and 18 or 16,font,alias and 'strong' or 'default','CENTER',true)
+        if not root then return false,err end
+        info[field]=root
+        if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(root) end
+        S.UI:SetVisible(root,false,P.owner)
+        return true
     end
-    local aliasLabel = nil
-    if scope == "target" then
-        local aliasErr
-        aliasLabel, aliasErr = S.UI:CreateLabel(parent, "v3_buff_head_target_alias", "", 0, 0, 180, 18, 12, "strong", "CENTER", true)
-        if aliasLabel == nil then
-            S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner); S.UI:SetVisible(distanceLabel, false, P.owner)
-            return nil, aliasErr
-        end
-        S.UI:SetVisible(aliasLabel, false, P.owner)
+    local visible=cfg.enabled~=false
+    local ok,err=Label('classTextRoot','_info_class',120,10,not selective or (visible and cfg.showClass~=false))
+    if not ok then return nil,err end
+    ok,err=Label('gearRoot','_info_gear',90,10,not selective or (visible and cfg.showGear~=false and (components.gearScore or {}).enabled~=false))
+    if not ok then return nil,err end
+    ok,err=Label('distanceRoot','_info_distance',90,10,not selective or (visible and cfg.showDistance~=false and (components.distance or {}).enabled~=false))
+    if not ok then return nil,err end
+    ok,err=Label('aliasRoot','_alias',180,12,UnitScope(scope)=='target' and (not selective or (settings.targetAlias or {}).enabled==true))
+    if not ok then return nil,err end
+    if not info.iconRoot and (not selective or (visible and (components.class or {}).enabled~=false)) then
+        info.iconRoot=S.UI:CreateEmptyWidget(parent,'v3_buff_head_'..scope..'_class_icon',0,0,16,16,false,P.owner)
+        if not info.iconRoot then return nil,'buff_head_class_icon_create_failed' end
+        info.icon=info.iconRoot.CreateIconDrawable and info.iconRoot:CreateIconDrawable('artwork') or nil
+        S.UI:SetVisible(info.iconRoot,false,P.owner)
     end
-    if S.Theme and S.Theme.SetWorldTextPalette then
-        S.Theme:SetWorldTextPalette(classLabel);S.Theme:SetWorldTextPalette(gearLabel);S.Theme:SetWorldTextPalette(distanceLabel);S.Theme:SetWorldTextPalette(aliasLabel)
-    end
-    S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner); S.UI:SetVisible(distanceLabel, false, P.owner)
-    -- 约束（HUD 基础信息拆分，2026-09-17）：旧实现只有一个拼接 label，导致职业名称、
-    -- 装分和距离只能整体移动/改字号。这里仍保持每 scope 固定 3 个 pooled label，不在 50ms
-    -- VisualTick 中创建对象。root 继续别名到 classTextRoot，保护旧测试/诊断引用；gear/distance
-    -- 仅消费 Feature 已有投影，不产生新的 Native 查询、Consumer 或 Scheduler。
-    local iconRoot = S.UI:CreateEmptyWidget(parent, "v3_buff_head_" .. scope .. "_class_icon", 0, 0, 16, 16, false, P.owner)
-    local icon = iconRoot and iconRoot.CreateIconDrawable and iconRoot:CreateIconDrawable("artwork") or nil
-    if iconRoot then S.UI:SetVisible(iconRoot, false, P.owner) end
-    return {
-        root=classLabel, classTextRoot=classLabel, gearRoot=gearLabel, distanceRoot=distanceLabel, aliasRoot=aliasLabel,
-        classText="", gearText="", distanceText="", aliasText="", iconRoot=iconRoot, icon=icon,
-    }
+    info.root=info.classTextRoot
+    return info
 end
 
 local function RequiredIconCount(settings)
@@ -218,6 +239,14 @@ local function RequiredIconCount(settings)
     local buffMax = math.max(1, math.min(64, math.floor(N(buff.maxPerRow, 8) * N(buff.maxRows, 2))))
     local debuffMax = math.max(1, math.min(64, math.floor(N(debuff.maxPerRow, 8) * N(debuff.maxRows, 2))))
     local cooldownMax = math.max(1, math.min(64, math.floor(N(cooldown.maxPerRow, 8) * N(cooldown.maxRows, 2))))
+    if settings.componentLayer==true then
+        local total=(buff.enabled~=false and buffMax or 0)+(debuff.enabled~=false and debuffMax or 0)
+            +(cooldown.enabled~=false and cooldownMax or 0)
+        for _,key in ipairs({'mainHand','offHand','ranged','wings'}) do
+            if (components[key] or {}).enabled~=false then total=total+1 end
+        end
+        return total
+    end
     -- 约束（2026-09-19，图标池容量）：CD 与 Buff/Debuff 共用既有 marker pool，
     -- 只按用户可见几何上限预分配，不为 256 个收藏技能建控件；装备仍保留 8 个固定余量。
     return buffMax + debuffMax + cooldownMax + 8
@@ -231,8 +260,14 @@ function P:EnsurePools(settings)
         iconCount = math.max(iconCount, RequiredIconCount(ScopeSettings(scope)))
     end
     if iconCount <= 0 then iconCount = RequiredIconCount(type(settings) == "table" and settings or Settings()) end
-    for _, scope in ipairs(SCOPES) do
+    for _, scope in ipairs(POOL_KEYS) do
+        local layerSettings=LayerSettings(scope)
+        local active=layerSettings and (not FixedLayer(scope) or HasRenderableComponents(layerSettings,UnitScope(scope)))
+        if active then
         local pool = self.pools[scope]
+        if not pool then pool={icons={},labels={}};self.pools[scope]=pool end
+        pool.unitScope,pool.layer=UnitScope(scope),FixedLayer(scope) and 'fixed' or 'head'
+        local required=layerSettings.componentLayer==true and RequiredIconCount(layerSettings) or iconCount
         -- 维护：新建时就固定父链，绝不reparent已有Native控件。所有子项落在union正坐标内，
         -- 避免小父容器裁剪；移动只写这个无命中父容器，职业/装备/Buff不会逐个追赶血条。
         if pool.root == nil then
@@ -242,23 +277,25 @@ function P:EnsurePools(settings)
             S.UI:SetVisible(pool.root, false, self.owner)
             self.metrics.allocated = self.metrics.allocated + 1
         end
-        for index = #pool.icons + 1, iconCount do
+        for index = #pool.icons + 1, required do
             local marker, err = MakeIcon(scope, index)
             if marker == nil then return false, err end
             pool.icons[index] = marker
             self.metrics.allocated = self.metrics.allocated + 1
         end
-        if pool.cast == nil then
+        if pool.cast == nil and (layerSettings.componentLayer~=true or (layerSettings.components.castBar or {}).enabled~=false) then
             local cast, err = MakeCastBar(scope)
             if cast == nil then return false, err end
             pool.cast = cast
             self.metrics.allocated = self.metrics.allocated + 1
         end
-        if pool.info == nil then
-            local info, err = MakeInfo(scope)
+        if pool.info == nil or FixedLayer(scope) then
+            local allocated=pool.info==nil
+            local info, err = MakeInfo(scope,layerSettings,pool.info)
             if info == nil then return false, err end
             pool.info = info
-            self.metrics.allocated = self.metrics.allocated + 1
+            if allocated then self.metrics.allocated = self.metrics.allocated + 1 end
+        end
         end
     end
     return true
@@ -292,7 +329,7 @@ local function HideScope(scope)
     end
 end
 function P:HideAll()
-    for _, scope in ipairs(SCOPES) do HideScope(scope) end
+    for _, scope in ipairs(POOL_KEYS) do HideScope(scope) end
     return true
 end
 
@@ -302,15 +339,40 @@ end
 
 -- 维护：内容布局以单位原点(0,0)计算，先记录所有子项边界再统一平移到父容器的正坐标。
 -- 只在内容/设置变更时执行，不在每渲染帧构建表；每个placement对象在池里复用。
-local function Place(pool, widget, x, y, w, h)
+local function Place(pool, widget, x, y, w, h, component)
     local n = (pool.placementCount or 0) + 1
     local row = pool.placements[n] or {}
     pool.placements[n], pool.placementCount = row, n
     row.widget, row.x, row.y, row.w, row.h = widget, x, y, w, h
+    row.rawX,row.rawY,row.component=x,y,component or pool.currentComponent
     pool.minX = math.min(pool.minX or x, x); pool.minY = math.min(pool.minY or y, y)
     pool.maxX = math.max(pool.maxX or x+w, x+w); pool.maxY = math.max(pool.maxY or y+h, y+h)
 end
 local function CommitPlacements(pool)
+    if pool.componentPlacements then
+        -- 分组件固定层只消费 Feature 的屏幕万分比投影。每组第一项是自己的锚点，
+        -- 其余项保留原局部几何；一个组件的图标数/文字宽度不会移动其它组件。
+        local width,height
+        if type(Feature.GetFixedHudViewport)=='function' then width,height=Feature:GetFixedHudViewport() end
+        local origins={}
+        pool.minX,pool.minY,pool.maxX,pool.maxY=nil,nil,nil,nil
+        for i=1,pool.placementCount do
+            local row=pool.placements[i]
+            local origin=origins[row.component]
+            if not origin then
+                local slot=pool.componentPlacements[row.component]
+                local x,y
+                if slot and type(Feature.ComputeFixedHudAnchor)=='function' then x,y=Feature.ComputeFixedHudAnchor(slot,width,height) end
+                if x==nil or y==nil then pool.ready=false;pool.fixedPlacementError='fixed_component_anchor_unavailable';return false end
+                origin={x=x-row.rawX,y=y-row.rawY};origins[row.component]=origin
+            end
+            row.x,row.y=row.rawX+origin.x,row.rawY+origin.y
+            pool.minX=math.min(pool.minX or row.x,row.x);pool.minY=math.min(pool.minY or row.y,row.y)
+            pool.maxX=math.max(pool.maxX or row.x+row.w,row.x+row.w);pool.maxY=math.max(pool.maxY or row.y+row.h,row.y+row.h)
+        end
+        pool.placementViewportW,pool.placementViewportH=width,height
+        pool.fixedPlacementError=nil
+    end
     local left, top = math.floor(pool.minX or 0), math.floor(pool.minY or 0)
     pool.offsetX, pool.offsetY = left, top
     pool.width = math.max(1, math.ceil(pool.maxX or 1)-left)
@@ -749,6 +811,7 @@ local function ApplyEquipGroup(scope, pool, plates, components, group, slotStart
         if marker == nil then break end
         local item = type(plates) == "table" and plates[s.key] or {}
         local cfg = type(components) == "table" and components[s.key] or {}
+        pool.currentComponent=s.key
         ApplyIcon(marker, { iconPath = item.icon, gradeIconPath = item.gradeIconPath, stack = nil, timeText = nil }, s.size, cfg, s.x, s.y, false, false, scale)
         used = used + 1
     end
@@ -935,7 +998,7 @@ function P.ComputeInfoLayout(plates, infoCfg, components, centerX, y, fontSize, 
     return {text=table.concat(text," "),x=minX or g.x,y=minY or g.y,width=math.max(1,(maxX or g.x+1)-(minX or g.x)),height=math.max(1,(maxY or g.y+1)-(minY or g.y)),icon=g.icon,iconX=g.iconX,iconY=g.iconY,iconSize=g.iconSize,alpha=g.iconAlpha}
 end
 
-local function RenderTextItem(pool, widget, cache, cacheField, item)
+local function RenderTextItem(pool, widget, cache, cacheField, item, component)
     if widget == nil then return end
     if item == nil or item.text == "" then S.UI:SetVisible(widget,false,P.owner); cache[cacheField]=""; return end
     local rendered = item.displayText or item.text
@@ -943,7 +1006,7 @@ local function RenderTextItem(pool, widget, cache, cacheField, item)
     S.UI:SetFontSize(widget,item.font,P.owner)
     S.UI:SetAlpha(widget,item.alpha or 1,P.owner)
     S.UI:SetExtent(widget,item.width,item.height,P.owner)
-    Place(pool,widget,item.x,item.y,item.width,item.height)
+    Place(pool,widget,item.x,item.y,item.width,item.height,component)
     S.UI:SetVisible(widget,true,P.owner)
 end
 
@@ -951,12 +1014,13 @@ local function RenderInfo(scope, plates, infoCfg, components, centerX, y, fontSi
     local pool = P.pools[scope]
     if pool == nil or pool.info == nil then return end
     local info = pool.info
-    local g = P.ComputeInfoItemsLayout(plates,infoCfg,components,centerX,y,fontSize,scale,scope)
-    TextColor(info.classTextRoot,scope,'classText');TextColor(info.gearRoot,scope,'gearScore');TextColor(info.distanceRoot,scope,'distance')
+    local g = P.ComputeInfoItemsLayout(plates,infoCfg,components,centerX,y,fontSize,scale,UnitScope(scope))
+    TextColor(info.classTextRoot,scope,'classText');TextColor(info.gearRoot,scope,'gearScore')
+    TextColor(info.distanceRoot,scope,'distance',plates.distance and plates.distance.meters)
     pool.dynamicLayout.distance=g.distance
-    RenderTextItem(pool,info.classTextRoot,info,"classText",g.classText)
-    RenderTextItem(pool,info.gearRoot,info,"gearText",g.gearScore)
-    RenderTextItem(pool,info.distanceRoot,info,"distanceText",g.distance)
+    RenderTextItem(pool,info.classTextRoot,info,"classText",g.classText,'info')
+    RenderTextItem(pool,info.gearRoot,info,"gearText",g.gearScore,'gearScore')
+    RenderTextItem(pool,info.distanceRoot,info,"distanceText",g.distance,'distance')
     if info.iconRoot then
         -- 职业图标与职业名称是两个独立组件；隐藏名称不能连带隐藏图标。
         local showIcon = g.icon ~= nil and info.icon ~= nil
@@ -966,7 +1030,7 @@ local function RenderInfo(scope, plates, infoCfg, components, centerX, y, fontSi
             S.UI:SetExtent(info.icon,g.iconSize,g.iconSize,P.owner)
             S.UI:SetAnchor(info.icon,info.iconRoot,0,0,P.owner)
             S.UI:SetAlpha(info.iconRoot,g.iconAlpha,P.owner)
-            Place(pool,info.iconRoot,g.iconX,g.iconY,g.iconSize,g.iconSize)
+            Place(pool,info.iconRoot,g.iconX,g.iconY,g.iconSize,g.iconSize,'class')
         end
         S.UI:SetVisible(info.iconRoot,showIcon,P.owner)
     end
@@ -975,13 +1039,14 @@ end
 -- 目标自定义名字拥有独立 target-only 固定槽位；位置/字号/透明度由 HUD 校准器维护，
 -- 不再借用 info.x/info.y/fontSize。这样用户可以像职业名称、装分一样单独拖动它，同时名字显隐
 -- 不会改变任何兄弟组件几何。Renderer 只消费 Projection 中已脱离 Store 的 hud 快照。
-local function RenderTargetAlias(scope, plates, centerX, centerY, scale)
+local function RenderTargetAlias(scope, plates, centerX, centerY, scale, settings)
     local pool = P.pools[scope]
     local info = pool and pool.info or nil
     local root = info and info.aliasRoot or nil
     if root == nil then return end
     TextColor(root,scope,'alias')
-    local alias = scope == "target" and type(plates.alias) == "table" and plates.alias or nil
+    local enabled=settings.componentLayer~=true or (settings.targetAlias or {}).enabled==true
+    local alias = UnitScope(scope) == "target" and enabled and type(plates.alias) == "table" and plates.alias or nil
     local text = alias and tostring(alias.value or "") or ""
     local cfg = alias and type(alias.hud) == "table" and alias.hud or nil
     local g = P.ComputeTargetAliasLayout(text, cfg, centerX, centerY, scale)
@@ -994,18 +1059,21 @@ local function RenderTargetAlias(scope, plates, centerX, centerY, scale)
     S.UI:SetFontSize(root, g.font, P.owner)
     S.UI:SetAlpha(root, g.alpha, P.owner)
     S.UI:SetExtent(root, g.width, g.height, P.owner)
-    Place(pool, root, g.x, g.y, g.width, g.height)
+    Place(pool, root, g.x, g.y, g.width, g.height,'alias')
     S.UI:SetVisible(root, true, P.owner)
 end
 
 local function RenderScope(scope, settings)
     local pool = P.pools[scope]
     if pool == nil then return end
-    if ScopeEnabled(scope, settings) ~= true then HideScope(scope); return end
-    local plates = Feature:GetPlatesProjection(scope, settings)
+    local unitScope=UnitScope(scope)
+    if ScopeEnabled(unitScope, settings) ~= true then HideScope(scope); return end
+    if unitScope=='target'and type(Feature.IsTargetSelf)=='function'and Feature:IsTargetSelf()then HideScope(scope);return end
+    local plates = Feature:GetPlatesProjection(unitScope, settings)
     -- 维护：所有内容在单位原点生成；屏幕移动留给MotionTick，绝不在这里重读投影Native。
     local anchorX, anchorY = 0, 0
     pool.placementCount, pool.minX, pool.minY, pool.maxX, pool.maxY = 0, nil, nil, nil, nil
+    pool.componentPlacements=FixedLayer(scope) and settings.componentLayer==true and settings.componentPlacements or nil
     P.metrics.projections = P.metrics.projections + 1
     local components = type(settings.components) == "table" and settings.components or {}
     local infoCfg = type(settings.info) == "table" and settings.info or {}
@@ -1040,21 +1108,24 @@ local function RenderScope(scope, settings)
     local slot = 0
     -- Buff 行从 bar.top 向上堆叠。
     if buffEnabled then
+        pool.currentComponent='buffs'
         slot = slot + RenderRows(scope, pool, buffRows, components.buffs or {}, bar.centerX, L.buff.firstTop, showStacks, showTime, slot, L.buff.size, L.buff.spacing, L.buff.maxPerRow, L.buff.maxRows, L.buff.rowGap, -1, scale,'buff')
     end
     -- debuff 行从 bar.bottom 向下堆叠。
     if debuffEnabled then
+        pool.currentComponent='debuffs'
         slot = slot + RenderRows(scope, pool, debuffRows, components.debuffs or {}, bar.centerX, L.debuff.firstTop, showStacks, showTime, slot, L.debuff.size, L.debuff.spacing, L.debuff.maxPerRow, L.debuff.maxRows, L.debuff.rowGap, 1, scale,'debuff')
     end
     -- 冷却行占单位锚点相对固定槽，不参与 Buff/Debuff/Info/Cast 兄弟几何；组件显现不能推动其它组件。
     local cooldownCfg = components.cooldowns or {}
-    local cooldownRows = scope == "player" and (plates.cooldowns or {}) or {}
-    if scope=="player" then
+    local cooldownRows = unitScope == "player" and (plates.cooldowns or {}) or {}
+    if unitScope=="player" and (settings.componentLayer~=true or cooldownCfg.enabled~=false) then
         P.cooldownEvidence.lastRenderAt=S.NowMs and S.NowMs() or 0
         P.cooldownEvidence.inputRows=#cooldownRows
         P.cooldownEvidence.drawn,P.cooldownEvidence.rejected=0,0
     end
     if cooldownCfg.enabled ~= false and #cooldownRows > 0 then
+        pool.currentComponent='cooldowns'
         local cdSize = math.max(8, math.floor(N(cooldownCfg.size, 29) * scale))
         local cdSpacing = math.max(0, math.floor(N(cooldownCfg.spacing, 2) * scale))
         local cdMaxPerRow = math.max(1, math.min(16, math.floor(N(cooldownCfg.maxPerRow, 8))))
@@ -1091,11 +1162,12 @@ local function RenderScope(scope, settings)
             if info.iconRoot then S.UI:SetVisible(info.iconRoot, false, P.owner) end
         end
     end
-    RenderTargetAlias(scope, plates, bar.centerX, bar.centerY, scale)
+    RenderTargetAlias(scope, plates, bar.centerX, bar.centerY, scale,settings)
 
     -- 读条使用固定槽，未施法时隐藏；debuff 行不能移动它，RenderCastBar 中 cfg.y 是唯一局部 Y 调整。
     local castCfg = components.castBar or {}
     if castCfg.enabled ~= false and plates.cast ~= nil then
+        pool.currentComponent='castBar'
         RenderCastBar(scope, plates.cast, castCfg, bar.centerX, L.cast.top, scale)
     else
         local cast = pool.cast
@@ -1137,22 +1209,41 @@ function P:IsCalibrationSuppressed() return self.calibrationSuppressed == true e
 local function MoveRoots()
     local w,h
     if type(Feature.GetHeadViewport)=="function" then w,h=Feature:GetHeadViewport() end
-    for _,scope in ipairs(SCOPES) do
+    for _,scope in ipairs(POOL_KEYS) do
         local pool=P.pools[scope]
-        local x,y,depth,source,err=Feature:GetPlatesAnchor(scope)
+        local settings=LayerSettings(scope)
+        if pool and settings then
+        local unitScope=UnitScope(scope)
+        local placement=type(settings.placement)=='table'and settings.placement or {}
+        local x,y,depth,source,err
+        local viewportW,viewportH=w,h
+        if pool.componentPlacements then
+            if type(Feature.GetFixedHudViewport)=='function'then viewportW,viewportH=Feature:GetFixedHudViewport()end
+            if pool.placementViewportW~=viewportW or pool.placementViewportH~=viewportH or pool.fixedPlacementError then CommitPlacements(pool) end
+            x,y,depth,source=0,0,1,'fixed_components'
+            if type(Feature.IsHudUnitAvailable)=='function'and not Feature:IsHudUnitAvailable(unitScope)then x,y,err=nil,nil,'unit_unavailable'end
+        elseif placement.mode=='fixed'and type(Feature.ComputeFixedHudAnchor)=='function'then
+            if type(Feature.GetFixedHudViewport)=='function'then viewportW,viewportH=Feature:GetFixedHudViewport()end
+            x,y,err=Feature.ComputeFixedHudAnchor(placement,viewportW,viewportH)
+            if type(Feature.IsHudUnitAvailable)=='function'and not Feature:IsHudUnitAvailable(unitScope)then x,y,err=nil,nil,'unit_unavailable'end
+            depth,source=1,'fixed_screen'
+        else x,y,depth,source,err=Feature:GetPlatesAnchor(unitScope)end
         local valid=x~=nil and y~=nil and N(depth,1)>0
         if pool and not valid then
             local reason=tostring(err or "native_anchor_unavailable")
             if pool.lastAnchorFailure~=reason then RecordAnchorFailure(scope,reason) end
             pool.lastAnchorFailure=reason
         elseif pool then pool.lastAnchorFailure=nil end
-        local show=pool and pool.ready==true and valid
+        local selfTarget=unitScope=='target'and type(Feature.IsTargetSelf)=='function'and Feature:IsTargetSelf()
+        local show=pool and pool.ready==true and valid and not selfTarget
         local visibilityReason=not valid and "native_anchor_unavailable" or not (pool and pool.ready) and "layout_not_ready" or "visible"
         if show then
             x,y=x+pool.offsetX,y+pool.offsetY
-            if w and h and w>0 and h>0 then
-                x=math.max(0,math.min(math.max(0,w-pool.width),x))
-                y=math.max(0,math.min(math.max(0,h-pool.height),y))
+            -- 固定锚点遵守用户校准坐标；不能按内容包围盒夹紧，否则文字/图标变化会拖动整组。
+            -- 锚点已限制在视口内，靠边的内容允许局部越界；恢复当前 HUD 可回到安全默认位置。
+            if placement.mode~='fixed'and viewportW and viewportH and viewportW>0 and viewportH>0 then
+                x=math.max(0,math.min(math.max(0,viewportW-pool.width),x))
+                y=math.max(0,math.min(math.max(0,viewportH-pool.height),y))
             end
             x,y=math.floor(x+.5),math.floor(y+.5)
             if pool.screenX~=x or pool.screenY~=y then
@@ -1178,6 +1269,7 @@ local function MoveRoots()
             else S.UI:SetVisible(pool.root,show==true,P.owner);pool.rootVisible=nil;pool.rootVisibilityAccepted=nil end
             pool.rootVisibilityReason=visibilityReason
         end
+        elseif pool then HideScope(scope) end
     end
 end
 
@@ -1185,15 +1277,16 @@ end
 -- 相同设置代际、相同距离字宽和施法可见性才局部更新；结构边沿回到原VisualTick。
 local function UpdateDynamicContent()
     if type(Feature.GetDynamicPlatesProjection)~="function" then return false end
-    for _,scope in ipairs(SCOPES) do
+    for _,scope in ipairs(POOL_KEYS) do
         local pool=P.pools[scope]
         local layout=pool and pool.dynamicLayout
         if layout then
             if layout.revision~=Feature.settingsRevision then return false end
-            local distance=P.dynamicDirty.distance and scope=="target" and layout.distanceEnabled
+            local unitScope=UnitScope(scope)
+            local distance=P.dynamicDirty.distance and unitScope=="target" and layout.distanceEnabled
             local casting=P.dynamicDirty.cast and layout.castEnabled
             if distance or casting then
-                local facts=Feature:GetDynamicPlatesProjection(scope)
+                local facts=Feature:GetDynamicPlatesProjection(unitScope)
                 -- 仅读条且为空的作用域可在其它作用域更新时保持空闲；新显现条目仍需已提交完整布局。
                 if pool.ready~=true and (distance or facts.cast or layout.castVisible) then return false end
                 if distance then
@@ -1205,6 +1298,7 @@ local function UpdateDynamicContent()
                             P.motionMetrics.partialDistanceWrites=P.motionMetrics.partialDistanceWrites+1
                         else S.UI:SetVisible(pool.info.distanceRoot,false,P.owner) end
                     end
+                    if item then TextColor(pool.info.distanceRoot,scope,'distance',facts.distance.meters)end
                 end
                 if casting then
                     if layout.castVisible~=(facts.cast~=nil) then return false end
@@ -1246,9 +1340,13 @@ function P:VisualTick()
     local policy = Settings()
     if policy.headEnabled == false then self:HideAll(); return true end
     local rendered = false
-    for _, scope in ipairs(SCOPES) do
-        local settings = ScopeSettings(scope)
-        if ScopeEnabled(scope, settings) and HasRenderableComponents(settings, scope) then
+    for _, scope in ipairs(POOL_KEYS) do
+        local settings = LayerSettings(scope)
+        if settings and ScopeEnabled(UnitScope(scope), settings) and HasRenderableComponents(settings, UnitScope(scope)) then
+            if not self.pools[scope] or not self.pools[scope].root then
+                local ok,err=self:EnsurePools(policy)
+                if not ok then self:HideAll();return false,err end
+            end
             RenderScope(scope, settings); rendered = true
         else HideScope(scope) end
     end
@@ -1277,7 +1375,7 @@ function P:Start()
             if reason=="distance" then P.dynamicDirty.distance=true
             elseif reason=="cast" then P.dynamicDirty.cast=true
             else P.contentDirty=true end
-            if reason=="target_identity_invalidated" then HideScope("target") end
+            if reason=="target_identity_invalidated" then HideScope("target");HideScope("target_fixed") end
         end)
         S.Events:SubscribeInternal("v3.buff_display.plates.motion", self, function() return P:MotionTick() end)
     end

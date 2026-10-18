@@ -39,15 +39,7 @@ local function IsOwnFocus(widget)
         local ok, focused, err = pcall(UI.IsInputWidgetFocused, UI, widget)
         if ok and err == nil and focused == true then return true, true end
     end
-    if type(GetFocusedWidgetId) ~= "function" then return false, false end
-    local ok, focused = pcall(GetFocusedWidgetId)
-    if not ok then return false, false end
-    if focused == nil or tostring(focused) == "" then return false, true end
-    focused = tostring(focused)
-    local physical = PhysicalId(widget)
-    return (physical ~= nil and focused == tostring(physical))
-        or (widget.rsNativeLogicalId ~= nil and focused == tostring(widget.rsNativeLogicalId))
-        or (widget.rsUiLogicalId ~= nil and focused == tostring(widget.rsUiLogicalId)), true
+    return false, false -- RU不允许Native焦点getter，不能以裸全局重试。
 end
 
 local function Retired(box)

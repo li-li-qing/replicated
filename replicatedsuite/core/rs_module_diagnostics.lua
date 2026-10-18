@@ -311,6 +311,93 @@ local function RuntimeState(moduleId)
     }
 end
 
+-- 共享输入故障不能靠业务Store健康推断；只在显式生成报告时读现有计数/有界错误池。
+-- 全局计数只作上下文，输入身份必须经注册表精确查找和当前页父链证明；不扫控件树/读正文。
+local function SharedInputContext(meta)
+    local ui,rsui=S.UI,S.RSUI
+    local host=S.UIV3 and S.UIV3.PageHost
+    local route=tostring(meta.route or '')
+    local page=host and host.pages and host.pages[route]
+    local pageRoot=page and (page.root or page)
+    local out={scope='shared_generation_counters_with_page_proven_input_identities',route=route,
+        focusTiming='not_sampled_native_focus_reader_not_allowed',pageCreated=page~=nil}
+    local failures=0
+    local function Fields(value,keys)
+        local copy={available=type(value)=='table'}
+        if type(value)=='table'then for _,key in ipairs(keys)do
+            local v=value[key];local kind=type(v)
+            if kind=='number'or kind=='boolean'then copy[key]=v
+            elseif kind=='string'then copy[key]=Clip(v,160)end
+        end end
+        return copy
+    end
+    local function Owned(widget)
+        if widget==nil or pageRoot==nil then return false end
+        local node,guard=widget,0
+        while node~=nil and guard<32 do
+            if node==pageRoot then return true end
+            node=node.rsUiParent;guard=guard+1
+        end
+        return false
+    end
+    local function Lookup(id)
+        return type(id)=='string'and #id<=160 and ui and ui.controls and ui.controls[id]or nil
+    end
+    -- 旧snapshot会经IsEditing间接读禁用焦点；只接纳已声明无焦点读取的V3合约。
+    -- 半更新时仅投影既有计数，不能调用旧函数尝试“探测是否安全”。
+    local drafts=rsui and rsui.InputDraftCoordinator and rsui.InputDraftCoordinator.metrics
+    local draftReason='legacy_focus_reader_not_sampled'
+    local safeSnapshot=rsui and (tonumber(rsui.InputDraftSessionContractVersion)or 0)>=3 and type(rsui.GetInputDraftSessionSnapshot)=='function'
+    if safeSnapshot then
+        local ok,value=pcall(rsui.GetInputDraftSessionSnapshot,rsui)
+        if ok and type(value)=='table'then drafts=value;draftReason=nil
+        else drafts=nil;draftReason=Clip(ok and 'snapshot_returned_no_table'or value,360);failures=failures+1 end
+    end
+    out.drafts=Fields(drafts,{'version','active','began','cancelled','committed','ended','focused','suspended','nativeFocusAdoptions','nativeTextAdoptions','renderSuppressions'})
+    out.drafts.coverage=safeSnapshot and 'component_flags_only_no_native_focus_readback'or 'existing_counters_only_no_focus_reader_or_active_widget_scan'
+    out.drafts.reason=draftReason or (not drafts and 'unavailable'or nil)
+    out.drafts.moduleActiveIds={}
+    local activeWidget
+    for index,id in ipairs(safeSnapshot and type(drafts)=='table'and type(drafts.ids)=='table'and drafts.ids or {})do
+        if index>32 then break end
+        local widget=Lookup(id)
+        if Owned(widget)and #out.drafts.moduleActiveIds<8 then
+            out.drafts.moduleActiveIds[#out.drafts.moduleActiveIds+1]=id;activeWidget=activeWidget or widget
+        end
+    end
+    local framework=ui and ui.FrameworkMetrics
+    out.lifecycle=Fields(framework and framework.lifecycle,{'inputActivationAttempts','inputActivationSuccesses','inputActivationFailures',
+        'keyboardArms','keyboardDisarms','keyboardArmFailures','postArmFocusPromotions','focusedFastPathHits'})
+    out.authority=Fields(framework and framework.authority,{'violations','conflicts','strictRepairs'})
+    out.authority.byField=Fields(framework and framework.authority and framework.authority.byField,{'text','visible','extent','anchor'})
+    local byType=rsui and rsui.metrics and rsui.metrics.byType
+    out.events={scope='shared_generation_totals',NumericInput=Fields(byType and byType.NumericInput,{'events','rendered','errors'}),
+        TextInput=Fields(byType and byType.TextInput,{'events','rendered','errors'})}
+    -- 只投影与本页精确关联的最后一条保留修复事实；不搬迁system故障、不复制消息/正文。
+    local last,lastWidget
+    local function Retained(rows,limit)
+        if type(rows)~='table'then return end
+        for index=math.max(1,#rows-limit+1),#rows do
+            local row=rows[index];local context=type(row)=='table'and row.context
+            if row and row.code=='AUTHORITY_VIOLATION'and type(context)=='table'then
+                local widget=Lookup(context.logicalId)
+                if Owned(widget)and (not last or (tonumber(row.seq)or 0)>(tonumber(last.seq)or 0))then
+                    last={seq=row.seq,count=row.count,at=row.at,lastAt=row.lastAt,logicalId=context.logicalId,
+                        owner=context.owner,field=context.field};lastWidget=widget
+                end
+            end
+        end
+    end
+    Retained(S.DiagnosticsManager and S.DiagnosticsManager.recent,80);Retained(S.ModuleDiagnosticsHub and S.ModuleDiagnosticsHub.rings.system,32)
+    out.lastRetainedRepair=last or {available=false,reason='no_retained_page_proven_authority_repair'}
+    out.focus={available=false,reason='not_allowed',capability='X2Util:GetFocusedWidgetId'}
+    local target=lastWidget or activeWidget
+    if target then
+        out.inputIdentity=Fields(target,{'rsUiLogicalId','rsNativePhysicalId','rsUiOwner','rsUiKeyboardArmed','rsUiInputLifecycleTracked','rsUiInputLifecycleRetired'})
+    else out.inputIdentity={available=false,reason='no_page_proven_retained_or_active_input'}end
+    return out,failures
+end
+
 function H:BuildReport(moduleId, options)
     moduleId = Normalize(moduleId)
     local meta = Meta(moduleId)
@@ -486,6 +573,12 @@ function H:BuildReport(moduleId, options)
     local pageCreated = type(host) == "table" and type(host.pages) == "table" and host.pages[route] ~= nil or false
     lines[#lines + 1] = "activeRoute=" .. tostring(type(host) == "table" and host.activeRoute or "")
         .. "/pageCreated=" .. tostring(pageCreated)
+
+    lines[#lines+1]='[SHARED_INPUT_CONTEXT]'
+    local inputOk,inputContext,inputFailures=pcall(SharedInputContext,meta)
+    if not inputOk then inputContext={available=false,error=Clip(inputContext,360)};inputFailures=1 end
+    providerFailures=providerFailures+inputFailures
+    lines[#lines+1]=Render(inputContext,'ui.sharedInput')
 
     -- （2026-09-20，module-toggle-native-trampoline-1）模块“启动无反应”过去只能看到
     -- initialized=false，无法区分按钮没收到 Native Click、页面动作未安装、统一 v3.features 写保护，

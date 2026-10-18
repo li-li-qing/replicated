@@ -5,7 +5,7 @@
 --
 -- UMG 风格 RSUI 交互层，此处扩展服务，不再添加另一批控件。
 -- 已确认 RU API：Suite 验证的 OnEnter/OnLeave/OnClick；客户端导出时的全局 SetTooltip(text, widget)；
--- Button/Edit SetFocus()、Edit ClearFocus()、全局 GetFocusedWidgetId()。
+-- Button/Edit SetFocus()、Edit ClearFocus()；焦点getter在RU清单中not allowed，不能调用。
 -- 不假设通用 OnKeyDown/OnKeyUp、可靠全局右键或指针 delta API；ContextMenu 由明确调用或调用方选定的已验证事件打开，键盘导航能力报告 false。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
@@ -649,7 +649,7 @@ end
 local Focus = {
     version = 3,
     keyboardNavigationSupported = false,
-    keyboardNavigationReason = "ui_functions.lua confirms SetFocus/GetFocusedWidgetId but does not document generic OnKeyDown/OnKeyUp handlers",
+    keyboardNavigationReason = "generic keyboard handlers undocumented; Native focus getter not allowed",
 }
 RSUI.Focus = Focus
 RSUI.FocusContractVersion = 3
@@ -704,11 +704,7 @@ function Focus:Clear(target)
 end
 
 function Focus:GetFocusedWidgetId()
-    if type(GetFocusedWidgetId) ~= "function" then return nil, "get_focus_unavailable" end
-    local ok, id = pcall(GetFocusedWidgetId)
-    if not ok then return nil, "get_focus_failed" end
-    if id == nil or tostring(id) == "" then return nil, nil end
-    return tostring(id), nil
+    return nil, "get_focus_not_allowed"
 end
 
 function Focus:GetTargetWidgetId(target)
@@ -752,7 +748,8 @@ function Focus:GetCapabilities(target)
         targetProvided = targetProvided,
         setFocus = canSet,
         clearFocus = canClear,
-        getFocusedWidgetId = type(GetFocusedWidgetId) == "function",
+        getFocusedWidgetId = false,
+        getFocusedWidgetIdReason = "not_allowed",
         genericKeyboardNavigation = self.keyboardNavigationSupported == true,
         reason = self.keyboardNavigationReason,
     }

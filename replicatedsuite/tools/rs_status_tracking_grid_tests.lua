@@ -10,6 +10,7 @@ local function T(name,fn)local ok,e=xpcall(fn,debug.traceback);if ok then passed
 local Boot=dofile('tools/rs_pvp_hud_test_host.lua')
 local function Build()
     local h,S,F=Boot();assert(F:EnsureStoreLoaded());dofile('features/combat/buff_display/rs_buff_display_transfer_v2.lua')
+    h.ms=0;S.NowMs=function()return h.ms end
     F.projections={player={{id=21,key='player:21',name='自己状态',category='buff',timeText='10'}},target={{id=82,key='target:82',name='目标状态',category='debuff',timeText='5'}}}
     F.coverage={player={available=true},target={available=true}};F.revision=F.revision+1
     S.FeatureRuntime.IsEnabled=function()return false end
@@ -328,5 +329,95 @@ T('export refuses a rewritten or truncated editor instead of reporting a usable 
     ui.edit.SetText=function(self,value)self.text=tostring(value):sub(1,12);return true end
     assert(ui.widgets.v3_buff_display_transfer_export.onClick()==false,'truncated text was advertised as a share')
     assert(not ui.widgets.v3_buff_display_transfer_status.text:find('已导出',1,true) and h.io.writes==writes,'export mutates configuration or reports false success')
+end)
+local function SeedAllTracking(F)
+    for _,scope in ipairs({'player','target'})do
+        assert(F:SetTrackedScope(21,scope,true)) -- 旧 auto 选择也必须清除。
+        assert(F:SetTrackedPlacement(82,scope,'buff',true))
+        assert(F:SetTrackedPlacement(99,scope,'debuff',true))
+    end
+    assert(F:SetTrackedCooldownId(37172,'skill',true));assert(F:SetTrackedCooldownId(10001,'mate',true))
+    assert(F:SetClassification(82,'debuff'));assert(F.Commands:SetSetting('headShowStacks',false))
+    assert(F:MutateTrackingStore(function()F.State.settings.library={catalogVersion=7,importedPacks={test_clear=3}};return true end,'test_library_metadata'))
+end
+local function AssertNoTracking(F)
+    for _,scope in ipairs({'player','target'})do
+        for _,category in ipairs({'buff','debuff','auto'})do
+            assert(#F.State.settings.tracked[scope][category]==0,'remaining '..scope..' '..category)
+        end
+    end
+    assert(not F:IsTrackedCooldownId(37172,'skill') and not F:IsTrackedCooldownId(10001,'mate'),'hidden cooldown tracking remains')
+end
+T('clear all commits every status channel and both cooldown routes without scanning or resetting display',function()
+    local h,S,F=Boot();assert(F:EnsureStoreLoaded());SeedAllTracking(F)
+    local hud=F:GetHudCalibrationSnapshot();hud.target.components.buffs.x=73;assert(F:PersistHudCalibrationSnapshot(hud,'test_clear'))
+    local layout=F:GetHudCalibrationSnapshot()
+    F.managementFreeze.rows={player={{id=21,name='保留的观察记录'}},target={}};local recorded=F.managementFreeze.rows
+    local scans=0;S.Services.AuraObservationV3.GetSnapshot=function()scans=scans+1;return nil end
+    local writes=h.io.writes;assert(F.Commands:ClearAllTracking())
+    AssertNoTracking(F);assert(h.io.writes==writes+4,'clear is not one tracking transaction')
+    assert(scans==0 and F.managementFreeze.rows==recorded,'clear rescanned Native or destroyed observation facts')
+    assert(F:GetClassification()[82]=='debuff' and F.State.settings.library.catalogVersion==7 and F.State.settings.library.importedPacks.test_clear==3,'clear removed tracking metadata')
+    assert(F:GetSettingsProjection().headShowStacks==false and F:GetHudCalibrationSnapshot().target.components.buffs.x==layout.target.components.buffs.x,'clear reset display settings')
+    local _,_,cold=Boot({disk=h.disk});assert(cold:EnsureStoreLoaded());AssertNoTracking(cold)
+    assert(cold:GetClassification()[82]=='debuff' and cold.State.settings.library.importedPacks.test_clear==3 and cold:GetSettingsProjection().headShowStacks==false and cold:GetHudCalibrationSnapshot().target.components.buffs.x==73,'reload lost unrelated configuration')
+end)
+T('failed clear at any tracking commit stage preserves selections in memory and on cold load',function()
+    for failAt=1,4 do
+        local h,S,F=Boot();assert(F:EnsureStoreLoaded());SeedAllTracking(F)
+        local before=F:SerializeExport(F:ExportAll());local save=S.Api.SaveData;local attempts=0
+        S.Api.SaveData=function(...)
+            attempts=attempts+1;if attempts==failAt then return false,'test_clear_stage_'..failAt end
+            return save(...)
+        end
+        local ok,err=F.Commands:ClearAllTracking();S.Api.SaveData=save
+        assert(ok==false and err,'failed clear reported success')
+        assert(F:SerializeExport(F:ExportAll())==before,'failed clear changed memory')
+        local _,_,cold=Boot({disk=h.disk});assert(cold:EnsureStoreLoaded())
+        assert(cold:IsTrackedId(21,'auto','player') and cold:IsTrackedPlacement(99,'target','debuff') and cold:IsTrackedCooldownId(10001,'mate'),'failed clear changed committed disk state')
+        assert(F.Commands:ClearAllTracking());AssertNoTracking(F)
+    end
+end)
+T('clear all requires confirmation and ignores filtering while preserving the other settings',function()
+    local h,S,F,ui,page=Build();SeedAllTracking(F)
+    assert(ui.widgets.v3_buff_manage_view.spec.set('tracked'));assert(ui.widgets.v3_buff_display_track_search.spec.onSubmit('82'))
+    local clear=assert(ui.widgets.v3_buff_tracking_clear_all,'missing clear all button');local cancel=assert(ui.widgets.v3_buff_tracking_clear_cancel)
+    local writes=h.io.writes;assert(clear.onClick());assert(h.io.writes==writes and clear.text=='确认全部取消','first click erased data')
+    assert(ui.widgets.v3_buff_tracking_clear_confirmation.visible~=false);assert(cancel.onClick());assert(h.io.writes==writes and clear.text=='全部取消追踪','cancel wrote data')
+    assert(clear.onClick());assert(clear.onClick());AssertNoTracking(F)
+    assert(h.io.writes==writes+4 and ui.widgets.v3_buff_tracking_status.text=='已全部取消追踪','clear did not save exactly once')
+    assert(#ui.widgets.v3_buff_display_tracking_table.items==0,'filtered tracked list retained cancelled rows')
+    assert(F:GetSettingsProjection().headShowStacks==false and ui.widgets.v3_buff_tracking_clear_confirmation.visible==false)
+end)
+T('clear confirmation expires and is cancelled by navigation source changes or another tracking action',function()
+    local h,S,F,ui,page=Build();assert(F:SetTrackedScope(21,'player',true))
+    local clear=assert(ui.widgets.v3_buff_tracking_clear_all);local writes=h.io.writes
+    assert(clear.onClick());h.ms=h.ms+5001;assert(clear.onClick());assert(h.io.writes==writes,'expired confirmation committed')
+    assert(page:SwitchTab('visibility'));assert(page:SwitchTab('track'));assert(clear.text=='全部取消追踪')
+    assert(clear.onClick());assert(ui.widgets.v3_buff_manage_view.spec.set('tracked'));assert(clear.text=='全部取消追踪')
+    assert(clear.onClick());page:OnDeactivated();assert(clear.text=='全部取消追踪' and h.io.writes==writes)
+    assert(clear.onClick());assert(Col(ui,'v3_buff_display_tracking_table','player_buff').onClick({id=82,kind='effect'}))
+    assert(clear.text=='全部取消追踪' and F:IsTrackedId(21,'auto','player'),'unrelated edit retained an armed clear')
+end)
+T('clear UI reports persistence failure and requires fresh confirmation to retry',function()
+    local h,S,F,ui,page=Build();assert(F:SetTrackedScope(21,'target',true))
+    local clear=assert(ui.widgets.v3_buff_tracking_clear_all);assert(clear.onClick())
+    local save=S.Api.SaveData;S.Api.SaveData=function()return false,'test_clear_ui_failure'end
+    assert(clear.onClick()==false);S.Api.SaveData=save
+    assert(F:IsTrackedId(21,'auto','target') and ui.widgets.v3_buff_tracking_status.text:find('保存失败',1,true),'failure appeared successful')
+    assert(clear.text=='全部取消追踪');local writes=h.io.writes
+    assert(clear.onClick());assert(h.io.writes==writes);assert(clear.onClick());AssertNoTracking(F)
+end)
+T('real clear button and warning remain accessible at narrow and wide page sizes',function()
+    local h,S,F,page,widgets,Layout=RealPage();assert(F:SetTrackedScope(21,'player',true))
+    local clear=assert(widgets.v3_buff_tracking_clear_all)
+    for _,size in ipairs({{560,460},{800,650}})do
+        Layout(size[1],size[2]);assert(h:VisibleRect(clear),'clear action clipped')
+        assert(clear.root.events.OnClick(clear.root,'LeftButton'));Layout(size[1],size[2])
+        assert(h:VisibleRect(widgets.v3_buff_tracking_clear_warning) and h:VisibleRect(widgets.v3_buff_tracking_clear_cancel),'confirmation warning clipped')
+        assert(widgets.v3_buff_display_tracking_table.height>=120,'warning crowds out the status list')
+        local cancel=widgets.v3_buff_tracking_clear_cancel;assert(cancel.root.events.OnClick(cancel.root,'LeftButton'))
+    end
+    assert(clear.root.events.OnClick(clear.root,'LeftButton'));assert(clear.root.events.OnClick(clear.root,'LeftButton'));AssertNoTracking(F)
 end)
 print(string.format('TRACKING_GRID_RESULT passed=%d failed=%d',passed,failed));if failed>0 then os.exit(1)end

@@ -306,5 +306,299 @@ Test('import failure compensates the independent color store',function()
         colors={target={gearScore={0.2,0.4,0.6}}}},'merge')
     assert(ok==false and err and F:GetHudColor('target','gearScore')==1,'failed import retained half the new colors')
 end)
+local function DistanceRules()
+    return {{meters=22,color={1,1,1}},{meters=5,color={1,0,0}},{meters=15,color={1,1,0}}}
+end
+Test('distance upper thresholds use raw meters at boundaries and survive reload',function()
+    local h,S,F=Boot()
+    assert(F:PersistHudColors({target={distanceRules=DistanceRules()}}))
+    for _,case in ipairs({{0,1,0,0},{4.99,1,0,0},{5,1,0,0},{5.01,1,1,0},{14.99,1,1,0},
+        {15,1,1,0},{15.01,1,1,1},{21.99,1,1,1},{22,1,1,1},{22.01,1,1,1},{9999,1,1,1}})do
+        local r,g,b=F:GetHudColor('target','distance',case[1])
+        assert(r==case[2]and g==case[3]and b==case[4],'wrong range at '..case[1])
+    end
+    assert(F:GetHudColor('player','distance',15)==1)
+    local _,_,F2=Boot(h.disk)
+    local _,g,b=F2:GetHudColor('target','distance',15);assert(g==1 and b==0)
+    local copy=F2:GetHudColorsProjection();copy.target.distanceRules[1].color[1]=0
+    assert(F2:GetHudColor('target','distance',5)==1)
+end)
+Test('invalid distance rules never save and empty arrays restore fixed color',function()
+    local h,S,F=Boot();local writes=h.io.writes
+    for _,rules in ipairs({{{meters=-1,color={1,0,0}}},{{meters=0/0,color={1,0,0}}},
+        {{meters=math.huge,color={1,0,0}}},{{meters=5,color={1,0,0}},{meters=5,color={1,1,0}}},
+        {{meters=5,color={2,0,0}}},{[2]={meters=5,color={1,0,0}}}})do
+        assert(F:PersistHudColors({target={distanceRules=rules}})==false)
+    end
+    assert(h.io.writes==writes)
+    assert(F:PersistHudColors({target={distance={0.2,0.4,0.6},distanceRules=DistanceRules()}}))
+    S.Api.SaveData=function()return false,'range_disk_rejected'end
+    assert(F:PersistHudColors({target={distanceRules={}}})==false)
+    local _,_,b=F:GetHudColor('target','distance',15);assert(b==0,'failed save retained the new range array')
+end)
+Test('distance rules round trip with full sharing and can be explicitly cleared',function()
+    local _,_,F=Boot();assert(F:EnsureStoreLoaded())
+    assert(F:PersistHudColors({target={distanceRules=DistanceRules()}}))
+    local text=F:SerializeExport(F:ExportAll());local parsed=F:ParseImportText(text)
+    assert(#parsed.errors==0,table.concat(parsed.errors,';'))
+    assert(#parsed.data.colors.target.distanceRules==3)
+    assert(F:PersistHudColors({target={distanceRules={}}}))
+    assert(F:ImportAll(parsed.data,'merge'))
+    local _,_,b=F:GetHudColor('target','distance',15);assert(b==0)
+    assert(not F:SerializeExport(F:ExportAll('tracking')):find('HUDDISTANCE=',1,true))
+    local bad=F:ParseImportText(text..'\nHUDDISTANCE=target:15:00FF00')
+    assert(#bad.errors>0 and F:ImportAll(bad.data,'merge')==false)
+end)
+Test('same-width distance changes recolor the real partial HUD renderer',function()
+    local h,S,F,P=dofile('tools/rs_pvp_hud_test_host.lua')({runtimeHud=true})
+    dofile('features/combat/buff_display/rs_buff_display_colors.lua');assert(F:EnsureHudColorsLoaded())
+    S.UI.SetColor=function(_,widget,r,g,b,a)widget.customColor={r,g,b,a};return true end
+    assert(F:PersistHudColors({target={distanceRules=DistanceRules()}}))
+    F.laneData.target.distance=4.9;P:VisualTick(true)
+    local root=P.pools.target.info.distanceRoot;assert(root.customColor[2]==0)
+    local builds=P.motionMetrics.contentBuilds
+    F.laneData.target.distance=5.1;S.Events:Publish('v3.buff_display.plates.updated','distance');P:MotionTick()
+    assert(root.customColor[2]==1 and root.customColor[3]==0,'partial update did not change range color')
+    assert(P.motionMetrics.contentBuilds==builds,'range crossing rebuilt all HUD components')
+end)
+Test('self-target hides the entire target HUD and motion does not reshow it',function()
+    local h,S,F,P=dofile('tools/rs_pvp_hud_test_host.lua')({runtimeHud=true})
+    local old=X2Unit;X2Unit={};local selfTarget=true
+    S.Api.CallCapability=function(_,key,object,method,scope)
+        if method=='GetUnitId'then return true,(scope=='player'or selfTarget)and '101'or '202'end
+        if method=='UnitName'then return true,selfTarget and 'Self'or 'Other'end
+        return false
+    end
+    F.laneData.target.distance=10;F.laneData.player.gearScore=12345
+    assert(F:RefreshTargetAliasIdentity('self_test'));P:VisualTick(true);P:MotionTick()
+    assert(P.pools.target.root.shown==false,'self target HUD remains visible')
+    assert(P.pools.player.root.shown==true,'self HUD was hidden together with target')
+    P:MotionTick();assert(P.pools.target.root.shown==false)
+    selfTarget=false;assert(F:RefreshTargetAliasIdentity('other_test'));P:VisualTick(true);P:MotionTick()
+    assert(P.pools.target.root.shown==true,'other target HUD did not recover')
+    X2Unit=old
+end)
+Test('inline distance array editing previews without saving and fits the calibration panel',function()
+    local h,S,F,C=Calibration(true);assert(C:SetScope('target'));assert(C:SetComponent('distance'))
+    local ranges=assert(C.distanceColorPanel,'no distance array editor in the selected component')
+    local writes=h.writes;assert(ranges:UseExamples())
+    assert(#C.colorDraft.target.distanceRules==3 and h.writes==writes)
+    assert(ranges.root.y+ranges.root.height<=C.enabledButton.y)
+    assert(C.enabledButton.y+C.enabledButton.height<=C.statusLabel.y,'range editor overlaps status')
+    assert(ranges:Select(2));assert(ranges:Update(16,{0.2,0.4,0.6}))
+    assert(C.colorDraft.target.distanceRules[2].meters==16)
+    assert(ranges:Add());assert(#C.colorDraft.target.distanceRules==4)
+    assert(ranges:Delete());assert(#C.colorDraft.target.distanceRules==3)
+    assert(C:Exit(false));assert(h.writes==writes and #F:GetHudColorsProjection().target.distanceRules==0)
+    assert(C:Open());assert(C:SetScope('target'));assert(C:SetComponent('distance'))
+    assert(C.distanceColorPanel:UseExamples());assert(C:Exit(true))
+    local _,_,b=F:GetHudColor('target','distance',15);assert(b==0)
+end)
+Test('schema1 colors migrate without changing old RGB or recent choices',function()
+    local h,S,F=Boot();local legacy={player={},target={},recent={'123456'}}
+    for _,scope in ipairs({'player','target'})do
+        for _,definition in ipairs(F:GetHudColorDefinitions())do legacy[scope][definition.key]='FFFFFF'end
+    end
+    legacy.target.distance='336699';legacy.player.buffTime='123456'
+    local store=S.Persistence:GetStore(F.HudColorsStoreId)
+    -- 真实 schema1 没有 migrate，不能用当前 normalizer 给“旧档”盖上新结构指纹。
+    store.schemaVersion=1;store.migrate=nil;store.rebuildCanonicalForIntegrity=nil;store.get=function()return legacy end
+    assert(S.Persistence:SaveStore(F.HudColorsStoreId))
+    local _,S2,F2=Boot(h.disk)
+    assert(S2.Persistence:GetStore(F2.HudColorsStoreId).schemaVersion==2)
+    local r,g,b=F2:GetHudColor('target','distance',15)
+    assert(Same(r,0.2)and Same(g,0.4)and Same(b,0.6))
+    assert(#F2:GetHudColorsProjection().target.distanceRules==0)
+    assert(Same(F2:GetRecentHudColors()[1][1],18/255))
+    local disk=S.Utils.DeepCopy(h.disk);local tampered=false
+    for _,raw in pairs(disk)do
+        if type(raw)=='table'and type(raw.__rsmeta)=='table'and raw.__rsmeta.store==F.HudColorsStoreId then
+            raw.payload.target.distance='000000';tampered=true
+        end
+    end
+    assert(tampered,'legacy fixture did not contain the saved color envelope')
+    local _,S3,F3=dofile('tools/rs_pvp_hud_test_host.lua')({disk=disk})
+    dofile('features/combat/buff_display/rs_buff_display_colors.lua')
+    assert(F3:EnsureHudColorsLoaded()==false,'legacy recovery accepted a changed old RGB without its old fingerprint')
+    assert(S3.Persistence:GetStore(F3.HudColorsStoreId).writeFenced)
+end)
+Test('real distance inputs reorder rules, reject duplicates and cancel across scopes',function()
+    local h,S,F,C=Calibration(true);assert(C:SetScope('target'));assert(C:SetComponent('distance'))
+    local panel=C.distanceColorPanel;local writes=h.writes
+    assert(panel:UseExamples())
+    assert(C.preview.infoLabel:GetText()=='15m'and C.preview.infoLabel.color[2]==1 and C.preview.infoLabel.color[3]==0,'example selection preview is stale')
+    assert(panel.selector:Open());local option=panel.selector.optionButtons[1]
+    assert(option.events.OnClick(option,'LeftButton'));assert(panel.index==1 and C.preview.infoLabel:GetText()=='5m')
+    panel.input.root:SetText('18');assert(panel.input:Submit('enter'))
+    assert(panel.index==2 and C.colorDraft.target.distanceRules[2].meters==18)
+    panel.color:BeginDraft();panel.color.hexInput.root:SetText('#336699');assert(panel.color:ApplyDraft())
+    local row=C.colorDraft.target.distanceRules[2]
+    assert(Same(row.color[1],0.2)and Same(row.color[2],0.4)and Same(row.color[3],0.6))
+    assert(C.preview.infoLabel:GetText()=='18m'and Same(C.preview.infoLabel.color[3],0.6))
+    panel.input.root:SetText('22');assert(panel.input:Submit('enter')==false)
+    assert(C.colorDraft.target.distanceRules[2].meters==18)
+    assert(panel.color:Open());assert(panel.color.hexInput:BeginEditing('range_scope'));panel.color.hexInput.root:SetText('#ABCDEF')
+    assert(C:SetScope('player'));assert(not panel.color.open and not panel.color.hexInput:HasDraftSession())
+    assert(#C.colorDraft.player.distanceRules==0 and h.writes==writes)
+    assert(C:SetScope('target'));assert(C:SetComponent('distance'));assert(C:ResetCurrentComponent())
+    assert(#C.colorDraft.target.distanceRules==0,'reset distance retained dynamic rules')
+    assert(C:Exit(false))
+end)
+Test('native Apply button commits pending distance before refresh with either focus order',function()
+    for _,blurFirst in ipairs({false,true})do
+        local h,S,F,C=Calibration(true);assert(C:SetScope('target'));assert(C:SetComponent('distance'))
+        local panel=C.distanceColorPanel;assert(panel:UseExamples());assert(panel:Select(3));assert(panel:Delete());assert(panel:Select(2))
+        local writes=h.writes;assert(panel.input:BeginEditing('distance_apply'))
+        panel.input.root:SetText('22')
+        if blurFirst then
+            assert(panel.input:SuspendEditing('distance_apply_blur'))
+            panel.input.root:SetText('15') -- Native失焦重绘不能覆盖Lua持有的新阈值。
+        end
+        assert(h:Click('v3_buff_hud_calibration_apply_inputs'))
+        assert(C.colorDraft.target.distanceRules[2].meters==22,'Apply ignored the pending distance input')
+        assert(panel.input.root:GetText()=='22'and h.writes==writes)
+        assert(C:Exit(true));assert(F:GetHudColorsProjection().target.distanceRules[2].meters==22)
+    end
+end)
+Test('duplicate distance Apply reports the conflict and preserves the typed input',function()
+    local h,S,F,C=Calibration(true);assert(C:SetScope('target'));assert(C:SetComponent('distance'))
+    local panel=C.distanceColorPanel;assert(panel:UseExamples());local writes=h.writes
+    assert(panel.input:BeginEditing('distance_duplicate'));panel.input.root:SetText('22')
+    local ok,err=h:Click('v3_buff_hud_calibration_apply_inputs')
+    assert(ok==false and tostring(err):find('22',1,true),'duplicate Apply was treated as success')
+    assert(panel.input:GetDraftNumber()==22,'rejected Apply silently restored 15m')
+    assert(C.colorDraft.target.distanceRules[2].meters==15 and h.writes==writes)
+    assert(C.statusLabel:GetText():find('22',1,true),'duplicate threshold has no visible feedback')
+    assert(C:Exit(false))
+end)
+Test('color picker Apply consumes the pending distance together with the selected RGB',function()
+    local h,S,F,C=Calibration(true);assert(C:SetScope('target'));assert(C:SetComponent('distance'))
+    local panel=C.distanceColorPanel;assert(panel:UseExamples());assert(panel:Select(3));assert(panel:Delete());assert(panel:Select(2))
+    local writes=h.writes;assert(panel.input:BeginEditing('distance_color_apply'));panel.input.root:SetText('22')
+    assert(panel.input:SuspendEditing('distance_color_blur'));panel.input.root:SetText('15')
+    panel.color:BeginDraft();panel.color.hexInput.root:SetText('#336699');assert(panel.color:ApplyDraft())
+    local row=C.colorDraft.target.distanceRules[2]
+    assert(row.meters==22 and Same(row.color[1],0.2)and Same(row.color[3],0.6),'color Apply lost the pending threshold')
+    assert(h.writes==writes);assert(C:Exit(false))
+end)
+Test('save and exit consumes an unsubmitted distance without depending on blur',function()
+    local h,S,F,C=Calibration(true);assert(C:SetScope('target'));assert(C:SetComponent('distance'))
+    local panel=C.distanceColorPanel;assert(panel:UseExamples());assert(panel:Select(3));assert(panel:Delete());assert(panel:Select(2))
+    assert(panel.input:BeginEditing('distance_save'));panel.input.root:SetText('22')
+    assert(C:Exit(true));assert(F:GetHudColorsProjection().target.distanceRules[2].meters==22)
+end)
+Test('distance editor displays plain digits and places the unit beside the input',function()
+    local h,S,F,C=Calibration(true);assert(C:SetScope('target'));assert(C:SetComponent('distance'))
+    local panel=C.distanceColorPanel;assert(panel:UseExamples())
+    assert(panel.input.root:GetText()=='15','distance unit remains inside the editable text')
+    assert(panel.unit and panel.unit.root:GetText()=='米','distance unit is not visible beside the input')
+    assert(panel.unit.x>=panel.input.x+panel.input.width,'unit overlaps the numeric input')
+    assert(panel.color.x+panel.color.width<=282,'separate unit pushed color picker outside the editor')
+    assert(C:Exit(false))
+end)
+Test('every visible HUD calibration numeric row has its own reachable Apply button',function()
+    local h,S,F,C=Calibration(true)
+    for _,scope in ipairs({'player','target'})do
+        assert(C:SetScope(scope))
+        for _,key in ipairs({'plate','buffs','debuffs','cooldowns','info','gearScore','distance','class','mainHand','offHand','ranged','wings','castBar'})do
+            assert(C:SetComponent(key))
+            for name,row in pairs(C.fieldRows)do
+                assert(row.apply,'numeric row has no Apply: '..name)
+                assert(row.apply.shown==row.edit.shown,'Apply visibility differs from its input')
+                if row.edit.shown then
+                    assert(row.apply.x>=row.plus.x+row.plus.width and row.apply.x+row.apply.width<=420)
+                    assert(row.apply.y==row.edit.y and row.apply.y+row.apply.height<=C.enabledButton.y)
+                end
+            end
+        end
+    end
+    assert(C:Exit(false))
+end)
+Test('HUD row Apply consumes latest Native text before blur and only previews until Save',function()
+    for _,key in ipairs({'buffs','debuffs','cooldowns','castBar','gearScore'})do
+        local h,S,F,C=Calibration(true);assert(C:SetComponent(key))
+        local name=key=='gearScore'and 'font'or 'size';local value=key=='gearScore'and 19 or 33
+        local writes=h.writes;C.inputs[name]:SetText(tostring(value))
+        assert(h:Click('v3_buff_hud_calibration_apply_'..name))
+        local draft=C.draft.player.components[key]
+        assert((name=='font'and draft.fontSize or draft.size)==value,'row Apply ignored its input')
+        assert(h.writes==writes,'row Apply wrote persistent settings')
+        assert(C:Exit(false));assert(h.writes==writes,'cancel persisted the preview')
+    end
+end)
+Test('HUD Save consumes unsubmitted geometry and invalid text keeps the editor open',function()
+    for _,key in ipairs({'buffs','debuffs','cooldowns'})do
+        local h,S,F,C=Calibration(true);assert(C:SetScope('target'));assert(C:SetComponent(key))
+        C.inputs.size:SetText('35');C.inputs.perRow:SetText('11');C.inputs.alpha:SetText('0.65')
+        assert(C:Exit(true))
+        local saved=F.Commands:GetHudCalibrationSnapshot().target.components[key]
+        assert(saved.size==35 and saved.maxPerRow==11 and Same(saved.alpha,0.65),'Save discarded pending numeric inputs')
+    end
+    local h,S,F,C=Calibration(true);local writes=h.writes;local old=C.draft.player.components.buffs.size
+    C.inputs.size:SetText('35');C.inputs.font:SetText('')
+    local ok,err=C:Exit(true)
+    assert(ok==false and C.visible and err,'invalid pending geometry silently closed the editor')
+    assert(h.writes==writes and C.draft.player.components.buffs.size==old,'invalid form partially committed')
+    assert(C.inputs.size:GetText()=='35'and C.inputs.font:GetText()=='','rejected Save erased pending text')
+    assert(C:Exit(false))
+end)
+local function CalibrationInputDiff()
+    local h,S,F,C=Calibration(true)
+    dofile('ui/rs_ui_framework.lua');GetFocusedWidgetId=nil
+    for _,input in pairs(C.inputControls or {})do
+        local n=input.root;n.rsUiKeyboardInput=true
+        function n:EnableKeyboard(value)self.keyboard=value end
+        function n:SetFocus()error('numeric buffer observation must not request focus')end
+        function n:ClearFocus()error('unknown focus must not be cleared')end
+        assert(S.UI:AdoptV3Widget(n,input.owner,input.id))
+        S.UI:PrimeNativeState(n,{text=n.text,visible=n.shown,enabled=true})
+    end
+    return h,S,F,C
+end
+Test('real calibration input drafts survive refresh and applying another row without focus APIs',function()
+    local h,S,F,C=CalibrationInputDiff();local writes=h.writes;local oldX=C.draft.player.components.buffs.x
+    C.inputs.x:SetText('123');C.inputs.size:SetText('33');assert(C:RefreshControls())
+    assert(C.inputs.x:GetText()=='123'and C.inputs.size:GetText()=='33','refresh erased Native numeric drafts')
+    assert(h:Click('v3_buff_hud_calibration_apply_size'))
+    assert(C.draft.player.components.buffs.size==33 and C.draft.player.components.buffs.x==oldX)
+    assert(C.inputs.x:GetText()=='123','single-row Apply erased another pending field')
+    C.inputs.x.events.OnLostFocus()
+    assert(h:Click('v3_buff_hud_calibration_apply_x')and C.draft.player.components.buffs.x==123)
+    assert(S.UI:GetAuthoritySnapshot().violations==0 and h.writes==writes)
+    assert(C:Exit(false));assert(h.writes==writes)
+end)
+Test('switching HUD contexts and restoring layouts cancel old numeric drafts',function()
+    local h,S,F,C=CalibrationInputDiff();local writes=h.writes
+    C.inputs.size:SetText('41');assert(C:RefreshControls());assert(C.inputControls.size:HasDraftSession())
+    assert(C:SetComponent('debuffs'))
+    assert(not C.inputControls.size:HasDraftSession()and tonumber(C.inputs.size:GetText())==C.draft.player.components.debuffs.size)
+    C.inputs.size:SetText('42');assert(C:RefreshControls());assert(C:ResetCurrentComponent())
+    assert(not C.inputControls.size:HasDraftSession()and tonumber(C.inputs.size:GetText())==C.draft.player.components.debuffs.size)
+    C.inputs.size:SetText('43');assert(C:RefreshControls());assert(C:SetScope('target'))
+    assert(not C.inputControls.size:HasDraftSession()and tonumber(C.inputs.size:GetText())==C.draft.target.components.debuffs.size)
+    C.inputs.size:SetText('44');assert(C:RefreshControls());assert(C:ApplyLayoutPreset('original'))
+    assert(not C.inputControls.size:HasDraftSession()and tonumber(C.inputs.size:GetText())==C.draft.target.components.debuffs.size)
+    assert(C:Exit(false));assert(C:Open());assert(not C.inputControls.size:HasDraftSession())
+    assert(C:Exit(false));assert(h.writes==writes)
+end)
+Test('numeric step buttons start from pending text and unchanged display precision does not rewrite the draft',function()
+    local h,S,F,C=CalibrationInputDiff();local writes=h.writes
+    C.inputs.size:SetText('22');assert(h:Click('v3_buff_hud_calibration_plus_size'))
+    assert(C.draft.player.components.buffs.size==23 and C.inputs.size:GetText()=='23')
+    C.draft.player.plateScale=1.337;assert(C:RefreshControls(true))
+    C.inputs.size:SetText('34');assert(C:ApplyInputFields())
+    assert(C.draft.player.plateScale==1.337,'unchanged rounded scale was rewritten during Apply')
+    assert(C.draft.player.components.buffs.size==34 and S.UI:GetAuthoritySnapshot().violations==0)
+    assert(C:Exit(false));assert(h.writes==writes)
+end)
+Test('failed coordinate nudge validates both fields before changing a calibration draft',function()
+    local h,S,F,C=CalibrationInputDiff();local old=C.draft.player.components.buffs.x
+    C.inputs.x:SetText('12');C.inputs.y:SetText('')
+    local ok,err=C:Nudge(1,0)
+    assert(ok==false and err and C.draft.player.components.buffs.x==old,'failed nudge partially applied X')
+    assert(C.inputs.x:GetText()=='12'and C.inputs.y:GetText()=='','failed nudge erased the input')
+    assert(C:SetComponent('debuffs'));assert(C:Exit(true))
+    assert(F.Commands:GetHudCalibrationSnapshot().player.components.buffs.x==old,'failed nudge leaked into saved geometry')
+end)
 print(string.format('HUD COLORS RESULT %d passed / %d failed',passed,failed))
 assert(failed==0,'HUD color regressions failed')

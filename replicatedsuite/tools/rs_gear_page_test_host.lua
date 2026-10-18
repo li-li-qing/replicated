@@ -34,7 +34,7 @@ return function(options)
     F.SetQuickHudVisible=function()return true end
     F.SyncQuickButtonsHost=function()return true end
     local function Native(parent,id,x,y,w,ht)
-        local n={parent=parent,id=id,x=x or 0,y=y or 0,width=w or 1,height=ht or 1,shown=true,enabled=true,pickable=false,text='',events={},rsUiOwner='test:gear'}
+        local n={parent=parent,rsUiParent=parent,id=id,x=x or 0,y=y or 0,width=w or 1,height=ht or 1,shown=true,enabled=true,pickable=false,text='',events={},rsUiOwner='test:gear'}
         function n:GetParent()return self.parent end
         function n:GetWidth()return self.width end
         function n:GetHeight()return self.height end

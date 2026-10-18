@@ -71,7 +71,7 @@ end
 -- 控件自行持有边界，各页共享，无需本地抑制标志或永久轮询。
 RSUI.InteractiveDraftContractVersion = 4
 RSUI.InputDraftCommitContractVersion = 3
-RSUI.InputDraftSessionContractVersion = 2 -- DraftSession V2 将 Lua 草稿寿命与 RU Native Focus 分离；显式确认输入失焦只挂起，不再提交/恢复 Authority。
+RSUI.InputDraftSessionContractVersion = 3 -- Native可编辑缓冲按文字差异接入草稿；不依赖RU不可用的焦点getter或OnClick投递。
 RSUI.InputActionDraftReadContractVersion = 1 -- 约束（2026-09-25）：按钮 OnClick 与 Native OnLostFocus 的先后顺序不是稳定 ABI；业务确认动作必须读取当前草稿/Native 可见值，不能只读尚未提交的 Binding。
 RSUI.NumericInputDraftReadContractVersion = 1
 RSUI.InputFocusVisualContractVersion = 1
@@ -115,6 +115,7 @@ end
 
 local function ShouldPreserveDraft(component, source)
     if component == nil or CanOverrideActiveDraft(source) == true then return false end
+    if type(component.ObserveNativeDraft)=='function' then component:ObserveNativeDraft('ambient_render') end
     -- 约束（DraftSession V2）：ambient Render 是否可覆盖输入，Authority 是 Lua draft session，
     -- 不能再依赖 RU Native Focus。LostFocus 后显式确认型输入仍保留 draftActive，页面/投影刷新必须继续让路。
     if type(component.HasDraftSession) == "function" and component:HasDraftSession() == true then return true end
@@ -128,6 +129,22 @@ end
 
 local function CountDraftSuppression()
     RSUI.metrics.interactiveDraftRenderSuppressions = (tonumber(RSUI.metrics.interactiveDraftRenderSuppressions) or 0) + 1
+end
+
+-- SetText的false既可能是Diff无操作，也可能是Native失败。只在回读确认后推进
+-- 编辑缓冲基线，否则下一次刷新会把未写成功的旧值误认为用户新草稿，阻止重试。
+local function RenderInputBuffer(component,text,source)
+    -- Shell可先隐藏、后导航；隐藏期间的环境刷新既不能恢复文字，也不能将其误审。
+    -- 明确取消/提交仍由各自事务处理缓冲交接。
+    if component.lastRenderedText~=nil and not CanOverrideActiveDraft(source) and type(UI.IsEditableInputBufferUsable)=='function'
+        and UI:IsEditableInputBufferUsable(component.root,component.owner)~=true then return false end
+    UI:SetText(component.root,text,component.owner)
+    local root=component.root
+    if root==nil or type(root.GetText)~='function' then return false end
+    local ok,actual=pcall(function()return root:GetText()end)
+    if not ok or tostring(actual or '')~=text then return false end
+    component.lastRenderedText=text;component.lastObservedNativeText=text
+    return true
 end
 
 -- 延迟 EditBox 键盘所有权：构建时 EnableKeyboard(true) 可能抢走移动/技能键；输入初始静默，仅明确点击激活，LostFocus 总是解除，不增加 Tick/轮询。
@@ -197,6 +214,8 @@ end
 -- 组件本地编辑所有权决定草稿寿命；弱引用事件协调器让新点击输入结束另一活跃 Suite 输入，不持有已释放组件或轮询。
 local DraftCoordinator = type(RSUI.InputDraftCoordinator) == "table" and RSUI.InputDraftCoordinator or {}
 DraftCoordinator.active = type(DraftCoordinator.active) == "table" and DraftCoordinator.active or setmetatable({}, { __mode = "k" })
+DraftCoordinator.byNative=type(DraftCoordinator.byNative)=='table'and DraftCoordinator.byNative or setmetatable({}, {__mode='kv'})
+DraftCoordinator.byScope=setmetatable({}, {__mode='k'})
 DraftCoordinator.metrics = type(DraftCoordinator.metrics) == "table" and DraftCoordinator.metrics or {
     began = 0, suspended = 0, committed = 0, cancelled = 0, ended = 0, renderSuppressions = 0,
 }
@@ -244,15 +263,71 @@ function DraftCoordinator:Begin(component)
     return true
 end
 
+-- 原生父身份在本generation不可变，构建时索引输入所属子树。page fence仅检查本范围
+-- 的编辑缓冲，不遍历整个UI；只用既有刷新/动作边界，不加轮询/未知Native事件。
+local function InstallNativeDraftObservation(component)
+    component.root.rsUiDraftInput=true
+    DraftCoordinator.byNative[component.root]=component
+    component._draftScopes={}
+    local node,guard=component.root,0
+    while node~=nil and node~=UIParent and guard<64 do
+        local inputs=DraftCoordinator.byScope[node]
+        if inputs==nil then inputs=setmetatable({}, {__mode='k'});DraftCoordinator.byScope[node]=inputs end
+        inputs[component]=true;component._draftScopes[#component._draftScopes+1]=node
+        node=node.rsUiParent;guard=guard+1
+    end
+    function component:ObserveNativeDraft(reason)
+        if self.released==true or self.enabled==false or self._endingEdit==true or self.root==nil
+            or type(UI.AdoptEditableInputDraftText)~='function' then return false end
+        local adopted,text=UI:AdoptEditableInputDraftText(self.root,self.owner,self.lastObservedNativeText or self.lastRenderedText)
+        if adopted~=true then return false end
+        if self.draftActive~=true then self.draftActive=true;DraftCoordinator:Bump('began') end
+        self.draftText=text;self.lastObservedNativeText=text;self.nativeDraftObserved=true
+        self.draftLastReason=tostring(reason or 'native_text')
+        -- 只记录编辑缓冲所有权；没有焦点证据时不撤销其它输入、不启键盘、不画聚焦边框。
+        DraftCoordinator.active[self]=true;DraftCoordinator:Bump('nativeTextAdoptions')
+        return true
+    end
+end
+
+local function UnindexDraftInput(component)
+    DraftCoordinator.byNative[component.root]=nil
+    for _,node in ipairs(component._draftScopes or {})do
+        local inputs=DraftCoordinator.byScope[node]
+        if inputs then inputs[component]=nil end
+    end
+    component._draftScopes=nil
+end
+
+-- 原生owner释放/构建回滚也可能先于组件Release。显式拆索引，不等待弱引用GC；
+-- 退役只结束草稿，不提交业务、不读取/回写正文。
+function DraftCoordinator:RetireNative(widget)
+    local component=self.byNative[widget]
+    if component==nil then return end
+    CancelInputLostFocusRecheck(component)
+    self:Forget(component);UnindexDraftInput(component)
+    if component.draftActive==true then self:Bump('ended') end
+    component.draftActive=false;component.draftText=nil;component.editing=false
+    component.nativeDraftObserved=false
+end
+
+function RSUI:CancelInputDraftsWithin(ancestor,reason)
+    local inputs=ancestor and DraftCoordinator.byScope[ancestor.root or ancestor]
+    for component in pairs(inputs or {})do
+        if component.released~=true then component:CancelEditing(reason or 'scope_deactivated') end
+    end
+end
+
 -- 约束（DraftSession V2 / page fence）：高频 UnitLines/RangeAssist Presentation 刷新
 -- 必须看 draftActive，而不是 Native Focus。真实 RU LostFocus 可以先于用户完成输入；若这里只看 IsEditing，
 -- blur 后页面会立即恢复 Authority 文本，正是“删一个字符过一会又变回来”的根因。
-RSUI.InputDraftScopeContractVersion = 2
-function DraftCoordinator:HasActiveWithin(ancestor)
+RSUI.InputDraftScopeContractVersion = 3
+function DraftCoordinator:HasActiveWithin(ancestor,observeNative)
     if ancestor == nil then return false end
     local stale = {}
     for active in pairs(self.active) do
-        local hasDraft = active ~= nil and active.released ~= true
+        local hasDraft = active ~= nil and active.released ~= true and active.root~=nil
+            and active.root.rsUiInputLifecycleRetired~=true
             and type(active.HasDraftSession) == "function" and active:HasDraftSession() == true
         if not hasDraft then
             stale[#stale + 1] = active
@@ -266,10 +341,17 @@ function DraftCoordinator:HasActiveWithin(ancestor)
         end
     end
     for _, active in ipairs(stale) do self.active[active] = nil end
+    if observeNative==false then return false end
+    local inputs=self.byScope[ancestor.root or ancestor]
+    for component in pairs(inputs or {})do
+        component:ObserveNativeDraft('page_draft_fence')
+        if component.released~=true and component.root.rsUiInputLifecycleRetired~=true
+            and component:HasDraftSession() then return true end
+    end
     return false
 end
-function RSUI:HasActiveInputDraftWithin(ancestor)
-    return DraftCoordinator:HasActiveWithin(ancestor)
+function RSUI:HasActiveInputDraftWithin(ancestor,observeNative)
+    return DraftCoordinator:HasActiveWithin(ancestor,observeNative)
 end
 
 function DraftCoordinator:GetSnapshot()
@@ -279,15 +361,17 @@ function DraftCoordinator:GetSnapshot()
             and component:HasDraftSession() == true then
             activeCount = activeCount + 1
             ids[#ids + 1] = tostring(component.id or "input")
-            if type(component.IsEditing) == "function" and component:IsEditing() == true then focusedCount = focusedCount + 1 end
+            if component.editing==true or (component.root and component.root.rsUiKeyboardArmed==true) then focusedCount = focusedCount + 1 end
         end
     end
     table.sort(ids)
     return {
-        version = 2, active = activeCount, focused = focusedCount, ids = ids,
+        version = 3, active = activeCount, focused = focusedCount, ids = ids,
         began = tonumber(self.metrics.began) or 0, suspended = tonumber(self.metrics.suspended) or 0,
         committed = tonumber(self.metrics.committed) or 0, cancelled = tonumber(self.metrics.cancelled) or 0,
         ended = tonumber(self.metrics.ended) or 0,
+        nativeFocusAdoptions = tonumber(self.metrics.nativeFocusAdoptions) or 0,
+        nativeTextAdoptions = tonumber(self.metrics.nativeTextAdoptions) or 0,
         renderSuppressions = tonumber(RSUI.metrics.interactiveDraftRenderSuppressions) or 0,
     }
 end
@@ -474,6 +558,7 @@ RSUI:RegisterType("TextInput", function(spec)
     c.editing = false
     c.draftActive = false
     c.draftText = nil
+    InstallNativeDraftObservation(c)
     c.draftCommitMode = tostring(spec.draftCommitMode or (spec.submitOnLostFocus == false and "explicit" or "blur"))
     if c.draftCommitMode ~= "explicit" then c.draftCommitMode = "blur" end
     local function Normalize(value)
@@ -482,18 +567,20 @@ RSUI:RegisterType("TextInput", function(spec)
         return text
     end
     local function NativeText(self)
-        if self.root ~= nil and type(self.root.GetText) == "function" then return Normalize(self.root:GetText()) end
+        if self.root ~= nil and type(self.root.GetText) == "function" then return tostring(self.root:GetText() or "") end
         return Normalize(self.value)
     end
     local function CaptureDraft(self, reason)
         if self.draftActive ~= true then return NativeText(self) end
         self.draftText = NativeText(self)
+        self.lastObservedNativeText=self.draftText
         self.draftLastReason = tostring(reason or "capture")
         return self.draftText
     end
     local function ClearDraft(self, outcome, reason)
         local existed = self.draftActive == true
         self.draftActive, self.draftText = false, nil
+        self.nativeDraftObserved=false
         self.draftLastFinalizeReason = tostring(reason or outcome or "end")
         DraftCoordinator:Forget(self)
         if existed and outcome ~= nil then DraftCoordinator:Bump(outcome) end
@@ -504,9 +591,10 @@ RSUI:RegisterType("TextInput", function(spec)
     -- 约束（DraftSession V2 / detached draft）：Native EditBox 只在当前持有焦点时作为输入载体；
     -- 失焦后的 Authority 是 Lua draftText，不能重新读取可能被 RU/页面刷新改写过的 Native 文本。
     function c:GetDraftValue()
+        self:ObserveNativeDraft('draft_read')
         if self.draftActive == true then
             if self:IsEditing() == true then return CaptureDraft(self, "draft_read") end
-            return Normalize(self.draftText)
+            return tostring(self.draftText or "")
         end
         return NativeText(self)
     end
@@ -527,8 +615,7 @@ RSUI:RegisterType("TextInput", function(spec)
             return self:GetDraftValue()
         end
         if explicitValue == nil then self.value = value end
-        UI:SetText(self.root, value, self.owner)
-        self.lastRenderedText = value
+        RenderInputBuffer(self,value,source)
         return value
     end
     function c:SetValue(value, notify, source)
@@ -554,7 +641,7 @@ RSUI:RegisterType("TextInput", function(spec)
     end
     function c:Submit(source)
         if self.enabled == false then return false end
-        local value = self:GetDraftValue()
+        local value = Normalize(self:GetDraftValue())
         if spec.allowEmpty == false and value == "" then
             self:Render(nil, "rejected")
             if type(spec.onInvalid) == "function" then RSUI:Callback("rsui:" .. self.id .. ":invalid", spec.onInvalid, value, self) end
@@ -577,6 +664,10 @@ RSUI:RegisterType("TextInput", function(spec)
     function c:BeginEditing(source)
         CancelInputLostFocusRecheck(self)
         local hadDraft = self.draftActive == true
+        -- 持续编辑可能先由Native焦点接管；迟到OnClick须先捕获新字符，不能回写旧draft。
+        -- 仅Lua editing判定持续会话；暂停重入时Native已focus，仍须恢复原Lua草稿。
+        local continuing=hadDraft and (self.editing==true or self.nativeDraftObserved==true)
+        if continuing then CaptureDraft(self,source or 'text_input_continue')end
         if not hadDraft then
             self.draftActive = true
             self.draftText = NativeText(self)
@@ -585,7 +676,7 @@ RSUI:RegisterType("TextInput", function(spec)
         end
         DraftCoordinator:Begin(self)
         -- 失焦后若 RU 重绘休眠 EditBox，重启键盘前先恢复 Lua 持有草稿。
-        if self.draftText ~= nil then UI:SetText(self.root, tostring(self.draftText), self.owner) end
+        if self.draftText ~= nil and not continuing then UI:SetText(self.root, tostring(self.draftText), self.owner) end
         local ok, err = BeginEditInteraction(self, source or ("text_input:" .. tostring(self.id)))
         if ok == true then
             self.editing = true
@@ -602,6 +693,7 @@ RSUI:RegisterType("TextInput", function(spec)
     function c:SuspendEditing(source)
         CancelInputLostFocusRecheck(self)
         if self.draftActive == true then CaptureDraft(self, source or "text_input_suspend") end
+        self.nativeDraftObserved=false
         local wasEditing = self:IsEditing()
         local nested = self._endingEdit == true
         self._endingEdit = true
@@ -630,6 +722,7 @@ RSUI:RegisterType("TextInput", function(spec)
     end
     function c:CancelEditing(source)
         CancelInputLostFocusRecheck(self)
+        if type(UI.PrepareInputDraftDiscard)=='function' then UI:PrepareInputDraftDiscard(self.root,self.owner) end
         local wasEditing = self:IsEditing()
         local nested = self._endingEdit == true
         self._endingEdit = true
@@ -643,6 +736,7 @@ RSUI:RegisterType("TextInput", function(spec)
     end
     function c:CommitAndEndEditing(source)
         CancelInputLostFocusRecheck(self)
+        self:ObserveNativeDraft('action_commit')
         local nested = self._endingEdit == true
         self._endingEdit = true
         local committed = self:Submit(source or "edit_commit")
@@ -665,6 +759,7 @@ RSUI:RegisterType("TextInput", function(spec)
     local BaseRelease = c.Release
     function c:Release()
         if self.released == true then return 0 end
+        UnindexDraftInput(self)
         CancelInputLostFocusRecheck(self)
         if self:HasDraftSession() or self:IsEditing() then self:CancelEditing("text_input_release") else DraftCoordinator:Forget(self); SetInputFocusVisual(self, false) end
         return BaseRelease(self)
@@ -674,12 +769,14 @@ RSUI:RegisterType("TextInput", function(spec)
     if activationBound ~= true then return c end
     for _, eventName in ipairs({ "OnEnterPressed", "OnEditEnter" }) do
         c:On(edit, eventName, function()
+            c:ObserveNativeDraft('enter')
             if c:HasDraftSession() ~= true and c:IsEditing() ~= true then return true end
             return c:CommitAndEndEditing("enter")
         end, "rsui:" .. spec.id .. ":" .. eventName)
     end
     local function FinalizeTextInputLostFocus(source)
         if c._endingEdit == true then return true end
+        c:ObserveNativeDraft('lost_focus')
         if c.draftCommitMode == "explicit" then
             return c:SuspendEditing(tostring(source or "text_input_lost_focus"))
         end
@@ -722,6 +819,7 @@ RSUI:RegisterType("NumericInput", function(spec)
     c.editing = false
     c.draftActive = false
     c.draftText = nil
+    InstallNativeDraftObservation(c)
     c.draftCommitMode = tostring(spec.draftCommitMode or "blur")
     if c.draftCommitMode ~= "explicit" then c.draftCommitMode = "blur" end
     local function NativeText(self)
@@ -731,12 +829,14 @@ RSUI:RegisterType("NumericInput", function(spec)
     local function CaptureDraft(self, reason)
         if self.draftActive ~= true then return NativeText(self) end
         self.draftText = NativeText(self)
+        self.lastObservedNativeText=self.draftText
         self.draftLastReason = tostring(reason or "capture")
         return self.draftText
     end
     local function ClearDraft(self, outcome, reason)
         local existed = self.draftActive == true
         self.draftActive, self.draftText = false, nil
+        self.nativeDraftObserved=false
         self.draftLastFinalizeReason = tostring(reason or outcome or "end")
         DraftCoordinator:Forget(self)
         if existed and outcome ~= nil then DraftCoordinator:Bump(outcome) end
@@ -745,6 +845,7 @@ RSUI:RegisterType("NumericInput", function(spec)
     function c:GetValue() return NormalizeNumber(spec, Read(self.binding, self.value)) end
     function c:HasDraftSession() return self.draftActive == true end
     function c:GetDraftValue()
+        self:ObserveNativeDraft('draft_read')
         if self.draftActive == true then
             if self:IsEditing() == true then return CaptureDraft(self, "draft_read") end
             return tostring(self.draftText or "")
@@ -781,8 +882,7 @@ RSUI:RegisterType("NumericInput", function(spec)
         end
         if explicitValue == nil then self.value = value end
         local rendered = self:Format(value)
-        UI:SetText(self.root, rendered, self.owner)
-        self.lastRenderedText = rendered
+        RenderInputBuffer(self,rendered,source)
         return value
     end
     function c:Submit(source)
@@ -807,6 +907,9 @@ RSUI:RegisterType("NumericInput", function(spec)
     function c:BeginEditing(source)
         CancelInputLostFocusRecheck(self)
         local hadDraft = self.draftActive == true
+        -- 与TextInput同一交接：持续编辑读Native新字符，暂停重入才恢复Lua草稿。
+        local continuing=hadDraft and (self.editing==true or self.nativeDraftObserved==true)
+        if continuing then CaptureDraft(self,source or 'numeric_input_continue')end
         if not hadDraft then
             self.draftActive = true
             self.draftText = NativeText(self)
@@ -814,7 +917,7 @@ RSUI:RegisterType("NumericInput", function(spec)
             DraftCoordinator:Bump("began")
         end
         DraftCoordinator:Begin(self)
-        if self.draftText ~= nil then UI:SetText(self.root, tostring(self.draftText), self.owner) end
+        if self.draftText ~= nil and not continuing then UI:SetText(self.root, tostring(self.draftText), self.owner) end
         local ok, err = BeginEditInteraction(self, source or ("numeric_input:" .. tostring(self.id)))
         if ok == true then
             self.editing = true
@@ -831,6 +934,7 @@ RSUI:RegisterType("NumericInput", function(spec)
     function c:SuspendEditing(source)
         CancelInputLostFocusRecheck(self)
         if self.draftActive == true then CaptureDraft(self, source or "numeric_input_suspend") end
+        self.nativeDraftObserved=false
         local wasEditing = self:IsEditing()
         local nested = self._endingEdit == true
         self._endingEdit = true
@@ -858,6 +962,7 @@ RSUI:RegisterType("NumericInput", function(spec)
     end
     function c:CancelEditing(source)
         CancelInputLostFocusRecheck(self)
+        if type(UI.PrepareInputDraftDiscard)=='function' then UI:PrepareInputDraftDiscard(self.root,self.owner) end
         local wasEditing = self:IsEditing()
         local nested = self._endingEdit == true
         self._endingEdit = true
@@ -871,6 +976,7 @@ RSUI:RegisterType("NumericInput", function(spec)
     end
     function c:CommitAndEndEditing(source)
         CancelInputLostFocusRecheck(self)
+        self:ObserveNativeDraft('action_commit')
         local nested = self._endingEdit == true
         self._endingEdit = true
         local committed = self:Submit(source or "edit_commit")
@@ -893,6 +999,7 @@ RSUI:RegisterType("NumericInput", function(spec)
     local BaseRelease = c.Release
     function c:Release()
         if self.released == true then return 0 end
+        UnindexDraftInput(self)
         CancelInputLostFocusRecheck(self)
         if self:HasDraftSession() or self:IsEditing() then self:CancelEditing("numeric_input_release") else DraftCoordinator:Forget(self); SetInputFocusVisual(self, false) end
         return BaseRelease(self)
@@ -902,12 +1009,14 @@ RSUI:RegisterType("NumericInput", function(spec)
     if activationBound ~= true then return c end
     for _, eventName in ipairs({ "OnEnterPressed", "OnEditEnter" }) do
         c:On(edit, eventName, function()
+            c:ObserveNativeDraft('enter')
             if c:HasDraftSession() ~= true and c:IsEditing() ~= true then return true end
             return c:CommitAndEndEditing("enter")
         end, "rsui:" .. spec.id .. ":" .. eventName)
     end
     local function FinalizeNumericInputLostFocus(source)
         if c._endingEdit == true then return true end
+        c:ObserveNativeDraft('lost_focus')
         if c.draftCommitMode == "explicit" then
             return c:SuspendEditing(tostring(source or "numeric_input_lost_focus"))
         end

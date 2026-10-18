@@ -170,6 +170,7 @@ features/combat/buff_display/rs_buff_display_management.lua
 features/combat/buff_display/rs_buff_display_transfer_v2.lua
 features/combat/buff_display/rs_buff_display_colors.lua
 features/combat/buff_display/rs_buff_display_arrangement.lua
+features/combat/buff_display/rs_buff_display_placement.lua
 -- 2026-09-20 nameplate-mark-ratio-3：头标使用 name_tag_mark_size_ratio；Store schema1 保持兼容，禁止页面直写 X2Option。
 features/combat/nameplate_visuals/rs_nameplate_visuals_store.lua
 features/combat/nameplate_visuals/rs_nameplate_visuals_authority.lua

@@ -77,6 +77,45 @@ Test('unknown shared error stays in system ring',function()
     assert(#H:GetRecent('system')==1)
 end)
 
+Test('module capture includes bounded shared input facts and exact page-owned repair identity',function()
+    local S=Boot();local H=S.ModuleDiagnosticsHub;local calls=0
+    local pageRoot,foreignRoot={},{}
+    local input={rsUiParent=pageRoot,rsUiLogicalId='owned_input',rsUiOwner='v3:shell',rsUiKeyboardInput=true}
+    input.GetText=function()error('diagnostics must not read user draft text')end
+    S.UIV3={PageHost={activeRoute='combat.a',pages={['combat.a']={root=pageRoot},['life.b']={root=foreignRoot}}}}
+    S.UI={controls={owned_input=input,foreign_input={rsUiParent=foreignRoot}},
+        FrameworkMetrics={lifecycle={inputActivationAttempts=3,keyboardArms=1},authority={violations=2,byField={text=2}}},
+        GetFrameworkSnapshot=function()error('do not scan all UI widgets for module diagnostics')end,
+        GetFocusedInputWidget=function()error('not_allowed focus reader invoked')end,
+        IsInputWidgetFocused=function()error('not_allowed focus reader invoked')end,
+        GetCopyInputSnapshot=function()error('not_allowed focus reader invoked')end}
+    S.RSUI={InputDraftSessionContractVersion=3,metrics={byType={NumericInput={events=4},TextInput={events=2}}},
+        GetInputDraftSessionSnapshot=function()calls=calls+1;return {version=3,active=2,began=3,nativeTextAdoptions=1,
+            ids={'owned_input','foreign_input'},draftText='PRIVATE_DRAFT'}end}
+    S.DiagnosticsManager:Warn('ui_v3','AUTHORITY_VIOLATION','PRIVATE_DRAFT',{owner='v3:shell',logicalId='owned_input',field='text'})
+    assert(calls==0,'shared input collector ran before explicit capture')
+    local snapshot=assert(H:Capture('feature_a',900));local text=snapshot.exportReport
+    assert(text:find('[SHARED_INPUT_CONTEXT]',1,true),'module report omitted shared input context')
+    assert(text:find('nativeTextAdoptions',1,true)and text:find('not_allowed',1,true))
+    assert(text:find('owned_input',1,true)and text:find('NumericInput',1,true))
+    assert(not text:find('PRIVATE_DRAFT',1,true),'shared input diagnostics leaked draft/message text')
+    assert(not text:find('foreign_input',1,true),'another page input identity leaked into this module')
+    assert(calls==1,'explicit capture did not sample exactly once')
+    local capturedCalls=calls;assert(H:GetPage(snapshot,1));assert(H:Repage(snapshot,700));assert(calls==capturedCalls,'paging resampled input state')
+    assert(#H:GetRecent('feature_a')==0 and #H:GetRecent('system')==1,'shared input report changed fault attribution')
+end)
+
+Test('missing or failing shared input facts remain explicit without aborting module capture',function()
+    local S=Boot();local H=S.ModuleDiagnosticsHub
+    local text=assert(H:BuildReport('feature_a'));assert(text:find('[SHARED_INPUT_CONTEXT]',1,true))
+    assert(text:find('unavailable',1,true),'missing UI facts silently disappeared')
+    S.RSUI={InputDraftSessionContractVersion=2,GetInputDraftSessionSnapshot=function()error('legacy snapshot called a forbidden reader')end}
+    assert(H:BuildReport('feature_a'):find('legacy_focus_reader_not_sampled',1,true))
+    S.RSUI={InputDraftSessionContractVersion=3,GetInputDraftSessionSnapshot=function()error('input_snapshot_failed')end}
+    local report=assert(H:BuildReport('feature_a'))
+    assert(report:find('input_snapshot_failed',1,true)and report:find('collection=INCOMPLETE',1,true))
+end)
+
 Test('per-module ring remains bounded at 32',function()
     local S=Boot();local D=S.DiagnosticsManager;local H=S.ModuleDiagnosticsHub
     for i=1,40 do D:Warn('combat.a','E'..i,'m'..i,{route='combat.a'}) end

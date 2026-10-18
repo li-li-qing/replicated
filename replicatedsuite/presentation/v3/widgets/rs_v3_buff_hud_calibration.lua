@@ -26,6 +26,7 @@ C.component = C.component or "buffs"
 C.step = tonumber(C.step) or 1
 C.controls = C.controls or {}
 C.inputs = C.inputs or {}
+C.inputControls = C.inputControls or {}
 C.preview = C.preview or { icons = {} }
 C.globalPreview = C.globalPreview or { items = {} }
 C.globalPreviewEnabled = C.globalPreviewEnabled ~= false
@@ -66,6 +67,7 @@ local SAMPLE_ICONS = {
 }
 local SAMPLE_GLYPHS = {mainHand="主",offHand="副",ranged="远",wings="背",class="职",buffs="增",debuffs="减",cooldowns="技"}
 local COMPONENTS = {
+    { key="screen", label="整体位置", fixedOnly=true },
     { key="plate",    label="血条基准" },
     { key="buffs",    label="Buff" },
     { key="debuffs",  label="Debuff" },
@@ -260,6 +262,29 @@ local function Profile()
     profile.info = type(profile.info) == "table" and profile.info or {}
     return profile
 end
+local function ComponentSlot(key,profile)
+    profile=profile or Profile();key=key or C.component
+    local placement=profile.placement or {}
+    local slots=placement.slots
+    if type(slots)~='table'or key=='screen'or key=='plate'then return nil end
+    local slot=slots[key]
+    if not slot and placement.baseMode=='fixed'then
+        slot=Feature:GetDefaultHudComponentPlacement(C.scope,key);slot.mode='fixed'
+    end
+    return type(slot)=='table'and slot.mode=='fixed'and slot or nil
+end
+local function ComponentProfile(key,profile)
+    profile=profile or Profile()
+    local placement=Profile().placement or {}
+    if placement.slots and C.modeLayouts and key~='plate'and key~='screen'then
+        local slot=placement.slots[key]
+        local mode=slot and slot.mode or placement.baseMode or 'head'
+        if mode~=(profile.placement or {}).mode then
+            profile=Copy(C.modeLayouts[C.scope][mode]);profile.placement=Copy(placement);profile.placement.mode=mode
+        end
+    end
+    return profile
+end
 
 -- 约束（target-alias-hud-2，Draft 分层）：目标自定义名字的 HUD 几何不属于历史
 -- player/target Layout Store，因此校准器持有第二份极小 Draft。aliasDraft.hud 只保存显示开关与几何；
@@ -272,6 +297,13 @@ local function AliasDraft()
 end
 
 local function AliasHud()
+    if C.modeLayouts and C.draft and type(C.draft.target)=='table'then
+        local target=C.draft.target
+        if type(target.aliasHud)~='table'then
+            target.aliasHud=Copy(AliasDraft().hud);target.aliasHud.enabled=AliasDraft().enabled~=false
+        end
+        return target.aliasHud
+    end
     return AliasDraft().hud
 end
 
@@ -318,6 +350,11 @@ function C:RefreshAliasEditorSnapshot(forceText)
         }
         self.aliasPersistedConfig = { enabled=draft.enabled, x=draft.hud.x, y=draft.hud.y, fontSize=draft.hud.fontSize, alpha=draft.hud.alpha }
         self.aliasConfigInitialized = true
+        if self.modeLayouts and self.draft and self.draft.target then
+            local current=self.draft.target.aliasHud
+            if type(current)=='table'then draft.hud=current;draft.enabled=current.enabled~=false
+            else self.draft.target.aliasHud=Copy(draft.hud);self.draft.target.aliasHud.enabled=draft.enabled end
+        end
     end
     if self.aliasInput ~= nil and type(self.aliasInput.SetText) == "function"
         and (forceText == true or previousName ~= draft.targetName) then
@@ -328,6 +365,7 @@ end
 
 local function Component(key)
     key=key or C.component
+    if key == "screen" then return Profile().placement or {} end
     if key == "alias" then return AliasHud() end
     local profile = Profile()
     if key == "plate" then return profile.plate end
@@ -336,9 +374,16 @@ local function Component(key)
     return profile.components[key]
 end
 
-local function CurrentFields(key)
+local function CurrentFields(key,suppliedProfile)
     key=key or C.component
-    local profile, component = Profile(), Component(key)
+    local profile=suppliedProfile or Profile()
+    local component=suppliedProfile and (key=='screen'and profile.placement or key=='alias'and profile.aliasHud
+        or key=='plate'and profile.plate or key=='info'and profile.info or profile.components[key])or Component(key)
+    component=component or {}
+    if key=="screen" and type(Feature.ComputeFixedHudAnchor)=="function" then
+        local w,h=ScreenSize();local x,y=Feature.ComputeFixedHudAnchor(component,w,h)
+        return {x=x or 0,y=y or 0,scale=N(profile.plateScale,1)}
+    end
     local fields = { x=N(component.x,0), y=StoredYToScreenY(key, component.y), size=nil, font=nil, alpha=nil, spacing=nil, perRow=nil, rows=nil, width=nil, scale=N(profile.plateScale,1) }
     if key == "plate" then
         fields.width=N(component.width,150); fields.size=N(component.height,20)
@@ -362,13 +407,23 @@ local function CurrentFields(key)
         end
         if key == "castBar" then fields.width=N(component.width,120) end
     end
+    local slot=ComponentSlot(key,profile)
+    if slot then local w,h=ScreenSize();fields.x,fields.y=Feature.ComputeFixedHudAnchor(slot,w,h)end
     return fields
 end
 
 local function ApplyField(name, value)
     local profile, component = Profile(), Component()
     local key = C.component
-    if name == "x" then
+    local fixedSlot=ComponentSlot(key,profile)
+    if fixedSlot and (name=='x'or name=='y')then
+        local w,h=ScreenSize();local extent=name=='x'and w or h
+        fixedSlot[name]=Round(Clamp(value,0,extent,0)/extent*10000)
+        profile.placement.slots[key]=fixedSlot
+    elseif key=="screen" and (name=="x"or name=="y")then
+        local w,h=ScreenSize();local extent=name=="x"and w or h
+        component[name]=Round(Clamp(value,0,extent,0)/extent*10000)
+    elseif name == "x" then
         local lo, hi = -400, 400
         component.x = Round(Clamp(value, lo, hi, component.x or 0))
     elseif name == "y" then
@@ -445,7 +500,13 @@ local function SetCurrentEnabled(value)
     return C:RefreshControls()
 end
 
-local function PreviewAnchor(scope)
+local function PreviewAnchor(scope,profile)
+    profile=profile or type(C.draft)=='table'and C.draft[scope]
+    local placement=type(profile)=='table'and profile.placement
+    if type(placement)=='table'and placement.mode=='fixed'and type(Feature.ComputeFixedHudAnchor)=='function'then
+        local w,h=ScreenSize();local x,y=Feature.ComputeFixedHudAnchor(placement,w,h)
+        return x,y,true
+    end
     local x, y = nil, nil
     if type(Feature.GetPlatesAnchor) == "function" then x, y = Feature:GetPlatesAnchor(scope) end
     if tonumber(x) ~= nil and tonumber(y) ~= nil then return tonumber(x), tonumber(y), true end
@@ -512,9 +573,9 @@ local function PreviewLayoutProfile()
     return profile
 end
 
-local function PreviewRect(key,previewProfile)
+local function BasePreviewRect(key,previewProfile)
     local profile = previewProfile or PreviewLayoutProfile()
-    local anchorX, anchorY, liveAnchor = PreviewAnchor(C.scope)
+    local anchorX, anchorY, liveAnchor = PreviewAnchor(C.scope,profile)
     local compute = Markers and Markers.ComputePlateLayout or nil
     if type(compute) ~= "function" then return { x=anchorX-70, y=anchorY-20, width=140, height=40 }, liveAnchor end
     key = tostring(key or C.component or "buffs")
@@ -526,7 +587,10 @@ local function PreviewRect(key,previewProfile)
     end
     local layout = compute(anchorX, anchorY, profile, buffCount, debuffCount, { mainHand=true, offHand=true, ranged=true, wings=true })
     local scale = N(layout.scale, 1)
-    if key == "plate" then
+    if key == "screen" then
+        -- 整体手柄覆盖血条基准，拖动改变屏幕锚点；组件偏移/大小仍留在原 profile。
+        return { x=layout.bar.left,y=layout.bar.top,width=layout.bar.width,height=layout.bar.height },liveAnchor
+    elseif key == "plate" then
         return { x=layout.bar.left, y=layout.bar.top, width=layout.bar.width, height=layout.bar.height }, liveAnchor
     elseif key == "buffs" or key == "debuffs" then
         local region = key == "buffs" and layout.buff or layout.debuff
@@ -597,6 +661,21 @@ local function PreviewRect(key,previewProfile)
         if slot ~= nil then return { x=Round(slot.x), y=Round(slot.y), width=Round(slot.size), height=Round(slot.size) }, liveAnchor end
     end
     return { x=anchorX-20, y=anchorY-20, width=40, height=40 }, liveAnchor
+end
+
+local function PreviewRect(key,previewProfile)
+    key=key or C.component
+    local profile=ComponentProfile(key,previewProfile)
+    local rect,live=BasePreviewRect(key,profile)
+    local slot=ComponentSlot(key,profile)
+    if slot then
+        local w,h=ScreenSize();rect.x,rect.y=Feature.ComputeFixedHudAnchor(slot,w,h)
+        -- 正式层以首个控件为固定锚点；向上增长的多行图标，其首项不在包围盒左上。
+        local first=rect.grid and rect.grid.slots and rect.grid.slots[1]
+        if first then rect.x,rect.y=rect.x-first.x,rect.y-first.y end
+        live=true
+    end
+    return rect,live
 end
 
 local function ComponentEnabledFor(profile, key)
@@ -740,7 +819,7 @@ function C:LayoutGlobalPreview()
     local simulated=self.allPreviewEnabled == true and 1 or 0
     for _, row in ipairs(COMPONENTS) do
         local key, item = row.key, self.globalPreview.items[row.key]
-        local show = self.globalPreviewEnabled == true and key ~= self.component and not (row.targetOnly == true and self.scope ~= "target")
+        local show = self.globalPreviewEnabled == true and key ~= self.component and key ~= "screen" and not (row.targetOnly == true and self.scope ~= "target")
         if item ~= nil then
             SafeVisible(item.root, show)
             if show then
@@ -757,7 +836,7 @@ function C:LayoutGlobalPreview()
                     simulated=simulated+1
                 else
                     if item.preview then SetPreviewChildrenVisible(item.preview,"none") end
-                    local enabled = ComponentEnabledFor(profile, key)
+                    local enabled = ComponentEnabledFor(ComponentProfile(key,profile), key)
                     S.UI:SetAlpha(item.root, enabled and 0.62 or 0.28, self.owner)
                     local label = row.label
                     if key == "buffs" then label = "Buff ×4"
@@ -911,6 +990,18 @@ function C:BuildTemplateSnapshotLines(meta)
         -- class 的 enabled 与 BASE.info.class 均保留，维护者按现有双开关语义重建，不在导出时做归一化写入。
         lines[#lines+1] = "HUD_TEMPLATE_V1|"..scopeName.."|CLASS|"
             ..TemplateComponent(profile,"class",{size=0})
+        if type(profile.placement)=='table'then
+            local position=profile.placement
+            lines[#lines+1]='HUD_TEMPLATE_V1|'..scopeName..'|PLACEMENT|mode='..tostring(position.mode)
+                ..',x='..TemplateNumber(position.x,5000)..',y='..TemplateNumber(position.y,6800)
+                ..',space=viewport_basis_points'
+            for _,row in ipairs(COMPONENTS)do
+                local slot=position.slots and position.slots[row.key]
+                if slot then lines[#lines+1]='HUD_TEMPLATE_V1|'..scopeName..'|SLOT|component='..row.key
+                    ..',mode='..tostring(slot.mode)..',x='..TemplateNumber(slot.x,5000)..',y='..TemplateNumber(slot.y,6800)
+                    ..',space=viewport_basis_points'end
+            end
+        end
         if C.colorDraft then
             local palette=C.colorDraft[scopeName=='PLAYER'and 'player'or 'target'];local fields={}
             for _,definition in ipairs(Feature:GetHudColorDefinitions())do
@@ -918,6 +1009,11 @@ function C:BuildTemplateSnapshotLines(meta)
                 fields[#fields+1]=definition.key..'='..string.format('%02X%02X%02X',Round(color[1]*255),Round(color[2]*255),Round(color[3]*255))
             end
             lines[#lines+1]='HUD_TEMPLATE_V1|'..scopeName..'|COLORS|'..table.concat(fields,',')
+            local rules={}
+            for _,row in ipairs(palette.distanceRules or {})do
+                rules[#rules+1]=row.meters..'='..string.format('%02X%02X%02X',Round(row.color[1]*255),Round(row.color[2]*255),Round(row.color[3]*255))
+            end
+            lines[#lines+1]='HUD_TEMPLATE_V1|'..scopeName..'|DISTANCE_COLORS|'..(#rules>0 and table.concat(rules,',')or 'OFF')
         end
         if type(Feature.GetHudArrangementProjection)=='function'then
             local fields={}
@@ -1166,6 +1262,15 @@ end
 local function PreviewTextColor(widget,key)
     local palette=C.colorDraft and C.colorDraft[C.scope]
     local color=palette and palette[key]
+    if key=='distance'and palette then
+        local meters=C.distanceColorPanel and (palette.distanceRules or {})[C.distanceColorPanel.index]
+        meters=meters and meters.meters or ((C.previewContent or {}).distance or {}).meters or 28.4
+        local rules=palette.distanceRules or {}
+        if #rules>0 then color=rules[#rules].color end
+        for _,row in ipairs(rules)do
+            if meters<=row.meters then color=row.color;break end
+        end
+    end
     if widget and color then widget.rsManualTextColor=true;S.UI:SetColor(widget,color[1],color[2],color[3],1,C.owner)end
 end
 local function RenderPreviewIcon(icon,row,key,size,fields)
@@ -1190,7 +1295,7 @@ local function RenderPreviewIcon(icon,row,key,size,fields)
     SafeText(icon.time,time);SafeVisible(icon.time,content.showTime~=false and time~="")
     local channel=key=='debuffs'and 'debuff'or key=='cooldowns'and 'cooldown'or 'buff'
     PreviewTextColor(icon.time,channel..'Time');PreviewTextColor(icon.stack,channel..'Stacks')
-    local font=math.max(8,Round((fields.font or 11)*N(Profile().plateScale,1)))
+    local font=math.max(8,Round((fields.font or 11)*N(fields.scale,1)))
     local labelH=math.max(10,font+2)
     S.UI:SetFontSize(icon.time,font,C.owner)
     S.UI:SetAnchor(icon.time,icon.root,0,math.max(0,size-labelH),C.owner);S.UI:SetExtent(icon.time,size,labelH,C.owner)
@@ -1203,7 +1308,8 @@ end
 
 -- 单项/全部共用同一绘制；仅选中项有细边框，血条基准只画轮廓，不制造额外遮挡。
 RenderPreviewVisuals = function(preview,key,rect)
-    local fields=CurrentFields(key)
+    local profile=ComponentProfile(key)
+    local fields=CurrentFields(key,profile)
     S.UI:SetAlpha(preview.root,fields.alpha or 1,C.owner)
     SafeVisible(preview.bg,false)
     LayoutPreviewOutline(preview,rect,preview==C.preview or key=="plate")
@@ -1211,7 +1317,7 @@ RenderPreviewVisuals = function(preview,key,rect)
         SetPreviewChildrenVisible(preview,"icons")
         local grid=rect.grid
         local size=grid and grid.size or math.max(8,Round(rect.height))
-        local spacing=math.max(0,Round((fields.spacing or 2)*N(Profile().plateScale,1)))
+        local spacing=math.max(0,Round((fields.spacing or 2)*N(fields.scale,1)))
         local rows=(C.previewContent or {})[key] or {}
         local count=grid and grid.count or math.min(4,math.max(1,Round(fields.perRow or 8)))
         for i,icon in ipairs(preview.icons) do
@@ -1238,20 +1344,24 @@ RenderPreviewVisuals = function(preview,key,rect)
         SetPreviewChildrenVisible(preview,"info")
         local fallback=key=="alias" and AliasPreviewText() or (key=="info" and "职业预览" or (key=="gearScore" and "12345" or "28.4m"))
         SafeText(preview.infoLabel,rect.text and rect.text~="" and rect.text or fallback)
+        if key=='distance'and C.distanceColorPanel and C.colorDraft then
+            local rule=(C.colorDraft[C.scope].distanceRules or {})[C.distanceColorPanel.index]
+            if rule then SafeText(preview.infoLabel,tostring(rule.meters)..'m')end
+        end
         PreviewTextColor(preview.infoLabel,key=='info'and 'classText'or key)
-        S.UI:SetFontSize(preview.infoLabel,math.max(8,Round((fields.font or 12)*N(Profile().plateScale,1))),C.owner)
+        S.UI:SetFontSize(preview.infoLabel,math.max(8,Round((fields.font or 12)*N(fields.scale,1))),C.owner)
         S.UI:SetAnchor(preview.infoLabel,preview.root,0,0,C.owner);S.UI:SetExtent(preview.infoLabel,rect.width,rect.height,C.owner)
     elseif key=="castBar" then
         SetPreviewChildrenVisible(preview,"cast")
         local cast=(C.previewContent or {}).cast or {}
         local fraction=cast.totalMs and Clamp(N(cast.currMs,0)/math.max(1,N(cast.totalMs,1)),0,1,0.62) or 0.62
-        local barH=math.max(4,Round((fields.size or 7)*N(Profile().plateScale,1)))
+        local barH=math.max(4,Round((fields.size or 7)*N(fields.scale,1)))
         S.UI:SetAnchor(preview.castBg,preview.root,0,0,C.owner);S.UI:SetExtent(preview.castBg,rect.width,barH,C.owner)
         S.UI:SetAnchor(preview.castFill,preview.root,0,0,C.owner);S.UI:SetExtent(preview.castFill,math.max(1,Round(rect.width*fraction)),barH,C.owner)
         SafeText(preview.castText,tostring(cast.spellName or "")~="" and cast.spellName or "施法预览")
         PreviewTextColor(preview.castText,'castName')
-        SafeVisible(preview.castText,(Profile().components.castBar or {}).showText~=false)
-        S.UI:SetFontSize(preview.castText,math.max(8,Round((fields.font or 12)*N(Profile().plateScale,1))),C.owner)
+        SafeVisible(preview.castText,(profile.components.castBar or {}).showText~=false)
+        S.UI:SetFontSize(preview.castText,math.max(8,Round((fields.font or 12)*N(fields.scale,1))),C.owner)
         S.UI:SetAnchor(preview.castText,preview.root,0,barH+1,C.owner);S.UI:SetExtent(preview.castText,rect.width,15,C.owner)
     else SetPreviewChildrenVisible(preview,"none") end
 end
@@ -1275,7 +1385,8 @@ function C:LayoutPreview()
     SafeVisible(self.preview.caption,self.allPreviewEnabled~=true)
     SafeText(self.preview.caption, ScopeName(self.scope) .. " · " .. tostring(COMPONENT_LABEL[self.component] or self.component))
     local hint
-    if self.component=="class" then hint="尺寸0随字号；XY只移动图标，不移动职业名称"
+    if self.component=="screen"then hint="拖动此框移动整组 HUD；X/Y 为屏幕逻辑坐标"
+    elseif self.component=="class" then hint="尺寸0随字号；XY只移动图标，不移动职业名称"
     elseif self.component=="alias" then
         local d=AliasDraft(); hint=d.targetAvailable and ("当前目标："..tostring(d.targetName or "").." · 下方可保存自定义名字") or "当前无可读目标；仍可先调整自定义名字 HUD 位置"
     elseif self.component=="info" then
@@ -1289,8 +1400,21 @@ function C:LayoutPreview()
 end
 
 local function FieldText(name, value)
+    local input=C.inputControls[name]
+    if input then input:Render();return end
     local edit = C.inputs[name]
     if edit ~= nil and type(edit.SetText) == "function" then pcall(edit.SetText, edit, tostring(value == nil and "--" or value)) end
+end
+
+-- 数值框使用共享DraftSession；组件/范围切换和明确恢复才丢弃旧上下文的未应用输入。
+function C:CancelInputFields(names)
+    if names then
+        for _,name in ipairs(names)do
+            local input=self.inputControls[name];if input then input:CancelEditing('hud_calibration_context')end
+        end
+    else
+        for _,input in pairs(self.inputControls)do input:CancelEditing('hud_calibration_context')end
+    end
 end
 
 function C:SaveAliasName()
@@ -1358,6 +1482,7 @@ end
 
 local FIELD_ORDER = { "x","y","size","font","spacing","perRow","rows","width","scale","alpha" }
 local FIELD_VISIBLE = {
+    screen  = { x=true,y=true,scale=true },
     plate   = { x=true,y=true,size=true,width=true,scale=true },
     buffs   = { x=true,y=true,size=true,font=true,spacing=true,perRow=true,rows=true,scale=true,alpha=true },
     debuffs = { x=true,y=true,size=true,font=true,spacing=true,perRow=true,rows=true,scale=true,alpha=true },
@@ -1373,6 +1498,10 @@ local FIELD_VISIBLE = {
     wings   = { x=true,y=true,size=true,scale=true,alpha=true },
     castBar = { x=true,y=true,size=true,font=true,width=true,scale=true,alpha=true },
 }
+local FIELD_INPUT_LIMITS={
+    x={-400,400},y={-500,500},size={0,64},font={8,32},spacing={0,24},
+    perRow={1,16},rows={1,4},width={20,480},scale={0.5,2,0.01},alpha={0.1,1,0.01},
+}
 
 local function LayoutContextFields()
     local rows = C.fieldRows or {}
@@ -1382,16 +1511,18 @@ local function LayoutContextFields()
         local row = rows[name]
         local show = visible[name] == true
         if type(row) == "table" then
-            SafeVisible(row.label, show); SafeVisible(row.edit, show); SafeVisible(row.minus, show); SafeVisible(row.plus, show)
+            SafeVisible(row.label, show);row.input:SetVisible(show)
+            SafeVisible(row.minus, show); SafeVisible(row.plus, show);SafeVisible(row.apply,show)
             if show ~= true and row.edit ~= nil and type(S.UI.DeactivateInputWidget) == "function" then
                 -- 组件切换后隐藏的 EditBox 不得继续持有输入焦点，否则键盘输入可能落到不可见控件。
                 pcall(function() S.UI:DeactivateInputWidget(row.edit, C.owner, "hud_calibration_context_hide") end)
             end
             if show then
                 S.UI:SetAnchor(row.label, C.panel, 126, y+4, C.owner)
-                S.UI:SetAnchor(row.edit, C.panel, 181, y, C.owner)
+                row.input:Layout(181,y,72,24)
                 S.UI:SetAnchor(row.minus, C.panel, 258, y, C.owner)
                 S.UI:SetAnchor(row.plus, C.panel, 289, y, C.owner)
+                S.UI:SetAnchor(row.apply,C.panel,324,y,C.owner)
                 y = y + 27
             end
         end
@@ -1429,29 +1560,59 @@ function C:SetGroupOrientation(mode)
 end
 function C:ApplyLayoutPreset(name)
     if not self.visible or not self.draft then return false,'HUD校准未开启'end
+    local componentPlacement=type((Profile().placement or {}).slots)=='table'and Copy(Profile().placement)or nil
     local profile,alias
     if name=='original'then
         profile=self.openingDraft and Copy(self.openingDraft[self.scope]);alias=Copy(self.openingAliasHud)
+        if self.openingModeLayouts then
+            local mode=(Profile().placement or {}).mode or 'head'
+            profile=Copy(self.openingModeLayouts[self.scope][mode])
+            if type(profile)=='table'and profile.aliasHud then alias=Copy(profile.aliasHud)end
+        end
     else profile,alias=Feature:GetHudLayoutPreset(name,self.scope,Profile())end
     if not profile then return false,alias or '进入时布局不可用'end
+    -- 外观预设只恢复当前视觉 bank；mode 是该 bank 标签，不能覆盖组件路由。
+    if componentPlacement then profile.placement=componentPlacement end
     if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
     self.draft[self.scope]=profile
     if self.scope=='target'and type(alias)=='table'and AliasDraft().available==true then
         local hud=AliasHud();for _,key in ipairs({'x','y','fontSize'})do if alias[key]~=nil then hud[key]=alias[key]end end
+        if name=='original'and self.modeLayouts then
+            hud.alpha=alias.alpha;AliasDraft().enabled=alias.enabled~=false;hud.enabled=alias.enabled~=false
+        end
         self.aliasConfigDirty=true
     end
     self.layoutPresetSelections=self.layoutPresetSelections or {};self.layoutPresetSelections[self.scope]=name
     self.layoutDirty,self.dirty=true,true;self.globalPreviewEnabled,self.allPreviewEnabled=true,true
     Trace('layout_preset_preview',{preset=name,clearError=true})
     SafeText(self.statusLabel,'布局已预览；保存并退出后生效。可选择“恢复进入时布局”。')
-    return self:RefreshControls()
+    return self:RefreshControls(true)
 end
 
-function C:RefreshControls()
+function C:RefreshControls(resetInputs)
     if self.visible ~= true then return true end
+    local fixed=(Profile().placement or {}).mode=='fixed'
+    if self.fieldRows then
+        for _,name in ipairs({'x','y'})do
+            local input=self.fieldRows[name]and self.fieldRows[name].input
+            if input and input.spec then
+                local w,h=ScreenSize();local screen=self.component=='screen'or ComponentSlot()~=nil
+                input.spec.min=screen and 0 or FIELD_INPUT_LIMITS[name][1]
+                input.spec.max=screen and (name=='x'and w or h)or FIELD_INPUT_LIMITS[name][2]
+            end
+        end
+    end
+    local context=self.scope..':'..self.component..':'..(fixed and 'fixed'or 'head')
+    if resetInputs==true or self.inputContext~=context then
+        self:CancelInputFields();self.inputContext=context
+    end
     CapturePreviewContent()
     SafeText(self.scopeLabel, "当前：" .. ScopeName(self.scope))
     SafeText(self.componentLabel, tostring(COMPONENT_LABEL[self.component] or self.component))
+    if self.modeButton then
+        SafeText(self.modeButton,ComponentSlot()and '当前项：固定'or '当前项：悬浮')
+        S.UI:SetEnabled(self.modeButton,Feature.HudPlacementError==nil,self.owner)
+    end
     for value, button in pairs(self.stepButtons or {}) do
         if button ~= nil then S.UI:SetButtonActive(button, tonumber(value) == tonumber(self.step), self.owner) end
     end
@@ -1481,7 +1642,7 @@ function C:RefreshControls()
     FieldText("perRow", f.perRow and Round(f.perRow) or "--"); FieldText("rows", f.rows and Round(f.rows) or "--")
     FieldText("width", f.width and Round(f.width) or "--"); FieldText("scale", string.format("%.2f", N(f.scale,1)))
     if self.enabledButton ~= nil then
-        if self.component == "plate" then
+        if self.component == "plate"or self.component=="screen"then
             SafeText(self.enabledButton, "锚点基准")
             S.UI:SetButtonActive(self.enabledButton, false, self.owner)
         else
@@ -1492,7 +1653,7 @@ function C:RefreshControls()
     local componentY = 112
     for _, row in ipairs(COMPONENTS) do
         local button = self.controls["component_" .. row.key]
-        local allowed = row.targetOnly ~= true or self.scope == "target"
+        local allowed = (row.targetOnly ~= true or self.scope == "target")and (row.fixedOnly~=true or (fixed and not (Profile().placement or {}).slots))
         if button ~= nil then
             SafeVisible(button, allowed)
             if allowed then
@@ -1549,27 +1710,55 @@ function C:RefreshControls()
 end
 
 local function ReadInput(name)
+    local input=C.inputControls[name]
+    if input then return tonumber(input:GetDraftValue())end
     local edit = C.inputs[name]
     if edit == nil or type(edit.GetText) ~= "function" then return nil end
     local ok, text = pcall(edit.GetText, edit); if ok then return tonumber(text) end
     return nil
 end
 
-function C:ApplyInputFields()
+function C:ApplyInputFields(fieldName,deferRefresh)
+    if not self.visible then return false,'HUD校准未开启'end
+    local names={}
+    local selected={}
+    if type(fieldName)=='table'then for _,name in ipairs(fieldName)do selected[name]=true end end
+    -- 先验证全部待应用字段；坏输入保持原文并留在编辑器，不产生一半预览/一半落盘。
+    for _,name in ipairs(FIELD_ORDER)do
+        if FIELD_VISIBLE[self.component][name] and (fieldName==nil or fieldName==name or selected[name])then
+            local value=ReadInput(name)
+            if value==nil or value~=value or value==math.huge or value==-math.huge then
+                local label=self.fieldRows[name].label
+                local message=tostring(label and label:GetText()or name)..'：请输入有效数字'
+                SafeText(self.statusLabel,message);return false,message
+            end
+            names[#names+1]=name
+        end
+    end
+    -- 距离分段输入属于独立颜色草稿；必须在RefreshControls重绘之前显式接收。
+    if fieldName==nil and self.component=='distance'and self.colorDraft and self.distanceColorPanel then
+        local ok,err=self.distanceColorPanel:ApplyInput();if not ok then return false,err end
+    end
     local component = Component()
     local beforeFields = CurrentFields()
     local beforeStoredY = N(component.y,0)
-    for _, name in ipairs({"x","y","size","font","alpha","spacing","perRow","rows","width","scale"}) do
-        local value = ReadInput(name)
-        if value ~= nil then ApplyField(name, value) end
+    for _,name in ipairs(names)do
+        local input=self.inputControls[name]
+        if input:GetDraftValue()~=input.lastRenderedText then
+            local ok,err=input:CommitAndEndEditing('hud_calibration_apply')
+            if not ok then return false,err end
+        else
+            -- 未编辑的显示文本可能比历史存档精度低；保存其它设置不能顺便舍入原值。
+            input:EndEditing('hud_calibration_unchanged')
+        end
     end
     local afterFields = CurrentFields()
     local screenDy = N(afterFields.y,0) - N(beforeFields.y,0)
     local storedDy = N(component.y,0) - beforeStoredY
-    self.dirty = true
     self.Diagnostics.lastScreenDy, self.Diagnostics.lastLogicalDy, self.Diagnostics.lastStoredDy = screenDy, screenDy, storedDy
     self.Diagnostics.yAdapter = YAdapterName(self.component)
     Trace("apply_inputs", { screenDy=screenDy, logicalDy=screenDy, storedDy=storedDy, yAdapter=YAdapterName(self.component), clearError=true })
+    if deferRefresh then return true end
     return self:RefreshControls()
 end
 
@@ -1581,6 +1770,7 @@ function C:SetStep(step)
 end
 
 function C:Nudge(dx, dy)
+    local ok,err=self:ApplyInputFields({'x','y'},true);if not ok then return false,err end
     local f = CurrentFields()
     local component = Component()
     local beforeStoredY = N(component.y, 0)
@@ -1600,6 +1790,7 @@ function C:Nudge(dx, dy)
     return self:RefreshControls()
 end
 function C:Adjust(name, delta)
+    local ok,err=self:ApplyInputFields(name,true);if not ok then return false,err end
     local f = CurrentFields(); local current = f[name]
     if current == nil then return true end
     local component = Component(); local beforeStoredY = N(component.y,0)
@@ -1613,13 +1804,26 @@ function C:Adjust(name, delta)
     return self:RefreshControls()
 end
 
+function C:CancelPreviewDrag()
+    if self.dragging and self.preview and self.preview.root then
+        local root=self.preview.root
+        if type(root.StopMovingOrSizing)=='function'then pcall(root.StopMovingOrSizing,root)end
+        if type(S.UI.EndNativeGeometryLease)=='function'then S.UI:EndNativeGeometryLease(root,self.owner)end
+    end
+    self.dragging,self.dragStartRect=false,nil
+    self.previewGeometryUnitScale,self.previewDragViewport=nil,nil
+end
 function C:SetScope(scope)
+    if self.modeLayouts then self:StoreActiveModeDraft()end
+    self:CancelPreviewDrag()
     if self.layoutPreset then self.layoutPreset:Close()end
     if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
     scope = scope == "target" and "target" or "player"
     self.scope = scope
     -- target-only 自定义名字不能泄漏到自身 HUD；切回自身时选择一个通用组件并隐藏编辑框。
     if scope ~= "target" and self.component == "alias" then self.component = "buffs" end
+    if self.component=='screen'and (Profile().placement or {}).mode~='fixed'then self.component='buffs'end
+    if self.modeLayouts then self:UseComponentModeDraft(self.component)end
     if type(self.Diagnostics) == "table" then self.Diagnostics.lastScope = scope end
     Trace("scope_changed", { scope=scope, clearError=true })
     return self:RefreshControls()
@@ -1627,13 +1831,93 @@ end
 function C:SetComponent(key)
     if COMPONENT_LABEL[key] == nil then return false, "未知 HUD 组件" end
     if key == "alias" and self.scope ~= "target" then return false, "自定义名字仅属于目标 HUD" end
+    if key=='screen'and (Profile().placement or {}).mode~='fixed'then return false,'整体位置仅用于屏幕固定模式'end
+    self:CancelPreviewDrag()
+    if self.modeLayouts then self:StoreActiveModeDraft()end
     if self.layoutPreset then self.layoutPreset:Close()end
     if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
     self.component = key
+    if self.modeLayouts then self:UseComponentModeDraft(key)end
     if key == "alias" then self:RefreshAliasEditorSnapshot(false) end
     if type(self.Diagnostics) == "table" then self.Diagnostics.lastComponent = key end
     Trace("component_changed", { component=key, clearError=true })
     return self:RefreshControls()
+end
+function C:CaptureAliasModeDraft()
+    if not self.modeLayouts or not self.draft then return end
+    if (Profile().placement or {}).slots and (self.scope~='target'or self.component~='alias')then return end
+    local alias,hud=AliasDraft(),AliasHud()
+    self.draft.target.aliasHud={enabled=alias.enabled~=false,x=hud.x,y=hud.y,fontSize=hud.fontSize,alpha=hud.alpha}
+end
+function C:StoreActiveModeDraft()
+    if not self.modeLayouts then return end
+    self:CaptureAliasModeDraft()
+    local profile=Profile();local mode=(profile.placement or {}).mode or 'head'
+    self.modeLayouts[self.scope][mode]=Copy(profile)
+end
+function C:UseComponentModeDraft(key)
+    if not self.modeLayouts then return end
+    local placement=Copy(Profile().placement or {})
+    if not placement.slots then return end
+    local slot=placement.slots[key]
+    local mode=slot and slot.mode or placement.baseMode or 'head'
+    local profile=Copy(self.modeLayouts[self.scope][mode]);profile.placement=placement;profile.placement.mode=mode
+    self.draft[self.scope]=profile
+    if self.scope=='target'and key=='alias'and profile.aliasHud and self.aliasDraft then
+        self.aliasDraft.hud=profile.aliasHud;self.aliasDraft.enabled=profile.aliasHud.enabled~=false
+    end
+end
+function C:SetDisplayMode(mode)
+    if not self.visible or not self.modeLayouts or self.component=='plate'or self.component=='screen'then return false,'请选择要调整的显示组件'end
+    if mode~='head'and mode~='fixed'then return false,'HUD 显示模式无效'end
+    if Feature.HudPlacementError then return false,Feature.HudPlacementError end
+    self:CancelPreviewDrag()
+    local ok,err=self:ApplyInputFields(nil,true);if not ok then return false,err end
+    if self.layoutPreset then self.layoutPreset:Close()end
+    if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
+    self:StoreActiveModeDraft()
+    local current=Profile();local placement=Copy(current.placement or {})
+    placement.baseMode=placement.baseMode or placement.mode or 'head';placement.slots=placement.slots or {}
+    local slot=Copy(placement.slots[self.component]or Feature:GetDefaultHudComponentPlacement(self.scope,self.component));slot.mode=mode
+    placement.slots[self.component]=slot
+    if mode=='fixed'and not self.modeLayouts[self.scope].fixedInitialized then
+        self.modeLayouts[self.scope].fixed=Copy(self.modeLayouts[self.scope].head);self.modeLayouts[self.scope].fixedInitialized=true
+    end
+    for _,name in ipairs({'head','fixed'})do
+        self.modeLayouts[self.scope][name].placement=Copy(placement);self.modeLayouts[self.scope][name].placement.mode=name
+    end
+    self.draft[self.scope]=Copy(self.modeLayouts[self.scope][mode]);self.draft[self.scope].placement.mode=mode
+    if self.scope=='target'and self.component=='alias'then
+        self.aliasDraft.hud=Profile().aliasHud;self.aliasDraft.enabled=Profile().aliasHud.enabled~=false
+    end
+    self.layoutDirty,self.dirty=true,true
+    return self:RefreshControls(true)
+end
+-- 仅兼容上一版整组校准调用；用户界面始终调用逐组件 SetDisplayMode。
+function C:SetLegacyDisplayMode(mode)
+    if not self.visible or not self.modeLayouts then return false,'HUD 显示模式不可用'end
+    if mode~='head'and mode~='fixed'then return false,'HUD 显示模式无效'end
+    if Feature.HudPlacementError then return false,Feature.HudPlacementError end
+    self:CancelPreviewDrag()
+    -- 输入/颜色弹层属于原模式的草稿上下文；先接收输入，再换副本，禁止迟到回调写到另一模式。
+    local ok,err=self:ApplyInputFields(nil,true);if not ok then return false,err end
+    if self.layoutPreset then self.layoutPreset:Close()end
+    if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
+    if self.scope=='target'then self:CaptureAliasModeDraft()end
+    local current=Profile();local previous=(current.placement or {}).mode or 'head'
+    self.modeLayouts[self.scope][previous]=Copy(current)
+    if mode=='fixed'and self.modeLayouts[self.scope].fixedInitialized~=true then
+        self.modeLayouts[self.scope].fixed=Copy(current);self.modeLayouts[self.scope].fixedInitialized=true
+    end
+    local nextProfile=Copy(self.modeLayouts[self.scope][mode])
+    nextProfile.placement=Copy(current.placement or Feature:GetDefaultHudPlacement(self.scope));nextProfile.placement.mode=mode
+    self.draft[self.scope]=nextProfile
+    if self.scope=='target'and type(nextProfile.aliasHud)=='table'then
+        self.aliasDraft.hud=nextProfile.aliasHud;self.aliasDraft.enabled=nextProfile.aliasHud.enabled~=false
+    end
+    self.component=mode=='fixed'and 'screen'or (self.component=='screen'and 'buffs'or self.component)
+    self.layoutDirty,self.dirty=true,true
+    return self:RefreshControls(true)
 end
 function C:SyncPlayerToTarget()
     if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
@@ -1641,7 +1925,12 @@ function C:SyncPlayerToTarget()
         Trace("sync_failed", { error="自身 HUD 草稿不存在" })
         return false, "自身 HUD 草稿不存在"
     end
+    local targetPlacement=Copy((self.draft.target or {}).placement)
+    local targetAlias=Copy((self.draft.target or {}).aliasHud)
     self.draft.target = Copy(self.draft.player)
+    -- 复制外观不把目标屏幕锚点搬到自身位置，也不改变目标已选模式。
+    if targetPlacement then self.draft.target.placement=targetPlacement end
+    if targetAlias then self.draft.target.aliasHud=targetAlias end
     if Feature.GetHudArrangementProjection then
         for _,key in ipairs({'buffs','debuffs','cooldowns'})do
             local cfg=self.draft.target.components[key];if cfg.orientation==nil then cfg.orientation='default'end
@@ -1652,10 +1941,11 @@ function C:SyncPlayerToTarget()
         self.colorDraft.target=Copy(self.colorDraft.player);self.colorDraft.target.alias=alias;self.colorsDirty=true
     end
     self.scope = "target"; self.layoutDirty = true; self.dirty = true
+    if self.component=='screen'and (Profile().placement or {}).mode~='fixed'then self.component='buffs'end
     self.Diagnostics.syncCount = (tonumber(self.Diagnostics.syncCount) or 0) + 1
     Trace("sync_player_to_target", { clearError=true })
     SafeText(self.statusLabel, "已复制 自身 → 目标（尚未保存）")
-    return self:RefreshControls()
+    return self:RefreshControls(true)
 end
 function C:ResetCurrentComponent()
     if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
@@ -1666,10 +1956,17 @@ function C:ResetCurrentComponent()
         return false, "默认 HUD 配置不可用"
     end
     local profile = Profile()
+    local fixedSlot=ComponentSlot(self.component,profile)
+    if fixedSlot then
+        local position=Feature:GetDefaultHudComponentPlacement(self.scope,self.component)
+        fixedSlot.x,fixedSlot.y=position.x,position.y
+        profile.placement.slots[self.component]=fixedSlot
+    end
     local colorKeys={info={'classText'},alias={'alias'},gearScore={'gearScore'},distance={'distance'},castBar={'castName'},
         buffs={'buffTime','buffStacks'},debuffs={'debuffTime','debuffStacks'},cooldowns={'cooldownTime'}}
     if self.colorDraft then
         for _,key in ipairs(colorKeys[self.component]or {})do self.colorDraft[self.scope][key]={1,1,1};self.colorsDirty=true end
+        if self.component=='distance'then self.colorDraft[self.scope].distanceRules={}end
     end
     if self.component == "alias" then
         local defaultAlias = type(Feature.Commands.GetDefaultTargetAliasHudConfig) == "function" and Feature.Commands:GetDefaultTargetAliasHudConfig()
@@ -1677,7 +1974,11 @@ function C:ResetCurrentComponent()
         local draft = AliasDraft()
         draft.enabled = defaultAlias.enabled ~= false
         draft.hud = { x=N(defaultAlias.x,0), y=N(defaultAlias.y,-94), fontSize=N(defaultAlias.fontSize,12), alpha=N(defaultAlias.alpha,1) }
+        if self.modeLayouts then self.draft.target.aliasHud=Copy(draft.hud);self.draft.target.aliasHud.enabled=draft.enabled end
         self.aliasConfigDirty = true
+    elseif self.component=='screen'then
+        local position=Feature:GetDefaultHudPlacement(self.scope)
+        profile.placement.x,profile.placement.y=position.x,position.y
     elseif self.component == "plate" then
         profile.plate = Copy(defaultProfile.plate or {})
     elseif self.component == "info" then
@@ -1699,7 +2000,7 @@ function C:ResetCurrentComponent()
     self.Diagnostics.resetCount = (tonumber(self.Diagnostics.resetCount) or 0) + 1
     Trace("reset_component", { clearError=true })
     SafeText(self.statusLabel, tostring(COMPONENT_LABEL[self.component] or self.component) .. " 已恢复默认（尚未保存）")
-    return self:RefreshControls()
+    return self:RefreshControls(true)
 end
 
 function C:ResetCurrentScope()
@@ -1709,14 +2010,24 @@ function C:ResetCurrentScope()
         Trace("reset_failed", { error="默认 HUD 配置不可用" })
         return false, "默认 HUD 配置不可用"
     end
+    local placement=Copy(Profile().placement)
     self.draft[self.scope] = Copy(defaults[self.scope])
-    if self.colorDraft then self.colorDraft[self.scope]=Feature:GetHudColorPreset('white');self.colorsDirty=true end
+    if placement then
+        if placement.mode=='fixed'then local position=Feature:GetDefaultHudPlacement(self.scope);placement.x,placement.y=position.x,position.y end
+        for key,slot in pairs(placement.slots or {})do
+            local position=Feature:GetDefaultHudComponentPlacement(self.scope,key)
+            slot.x,slot.y=position.x,position.y
+        end
+        self.draft[self.scope].placement=placement
+    end
+    if self.colorDraft then self.colorDraft[self.scope]=Feature:GetHudColorPreset('white');self.colorDraft[self.scope].distanceRules={};self.colorsDirty=true end
     if self.scope == "target" then
         local defaultAlias = type(Feature.Commands.GetDefaultTargetAliasHudConfig) == "function" and Feature.Commands:GetDefaultTargetAliasHudConfig()
             or { enabled=true, x=0, y=-94, fontSize=12, alpha=1.0 }
         local alias = AliasDraft()
         alias.enabled = defaultAlias.enabled ~= false
         alias.hud = { x=N(defaultAlias.x,0), y=N(defaultAlias.y,-94), fontSize=N(defaultAlias.fontSize,12), alpha=N(defaultAlias.alpha,1) }
+        if self.modeLayouts then self.draft.target.aliasHud=Copy(alias.hud);self.draft.target.aliasHud.enabled=alias.enabled end
         self.aliasConfigDirty = true
     end
     self.layoutDirty = true
@@ -1724,7 +2035,7 @@ function C:ResetCurrentScope()
     self.Diagnostics.resetCount = (tonumber(self.Diagnostics.resetCount) or 0) + 1
     Trace("reset_scope", { clearError=true })
     SafeText(self.statusLabel, ScopeName(self.scope) .. " 已恢复默认（尚未保存）")
-    return self:RefreshControls()
+    return self:RefreshControls(true)
 end
 
 local function RestoreShell()
@@ -1742,6 +2053,7 @@ local function RestoreShell()
 end
 
 function C:HideOverlay()
+    self:CancelInputFields();self.inputContext=nil
     if self.layoutPreset then self.layoutPreset:Close()end
     if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
     -- 维护（hud-template-copy-2）：取消/保存/重载退出均释放本校准的导出快照与键盘，不触碰其他报告。
@@ -1788,6 +2100,10 @@ local function ExitGeometry(self,save)
     -- 时快照。名字映射不在本事务内，因为“保存名字/删除名字”是用户显式即时动作。取消退出两份几何
     -- Draft 都不写 Store。这样既不污染大型 v3.buff_display，也避免一半 HUD 几何永久落盘。
     if save == true then
+        if self.modeLayouts then
+            self:CaptureAliasModeDraft()
+            if self.aliasConfigDirty then self.layoutDirty=true end
+        end
         if self.layoutDirty == true then
             local canWrite, writeErr = Feature.Commands:CanPersistLayoutSettings()
             if canWrite ~= true then
@@ -1798,7 +2114,7 @@ local function ExitGeometry(self,save)
         end
 
         local aliasCommitted = false
-        if self.aliasConfigDirty == true then
+        if self.aliasConfigDirty == true and not self.modeLayouts then
             local alias = AliasDraft(); local hud = AliasHud()
             local aliasValue = { enabled=alias.enabled ~= false, x=hud.x, y=hud.y, fontSize=hud.fontSize, alpha=hud.alpha }
             local aliasOk, aliasErr = Feature.Commands:PersistTargetAliasHudCalibration(aliasValue, "hud_calibration_alias_save_exit")
@@ -1811,6 +2127,10 @@ local function ExitGeometry(self,save)
         end
 
         if self.layoutDirty == true then
+            if self.modeLayouts then
+                -- 保存同时带上切换前已编辑的另一模式，活动 profile 仍为最终权威。
+                self.draft.modeLayouts=Copy(self.modeLayouts)
+            end
             local ok, err = Feature.Commands:PersistHudCalibrationSnapshot(self.draft, "hud_calibration_save_exit")
             if ok ~= true then
                 local rollbackText = ""
@@ -1850,6 +2170,7 @@ local function ExitGeometry(self,save)
     local exitCallback = self.exitCallback
     self.draft, self.previousShell, self.exitCallback, self.dirty = nil, nil, nil, false
     self.openingDraft,self.openingAliasHud,self.layoutPresetSelections=nil,nil,nil
+    self.modeLayouts,self.openingModeLayouts=nil,nil
     self.layoutDirty, self.aliasConfigDirty = false, false
     self.aliasDraft, self.aliasPersistedConfig, self.aliasConfigInitialized = nil, nil, false
     self.Diagnostics.dirty = false; self.Diagnostics.visible = false
@@ -1870,6 +2191,9 @@ function C:ApplyColorPatch(patch)
     self:LayoutPreview();return self:LayoutGlobalPreview()
 end
 function C:Exit(save)
+    if save and self.visible then
+        local ok,err=self:ApplyInputFields(nil,true);if not ok then return false,err end
+    end
     local before,committed
     if save and self.colorsDirty and self.colorDraft then
         before=Feature:GetHudColorsProjection()
@@ -1915,6 +2239,13 @@ function C:EnsureCreated()
     self.playerButton = MakeButton(panel, "v3_buff_hud_calibration_player", "自己 HUD", 12, 56, 84, 26, function() return C:SetScope("player") end)
     self.targetButton = MakeButton(panel, "v3_buff_hud_calibration_target", "目标 HUD", 100, 56, 84, 26, function() return C:SetScope("target") end)
     self.syncButton = MakeButton(panel, "v3_buff_hud_calibration_sync", "复制自身 → 目标", 190, 56, 132, 26, function() return C:SyncPlayerToTarget() end)
+    if type(Feature.GetHudDisplayModeProjection)=='function'then
+        self.modeButton=MakeButton(panel,'v3_buff_hud_calibration_mode','模式：头顶悬浮',190,56,132,26,function()
+            return C:SetDisplayMode(ComponentSlot()and 'head'or 'fixed')
+        end)
+        S.UI:SetAnchor(self.syncButton,panel,328,602,self.owner);S.UI:SetExtent(self.syncButton,80,28,self.owner)
+        SafeText(self.syncButton,'复制自身')
+    end
     self.globalPreviewButton = MakeButton(panel, "v3_buff_hud_calibration_global_preview", "全局：开", 326, 56, 82, 26, function() return C:ToggleGlobalPreview() end)
     self.allPreviewButton = MakeButton(panel, "v3_buff_hud_calibration_all_preview", "显示全部", 326, 86, 82, 24, function() return C:ToggleAllPreview() end)
     if not self.allPreviewButton then return false,"全部模拟按钮创建失败" end
@@ -1956,9 +2287,21 @@ function C:EnsureCreated()
     end
 
     self.fieldRows = {}
+    local inputBuildError
     local function Field(name, label)
         local labelWidget = S.UI:CreateLabel(panel, "v3_buff_hud_calibration_label_"..name, label, rx, 214, 52, 18, 9, "muted", "LEFT", false)
-        local edit = MakeInput(panel, "v3_buff_hud_calibration_input_"..name, rx+55, 210, 72, 24)
+        local limits=FIELD_INPUT_LIMITS[name]
+        local input,err=S.RSUI:NumericInput({id="v3_buff_hud_calibration_input_"..name,parent=panel,
+            x=rx+55,y=210,width=72,height=24,min=limits[1],max=limits[2],step=limits[3]or 1,
+            integer=limits[3]==nil,draftCommitMode='explicit',value=0,
+            get=function()return N(CurrentFields()[name],0)end,
+            set=function(value)
+                if CurrentFields()[name]~=value then ApplyField(name,value);C.dirty=true end
+                return true
+            end})
+        if not input then inputBuildError=err or ('数值框创建失败：'..name);return end
+        self.inputControls[name]=input
+        local edit=input.root
         self.inputs[name] = edit
         local minus = MakeButton(panel, "v3_buff_hud_calibration_minus_"..name, "-", rx+132, 210, 28, 24, function()
             local delta = (name == "scale" or name == "alpha") and -0.05 or -1; return C:Adjust(name, delta)
@@ -1966,13 +2309,18 @@ function C:EnsureCreated()
         local plus = MakeButton(panel, "v3_buff_hud_calibration_plus_"..name, "+", rx+163, 210, 28, 24, function()
             local delta = (name == "scale" or name == "alpha") and 0.05 or 1; return C:Adjust(name, delta)
         end)
-        self.fieldRows[name] = { label=labelWidget, edit=edit, minus=minus, plus=plus }
+        local apply=MakeButton(panel,'v3_buff_hud_calibration_apply_'..name,'应用',rx+198,210,48,24,function()
+            return C:ApplyInputFields(name)
+        end)
+        if not apply then inputBuildError='数值应用按钮创建失败：'..name end
+        self.fieldRows[name] = { label=labelWidget, edit=edit, input=input, minus=minus, plus=plus,apply=apply }
     end
     Field("x","X"); Field("y","Y"); Field("size","尺寸"); Field("font","字号")
     Field("spacing","间距"); Field("perRow","每行"); Field("rows","行数")
     Field("width","宽度"); Field("scale","缩放"); Field("alpha","透明")
+    if inputBuildError then return false,inputBuildError end
     self.enabledButton = MakeButton(panel, "v3_buff_hud_calibration_enabled", "显示：开", rx, 458, 88, 28, function()
-        if C.component == "plate" then return true end
+        if C.component == "plate"or C.component=='screen'then return true end
         return SetCurrentEnabled(not CurrentEnabled())
     end)
     self.applyInputsButton=MakeButton(panel, "v3_buff_hud_calibration_apply_inputs", "应用输入值", rx+94, 458, 112, 28, function() return C:ApplyInputFields() end)
@@ -2140,7 +2488,10 @@ function C:EnsureCreated()
             local fields=CurrentFields()
             local component = Component(); local beforeStoredY = N(component.y,0)
             local logicalDy = dy/math.max(0.01,scale)
-            if key=="buffs" or key=="debuffs" or key=="info" then
+            C:CancelInputFields({'x','y'}) -- 拖动明确替换坐标，不让旧输入草稿覆盖本次手势。
+            if key=='screen'or ComponentSlot(key,profile)then
+                ApplyField('x',fields.x+dx);ApplyField('y',fields.y+dy)
+            elseif key=="buffs" or key=="debuffs" or key=="info" then
                 ApplyField("x", fields.x + dx); ApplyField("y", fields.y + logicalDy)
             else
                 ApplyField("x", fields.x + dx/math.max(0.01,scale)); ApplyField("y", fields.y + logicalDy)
@@ -2194,6 +2545,11 @@ function C:Open(context)
     self.colorDraft=type(Feature.GetHudColorsProjection)=='function'and not Feature.HudColorsError and Feature:GetHudColorsProjection()or nil
     self.colorsDirty=false
     self.openingDraft=Copy(self.draft);self.layoutPresetSelections={}
+    self.modeLayouts=type(Feature.GetHudModeLayoutsProjection)=='function'and Feature:GetHudModeLayoutsProjection()or nil
+    self.openingModeLayouts=Copy(self.modeLayouts)
+    local requested=type(context)=='table'and context.component or nil
+    if COMPONENT_LABEL[requested]and requested~='screen'and requested~='plate'and (requested~='alias'or self.scope=='target')then self.component=requested end
+    if self.modeLayouts then self:UseComponentModeDraft(self.component)end
     self.aliasDraft, self.aliasPersistedConfig, self.aliasConfigInitialized = nil, nil, false
     -- Alias Store 故障不能阻断整个状态显示 HUD 校准；这里只尽力读取，小 Store 不可用时对应组件
     -- 会显示错误并禁用名字保存，其他 HUD 组件仍可正常调整/保存。

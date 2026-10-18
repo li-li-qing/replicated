@@ -15,10 +15,20 @@ local function Test(name, fn)
     else failed=failed+1; print('FAIL visual-settings-input '..name..': '..tostring(err)) end
 end
 
-local function Boot(id, reused, strict)
+local function Boot(id, reused, strict,nativeDraft)
     local h=reused or Base({width=980,height=760})
     if not reused then assert(h.page:OnDeactivated()) end
     local S=h.S
+    if nativeDraft then
+        local create=S.UI.CreateEditBox
+        S.UI.CreateEditBox=function(self,...)
+            local n=create(self,...);n.rsUiKeyboardInput=true
+            function n:EnableKeyboard(v)self.keyboard=v end
+            function n:ClearFocus()error('draft observation must not clear focus')end
+            function n:SetFocus()error('draft observation must not set focus')end
+            return n
+        end
+    end
     if not reused then -- 连续开页回归保留同一 Generation/RSUI 消耗 ID 表，不重建宿主掩盖碰撞。
     -- 维护（2026-09-30，range-continuity-1）：Gear 的旧测试宿主只有 RegisterFactory，
     -- Business Page 已采用真实 PageHost Consumer 生命周期桥；补齐生产加载顺序，
@@ -87,6 +97,7 @@ local function Boot(id, reused, strict)
         F.Commands.ClearSavedRaidMarkers=function()projection.savedMarkerCount=0;return true end
     else
         local function C() return projection.circles[1] end
+        F.Commands.SetRefreshMs=function(_,v)projection.refreshMs=v;return true end
         F.Commands.AddCircle=function(_)return true end
         F.Commands.RemoveCircle=function(_,_)return true end
         F.Commands.SetCircleEnabled=function(_,circleId,v)C().enabled=v;return true end
@@ -115,6 +126,16 @@ local function Boot(id, reused, strict)
     h.page=root;h.widgets={}
     local function Index(n)h.widgets[n.id]=n;for _,ch in ipairs(n.children or {})do Index(ch)end end
     root:Layout(0,0,980,760);Index(root);assert(root:OnActivated())
+    if nativeDraft then
+        -- 保留真实Diff/严格Authority；禁用焦点getter，Native输入不投递OnClick。
+        dofile('ui/rs_ui_framework.lua');GetFocusedWidgetId=nil
+        for _,c in pairs(h.widgets)do
+            if c.kind=='NumericInput' or c.kind=='TextInput' then
+                assert(S.UI:AdoptV3Widget(c.root,c.owner,c.id))
+                S.UI:PrimeNativeState(c.root,{text=c.root.text,visible=true,enabled=true})
+            end
+        end
+    end
     h.F,h.projection,h.route=F,projection,route
     function h:TypeVisual(inputId,text)
         local c=assert(self.widgets[inputId],'missing '..inputId)
@@ -304,5 +325,45 @@ Test('both team pages coexist and reopen in one generation in either order',func
         assert(h.page:OnDeactivated());assert(first:OnActivated());assert(first:Refresh());assert(first:OnDeactivated())
     end
 end)
+Test('unit-lines and range numeric editors keep units outside editable text',function()
+    for _,case in ipairs({
+        {'combat_unit_lines','v3_business_combat_unit_lines_refresh','50','ms'},
+        {'combat_range_assist','v3_business_range_refresh','16','ms'},
+        {'combat_range_assist','v3_business_combat_range_assist_selected_radius','17','米'},
+    })do
+        local h=Boot(case[1]);local field=assert(h.widgets[case[2]])
+        assert(field.input.root:GetText()==case[3],'unit is embedded in '..case[2]..' input: '..field.input.root:GetText())
+        assert(field.label.root:GetText():find(case[4],1,true),'unit is not visible in the field label')
+        local input=h:TypeVisual(case[2]..'_input','22')
+        assert(field.apply.spec.onClick(),'plain numeric Apply failed')
+        assert(input.root:GetText()=='22','Apply reinserted a unit into the numeric editor')
+        assert(h.page:OnDeactivated())
+    end
+end)
+Test('Native input without click or focus getter fences both real visual pages before the scheduled refresh',function()
+    for _,case in ipairs({{'combat_unit_lines','v3_business_combat_unit_lines_points'}, {'combat_range_assist','v3_business_combat_range_assist_selected_radius'}})do
+        local h=Boot(case[1],nil,nil,true)
+        local c=assert(h.widgets[case[2]..'_input']);local field=assert(h.widgets[case[2]])
+        local reads=0;local get=c.root.GetText
+        c.root.GetText=function(self)reads=reads+1;return get(self)end
+        local refreshes=0;local refresh=h.page.Refresh
+        h.page.Refresh=function(self,...)refreshes=refreshes+1;return refresh(self,...)end
+        c.root.text='22'
+        for i=1,100 do assert(h.page:RequestFeatureRefresh('visual_tick'))end
+        assert(reads==0,'high-frequency event polled Native text')
+        local task=assert(h.S.Scheduler.tasks['v3_business_visual_page_refresh:'..case[1]])
+        task.callback()
+        assert(refreshes==0 and c:HasDraftSession() and c.root.text=='22','scheduled refresh erased Native typing')
+        c.root.text='2';h.page:RequestFeatureRefresh('visual_tick');assert(c.root.text=='2')
+        c.root.text='';h.page:RequestFeatureRefresh('visual_tick');assert(c.root.text=='')
+        c.root.text='23';assert(field.apply.spec.onClick())
+        assert(c:GetValue()==23 and c.root.text=='23' and not c:HasDraftSession())
+        assert(h.S.UI:GetAuthoritySnapshot().violations==0)
+        c.root.text='29';assert(h.page:RequestFeatureRefresh('visual_tick'))
+        assert(h.page:OnDeactivated())
+        assert(not c:HasDraftSession() and c.root.text=='23','leaving page retained an unapplied edit')
+    end
+end)
+
 print('VISUAL SETTINGS INPUT RESULTS: '..passed..' passed / '..failed..' failed')
 assert(failed==0,tostring(failed)..' visual settings input regressions')

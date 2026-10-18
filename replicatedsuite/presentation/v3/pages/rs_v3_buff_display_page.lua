@@ -184,9 +184,9 @@ local function BuildPage(parent, route)
     root.activeTab, root.filterText = "track", ""
     root.managementView, root.managementFilter, root.managementSort, root.libraryPack = "live", "all", "id", "recommended"
     root.librarySource, root.libraryQuery, root.advancedTracking = "live", "", false
-    root.visibilityScope, root.visibilityByKey = "player", {}
+    root.visibilityScope, root.visibilityComponent, root.visibilityByKey = "player", "distance", {}
 
-    D:PageHeader(root, "v3_buff_display_header", "状态显示", "统一管理状态追踪与头顶 HUD；HUD 校准会暂时最小化主菜单，在真实游戏画面上调整。", "刷新", function()
+    D:PageHeader(root, "v3_buff_display_header", "状态显示", "统一管理状态追踪与 HUD；自身、目标的各组件可独立选择头顶悬浮或屏幕固定，点击调整 HUD 校准。", "刷新", function()
         return Feature.Commands:Refresh("page_manual")
     end)
 
@@ -244,6 +244,7 @@ local function BuildPage(parent, route)
     local viewPicker=RSUI:Dropdown({id="v3_buff_manage_view",parent=toolbar,maxVisible=4,
         items={{value="live",text="当前状态"},{value="tracked",text="已追踪"},{value="frozen",text="状态记录"},{value="cooldowns",text="技能 CD"}},
         get=function()return root.managementView end,set=function(value)
+            root:ResetClearTrackingConfirmation()
             if value=="library" then return root:SwitchTab("library")end -- 兼容已有程序化入口；界面只保留上方页签。
             root.managementView=sourceNames[value] and value or "live";root.selectedManagementRow=nil
             if root.activeTab~="track" then return root:SwitchTab("track")end
@@ -254,7 +255,7 @@ local function BuildPage(parent, route)
         placeholder="搜索名称 / ID",onSubmit=function(value)root.filterText=tostring(value or "");return root:Refresh()end,
         slot={size="fill",fill=1,minWidth=90}})
     local searchClear=RSUI:Button({id="v3_buff_display_track_search_clear",parent=toolbar,text="清除",compact=true,slot={size="fixed",width=52}})
-    -- 冻结直接放在当前状态入口旁，固定名单方便逐条追踪；持续记录仍由独立记录按钮控制。
+    -- 冻结当前列表后继续追加新状态，失效仍保留且不重排；独立记录入口的开关不受影响。
     local listFreezeButton=RSUI:Button({id="v3_buff_display_track_freeze",parent=toolbar,text="冻结列表",compact=true,slot={size="fixed",width=84}})
     local recordRow=RSUI:HorizontalBox({id="v3_buff_record_actions",parent=tabTrack,gap=5,slot={size="fixed",height=27,hAlign="fill"}})
     local freezeButton=RSUI:Button({id="v3_buff_capture_record",parent=recordRow,text="开始记录",compact=true,slot={size="fixed",width=100}})
@@ -285,6 +286,7 @@ local function BuildPage(parent, route)
         return ok,err
     end
     local function RunTrackingCommand(id,label,command,afterSave)
+        root:ResetClearTrackingConfirmation()
         local called,ok,err=pcall(command)
         if not called then err=ok;ok=false;ReportTrackingFailure("BUFF_TRACKING_COMMAND_FAILED",err,{id=id,stage="command"})end
         return ShowResult(ok==true,err,label,afterSave)
@@ -361,10 +363,33 @@ local function BuildPage(parent, route)
             for index,column in ipairs(row.columns or {})do if column.id=="target_cd" and row.cells[index] then row.cells[index]:SetEnabled(false)end end
         end,slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
     cooldownTable:SetVisible(false)
-    local footer=RSUI:HorizontalBox({id="v3_buff_tracking_footer",parent=tabTrack,gap=4,slot={size="fixed",height=24,hAlign="fill"}})
+    local footer=RSUI:HorizontalBox({id="v3_buff_tracking_footer",parent=tabTrack,gap=4,slot={size="fixed",height=28,hAlign="fill"}})
     RSUI:Text({id="v3_buff_tracking_on_legend",parent=footer,text="追踪",fontSize=9,tone="green",slot={size="fixed",width=44}})
     RSUI:Text({id="v3_buff_tracking_off_legend",parent=footer,text="未追踪",fontSize=9,tone="red",slot={size="fixed",width=52}})
     rowStatus=RSUI:Text({id="v3_buff_tracking_status",parent=footer,text="点击“未追踪”添加，点击“追踪”取消；修改立即保存。",fontSize=9,tone="muted",overflow="ellipsis",slot={size="fill",fill=1}})
+    local clearAllButton=RSUI:Button({id="v3_buff_tracking_clear_all",parent=footer,text="全部取消追踪",compact=true,slot={size="fixed",width=140}})
+    local clearConfirmation=RSUI:HorizontalBox({id="v3_buff_tracking_clear_confirmation",parent=tabTrack,gap=5,slot={size="fixed",height=40,hAlign="fill"}})
+    RSUI:Text({id="v3_buff_tracking_clear_warning",parent=clearConfirmation,
+        text="取消全部自身/目标状态和技能 CD 追踪，包含搜索结果以外的项目。\n保留 HUD、颜色及其他设置；请在 5 秒内再次点击确认。",
+        fontSize=9,tone="red",overflow="wrap",maxLines=2,slot={size="fill",fill=1}})
+    local clearCancel=RSUI:Button({id="v3_buff_tracking_clear_cancel",parent=clearConfirmation,text="取消",compact=true,slot={size="fixed",width=52}})
+    clearConfirmation:SetVisible(false)
+    function root:ResetClearTrackingConfirmation()
+        self.clearTrackingDeadline=nil
+        clearAllButton:SetText("全部取消追踪")
+        clearConfirmation:SetVisible(false)
+        return true
+    end
+    clearCancel.onClick=function()return root:ResetClearTrackingConfirmation()end
+    clearAllButton.onClick=function()
+        local now=S.NowMs()
+        if not root.clearTrackingDeadline or now>=root.clearTrackingDeadline then
+            root.clearTrackingDeadline=now+5000
+            clearAllButton:SetText("确认全部取消");clearConfirmation:SetVisible(true)
+            return true
+        end
+        return RunTrackingCommand("all","已全部取消追踪",function()return Feature.Commands:ClearAllTracking()end)
+    end
     freezeButton.onClick=function()
         local state=Feature:GetManagementFreezeState()
         local ok,err
@@ -374,7 +399,7 @@ local function BuildPage(parent, route)
     listFreezeButton.onClick=function()
         local active=Feature:GetManagementListFreezeState().active
         local ok,err=Feature.Commands:SetManagementListFrozen(not active)
-        return ShowResult(ok,err,active and "列表已恢复实时刷新" or "列表已冻结，可逐条设置追踪；HUD 继续实时更新")
+        return ShowResult(ok,err,active and "列表已恢复实时刷新" or "列表已冻结：新 Buff 继续加入，失效后仍保留；HUD 继续实时更新")
     end
     updateFreezeButton.onClick=function()local ok,err=Feature.Commands:ResetManagementCapture();return ShowResult(ok,err,"已清空记录")end
     cooldownAddButton.onClick=function()
@@ -391,7 +416,21 @@ local function BuildPage(parent, route)
         slot={hAlign="fill",vAlign="fill"} })
     local contentActions=RSUI:HorizontalBox({id="v3_buff_display_content_actions",parent=tabVisibility,gap=8,
         slot={size="fixed",height=30,hAlign="fill"}})
-    local visibilityControls, visibilityScopeSelector = {}, nil
+    local visibilityControls, visibilityScopeSelector, displayModeSelector = {}, nil, nil
+    local displayComponentPicker, displayModeTitle, displayComponentScope
+    -- 校准语义：info 是职业文字，class 是职业图标；显隐键 className/classIcon 不用于位置命令。
+    local displayComponents={
+        {value="distance",text="距离"},{value="info",text="职业名称"},{value="class",text="职业图标"},
+        {value="gearScore",text="装备分数"},{value="buffs",text="Buff 图标"},{value="debuffs",text="Debuff 图标"},
+        {value="cooldowns",text="技能 CD"},{value="mainHand",text="主手"},{value="offHand",text="副手"},
+        {value="ranged",text="远程武器"},{value="wings",text="背部"},{value="castBar",text="施法条"},
+        {value="alias",text="自定义名字",targetOnly=true},
+    }
+    local function DisplayComponent(key,scope)
+        for _,item in ipairs(displayComponents)do
+            if item.value==key and (not item.targetOnly or scope=="target")then return item end
+        end
+    end
     local visibilityStatus = RSUI:Text({ id="v3_buff_visibility_status", parent=tabVisibility,
         text="显隐修改立即保存；位置、字号、尺寸和颜色点击“调整 HUD”。",fontSize=9,tone="muted",
         overflow="wrap",maxLines=2,slot={size="fixed",height=26,hAlign="fill"} })
@@ -417,6 +456,25 @@ local function BuildPage(parent, route)
             if type(control.Render)=="function" then control:Render() end
         end
         if visibilityScopeSelector and type(visibilityScopeSelector.Render)=="function" then visibilityScopeSelector:Render() end
+        if not DisplayComponent(self.visibilityComponent,self.visibilityScope)then self.visibilityComponent="distance"end
+        if displayComponentPicker then
+            if displayComponentScope~=self.visibilityScope then
+                local items={}
+                for _,item in ipairs(displayComponents)do
+                    if not item.targetOnly or self.visibilityScope=="target"then items[#items+1]=item end
+                end
+                displayComponentPicker:SetItems(items)
+                displayComponentScope=self.visibilityScope
+            end
+            displayComponentPicker:Render()
+        end
+        if displayModeSelector then
+            local mode=Feature.Commands:GetHudComponentDisplayModeProjection(self.visibilityScope,self.visibilityComponent)
+            displayModeSelector:SetEnabled(type(mode)=='table'and mode.error==nil)
+            displayModeSelector:Render()
+            local component=DisplayComponent(self.visibilityComponent,self.visibilityScope)
+            displayModeTitle:SetText("显示位置 · 仅当前组件："..component.text)
+        end
         return snapshot~=nil,err
     end
     local function ApplyVisibility(key,value)
@@ -440,6 +498,32 @@ local function BuildPage(parent, route)
             visibilityStatus:SetText(value=="target" and "正在设置目标 HUD。" or "正在设置自身 HUD。")
             return root:RefreshVisibilityControls()
         end,slot={size="fixed",width=240,height=30} })
+    if type(Feature.Commands.GetHudComponentDisplayModeProjection)=='function'
+        and type(Feature.Commands.SetHudComponentDisplayMode)=='function'then
+        local modeCard=RSUI:VerticalBox({id='v3_buff_display_mode_card',parent=contentScroll,gap=4,slot={size='auto',hAlign='fill'}})
+        displayModeTitle=RSUI:Text({id='v3_buff_display_mode_title',parent=modeCard,text='显示位置 · 仅当前组件：距离',fontSize=11,tone='strong',slot={size='fixed',height=20}})
+        displayComponentPicker=RSUI:Dropdown({id='v3_buff_display_component',parent=modeCard,items={},maxVisible=7,
+            get=function()return root.visibilityComponent end,
+            set=function(value)
+                if not DisplayComponent(value,root.visibilityScope)then return false,'当前 HUD 范围没有此组件'end
+                root.visibilityComponent=value
+                return root:RefreshVisibilityControls()
+            end,slot={size='fixed',width=264,height=30}})
+        displayModeSelector=RSUI:SegmentedSelector({id='v3_buff_display_mode',parent=modeCard,maxItems=2,
+            items={{value='head',text='头顶悬浮',width=132},{value='fixed',text='屏幕固定',width=132}},
+            get=function()local value=Feature.Commands:GetHudComponentDisplayModeProjection(root.visibilityScope,root.visibilityComponent);return value and value.mode or 'head'end,
+            set=function(value)
+                local ok,err=Feature.Commands:SetHudComponentDisplayMode(root.visibilityScope,root.visibilityComponent,value)
+                root:RefreshVisibilityControls()
+                local component=DisplayComponent(root.visibilityComponent,root.visibilityScope)
+                local message=ok==true and ('已保存：'..(root.visibilityScope=='target'and '目标'or '自身')..' · '..component.text..'的显示位置。')
+                    or '保存失败：'..tostring(err)
+                visibilityStatus:SetText(message);persistHint:SetText(message)
+                return ok,err
+            end,slot={size='fixed',width=264,height=30}})
+        RSUI:Text({id='v3_buff_display_mode_hint',parent=modeCard,text='仅当前组件立即保存。默认选中距离，可单独固定距离；其他组件保持原样。位置和外观点击“调整 HUD”。',
+            fontSize=9,tone='muted',overflow='wrap',maxLines=2,slot={size='auto',minHeight=26,hAlign='fill'}})
+    end
     calibrationButton=RSUI:Button({id="v3_buff_display_layout_open_calibration",parent=contentActions,text="调整 HUD",compact=true,
         slot={size="fixed",width=132}})
     local visibilityActions=RSUI:HorizontalBox({ id="v3_buff_visibility_actions",parent=contentScroll,gap=8,
@@ -546,7 +630,7 @@ local function BuildPage(parent, route)
     calibrationButton.onClick = function()
         local calibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 or nil
         if type(calibration) ~= "table" or type(calibration.Open) ~= "function" then return false, "HUD 校准模块未加载" end
-        local ok, err = calibration:Open({ source = "status_display_page", scope = root.visibilityScope, onExit = function(saved, restored, restoreErr)
+        local ok, err = calibration:Open({ source = "status_display_page", scope = root.visibilityScope, component = root.visibilityComponent, onExit = function(saved, restored, restoreErr)
             if saved == true then persistHint:SetText("HUD 校准已保存 · 自己 / 目标配置已写入")
             else persistHint:SetText("HUD 校准已取消 · 未保存本次修改") end
             if restored ~= true and restoreErr ~= nil then persistHint:SetText("HUD 校准已退出，但主菜单恢复异常：" .. tostring(restoreErr)) end
@@ -661,12 +745,13 @@ local function BuildPage(parent, route)
     end
 
     function root:Refresh()
+        if self.clearTrackingDeadline and S.NowMs()>=self.clearTrackingDeadline then self:ResetClearTrackingConfirmation()end
         local enabled=S.FeatureRuntime and S.FeatureRuntime:IsEnabled("combat_buff_display")==true
         featureButton:SetText(enabled and "关闭功能" or "启用功能");widgetButton:SetEnabled(enabled)
         widgetButton:SetText(WidgetHost:IsVisible("combat.buff_display") and "关闭悬浮窗" or "打开悬浮窗")
         if self.activeTab=="library" then return self:RefreshLibrary()end
         local source=sourceNames[self.managementView] and self.managementView or "live"
-        local listFrozen=Feature:GetManagementListFreezeState().active
+        local listFreeze=Feature:GetManagementListFreezeState();local listFrozen=listFreeze.active
         listFreezeButton:SetVisible(source=="live");listFreezeButton:SetEnabled(enabled or listFrozen)
         listFreezeButton:SetText(listFrozen and "解冻列表" or "冻结列表")
         if type(listFreezeButton.SetSelected)=="function" then listFreezeButton:SetSelected(listFrozen)end
@@ -681,7 +766,7 @@ local function BuildPage(parent, route)
         end
         trackingTable:SetVisible(not cooldown);cooldownTable:SetVisible(cooldown)
         recordRow:SetVisible(source=="frozen");cooldownEditorRow:SetVisible(cooldown)
-        trackingCaption:SetText(sourceNames[source].." · "..tostring(#(rows or {})).." 条"..(source=="live" and (listFrozen and " · 已冻结" or " · 未知：未读到剩余时间") or cooldown and " · 目标真实 CD 暂不支持" or ""))
+        trackingCaption:SetText(sourceNames[source].." · "..tostring(#(rows or {})).." 条"..(source=="live" and (listFrozen and " · 新增继续加入，失效仍保留" or " · 未知：未读到剩余时间") or cooldown and " · 目标真实 CD 暂不支持" or "")..(source=="live" and listFreeze.overflow and " · 列表留存已达上限" or ""))
         if #(rows or {})>0 then view:SetViewState("normal")
         elseif source=="live" and tostring(self.filterText or "")=="" and (not enabled or not coverage or not ((coverage.player and coverage.player.available==true) or (coverage.target and coverage.target.available==true))) then
             view:SetViewState("unavailable",{title="当前状态尚未取得",message=enabled and "等待自身或目标状态采样；可从诊断查看读取情况。" or "请开启状态显示以读取当前自身和目标状态。"})
@@ -716,6 +801,7 @@ local function BuildPage(parent, route)
     end
 
     function root:SwitchTab(value)
+        self:ResetClearTrackingConfirmation()
         value = tostring(value or "track")
         if value=="layout" then value="visibility"end -- 保留旧程序化导航别名，不再增加一个可见页签。
         -- 程序化切页也必须关闭UIParent上的独立弹层；隐藏Switcher子页不会隐藏它。
@@ -840,6 +926,7 @@ local function BuildPage(parent, route)
     -- 生命周期：HUD 校准草稿归独立覆盖层持有；页面导航不会提交或重放几何。
     ------------------------------------------------------------------
     function root:OnActivated()
+        self:ResetClearTrackingConfirmation()
         local loaded, loadErr = Feature:EnsureStoreLoaded()
         if loaded ~= true then return false, loadErr or "状态显示配置读取失败" end
         persistHint:SetText("显隐点击即保存 · 校准需“保存并退出”")
@@ -853,6 +940,7 @@ local function BuildPage(parent, route)
         return self:Refresh()
     end
     function root:OnDeactivated()
+        self:ResetClearTrackingConfirmation()
         if RSUI.PopupCoordinator and type(RSUI.PopupCoordinator.CloseAll)=="function" then RSUI.PopupCoordinator:CloseAll()end
         Feature:SetManagementPageActive(false)
         if type(Feature.SetCooldownManagementActive)=="function" then Feature:SetCooldownManagementActive(false) end

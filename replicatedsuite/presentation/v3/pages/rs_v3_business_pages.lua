@@ -507,7 +507,7 @@ local function Build(parent, route, id)
         }))
         TrackField(D:SettingsNumericSlider(globalGrid, {
             -- 视觉常用范围1～100ms，步长1；精确输入仍允许原技术上限，不破坏已有慢速配置。
-            id = "v3_business_combat_unit_lines_refresh", label = "绘制间隔", min = 1, max = 100, fixedSliderRange = true, hardMin = REFRESH_HARD_MIN, hardMax = REFRESH_HARD_MAX, step = 1, integer = true, unit = "ms", labelWidth = 68, inputWidth = 58, applyButtonWidth = 38,
+            id = "v3_business_combat_unit_lines_refresh", label = "绘制间隔(ms)", min = 1, max = 100, fixedSliderRange = true, hardMin = REFRESH_HARD_MIN, hardMax = REFRESH_HARD_MAX, step = 1, integer = true, unit = "", labelWidth = 68, inputWidth = 58, applyButtonWidth = 38,
             controlHeight = 22, minHeight = 30, stackBelow = 274, sliderMinWidth = 74, sliderPreferredShare = 0.44,
             get = function() return (feature:GetProjection() or {}).refreshMs or 100 end,
             set = function(v) return feature.Commands:SetRefreshMs(v) end,
@@ -604,7 +604,7 @@ local function Build(parent, route, id)
 
         -- 范围绘制间隔独立于点数；保持几何预算，缺偏好仍用原自动节奏。
         TrackField(D:SettingsNumericSlider(root, {
-            id="v3_business_range_refresh",label="绘制间隔",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="ms",
+            id="v3_business_range_refresh",label="绘制间隔(ms)",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="",
             get=function()return (feature:GetProjection() or {}).refreshMs or 16 end,
             set=function(value)return feature.Commands:SetRefreshMs(value)end,
             slot={size="fixed",height=42,hAlign="fill"},
@@ -703,7 +703,7 @@ local function Build(parent, route, id)
         if editorRow1 == nil or editorRow2 == nil or editorRow3 == nil then return nil, "range_assist_editor_rows_build_failed" end
         local sliderSlot = { size = "fill", fill = 1, minWidth = 280, hAlign = "fill" }
         TrackRangeEditorControl(D:SettingsNumericSlider(editorRow1, {
-            id = "v3_business_combat_range_assist_selected_radius", label = "半径", min = 1, max = 100, hardMin = RANGE_RADIUS_HARD_MIN, hardMax = RANGE_RADIUS_HARD_MAX, step = 0.5, integer = false, unit = "m",
+            id = "v3_business_combat_range_assist_selected_radius", label = "半径(米)", min = 1, max = 100, hardMin = RANGE_RADIUS_HARD_MIN, hardMax = RANGE_RADIUS_HARD_MAX, step = 0.5, integer = false, unit = "",
             labelWidth = 42, inputWidth = 56, applyButtonWidth = 36, controlHeight = 22, minHeight = 28, stackBelow = 240, sliderMinWidth = 72, sliderPreferredShare = 0.48,
             get = function() local c = FindRangeCircle(rangeSelectedCircleId); return c and c.radius or 10 end,
             set = function(v) if rangeSelectedCircleId == nil then return false, "请先选择范围圆" end; return feature.Commands:SetCircleRadius(rangeSelectedCircleId, v) end,
@@ -1631,9 +1631,9 @@ local function Build(parent, route, id)
     local visualPageRefreshTask = "v3_business_visual_page_refresh:" .. tostring(id)
     local visualPageRefreshMs = 160
 
-    local function VisualSettingsInputDraftActive()
+    local function VisualSettingsInputDraftActive(observeNative)
         return visualSettingsPage == true and type(RSUI.HasActiveInputDraftWithin) == "function"
-            and RSUI:HasActiveInputDraftWithin(root) == true
+            and RSUI:HasActiveInputDraftWithin(root,observeNative) == true
     end
     local function DeferVisualPageRefreshForInput(reason)
         root.visualPageRefreshDeferredForInput = true
@@ -1657,7 +1657,8 @@ local function Build(parent, route, id)
         -- 抑制只能保护文本本身；TableView/状态/Enabled 的 Native 更新仍可能触发 RU LostFocus，造成“点一下
         -- 过会不能输入”或“删一个字符又恢复”。因此输入事务期间直接吞掉 环境视觉刷新；视觉绘制
         -- Scheduler 完全不受影响，用户结束编辑后的下一次 visual_tick 会自动补一次页面刷新。
-        if VisualSettingsInputDraftActive() then return DeferVisualPageRefreshForInput(reason) end
+        -- 高频通知只查Lua草稿；Native缓冲核对放160ms合并刷新执行前，避免每帧逐框GetText。
+        if VisualSettingsInputDraftActive(false) then return DeferVisualPageRefreshForInput(reason) end
         root.visualPageRefreshDeferredForInput = false
         root.visualPageRefreshDeferredReason = nil
         if self.visualPageRefreshPending == true then return true end
@@ -1734,6 +1735,8 @@ local function Build(parent, route, id)
         return Host:SyncFeatureConsumer(self, consumerBinding, "page_activated")
     end
     function root:OnDeactivated()
+        -- 离页结束未应用的视觉设置草稿；重开从业务权威重绘，避免隐藏期Native重绘被当成新输入。
+        if visualSettingsPage and type(RSUI.CancelInputDraftsWithin)=='function' then RSUI:CancelInputDraftsWithin(self,'page_deactivated') end
         -- 离开设置页只退出鼠标校准，保留已启用机制的后台观察，避免 HUD 截获战斗点击。
         if id == "combat_boss_alerts" and type(feature.Commands.SetHudEditing) == "function" then feature.Commands:SetHudEditing(false) end
         self:UnbindFeatureUpdates()

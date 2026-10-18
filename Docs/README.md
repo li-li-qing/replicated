@@ -280,6 +280,10 @@ LoadData 校验顺序
 
 Tracking 修改必须先 durable 写入并回读验证 inactive 的 player/target/meta 三个 Store，**全部成功后**才允许提交 manifest。inactive 写失败或 manifest 写失败都不得改变上一代 Authority；active slot 损坏则 fail-closed，禁止偷偷回退到 inactive 猜用户配置。HUD/settings 保存不得触碰 tracking Store，更不得重新写旧 `v3.buff_display`。
 
+状态追踪页底部的「全部取消追踪」（2026-10-18）使用 `Commands:ClearAllTracking()`，一次 tracking 事务清除自身/目标的 Buff、Debuff、Auto 及 skill/mate CD 选择，不受当前搜索和列表来源限制。先显示说明，再于 5 秒内二次点击确认；取消、离开页面、切换来源或执行其他追踪操作会撤销确认。保留 HUD、颜色、显示设置、分类、内置库导入元数据及会话观察记录；失败不改变已提交选择，可重新确认后重试。无需删除共享 `USER*/udf` 数据库。回归入口：`tools/rs_status_tracking_grid_tests.lua`。
+
+状态显示新增逐组件「头顶悬浮 / 屏幕固定」（2026-10-18）：在「显示内容」先选自身/目标，再选组件（默认距离），模式只作用于当前组件。例如只固定目标距离，Buff、装备、职业等继续悬浮；在「调整 HUD」也可选组件后切模式，分别调整屏幕 X/Y 和该项字体、大小、透明度、显隐等属性。固定几何与各组件锚点归 `v3.buff_display.placement` 的可选 slots，历史 layout/arrangement 指纹不变；旧整组模式存档仍能读取。锚点存逻辑视口万分比，校准显示逻辑像素，预览与正式渲染采用相同坐标；边缘允许内容局部越界以保持锚点稳定。两层共用单位事实、颜色、追踪、刷新与生命周期；仅无悬浮项时跳过人物投影。完整分享包含组件模式和两套布局，追踪分享不夹带布局；取消零写入，保存失败补偿。见 [实施与验收记录](superpowers/plans/2026-10-18-fixed-status-hud.md)，专项入口 `tools/rs_status_refactor_test_runner.py --fixed-hud`；RU 视觉效果待实机验收。
+
 首次迁移的方案 A 是一次性兼容例外：仅当旧 schema8/Transport5 的 `player.auto` 已是实证残片、`target.auto` 为完整 dense 列表且新 manifest 尚不存在时，允许以完整 target Auto 作为 player Auto 迁移基线；迁移完成后该规则退出日常数据流，**不得扩展成 Twin Authority、模糊恢复或 Hash 猜 ID**。
 
 ### 3.8 Static Data / ID

@@ -11,7 +11,7 @@
 -- 无对应请求及过期回调处理、当前比例和 130% 满比例模式，
 -- 贸易熟练度集成、TradePayoutV3 价格计算，
 -- 有界材料投影及身份解析、共用单一原生队列的多行询价，
--- 最多 12 条路线收藏、HUD 控件及 TradeDetailFloatingV3，
+-- 最多 64 条路线收藏、HUD 控件及 TradeDetailFloatingV3，
 -- 并核对 FoundationGate 和验收契约。
 ------------------------------------------------------------------------
 unpack = unpack or table.unpack
@@ -633,7 +633,7 @@ Test("T8: multi-row quote jobs coexist, remain bounded & cancel together", funct
 end)
 
 -- 测试 9：路线收藏管理与持久化。
-Test("T9: Route favorites toggle, 12-route bound & selection", function()
+Test("T9: Route favorites toggle, 64-route bound, persistence & selection", function()
     assert(Trade:AcquireConsumer("test_t9"))
     local TA = Trade.Authority
     Trade.State.fromZone, Trade.State.toZone = nil, nil
@@ -669,15 +669,37 @@ Test("T9: Route favorites toggle, 12-route bound & selection", function()
     assert(Trade:IsFavorite(1, 5) == false, "1->5 must not be favorite")
     assert(#Trade:GetFavorites() == 0, "Favorites must be empty")
 
-    -- 收藏数量不能超过 12。
+    -- 逐条提交覆盖旧的第 13 条拒绝边界，并让真实 Persistence 校验扩容后的预算。
     Trade.State.favorites = {}
-    for i = 1, 12 do
-        Trade.State.favorites[#Trade.State.favorites + 1] = { fromZone = i, toZone = i + 10 }
+    for i = 1, 64 do
+        Trade.State.fromZone, Trade.State.toZone = i, i + 100
+        local added, addErr = Trade.Commands:ToggleCurrentFavorite()
+        assert(added == true, "Must accept favorite " .. tostring(i) .. ": " .. tostring(addErr))
+        assert(#Trade:GetFavorites() == i, "Added favorite must remain visible")
     end
-    Trade.State.fromZone = 99
-    Trade.State.toZone = 100
-    local ok13, err13 = Trade:ToggleCurrentFavorite()
-    assert(ok13 == false and string.find(err13, "最多保存 12 条") ~= nil, "Must reject 13th favorite")
+    assert(#Trade:GetFavoriteItems() == 64, "Dropdown must expose all 64 favorite routes")
+    assert(Trade:GetProjection().currentRouteFavorite == true, "Current route must remain favorited")
+
+    Trade.State.fromZone, Trade.State.toZone = 99, 200
+    local ok65, err65 = Trade.Commands:ToggleCurrentFavorite()
+    assert(ok65 == false and string.find(err65, "最多保存 64 条", 1, true) ~= nil, "Must reject 65th favorite")
+    assert(#Trade:GetFavorites() == 64, "Rejected favorite must not change the existing list")
+
+    -- 满额仍可移除旧收藏，再添加新路线。
+    Trade.State.fromZone, Trade.State.toZone = 64, 164
+    assert(Trade.Commands:ToggleCurrentFavorite())
+    assert(#Trade:GetFavorites() == 63 and Trade:IsFavorite(64, 164) == false)
+    assert(Trade.Commands:ToggleCurrentFavorite())
+
+    -- 真实 codec/预算/Apply 回读都必须保留第 13～64 条，不能只修改添加判断。
+    local saved, saveErr = S.Persistence:SaveStore(Trade.storeId, { reason = "test_64_favorites", durable = true, verifyAfterSave = true })
+    assert(saved == true, "64 favorites must save: " .. tostring(saveErr))
+    Trade.State.favorites = {}
+    S.Persistence:GetStore(Trade.storeId).loaded = false
+    local loaded, _, loadErr = S.Persistence:LoadStore(Trade.storeId)
+    assert(loaded == true, "64 favorites must reload: " .. tostring(loadErr))
+    assert(#Trade:GetFavorites() == 64 and #Trade:GetFavoriteItems() == 64, "Reload must preserve all 64 favorites")
+    assert(Trade:IsFavorite(13, 113) and Trade:IsFavorite(64, 164), "Favorites beyond the old cap must survive reload")
 
     TA.inFlight = nil
     TA.pendingRoute = nil
