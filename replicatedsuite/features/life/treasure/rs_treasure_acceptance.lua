@@ -26,3 +26,12 @@ G:RegisterSequenceCase("v3_life_treasure_observation_contract", function()
     end
     return true
 end, { runtime = true })
+
+G:RegisterSequenceCase("v3_life_treasure_inventory_contract",function()
+    if not F or (tonumber(F.InventoryContractVersion) or 0)<1 then return Fail("treasure_inventory_component_missing")end
+    if not F.Inventory or F.Inventory.storeId~="v3.life.treasure.inventory" then return Fail("treasure_inventory_store_missing")end
+    for _,name in ipairs({"RegisterCoffer","WithdrawCoordinate","CancelWithdrawal","SetCoordinateContinent","SetInventorySort"})do
+        if type(F.Commands[name])~="function" then return Fail("treasure_inventory_command_"..name)end
+    end
+    return true
+end,{runtime=true})

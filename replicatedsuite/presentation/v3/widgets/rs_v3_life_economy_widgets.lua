@@ -1118,7 +1118,7 @@ ok, err = Register({
         if instance.treasureLastKind~=projection.viewKind then
             instance.treasureRegionDropdown:SetItems(projection.regionItems or {});instance.treasureLastKind=projection.viewKind
         end
-        instance.treasureRegionDropdown:SetEnabled(sea);instance.treasureRegionDropdown:Render()
+        instance.treasureRegionDropdown:SetEnabled(sea or projection.inventoryContractVersion~=nil);instance.treasureRegionDropdown:Render()
         if instance.treasureLastInterval~=projection.shipRespawnMinutes then
             instance.treasureSettingsDropdown:SetItems(instance.treasureSettingsItems(projection));instance.treasureLastInterval=projection.shipRespawnMinutes
         end
@@ -1126,6 +1126,7 @@ ok, err = Register({
         if instance.treasureInteractionHint then
             local errorText = instance.treasureActionError or projection.lastMapActionError
             local hint=TreasureMapInteraction.hint
+            if not sea and projection.inventoryContractVersion then hint="同坐标合并 · "..tostring(projection.totalMapCount or 0).." 张（含箱子扫描记录）" end
             if sea then
                 hint="本轮 已搜 "..tostring(projection.roundSearched or 0).."/"..tostring(projection.roundTotal or 0)
                     .." · 待搜 "..tostring(projection.roundRemaining or 0)
@@ -1140,7 +1141,7 @@ ok, err = Register({
         local rows = projection.rows or projection.maps or {}
         for _, row in ipairs(rows) do
             row.directionText=tostring(row.direction or "--")..(row.distance and (" · "..tostring(math.floor(row.distance+0.5)).."m") or "")
-            row.targetText=(row.regionName and (row.regionName.." · ") or "")..tostring(row.name or "")
+            row.targetText=(row.regionName and (row.regionName.." · ") or "")..tostring(row.groupKey and row.text or row.name or "")
             row.searchText=row.timerText or row.visitText
         end
         return rows
@@ -1152,12 +1153,12 @@ ok, err = Register({
     columns = {
         { id="name", title="追踪目标", field="targetText", size="fill", minWidth=88, fill=1 },
         { id="direction", title="方向 / 距离", field="directionText", size="fixed", width=86, minWidth=60 },
-        { id="visit", title="搜查 / 估时", field="searchText", size="fixed", width=96, minWidth=60 },
+        { id="visit", title="数量 / 搜查", field="searchText", size="fixed", width=108, minWidth=60 },
     },
     status = function(projection, rows)
         if projection.lastMapActionError ~= nil then return "地图定位失败 · " .. tostring(projection.lastMapActionError) end
         local selected = projection.selected
-        return selected and ((selected.regionName and (selected.regionName.." · ") or "")..tostring(selected.name or "").." · "..tostring(selected.direction or "--")..(selected.distance and (" · "..tostring(math.floor(selected.distance+0.5)).."m") or "")..(selected.timerText and (" · "..selected.timerText) or "")) or (tostring(#rows)..(projection.viewKind=="maps" and " 张" or " 个资料点"))
+        return selected and ((selected.regionName and (selected.regionName.." · ") or "")..tostring(selected.name or "").." · "..tostring(selected.direction or "--")..(selected.distance and (" · "..tostring(math.floor(selected.distance+0.5)).."m") or "")..(selected.timerText and (" · "..selected.timerText) or "")) or (tostring(#rows)..(projection.viewKind=="maps" and " 处坐标" or " 个资料点"))
     end,
 })
 if ok ~= true then error(err) end

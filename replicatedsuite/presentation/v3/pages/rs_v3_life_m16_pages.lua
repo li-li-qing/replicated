@@ -118,7 +118,7 @@ local function Build(parent, route, feature, kind)
     local title, subtitle = "", ""
     if kind == "trade" then title, subtitle = "跑商", "选择路线后查看实时货率与预计售价；单击选中货物，双击该行查询它的材料价格并自动计算毛利。"
     elseif kind == "bonds" then title, subtitle = "债券 / 居民板", "分别在西大陆、东大陆（以及原大陆）刷新一次即可保存当天快照；页面会合并显示已读取大陆，排序不会隐藏另一大陆。"
-    elseif kind == "treasure" then title, subtitle = "寻宝/海虫/沉船", "按海域找最近点，单击追踪；双击目标或点地图定位，在原生地图显示箭头。"
+    elseif kind == "treasure" then title, subtitle = "寻宝/海虫/沉船", "宝图按坐标合并；逐箱登记后汇总，选坐标取本箱同点图。双击目标显示地图箭头。"
     else title, subtitle = "钓鱼", "按需识别目标鱼动作并可安全切换 R；关闭、切区、战斗恢复或重载时按持久恢复快照还原原键位。" end
     D:PageHeader(root, "v3_" .. kind .. "_header", title, subtitle, "刷新", function()
         local ok, refreshErr = feature.Commands:Refresh("page_manual")
@@ -390,10 +390,10 @@ local function Build(parent, route, feature, kind)
             { id = "status", title = "任务状态", field = "statusText", size = "fixed", width = 82, minWidth = 68, getTone = function(item) return item and item.tone or "muted" end },
         } or kind == "treasure" and {
             { id = "name", title = "目标", field = "name", size = "fixed", width = 112, minWidth = 90 },
-            { id = "region", title = "海域", field = "regionName", size = "fixed", width = 100, minWidth = 80 },
+            { id = "region", title = "大陆 / 海域", field = "regionName", size = "fixed", width = 100, minWidth = 80 },
             { id = "coord", title = "坐标 / 来源", field = "detailText", size = "fill", minWidth = 190 },
             { id = "direction", title = "方向 / 距离", field = "directionText", size = "fixed", width = 124, minWidth = 100 },
-            { id = "visit", title = "搜查 / 预估计时", field = "searchText", size = "fixed", width = 126, minWidth = 80 },
+            { id = "visit", title = "数量 / 搜查", field = "searchText", size = "fixed", width = 150, minWidth = 100 },
         } or {
             { id = "status", title = "状态", field = "statusText", size = "fixed", width = 80, minWidth = 60, getTone = function(item) return item and item.tone or "muted" end },
             { id = "message", title = "动作 / 建议", field = "message", size = "fill", minWidth = 220 },
@@ -633,10 +633,11 @@ local function Build(parent, route, feature, kind)
             if root.treasureControls then root.treasureControls:Refresh(projection) end
             S.UIV3.TreasureMapInteraction:SyncSelection(tableView, projection)
             if not enabled then S.UIV3.TreasureMapInteraction:Reset(root) end
-            local treasureStatus = (projection.status or "--") .. " · " .. tostring(#rows) .. (projection.viewKind=="maps" and " 张藏宝图" or " 个资料点")
+            local treasureStatus = (projection.status or "--") .. " · " .. tostring(#rows) .. (projection.viewKind=="maps" and " 处坐标" or " 个资料点")
                 .. (projection.selected and (" · 当前 " .. tostring(projection.selected.name or "--")) or "")
+            if projection.viewKind=="maps" and projection.totalMapCount~=nil then treasureStatus=treasureStatus.." · 合计 "..projection.totalMapCount.." 张（含各箱扫描记录）" end
             local treasureError = root.treasureActionError or projection.lastMapActionError
-            if treasureError then treasureStatus = "定位未完成：" .. tostring(treasureError) end
+            if treasureError then treasureStatus = "操作未完成：" .. tostring(treasureError) end
             if projection.mapActionPending == true then treasureStatus = "地图定位等待中，冷却结束后自动执行" end -- 冷却等待不是定位失败；只显示 Feature 请求状态。
             status:SetText(enabled and treasureStatus or "功能已关闭")
             tableView:SetViewState(#rows>0 and "ready" or "empty",{title=projection.viewKind=="maps" and "暂无藏宝图" or "当前区域暂无资料点",detail=projection.error or "可切换分类、区域，或点击刷新。"})

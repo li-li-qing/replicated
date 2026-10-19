@@ -34,6 +34,37 @@ function M:Build(parent,F,prefix,options)
         c.settings=R:Button({id=prefix.."settings",parent=row,text="设置",compact=true,slot={size="fixed",width=76}})
         c.settings.onClick=options.onSettings
     end
+    if F.Inventory then
+        -- 库存操作仅在完整寻宝页提供；同点分组和大陆投影仍与浮窗共用。
+        c.boxId,c.takeLimit="1",2
+        c.storage=R:VerticalBox({id=prefix.."storage",parent=parent,gap=3,slot={size="auto",hAlign="fill"}})
+        local boxes=R:HorizontalBox({id=prefix.."boxes",parent=c.storage,gap=4,slot={size="fixed",height=26,hAlign="fill"}})
+        c.box=R:Dropdown({id=prefix.."box",parent=boxes,items=c.projection.cofferItems or {},popupWidth=200,maxVisible=8,
+            get=function()return c.boxId end,set=function(value)c.boxId=tostring(value);c:Refresh(c.projection);return true end,
+            slot={size="fill",fill=1,minWidth=100}})
+        c.register=R:Button({id=prefix.."register",parent=boxes,text="登记/更新本箱",compact=true,slot={size="fixed",width=112}})
+        c.register.onClick=function()return Run("RegisterCoffer",c.boxId)end
+        c.sort=R:Dropdown({id=prefix.."sort",parent=boxes,items={{value="count",text="数量从多到少"},{value="coordinate",text="按坐标排序"}},popupWidth=180,
+            get=function()return c.projection.sortMode or "count" end,set=function(value)return Run("SetInventorySort",value)end,
+            slot={size="fill",fill=1,minWidth=100}})
+        local actions=R:HorizontalBox({id=prefix.."inventory_actions",parent=c.storage,gap=4,slot={size="fixed",height=26,hAlign="fill"}})
+        c.quantity=R:Dropdown({id=prefix.."take_quantity",parent=actions,items={{value=1,text="最多1张"},{value=2,text="最多2张"},{value=0,text="本箱该点全部"}},popupWidth=180,
+            get=function()return c.takeLimit end,set=function(value)c.takeLimit=tonumber(value);return true end,
+            slot={size="fixed",width=112}})
+        c.take=R:Button({id=prefix.."take",parent=actions,text="取本箱同坐标",compact=true,slot={size="fixed",width=112}})
+        c.take.onClick=function()local selected=c.projection.selected
+            return Run("WithdrawCoordinate",c.boxId,selected and selected.groupKey,c.takeLimit)end
+        c.cancel=R:Button({id=prefix.."cancel_take",parent=actions,text="停止取图",compact=true,slot={size="fixed",width=76}})
+        c.cancel.onClick=function()return Run("CancelWithdrawal")end
+        local classes={{value="auto",text="恢复自动分类"},{value="auroria",text="归为原大陆"},{value="west",text="归为西大陆"},
+            {value="east",text="归为东大陆"},{value="sea",text="归为海上"},{value="unknown",text="归为未分类"}}
+        c.assign=R:Dropdown({id=prefix.."assign_continent",parent=actions,items=classes,placeholder="给选中坐标分类",popupWidth=180,
+            get=function()return "__assign__" end,set=function(value)
+                local selected=c.projection.selected;return Run("SetCoordinateContinent",selected and selected.groupKey,value)end,
+            onChanged=function(_,_,control)control:Render()end,slot={size="fill",fill=1,minWidth=110}})
+        c.inventoryHint=R:Text({id=prefix.."inventory_hint",parent=c.storage,text="",fontSize=9,tone="muted",overflow="ellipsis",
+            slot={size="fixed",height=20,hAlign="fill"}})
+    end
     c.round=R:HorizontalBox({id=prefix.."round",parent=parent,gap=4,slot={size="fixed",height=26,hAlign="fill"}})
     local function Button(key,text,width,fn)
         local b=R:Button({id=prefix..key,parent=c.round,text=text,compact=true,slot={size="fixed",width=width}});b.onClick=fn;return b
@@ -49,7 +80,7 @@ function M:Build(parent,F,prefix,options)
         local sea=p.viewKind=="seabugs" or p.viewKind=="ships"
         self.kind:Render()
         if self.lastKind~=p.viewKind then self.region:SetItems(p.regionItems or {});self.lastKind=p.viewKind end
-        self.region:Render();self.region:SetEnabled(sea)
+        self.region:Render();self.region:SetEnabled(sea or p.inventoryContractVersion~=nil)
         self.nearest:SetEnabled(sea and F.enabled==true)
         self.round:SetVisible(sea)
         local selected=p.selected
@@ -60,6 +91,26 @@ function M:Build(parent,F,prefix,options)
         self.stop:SetEnabled(selected~=nil)
         self.hint:SetText("本轮 已搜 "..tostring(p.roundSearched or 0).."/"..tostring(p.roundTotal or 0).." · 待搜 "..tostring(p.roundRemaining or 0)
             ..((p.roundSkipped or 0)>0 and (" · 跳过 "..tostring(p.roundSkipped)) or ""))
+        if self.storage then
+            self.storage:SetVisible(not sea)
+            local running=p.withdraw and p.withdraw.status=="running"
+            local signature={};for _,item in ipairs(p.cofferItems or {})do signature[#signature+1]=item.text end
+            signature=table.concat(signature,";")
+            if signature~=self.lastBoxes then self.box:SetItems(p.cofferItems or {});self.lastBoxes=signature end
+            self.box:Render();self.sort:Render();self.quantity:Render();self.assign:Render()
+            self.register:SetEnabled(F.enabled==true and not running)
+            self.box:SetEnabled(not running)
+            self.assign:SetEnabled(selected~=nil and selected.groupKey~=nil)
+            self.take:SetEnabled(F.enabled==true and not running and not p.inventoryUncertain and p.boundCofferId==self.boxId
+                and selected~=nil and selected.boxes~=nil and (selected.boxes[self.boxId] or 0)>0)
+            self.cancel:SetEnabled(running==true)
+            local hint=p.inventoryHint or ""
+            if running then hint="正在从箱"..tostring(p.withdraw.boxId).."取图：已确认 "..tostring(p.withdraw.moved).."/"..tostring(p.withdraw.limit)
+            elseif p.withdraw and p.withdraw.status=="done" then hint="本次已取出 "..tostring(p.withdraw.moved).." 张 · "..hint
+            elseif p.withdraw and p.withdraw.error then hint="取图停止："..p.withdraw.error end
+            if p.boundCofferId then hint="已登记本次箱"..p.boundCofferId.." · "..hint end
+            self.inventoryHint:SetText(hint)
+        end
         return true
     end
     c:Refresh(c.projection)

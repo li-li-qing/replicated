@@ -232,14 +232,17 @@ local function NormalizeTreasureZoneGroup(value)
 end
 local function Dms(dir, deg, min, sec, offset)
     deg, min, sec = Number(deg), Number(min), Number(sec); if not deg or not min or not sec then return nil end
+    -- 仍接受可进位的 DMS 数值；只拒绝不可表示的坐标，不凭字段名新增整数/秒范围假设。
+    if deg~=deg or min~=min or sec~=sec or math.abs(deg)==math.huge or math.abs(min)==math.huge or math.abs(sec)==math.huge then return nil end
     local value = deg + min / 60 + sec / 3600; if dir == "W" or dir == "S" then value = -value end
     return value * 1024 + offset
 end
-local function TreasureText(item)
+local function TreasureText(item, precise)
     local lon, lat = Text(item.longitudeDir), Text(item.latitudeDir)
     local a, b, c = Number(item.longitudeDeg), Number(item.longitudeMin), Number(item.longitudeSec)
     local d, e, f = Number(item.latitudeDeg), Number(item.latitudeMin), Number(item.latitudeSec)
     if (lon ~= "E" and lon ~= "W") or (lat ~= "N" and lat ~= "S") or not a or not b or not c or not d or not e or not f then return nil end
+    if precise then return string.format("%s %d°%d' %.12g\" · %s %d°%d' %.12g\"",lon,a,b,c,lat,d,e,f)end
     return string.format("%s %d°%d' %d\" · %s %d°%d' %d\"", lon, a, b, c, lat, d, e, f)
 end
 local function TreasureMapFromNativeItem(item, row, bagId)
@@ -247,9 +250,9 @@ local function TreasureMapFromNativeItem(item, row, bagId)
     -- 藏宝图原生物品事实自身携带完整经纬 DMS 字段，这是本功能真正需要且与语言无关的业务证据；只有八个坐标字段均合法时才接纳，
     -- 不根据名字、Tooltip 文案或未知 category 猜测。InventorySnapshotV3 只负责“哪个物理背包槽真实存在”，业务坐标判断仍由 Treasure Authority 所有。
     if type(item) ~= "table" then return nil end
-    local text = TreasureText(item)
     local worldX = Dms(item.longitudeDir, item.longitudeDeg, item.longitudeMin, item.longitudeSec, 21504)
     local worldY = Dms(item.latitudeDir, item.latitudeDeg, item.latitudeMin, item.latitudeSec, 28672)
+    local text = worldX and worldY and TreasureText(item)
     if text == nil or worldX == nil or worldY == nil then return nil end
     local slot = math.max(1, math.floor(Number(row and row.slot) or 1))
     local name = Text(item.name or item.itemName)
@@ -259,13 +262,15 @@ local function TreasureMapFromNativeItem(item, row, bagId)
         -- 虽然新版 Snapshot 能读到 itemType，也绝不能把它塞进 key，否则用户升级后已保存的当前藏宝图会失配并被静默切回第一张。
         -- itemType 仍作为事实字段保留供诊断/未来迁移使用；只有显式 schema migration 才允许改变持久身份格式。
         key = text .. ":" .. tostring(slot),
-        name = name, text = text, worldX = worldX, worldY = worldY,
+        name = name, text = TreasureText(item,true), worldX = worldX, worldY = worldY,
         -- 部分 RU 物品结构会直接附带 zoneGroupId/zoneGroupType。
         -- 若字段不存在则保持 nil，后续显式地图定位时再读取“当前区域组”作为有证据的 fallback；不要在背包扫描阶段调用位置 API。
         zoneGroupId = NormalizeTreasureZoneGroup(item.zoneGroupId) or NormalizeTreasureZoneGroup(item.zoneGroupType) or NormalizeTreasureZoneGroup(item.zoneGroup),
-        slot = slot, bagId = Number(bagId), itemType = Number(row and row.itemType), direction = "--", distance = nil,
+        slot = slot, bagId = Number(bagId), itemType = Number(row and row.itemType), stack = Number(row and row.stack) or 1, direction = "--", distance = nil,
     }
 end
+-- 库存组件复用同一原生坐标解析，不另起按名称识别或第二份 DMS 换算。
+function Treasure:ParseInventoryMap(item,row,bagId) return TreasureMapFromNativeItem(item,row,bagId) end
 function XA:Refresh()
     -- 静态目标与背包物品生命周期独立；海上视图中不为固定坐标反复扫描背包。
     if self.viewKind~="maps" and (self.selected==nil or IsSea(self.selected)) then
@@ -316,17 +321,27 @@ function XA:Refresh()
 
     local selected = Treasure.State.selectedKey
     local selectedMap = nil
+    local coordinate = Treasure.Inventory and self.selected and self.selected.kind~="catalog" and not IsSea(self.selected)
+        and Treasure.Inventory.CoordinateKey(self.selected) or nil
     for _, map in ipairs(maps) do
-        if map.key == selected then selectedMap = map; break end
+        if map.key == selected and (not coordinate or Treasure.Inventory.CoordinateKey(map)==coordinate) then selectedMap = map; break end
+    end
+    if selectedMap==nil and coordinate then
+        for _,map in ipairs(maps)do if Treasure.Inventory.CoordinateKey(map)==coordinate then selectedMap=map;selected=map.key;break end end
     end
     if selectedMap == nil then
         selectedMap = maps[1]
         selected = selectedMap and selectedMap.key or nil
-        Treasure.State.selectedKey = selected
     end
+    Treasure.State.selectedKey = selected
     if self.stopped then selectedMap=nil end
     self.maps=maps
-    if not IsSea(self.selected) then self.selected=selectedMap end
+    if not IsSea(self.selected) and not (self.selected and self.selected.kind=="catalog") then self.selected=selectedMap end
+    -- 分组必须先于 Publish；否则静止时的新增/消耗只更新旧行，页面要等玩家移动才看到新数量。
+    if Treasure.Inventory then
+        Treasure.Inventory:RebuildGroups()
+        if self.selected and self.selected.kind=="catalog" and not Treasure.Inventory.byKey[Treasure.Inventory.CoordinateKey(self.selected)] then self.selected=nil end
+    end
     if self.pendingMapKey ~= nil and (self.selected == nil or tostring(self.selected.key) ~= self.pendingMapKey) then Treasure:CancelPendingMapAction() end -- 物品消耗/重排改变选择时立即取消旧地图请求。
     self.inventoryBagId = snapshot.bagId
     self.inventoryFallbackUsed = snapshot.fallbackUsed == true
@@ -359,8 +374,8 @@ function XA:CheckInventory()
         return false
     end
     local current = TreasureMapFromNativeItem(item, map, map.bagId)
-    if current == nil or current.key ~= map.key then
-        self.selected = nil -- 已证实旧定位槽失效，先停旧箭头；重扫后再选择仍存在的藏宝图。
+    if current == nil or current.key ~= map.key or current.worldX~=map.worldX or current.worldY~=map.worldY then
+        -- 先停旧箭头；保留完整坐标供本轮同步重扫匹配，避免相同取整文字的槽位交换改变目标。
         ClearCompass("selection_changed")
         return self:Refresh()
     end
@@ -781,6 +796,7 @@ local function ResolveTreasureMapZoneGroup(map)
         return nil,"海上资料点缺少原包区域组映射"
     end
     if explicit ~= nil then return explicit, "item" end
+    if type(map)=="table" and map.kind=="catalog" then return nil,"箱子坐标记录缺少区域组，请先取图核对" end
     local ok, currentZone, err = Call("X2Unit:GetCurrentZoneGroup", UnitApi, "GetCurrentZoneGroup")
     local zone = ok == true and NormalizeTreasureZoneGroup(currentZone) or nil
     if zone ~= nil then return zone, "current_zone" end

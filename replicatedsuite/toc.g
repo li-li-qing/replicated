@@ -193,6 +193,7 @@ features/life/shared/rs_life_slice_factory.lua
 data/rs_treasure_sea_points.lua
 features/life/treasure/rs_treasure_sea_catalog.lua
 features/life/treasure/rs_treasure_feature.lua
+features/life/treasure/rs_treasure_inventory.lua
 -- 2026-09-28 Phase 2 Step 2：life_fishing 拆出（Auto-R 事务契约冻结）。
 features/life/fishing/rs_fishing_feature.lua
 -- 2026-09-28 Phase 2 Step 3：life_bonds 拆出（X2Quest ownership 仍在 Registry .328 声明）。
