@@ -35,15 +35,14 @@ function M:Build(parent,F,prefix,options)
         c.settings.onClick=options.onSettings
     end
     if F.Inventory then
-        -- 库存操作仅在完整寻宝页提供；同点分组和大陆投影仍与浮窗共用。
-        c.boxId,c.takeLimit="1",2
+        -- 完整页与悬浮窗分派同一个逐箱识别命令；记录号来自Feature，不让UI预设/选择物理箱身份。
+        c.takeLimit=2
         c.storage=R:VerticalBox({id=prefix.."storage",parent=parent,gap=3,slot={size="auto",hAlign="fill"}})
         local boxes=R:HorizontalBox({id=prefix.."boxes",parent=c.storage,gap=4,slot={size="fixed",height=26,hAlign="fill"}})
-        c.box=R:Dropdown({id=prefix.."box",parent=boxes,items=c.projection.cofferItems or {},popupWidth=200,maxVisible=8,
-            get=function()return c.boxId end,set=function(value)c.boxId=tostring(value);c:Refresh(c.projection);return true end,
-            slot={size="fill",fill=1,minWidth=100}})
-        c.register=R:Button({id=prefix.."register",parent=boxes,text="登记/更新本箱",compact=true,slot={size="fixed",width=112}})
-        c.register.onClick=function()return Run("RegisterCoffer",c.boxId)end
+        c.register=R:Button({id=prefix.."register",parent=boxes,text="识别当前保管箱",compact=true,slot={size="fixed",width=136}})
+        c.register.onClick=function()return Run("IdentifyCurrentCoffer")end
+        c.clear=R:Button({id=prefix.."clear_coffers",parent=boxes,text="重新统计",compact=true,slot={size="fixed",width=88}})
+        c.clear.onClick=function()return Run("ResetCofferRound")end
         c.sort=R:Dropdown({id=prefix.."sort",parent=boxes,items={{value="count",text="数量从多到少"},{value="coordinate",text="按坐标排序"}},popupWidth=180,
             get=function()return c.projection.sortMode or "count" end,set=function(value)return Run("SetInventorySort",value)end,
             slot={size="fill",fill=1,minWidth=100}})
@@ -94,12 +93,10 @@ function M:Build(parent,F,prefix,options)
         if self.storage then
             self.storage:SetVisible(not sea)
             local running=p.withdraw and p.withdraw.status=="running"
-            local signature={};for _,item in ipairs(p.cofferItems or {})do signature[#signature+1]=item.text end
-            signature=table.concat(signature,";")
-            if signature~=self.lastBoxes then self.box:SetItems(p.cofferItems or {});self.lastBoxes=signature end
-            self.box:Render();self.sort:Render();self.quantity:Render();self.assign:Render()
+            self.boxId=p.boundCofferId -- 取图只允许刚识别的当前箱，不能从旧统计记录任意切换操作对象。
+            self.sort:Render();self.quantity:Render();self.assign:Render()
             self.register:SetEnabled(F.enabled==true and not running)
-            self.box:SetEnabled(not running)
+            self.clear:SetEnabled(F.enabled==true and not running)
             self.assign:SetEnabled(selected~=nil and selected.groupKey~=nil)
             self.take:SetEnabled(F.enabled==true and not running and not p.inventoryUncertain and p.boundCofferId==self.boxId
                 and selected~=nil and selected.boxes~=nil and (selected.boxes[self.boxId] or 0)>0)
@@ -108,7 +105,7 @@ function M:Build(parent,F,prefix,options)
             if running then hint="正在从箱"..tostring(p.withdraw.boxId).."取图：已确认 "..tostring(p.withdraw.moved).."/"..tostring(p.withdraw.limit)
             elseif p.withdraw and p.withdraw.status=="done" then hint="本次已取出 "..tostring(p.withdraw.moved).." 张 · "..hint
             elseif p.withdraw and p.withdraw.error then hint="取图停止："..p.withdraw.error end
-            if p.boundCofferId then hint="已登记本次箱"..p.boundCofferId.." · "..hint end
+            if p.boundCofferId then hint="当前识别记录 "..p.boundCofferId.." · "..hint end
             self.inventoryHint:SetText(hint)
         end
         return true

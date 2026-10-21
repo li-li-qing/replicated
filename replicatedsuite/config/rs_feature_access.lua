@@ -4,5 +4,5 @@
 -- QQ群：1104129461
 ------------------------------------------------------------------------
 ReplicatedSuiteFeatureAccess = {
-    combat_facing_indicator = true, 
+    combat_facing_indicator = false,
 }

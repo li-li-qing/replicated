@@ -4,7 +4,7 @@
 -- QQ群：1104129461
 --
 -- 钓鱼热键事务只拥有可逆动作栏按键修改；鱼/Buff/区域识别归 Fishing Feature，持久化归 v3.life.fishing Store
--- ，UI 只读 projection。无轮询、不拥有 UI、不另建 SaveData key。每次 Native 写通过 S.Api 能力门禁，只使用
+-- ，UI 只读 projection。服务不建轮询；唯一自有控件是隐藏且不可交互的首槽读取器，不另建 SaveData key。每次 Native 写通过 S.Api 能力门禁，只使用
 -- OfficialEnabled Hotkey/PlayerInCombat，禁止 not-allowed getter。Feature 先完整槽位快照 -> 耐久 SaveData/
 -- 读回 -> AdoptRecovery -> MoveR -> SaveHotKey -> Native 读回；首次写及首次触碰每个目标槽前都须持久化恢复快
 -- 照。战斗状态读不到视为战斗中，不写热键；恢复可延至脱战但快照保留。空槽只能用 RemoveOptionBinding 精确恢复
@@ -24,7 +24,9 @@ local H = {
     presentationBoundary = "service_only",
     ActionBar = "mode_action_bar_button",
     ScanMax = 12,
-    FishingSlots = { 2, 3, 4, 5, 6, 7 },
+    FishingSlots = { 2, 3, 4, 5, 6, 7, 8 }, -- 放生占首槽时提竿移至8；必须在首次改键前一起备份。
+    ReleaseSkillId = 22538, -- 用户点击放生后，由“状态显示”的技能CD记录识别；尚不能证明Slot:GetSkillType也返回同一ID。
+    CandidateReleaseSkillId = 22536, -- 12:28 RU报告：背鱼后首槽由21571变成22536；用户授权并列试验，名称/等价性仍待取证。
     ReadOptions = { false, true, 0, 1 },
     sessionSnapshot = nil,
     currentSlot = nil,
@@ -313,6 +315,20 @@ function H:IsRecoveryPending()
     return self.pendingRecovery == true or type(self.sessionSnapshot) == "table"
 end
 
+-- 切目标的初始化只还原同一会话已有的原始快照，不ResetSession/重新备份。
+-- 所有触碰过的槽位都归本事务恢复；恢复成功后保留durable记录和会话，下一条鱼仍可继续映射。
+function H:ResetTargetMapping()
+    local snapshot = self.sessionSnapshot
+    if type(snapshot) ~= "table" then return false, "切目标初始化缺少原按键快照" end
+    self.stats.targetResets = (tonumber(self.stats.targetResets) or 0) + 1
+    if self:InCombat() then self.pendingRecovery = true; return false, "战斗中不能初始化钓鱼按键" end
+    local restored, err = self:VerifySnapshotRestored(snapshot)
+    if restored ~= true then restored, err = self:RestoreSnapshot(snapshot) end
+    if restored ~= true then return false, err end
+    self.currentSlot, self.pendingRecovery = nil, true -- 清掉上一条鱼的映射缓存，恢复义务仍由原会话持有。
+    return true
+end
+
 function H:MoveR(slot, persistTouch)
     self.stats.moveAttempts = (tonumber(self.stats.moveAttempts) or 0) + 1
     slot = tonumber(slot)
@@ -387,6 +403,131 @@ function H:MoveR(slot, persistTouch)
     self.currentSlot = slot
     self.pendingRecovery = true
     return true
+end
+
+-- Slot方法均来自当前Allowed参考；只操作工厂创建的自有读取器，不读取/修改原生技能栏控件。
+local function ProbeCall(probe, method, ...)
+    local args = { ... }
+    return pcall(function()
+        local fn = probe[method]
+        if type(fn) ~= "function" then error("slot_method_unavailable:" .. method) end
+        return fn(probe, unpack(args))
+    end)
+end
+
+function H:EnsureModeProbe()
+    local generation = tonumber(S.Generation) or 0
+    if self.modeProbeGeneration == generation then return self.modeProbe, self.modeProbeError end
+    self.modeProbeGeneration, self.modeProbe, self.modeProbeError = generation, nil, nil
+    local factory = S.NativeObjectFactory
+    if type(factory) ~= "table" or type(factory.Create) ~= "function" or type(S.PhysicalId) ~= "function" then
+        self.modeProbeError = "native_slot_factory_unavailable"
+        return nil, self.modeProbeError
+    end
+    -- 一个代际最多构造一次；失败不在100ms路径不断导入/创建。物理ID仍由Suite身份Authority分配。
+    local ok, probe, err = pcall(function()
+        return factory:Create("slot", S.PhysicalId("service:fishing_hotkey:mode_probe"), "UIParent")
+    end)
+    if ok ~= true or probe == nil then
+        self.modeProbeError = tostring(ok and err or probe)
+        return nil, self.modeProbeError
+    end
+    -- Show(false)/EnablePick(false)允许原样返回false，这是设置后的状态，不是拒绝。
+    local hidden, hideResult = ProbeCall(probe, "Show", false)
+    local inert, inertResult = ProbeCall(probe, "EnablePick", false)
+    local clickDisabled, clickResult = ProbeCall(probe, "DisableDefaultClick")
+    if hidden ~= true or inert ~= true or clickDisabled ~= true or clickResult == false then
+        self.modeProbeError = "mode_probe_cannot_be_made_inert:" .. tostring(not hidden and hideResult or not inert and inertResult or clickResult)
+        return nil, self.modeProbeError
+    end
+    self.modeProbe = probe
+    return probe
+end
+
+-- 客户端x2ui/hud/mode_action_bar/mode_action.lua以EstablishSlot(ISLOT_MODE_ACTION,i)绑定一基槽位。
+-- 每次读后ReleaseSlot，不持有动作绑定、不挂事件/OnUpdate；空槽/异常绝不当成普通布局。
+-- 日常观察只读首槽ID；提示名/相邻槽仅在用户导出详情时有界采样，不扩展100ms路径的Native读取。
+local function ReadModeSlot(self, slotIndex, includeTooltip)
+    local row = { status = "unavailable", slot = slotIndex }
+    local probe, err = self:EnsureModeProbe()
+    if probe == nil then row.reason = err or "mode_probe_unavailable"; return row end
+    local slotType = Host("ISLOT_MODE_ACTION") -- 可由Slot导入导出；不在导入前误判缺失，也不硬编码数值。
+    if type(slotType) ~= "number" or slotType ~= slotType or slotType <= 0 or slotType == math.huge then
+        row.reason = "mode_slot_constant_unavailable"; return row
+    end
+    row.slotType = slotType
+    local bound, accepted = ProbeCall(probe, "EstablishSlot", slotType, slotIndex)
+    local readOk, skill = false, nil
+    if bound == true and accepted ~= false then readOk, skill = ProbeCall(probe, "GetSkillType") end
+    if includeTooltip == true and readOk == true and tonumber(skill) and tonumber(skill) > 0 then
+        -- 保留客户端的原始身份字段以核对GetSkillType/提示数据是否同义；不把推测出的名称用于自动改键。
+        local tipOk, tip = ProbeCall(probe, "GetTooltip")
+        row.tooltipStatus = tipOk and type(tip) == "table" and "captured" or "unavailable"
+        if row.tooltipStatus == "captured" then
+            row.tooltip = {}
+            for _, key in ipairs({ "name", "skillName", "skill_name", "skillType", "skillId", "id", "path", "description" }) do
+                local value = rawget(tip, key)
+                if type(value) == "number" then row.tooltip[key] = value
+                elseif type(value) == "string" then row.tooltip[key] = value:sub(1, key == "description" and 512 or 256) end
+            end
+            row.name = row.tooltip.name or row.tooltip.skillName or row.tooltip.skill_name
+        elseif not tipOk then row.tooltipError = tostring(tip) end
+    end
+    local released, releaseResult = ProbeCall(probe, "ReleaseSlot")
+    if bound ~= true or accepted == false then row.reason, row.error = "mode_probe_establish_failed", tostring(accepted); return row end
+    if readOk ~= true then row.reason, row.error = "mode_probe_skill_read_failed", tostring(skill); return row end
+    if released ~= true or releaseResult == false then row.reason, row.error = "mode_probe_release_failed", tostring(releaseResult); return row end
+    local skillId = tonumber(skill)
+    if skillId == nil or skillId ~= skillId or skillId <= 0 or skillId == math.huge or skillId ~= math.floor(skillId) then
+        row.status, row.reason = "empty_or_unknown", "mode_skill_not_positive_id"
+        return row
+    end
+    row.status, row.skillId = "captured_slot", skillId
+    if skillId == self.ReleaseSkillId then row.releaseMatch = "cast_cd_observed_id"
+    elseif skillId == self.CandidateReleaseSkillId then row.releaseMatch = "candidate_ru_report"
+    else row.releaseMatch = "not_matched" end
+    row.isRelease = row.releaseMatch ~= "not_matched"
+    return row
+end
+
+function H:ReadActionBarLayout(includeTooltip)
+    local row = ReadModeSlot(self, 1, includeTooltip)
+    local out = { status = row.status == "captured_slot" and "captured_first_slot" or row.status,
+        source = "owned_mode_slot", slot = 1, slotType = row.slotType, slots = { row },
+        releaseSkillId = self.ReleaseSkillId, candidateReleaseSkillId = self.CandidateReleaseSkillId,
+        releaseIdEvidence = "user_observed_after_cast_in_skill_cd", slotIdEquivalence = "unverified_user_approved_trial",
+        offsetInferred = false, reason = row.reason, error = row.error }
+    if row.status ~= "captured_slot" then return out end
+    out.firstSkillId, out.firstSkillName, out.releaseMatch = row.skillId, row.name, row.releaseMatch
+    out.releasePresent, out.slotOffset, out.offsetInferred = row.isRelease, row.isRelease and 1 or 0, true
+    return out
+end
+
+function H:CaptureActionBarDiagnostics()
+    local out = self:ReadActionBarLayout(true)
+    out.slotScanLimit = 8
+    -- 只在显式详情读取相邻1..8槽，下一份报告可直接核对提示名和真实技能顺序，不改变原生栏或观察缓存。
+    if out.status == "captured_first_slot" then
+        for index = 2, out.slotScanLimit do out.slots[index] = ReadModeSlot(self, index, true) end
+    end
+    return out
+end
+
+-- 仅由用户显式生成钓鱼详细报告时调用；扫描现有12槽绑定，不开编辑事务、不移动R、不保存。
+-- 绑定只能证明某槽当前分配了哪个键，不能证明该槽现在是什么技能，更不能据此推断背鱼后的偏移。
+function H:CaptureBindingDiagnostics()
+    local out = { actionBar = self.ActionBar, slots = {}, rSlots = {}, unknownSlots = {} }
+    for slot = 1, self.ScanMax do
+        local binding, readable = self:ReadActionSlotBinding(slot)
+        local isR = readable == true and self:IsR(binding) or false
+        out.slots[slot] = { slot = slot, binding = binding, isR = isR,
+            status = readable ~= true and "unreadable" or (binding == nil and "unbound" or "bound") }
+        if isR then out.rSlots[#out.rSlots + 1] = slot end
+        if readable ~= true then out.unknownSlots[#out.unknownSlots + 1] = slot end
+    end
+    -- 原始恢复记录只进入诊断详情，不扩充给Presentation的普通投影；快照与当前绑定分列避免混淆。
+    out.service, out.sessionSnapshot = self:GetDiagnostics(), Copy(self.sessionSnapshot)
+    return out
 end
 
 function H:GetDiagnostics()

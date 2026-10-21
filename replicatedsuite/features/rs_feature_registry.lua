@@ -462,7 +462,7 @@ Add("life_treasure", "life.treasure", "寻宝/海虫/沉船", "life", 50, "藏�
     -- InventorySnapshotV3 仍只提供共享背包事实；ShowWorldmapLocation 仅由用户点击触发。
     -- 声明与实现保持一致；UnitScreen 只用于罗盘锚定，位置任务核对单槽，地图写仍须显式点击。
     apiDependencies = { "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetUnitScreenPosition", "X2Unit:GetCurrentZoneGroup", "X2Map:ShowWorldmapLocation", "X2Coffer:GetBagItemInfo", "X2Coffer:Capacity", "X2Coffer:MoveToEmptyBagSlot", "ADDON:GetContent", "ADDON:GetContentMainScriptPosVis" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_plus_explicit_ui_action",
-    currentImplementation = "藏宝图按完整坐标归组、按大陆筛选；逐箱登记角色快照，汇总数量排序并从当前登记箱按坐标串行取图，观察箱内减少与背包增加后确认；InventorySnapshotV3 单槽核对与有界补采；60 海虫/444 沉船支持海域筛选、最近点、列表选择；地图按钮/双击复用 ShowWorldmapLocation 原生小箭头；共享 500ms 位置更新与 33ms 指针，停止或 Consumer=0 清理任务；原生队伍共享标记待验证",
+    currentImplementation = "藏宝图按完整坐标归组、按大陆筛选；悬浮窗一键识别当前保管箱，本轮逐箱追加记录并统计跨箱同坐标，设置可清空本轮重新统计；从当前已识别箱按坐标串行取图，观察箱内减少与背包增加后确认；InventorySnapshotV3 单槽核对与有界补采；60 海虫/444 沉船支持海域筛选、最近点、列表选择；地图按钮/双击复用 ShowWorldmapLocation 原生小箭头；共享 500ms 位置更新与 33ms 指针，停止或 Consumer=0 清理任务；原生队伍共享标记待验证",
     evidence = "V3 Treasure map-location contract v2 + RU API ShowWorldmapLocation(zoneGroupId,globalX,globalY,z) + reference TreasureMapHunter targetZone,targetX,targetY call; fixed context-id 2 removed",
 })
 Add("life_fishing", "life.fishing", "钓鱼", "life", 60, "目标鱼动作识别、技能栏推荐与可逆自动 R；完整写键链已恢复。", {

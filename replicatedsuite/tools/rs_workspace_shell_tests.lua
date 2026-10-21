@@ -133,8 +133,8 @@ Test('appearance shortcut stays clickable in the main title bar and opens the ac
 end)
 Test('release label, support line and menu tips use visible open edges',function()
  local shell,S,h,n=Boot()
- -- 中文维护（5.5 发布）：核对实际创建的标题，避免发行名称仍停留在上一个版本。
- assert(shell.brandTitle.text:find('QQ群:1104129461   正式版5.5',1,true),'release label missing beside QQ group')
+ -- 中文维护（5.6 发布）：核对实际创建的标题，避免发行名称仍停留在上一个版本。
+ assert(shell.brandTitle.text:find('QQ群:1104129461   正式版5.6',1,true),'release label missing beside QQ group')
  assert(n.v3_shell_support_text.text=='如果觉得功能好用，可以邮件给作者提供一点打赏','support line missing')
  local tips={
   '债券功能','装备升级或者翻新','血条太大挡视野','想给朋友取别称吗',

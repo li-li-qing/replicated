@@ -74,8 +74,145 @@ class TreasureInventoryTests(unittest.TestCase):
         function h:Drain() for i=1,40 do self:Step() end end
         function Refresh()assert(f:Refresh());return f:GetProjection()end
         function Group()for _,r in ipairs(f:GetProjection().rows)do if r.worldX==22528 then return r end end end
+        function NextCoffer()
+         h.S.Events:Dispatch('COFFER_INTERACTION_END')
+         h.S.Events:Dispatch('COFFER_INTERACTION_START')
+        end
         ''')
         return lua
+
+    def floating(self):
+        lua=self.boot()
+        lua.execute('''
+        local S=h.S
+        S.UIV3.WidgetHost={Register=function()return true end,BindFeatureLifecycle=function()return true end}
+        S.Features.Trade=f;S.Features.Bonds=f;S.Features.Fishing=f
+        S.UI.CreateWindowShell=function()error('content test must not create a native root window')end
+        dofile('ui/framework/rs_ui_floating_surface.lua')
+        dofile('presentation/v3/widgets/rs_v3_life_economy_widgets.lua')
+        parent=h.Native(nil,'withdraw_assistant_parent',0,0,390,240)
+        content=assert(S.UIV3.LifeEconomyContent:Create(parent,'Treasure','withdraw_assistant_'))
+        assert(content:Refresh())
+        function Click(control)return control.root.events.OnClick(control.root,'LeftButton')end
+        function SelectCoordinate(key)
+         content:Refresh();content.content:Layout(0,0,390,240)
+         for index=1,#f:GetProjection().rows do
+          local item=content.table:GetItem(index)
+          if item.key==key then
+           local row=assert(content.table.list:GetRowForIndex(index))
+           assert(Click(row));return
+          end
+         end
+         error('coordinate is absent from the real table')
+        end
+        ''')
+        return lua
+
+    def test_floating_withdraws_all_selected_coordinates_from_current_box_and_preserves_other_sources(self):
+        self.floating().execute('''
+        local take=assert(content.treasureWithdrawButton,'assistant has no coordinate withdrawal button')
+        assert(content.treasureCancelWithdrawButton,'assistant has no withdrawal cancellation button')
+        h.storage={Map(0,2),Map(0,2),Map(0,2)};assert(Click(content.treasureIdentifyButton))
+        NextCoffer();h.storage={Map(0,2),Map(0.1,2),Map(0,2),Map(2,4),Map(0,2),Map(0,2)}
+        assert(Click(content.treasureIdentifyButton));local key=Group().key;SelectCoordinate(key)
+        assert(take.enabled==true and f:GetProjection().boundCofferId=='2')
+        local reads,writes=h.inventoryReads,h.writes
+        for i=1,5 do content:Refresh()end
+        assert(h.inventoryReads==reads and h.writes==writes,'button rendering performs inventory work')
+        assert(Click(take));assert(h.nativeWrites==0,'click bypassed the serial withdrawal scheduler')
+        assert(take.enabled==false and content.treasureCancelWithdrawButton.enabled==true)
+        assert(f:GetProjection().withdraw.limit==4,'all was silently capped at the old two-map default')
+        h:Step();content:Refresh()
+        assert(h.nativeWrites==1 and f:GetProjection().withdraw.moved==0)
+        assert(content.treasureInteractionHint.text:find('0/4',1,true),'sent move was presented as confirmed')
+        h:Step();content:Refresh()
+        assert(content.treasureInteractionHint.text:find('1/4',1,true),'confirmed progress is absent')
+        h:Drain();content:Refresh()
+        local p=Refresh()
+        assert(h.nativeWrites==4 and #h.bag==4 and #h.storage==2)
+        assert(h.storage[1].longitudeSec==0.1 and h.storage[2].longitudeSec==2,'a different exact coordinate was moved')
+        assert(Group().cofferCount==3 and Group().bagCount==4 and Group().boxes['1']==3)
+        assert(p.withdraw.status=='done' and p.withdraw.moved==4)
+        assert(content.treasureInteractionHint.text:find('已取出 4 张',1,true))
+        assert(take.enabled==false and content.treasureCancelWithdrawButton.enabled==false)
+        content:DisposeHeaderSettings()
+        ''')
+
+    def test_floating_withdrawal_uses_the_latest_shared_selection_instead_of_its_old_projection(self):
+        self.floating().execute('''
+        h.storage={Map(0,2),Map(1,4),Map(0,2),Map(1,4),Map(1,4)}
+        assert(Click(content.treasureIdentifyButton));local old=Group().key;SelectCoordinate(old)
+        local target
+        for _,row in ipairs(f:GetProjection().rows)do if row.key~=old then target=row.key end end
+        assert(target and f.Commands:Select(target)) -- 另一个界面变更共享选择，当前浮窗尚未刷新。
+        assert(content.treasureControlProjection.selected.groupKey==old)
+        assert(Click(content.treasureWithdrawButton));assert(f.Inventory.job.key==target)
+        h:Drain();content:Refresh()
+        assert(h.nativeWrites==3 and #h.storage==2 and h.storage[1].longitudeSec==0 and h.storage[2].longitudeSec==0)
+        content:DisposeHeaderSettings()
+        ''')
+
+    def test_floating_stop_button_stops_the_existing_job_without_a_second_native_move(self):
+        self.floating().execute('''
+        local take=assert(content.treasureWithdrawButton,'assistant has no coordinate withdrawal button')
+        local stop=assert(content.treasureCancelWithdrawButton,'assistant has no stop button')
+        h.storage={Map(0,2),Map(0,2),Map(0,2)};assert(Click(content.treasureIdentifyButton))
+        SelectCoordinate(Group().key);assert(Click(take));h:Step();h:Step();content:Refresh()
+        assert(f:GetProjection().withdraw.moved==1 and h.nativeWrites==1)
+        assert(Click(stop));h:Drain();content:Refresh()
+        assert(f:GetProjection().withdraw.status=='cancelled' and h.nativeWrites==1 and #h.storage==2)
+        assert(content.treasureInteractionHint.text:find('已停止',1,true))
+        assert(stop.enabled==false and take.enabled==false)
+        assert(Click(content.treasureIdentifyButton));assert(f:GetProjection().scannedCofferCount==1)
+        assert(take.enabled==true,'same-box rescan cannot resume remaining maps')
+        content:DisposeHeaderSettings()
+        ''')
+
+    def test_floating_withdrawal_requires_current_box_and_selected_coordinate_and_fits_compact_windows(self):
+        self.floating().execute('''
+        local take=assert(content.treasureWithdrawButton,'assistant has no coordinate withdrawal button')
+        local stop=assert(content.treasureCancelWithdrawButton)
+        assert(take.enabled==false and stop.enabled==false)
+        h.bag={Map(2,4)};Refresh();h.storage={Map(0,2)};assert(Click(content.treasureIdentifyButton))
+        SelectCoordinate(f.Inventory.CoordinateKey(f.Authority.maps[1]));assert(take.enabled==false)
+        SelectCoordinate(Group().key);assert(take.enabled==true)
+        for _,width in ipairs({240,390,640})do for _,height in ipairs({140,240})do
+         parent.width,parent.height=width,height;content.content:Layout(0,0,width,height)
+         for _,button in ipairs({content.treasureIdentifyButton,take,stop,content.treasureMapButton})do
+          local visible,why=h:VisibleRect(button);assert(visible,why)
+         end
+        end end
+        NextCoffer();content:Refresh();assert(take.enabled==false)
+        assert(not Click(take) and h.nativeWrites==0)
+        assert(f.Commands:SetViewKind('ships'));content:Refresh()
+        assert(content.treasureWithdrawRow.visible==false,'storage actions leak into the sea view')
+        content:DisposeHeaderSettings()
+        ''')
+
+    def test_floating_reports_full_bag_and_switching_box_stops_withdrawal(self):
+        for mode in ('full', 'switch', 'reject'):
+            with self.subTest(mode=mode):
+                lua=self.floating();lua.globals().MODE=mode
+                lua.execute('''
+                local take=assert(content.treasureWithdrawButton,'assistant has no coordinate withdrawal button')
+                h.storage={Map(0,2),Map(0,2)};assert(Click(content.treasureIdentifyButton))
+                SelectCoordinate(Group().key)
+                if MODE=='full' then for i=1,h.capacity do h.bag[i]={itemType=100+i,name='other'}end end
+                if MODE=='reject' then h.rejectMove=true end
+                assert(Click(take))
+                if MODE=='switch' then NextCoffer()end
+                h:Drain();content:Refresh()
+                assert(f.Inventory.job==nil and content.treasureCancelWithdrawButton.enabled==false)
+                if MODE=='full' then
+                 assert(h.nativeWrites==0 and content.treasureInteractionHint.text:find('背包已满',1,true))
+                elseif MODE=='switch' then
+                 assert(h.nativeWrites==0 and content.treasureInteractionHint.text:find('关闭或切换',1,true))
+                else
+                 local err=f:GetProjection().withdraw.error
+                 assert(h.nativeWrites==1 and err and content.treasureInteractionHint.text:find(err,1,true))
+                end
+                content:DisposeHeaderSettings()
+                ''')
 
     def test_exact_coordinates_group_across_bag_and_three_replaced_box_snapshots(self):
         self.boot().execute('''
@@ -85,7 +222,7 @@ class TreasureInventoryTests(unittest.TestCase):
         h.storage={Map(0,2),Map(0,2),Map(0,2)};assert(f.Commands:RegisterCoffer(3))
         local p=Refresh();assert(#p.rows==2 and p.rows[1].count==7)
         assert(p.rows[1].bagCount==1 and p.rows[1].cofferCount==6)
-        assert(p.rows[1].sourceText:find('箱1',1,true) and p.rows[1].sourceText:find('箱3',1,true))
+        assert(p.rows[1].sourceText:find('记录1',1,true) and p.rows[1].sourceText:find('记录3',1,true))
         h.storage={};assert(f.Commands:RegisterCoffer(1));assert(Group().count==5)
         p.rows[1].count=99;assert(Group().count==5,'projection aliases authority')
         ''')
@@ -207,6 +344,7 @@ class TreasureInventoryTests(unittest.TestCase):
           onResult=function(ok,err)lastControlResult=ok;lastControlError=err;if controls then controls:Refresh(f:GetProjection())end end})
         controls=c
         assert(c.register,'缺少箱子登记按钮')
+        assert(c.box==nil,'one-click recognition still requires a manual chest selection')
         h.failSave=true
         assert(not c.register.root.events.OnClick(c.register.root,'LeftButton'))
         assert(lastControlResult==false and lastControlError and not c.take.enabled,'保存失败没有通过界面操作反馈')
@@ -337,6 +475,302 @@ class TreasureInventoryTests(unittest.TestCase):
         self.boot().execute('''
         h.storage={Map(0,2),Map(1,4)};local before=h.inventoryReads
         assert(f.Commands:RegisterCoffer(1));assert(h.inventoryReads-before<=h.storageCapacity)
+        ''')
+
+    def test_current_coffer_button_starts_a_round_and_appends_without_choosing_box_ids(self):
+        self.boot().execute('''
+        h.storage={Map(9,2)};assert(f.Commands:RegisterCoffer(3))
+        h.storage={Map(0,2),Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local p=f:GetProjection();assert(p.scannedCofferCount==1 and p.sharedCoordinateCount==0)
+        assert(f.Inventory.State.boxes['3']==nil,'legacy numbered records leaked into the new round')
+        NextCoffer();h.storage={Map(0,2),Map(1,4)};assert(f.Commands:IdentifyCurrentCoffer())
+        p=f:GetProjection();assert(p.scannedCofferCount==2 and p.sharedCoordinateCount==1)
+        assert(Group().cofferCount==3 and Group().cofferSourceCount==2)
+        assert(p.boundCofferId=='2' and p.cofferItems==nil,'manual box selector survived the one-button workflow')
+        ''')
+
+    def test_identical_boxes_are_separate_scans_but_same_box_stacks_are_not_cross_box_matches(self):
+        self.boot().execute('''
+        h.bag={Map(0,2)};h.storage={Map(0,2),Map(0,2)};Refresh()
+        assert(f.Commands:IdentifyCurrentCoffer());assert(f:GetProjection().sharedCoordinateCount==0)
+        NextCoffer();assert(f.Commands:IdentifyCurrentCoffer()) -- 两个物理箱可有完全相同内容。
+        local p=f:GetProjection();assert(p.scannedCofferCount==2 and p.sharedCoordinateCount==1)
+        assert(Group().count==5 and Group().cofferCount==4 and Group().cofferSourceCount==2)
+        ''')
+
+    def test_more_than_thirty_two_scans_grow_dynamically_and_reset_preserves_bag_maps(self):
+        self.boot().execute('''
+        h.bag={Map(0,2)};Refresh();h.storageCapacity=1
+        for i=1,35 do NextCoffer();h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer()) end
+        local p=f:GetProjection();assert(p.scannedCofferCount==35 and Group().cofferSourceCount==35)
+        assert(Group().cofferCount==35 and p.boundCofferId=='35')
+        assert(f.Commands:ResetCofferRound());p=f:GetProjection()
+        assert(p.scannedCofferCount==0 and p.sharedCoordinateCount==0 and Group().count==1)
+        assert(p.boundCofferId==nil and next(f.Inventory.State.boxes)==nil)
+        assert(f.Commands:IdentifyCurrentCoffer());assert(f:GetProjection().boundCofferId=='1')
+        ''')
+
+    def test_failed_first_identification_does_not_clear_legacy_or_append_partial_records(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:RegisterCoffer(2))
+        h.storageVisible=false;assert(not f.Commands:IdentifyCurrentCoffer())
+        h.storageVisible=true;h.failSlot=2;assert(not f.Commands:IdentifyCurrentCoffer())
+        h.failSlot=nil;h.failSave=true;assert(not f.Commands:IdentifyCurrentCoffer())
+        assert(f.Inventory.State.boxes['2'] and Group().count==1 and not f.Inventory.State.scanRound)
+        h.failSave=false;assert(f.Commands:IdentifyCurrentCoffer())
+        h.failSave=true;assert(not f.Commands:ResetCofferRound())
+        assert(f:GetProjection().scannedCofferCount==1 and Group().count==1)
+        ''')
+
+    def test_round_survives_reload_and_clear_and_scan_are_blocked_during_withdrawal(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local I=f.Inventory;I.loaded=false;h.S.Persistence:GetStore(I.storeId).loaded=false
+        assert(I:Initialize());assert(f:GetProjection().scannedCofferCount==1)
+        h.storage={Map(1,4)};assert(f.Commands:IdentifyCurrentCoffer())
+        assert(f:GetProjection().scannedCofferCount==2 and I.State.boxes['1'])
+        local row=f:GetProjection().rows[2];assert(f.Commands:WithdrawCoordinate('2',row.key,1))
+        assert(not f.Commands:ResetCofferRound());assert(not f.Commands:IdentifyCurrentCoffer())
+        assert(f:GetProjection().scannedCofferCount==2);assert(f.Commands:CancelWithdrawal())
+        ''')
+
+    def test_floating_button_scans_real_inventory_and_settings_clear_the_same_round(self):
+        self.boot().execute('''
+        local S=h.S
+        S.UIV3.WidgetHost={Register=function()return true end,BindFeatureLifecycle=function()return true end}
+        S.Features.Trade=f;S.Features.Bonds=f;S.Features.Fishing=f
+        S.UI.CreateWindowShell=function()error('content test must not create a native root window')end
+        dofile('ui/framework/rs_ui_floating_surface.lua')
+        dofile('presentation/v3/widgets/rs_v3_life_economy_widgets.lua')
+        local parent=h.Native(nil,'coffer_assistant_parent',0,0,390,240)
+        local content=assert(S.UIV3.LifeEconomyContent:Create(parent,'Treasure','coffer_assistant_'))
+        local button=assert(content.treasureIdentifyButton,'floating assistant has no one-click coffer recognition')
+        h.storage={Map(0,2)}
+        assert(button.root.events.OnClick(button.root,'LeftButton'))
+        assert(f:GetProjection().scannedCofferCount==1)
+        assert(button.root.events.OnClick(button.root,'LeftButton'))
+        assert(f:GetProjection().scannedCofferCount==1 and f:GetProjection().sharedCoordinateCount==0)
+        NextCoffer();assert(button.root.events.OnClick(button.root,'LeftButton'))
+        assert(f:GetProjection().sharedCoordinateCount==1)
+        assert(content.treasureInteractionHint.text:find('跨箱同坐标 1',1,true))
+        for _,width in ipairs({240,390,640})do
+            parent.width=width;content.content:Layout(0,0,width,240)
+            local visible,why=h:VisibleRect(button);assert(visible,why)
+            assert(button.root.width>=108,'recognition button clipped in compact assistant')
+        end
+        assert(content.treasureSettingsDropdown:SetValue('clear_coffers'))
+        assert(f:GetProjection().scannedCofferCount==0 and f:GetProjection().sharedCoordinateCount==0)
+        h.storageVisible=false
+        assert(not button.root.events.OnClick(button.root,'LeftButton'))
+        assert(content.treasureInteractionHint.text:find('请先打开保管箱',1,true),'closed-box failure is invisible')
+        assert(f.Commands:SetViewKind('ships'));content:Refresh();assert(button.visible==false)
+        content:DisposeHeaderSettings()
+        ''')
+
+    def test_new_round_survives_a_fresh_vm_and_first_scan_clears_an_old_cached_target(self):
+        lua=self.boot()
+        lua.execute('''
+        h.storage={Map(9,2)};assert(f.Commands:RegisterCoffer(3))
+        local key=f:GetProjection().rows[1].key;assert(f.Commands:Select(key))
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        assert(f:GetProjection().selected==nil,'old-round cached-only target survived the replacement')
+        ''')
+        def plain(value):
+            return {k: plain(v) for k, v in value.items()} if hasattr(value, 'items') else value
+        fresh=self.boot(plain(lua.globals().h.disk))
+        fresh.execute('''
+        assert(f:GetProjection().scannedCofferCount==1 and f:GetProjection().cofferRoundStarted)
+        h.storage={Map(1,4)};assert(f.Commands:IdentifyCurrentCoffer())
+        assert(f:GetProjection().scannedCofferCount==2 and f.Inventory.State.boxes['1'])
+        ''')
+
+    def test_repeated_clicks_update_the_same_open_box_even_after_contents_change(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        for i=1,5 do h.ms=h.ms+1500;assert(f.Commands:IdentifyCurrentCoffer()) end
+        assert(f:GetProjection().scannedCofferCount==1 and Group().count==1)
+        assert(f:GetProjection().sharedCoordinateCount==0 and f:GetProjection().boundCofferId=='1')
+        h.storage={Map(0,2),Map(0,2),Map(1,4)};assert(f.Commands:IdentifyCurrentCoffer())
+        assert(f:GetProjection().scannedCofferCount==1 and Group().count==2)
+        assert(f:GetProjection().totalMapCount==3 and f:GetProjection().sharedCoordinateCount==0)
+        assert(f.Commands:CancelWithdrawal());assert(f.Commands:IdentifyCurrentCoffer())
+        assert(f:GetProjection().scannedCofferCount==1,'withdrawal binding was used as box identity')
+        ''')
+
+    def test_coffer_start_alone_invalidates_the_binding_and_stops_pending_withdrawal(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        assert(f.Commands:WithdrawCoordinate('1',Group().key,1))
+        h.S.Events:Dispatch('COFFER_INTERACTION_START');h:Drain()
+        assert(h.nativeWrites==0 and f.Inventory.job==nil and f.Inventory.bound==nil)
+        assert(f.Commands:IdentifyCurrentCoffer())
+        assert(f:GetProjection().scannedCofferCount==2 and Group().cofferSourceCount==2)
+        ''')
+
+    def test_coffer_switch_during_withdrawal_scan_cancels_without_using_a_stale_binding(self):
+        for stage in ('validate', 'step'):
+            with self.subTest(stage=stage):
+                lua=self.boot();lua.globals().STAGE=stage
+                lua.execute('''
+                h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+                if STAGE=='step' then assert(f.Commands:WithdrawCoordinate('1',Group().key,1))end
+                local read=X2Coffer.GetBagItemInfo;local changed=false
+                X2Coffer.GetBagItemInfo=function(self,...)
+                 if not changed then changed=true;NextCoffer()end
+                 return read(self,...)
+                end
+                if STAGE=='validate' then assert(not f.Commands:WithdrawCoordinate('1',Group().key,1))
+                else h:Drain()end
+                assert(changed and h.nativeWrites==0 and f.Inventory.job==nil)
+                ''')
+
+    def test_coffer_switch_during_move_confirmation_keeps_the_job_cancelled(self):
+        for stage in ('coffer', 'bag', 'save'):
+            with self.subTest(stage=stage):
+                lua=self.boot();lua.globals().STAGE=stage
+                lua.execute('''
+                h.storage={Map(0,2),Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+                assert(f.Commands:WithdrawCoordinate('1',Group().key,2));h:Step()
+                assert(h.nativeWrites==1 and f.Inventory.State.pendingCoffer=='1')
+                local changed=false
+                local function Switch()if not changed then changed=true;NextCoffer()end end
+                if STAGE=='save' then
+                 local save=ADDON.SaveData
+                 ADDON.SaveData=function(self,...)local ok=save(self,...);Switch();return ok end
+                elseif STAGE=='coffer' then
+                 local read=X2Coffer.GetBagItemInfo
+                 X2Coffer.GetBagItemInfo=function(self,...)Switch();return read(self,...)end
+                else
+                 local read=X2Bag.GetBagItemInfo
+                 X2Bag.GetBagItemInfo=function(self,...)Switch();return read(self,...)end
+                end
+                h:Drain()
+                assert(changed and h.nativeWrites==1 and f.Inventory.job==nil and not f.Inventory.bound)
+                ''')
+
+    def test_window_close_fallback_releases_record_without_scanning_or_saving(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local writes,reads=h.writes,h.inventoryReads
+        h.storageVisible=false;f.Authority:CheckInventory()
+        assert(h.writes==writes and h.inventoryReads==reads)
+        h.storageVisible=true;assert(f.Commands:IdentifyCurrentCoffer())
+        assert(f:GetProjection().scannedCofferCount==2)
+        ''')
+
+    def test_coffer_event_ownership_is_released_and_reacquired_once_with_demand(self):
+        self.boot().execute('''
+        local E=h.S.Events
+        local function Count()
+         local n=0
+         for _,listeners in pairs(E.listeners)do for _,row in ipairs(listeners)do
+          if row.owner==f.Inventory then n=n+1 end
+         end end
+         return n
+        end
+        assert(Count()==2,'coffer lifecycle is not observed')
+        assert(f:ReleaseConsumer('test:inventory'));assert(Count()==0)
+        assert(f:AcquireConsumer('test:inventory'));assert(Count()==2)
+        assert(f:AcquireConsumer('test:inventory:second'));assert(Count()==2)
+        assert(f:Disable());assert(Count()==0)
+        ''')
+
+    def test_failed_update_keeps_the_same_record_and_a_coffer_switch_during_scan_is_rejected(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        h.storage={Map(0,2),Map(0,2)};h.failSave=true
+        assert(not f.Commands:IdentifyCurrentCoffer());assert(Group().count==1)
+        h.failSave=false;assert(f.Commands:IdentifyCurrentCoffer())
+        assert(f:GetProjection().scannedCofferCount==1 and Group().count==2)
+        local read=X2Coffer.GetBagItemInfo;local changed=false
+        X2Coffer.GetBagItemInfo=function(self,slot)
+         if not changed then changed=true;NextCoffer()end
+         return read(self,slot)
+        end
+        assert(not f.Commands:IdentifyCurrentCoffer(),'a scan spanning two interactions was committed')
+        assert(f:GetProjection().scannedCofferCount==1)
+        ''')
+
+    def test_global_coffer_events_use_the_shared_bridge_and_preserve_other_owners(self):
+        self.boot().execute('''
+        local E,I=h.S.Events,f.Inventory;I:WatchCofferInteraction(false)
+        local handlers,releases={},0
+        UIParent.SetEventHandler=function(_,name,callback)handlers[name]=callback end
+        UIParent.ReleaseEventHandler=function(_,name,callback)
+         assert(handlers[name]==callback);handlers[name]=nil;releases=releases+1
+        end
+        E.running=true;I:WatchCofferInteraction(true)
+        assert(I.cofferEventChannels.COFFER_INTERACTION_START=='global')
+        local other,received={},0
+        assert(E:SubscribeGlobalOptional('COFFER_INTERACTION_START',other,function()received=received+1 end))
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local reads,writes=h.inventoryReads,h.writes
+        handlers.COFFER_INTERACTION_START()
+        assert(I.openRecord==nil and I.bound==nil and I.cofferEventCount==1)
+        assert(I.lastCofferBoundary=='COFFER_INTERACTION_START')
+        assert(h.inventoryReads==reads and h.writes==writes,'event scanned or saved a box')
+        assert(f.Commands:IdentifyCurrentCoffer());assert(f:GetProjection().scannedCofferCount==2)
+        I:WatchCofferInteraction(false);assert(releases==1 and handlers.COFFER_INTERACTION_START)
+        local count=I.cofferEventCount;handlers.COFFER_INTERACTION_START()
+        assert(I.cofferEventCount==count and received==2)
+        E:UnsubscribeGlobalOwner(other);assert(releases==2)
+        ''')
+
+    def test_snapshot_capacity_is_checked_before_native_write_and_keeps_the_previous_round(self):
+        self.boot().execute('''
+        h.storageCapacity=150
+        for i=1,150 do local item=Map(0,2);item.longitudeDeg=1+math.floor((i-1)/60);item.longitudeSec=(i-1)%60;h.storage[i]=item end
+        assert(f.Commands:IdentifyCurrentCoffer())
+        local writes=h.writes;NextCoffer()
+        local ok,err=f.Commands:IdentifyCurrentCoffer()
+        assert(not ok and err:find('存档容量',1,true))
+        assert(h.writes==writes,'an oversize snapshot reached native SaveData')
+        assert(f:GetProjection().scannedCofferCount==1 and f:GetProjection().totalMapCount==150)
+        local store=h.S.Persistence:GetStore(f.Inventory.storeId)
+        assert(not store.writeFenced and store.lastNativeByteEstimate>store.nativeByteBudget)
+        ''')
+
+    def test_corrupt_snapshot_keeps_recovery_ui_and_is_reset_only_by_explicit_command(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        local raw=h.disk[store.resolvedKey]
+        raw.payload.boxes['1'].chunks[1]='truncated snapshot'
+        I.loaded=false;store.loaded=false
+        local writes=h.writes
+        assert(f:Initialize(),'corrupt derived records locked the entire feature')
+        assert(not I.loaded and store.writeFenced and h.writes==writes)
+        assert(f:GetProjection().scannedCofferCount==0 and f:GetProjection().inventoryError)
+        assert(not f.Commands:IdentifyCurrentCoffer());assert(h.writes==writes)
+        h.failSave=true;assert(not f.Commands:ResetCofferRound())
+        assert(not I.loaded and store.writeFenced)
+        h.failSave=false;assert(f.Commands:ResetCofferRound())
+        assert(I.loaded and not store.writeFenced and f:GetProjection().scannedCofferCount==0)
+        assert(store.lastVerifyOk==true and not store.needsBarrierVerify)
+        assert(f.Commands:IdentifyCurrentCoffer());assert(f:GetProjection().scannedCofferCount==1)
+        I.loaded=false;store.loaded=false;assert(I:Initialize())
+        assert(f:GetProjection().scannedCofferCount==1)
+        ''')
+
+    def test_reset_cannot_override_future_schema(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        local version=store.schemaVersion;store.schemaVersion=version+1
+        assert(P:SaveStore(I.storeId,{durable=true}));store.schemaVersion=version
+        I.loaded=false;store.loaded=false;local writes=h.writes
+        assert(f:Initialize());assert(not I.loaded)
+        assert(not f.Commands:ResetCofferRound());assert(h.writes==writes)
+        ''')
+
+    def test_reset_cannot_override_temporary_load_failure(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        I.loaded=false;store.loaded=false;local writes=h.writes
+        h.S.Api.LoadData=function()return nil,'temporary read failure' end
+        assert(f:Initialize());assert(not I.loaded)
+        assert(not f.Commands:ResetCofferRound());assert(h.writes==writes)
         ''')
 
 

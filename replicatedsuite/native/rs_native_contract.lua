@@ -78,6 +78,9 @@ S.NativeContract = {
         STATUS_BAR         = { id = 17, widgetKind = "statusbar",   optional = true },
         SLIDER             = { id = 24, widgetKind = "slider",      optional = true },
         EMPTY_WIDGET       = { id = 46, widgetKind = "emptywidget", required = true },
+        -- Slot=47取自Noviern/x2的docs/reference/examples/Slot.md中的ImportObject(47)。
+        -- 仅钓鱼观察惰性使用；导入失败只暂停该能力，不能升为Foundation必需对象。
+        SLOT               = { id = 47, widgetKind = "slot",        optional = true },
         X2_EDITBOX         = { id = 53, widgetKind = "editbox",     optional = true },
     },
 

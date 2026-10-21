@@ -1070,6 +1070,9 @@ ok, err = Register({
             local items={{value="refresh",text="刷新背包 / 点位"},{value="skip",text="跳过 → 下一处"},
                 {value="undo",text="撤销上次搜查"},{value="round",text="新一轮（保留沉船计时）"},{value="stop",text="停止追踪"},
                 {value="timer:0",text=(interval==0 and "✓ " or "").."沉船：仅显示已过时间"}}
+            if type(Feature.Commands.ResetCofferRound)=="function" then
+                table.insert(items,2,{value="clear_coffers",text="重新统计保管箱（清空本轮记录）"})
+            end
             for _,hours in ipairs({1,2,4,6,12,24,48})do
                 items[#items+1]={value="timer:"..(hours*60),text=(interval==hours*60 and "✓ " or "").."沉船预估："..hours.."小时"}
             end
@@ -1087,6 +1090,7 @@ ok, err = Register({
                 if minutes then return Run("SetShipRespawnMinutes",tonumber(minutes))end
                 if draw then return Run("SetRefreshMs",tonumber(draw))end
                 if value=="refresh" then return Run("Refresh")end
+                if value=="clear_coffers" then return Run("ResetCofferRound")end
                 if value=="skip" then return Run("VisitAndNext","skipped")end
                 if value=="undo" then return Run("UndoVisit")end
                 if value=="round" then return Run("ResetRound")end
@@ -1094,26 +1098,60 @@ ok, err = Register({
                 return false,"未知设置"
             end,onChanged=function(_,_,control)control:Render()end,slot={size="fixed",width=48}})
         local row=RSUI:HorizontalBox({id=prefix.."actions",parent=content,gap=3,slot={size="fixed",height=24,hAlign="fill"}})
+        -- 保管箱统计的主操作直接露在浮窗；仅显式点击读取当前箱，按钮/刷新不自动枚举或扫描其它箱。
+        if type(Feature.Commands.IdentifyCurrentCoffer)=="function" then
+            instance.treasureIdentifyButton=RSUI:Button({id=prefix.."identify_coffer",parent=row,text="识别当前保管箱",fontSize=9,compact=true,
+                slot={size="fill",fill=1,minWidth=108},onClick=function()return Run("IdentifyCurrentCoffer")end})
+        end
         instance.treasureNextButton=RSUI:Button({id=prefix.."next",parent=row,text="已搜 → 下一处",fontSize=9,compact=true,
             slot={size="fill",fill=1,minWidth=84},onClick=function()return Run("VisitAndNext","searched")end})
         instance.treasureNearestButton=RSUI:Button({id=prefix.."nearest",parent=row,text="最近点",fontSize=9,compact=true,slot={size="fixed",width=54}})
         instance.treasureNearestButton.onClick=function()return Run("TrackNearest")end
         instance.treasureMapButton=RSUI:Button({id=prefix.."map",parent=row,text = "地图定位",fontSize=9,compact=true,
             slot={size="fixed",width=62},onClick=function()return Run("ShowSelectedOnMap")end})
+        if type(Feature.Commands.WithdrawCoordinate)=="function" and type(Feature.Commands.CancelWithdrawal)=="function" then
+            -- 取图占独立一行以适配240宽小窗；只分派现有串行命令，0表示当前箱该坐标全部，不沿用主页面最多2张的默认值。
+            -- 点击时读Feature最新选择/开箱绑定，避免另一个视图换目标后仍使用本浮窗的旧投影。UI不保存坐标或创建取图任务。
+            local withdrawRow=RSUI:HorizontalBox({id=prefix.."withdraw_actions",parent=content,gap=3,
+                slot={size="fixed",height=24,hAlign="fill"}})
+            instance.treasureWithdrawRow=withdrawRow
+            instance.treasureWithdrawButton=RSUI:Button({id=prefix.."withdraw_coordinate",parent=withdrawRow,text="取出同坐标",fontSize=9,compact=true,enabled=false,
+                slot={size="fill",fill=1,minWidth=132},onClick=function()
+                    local p=Feature:GetProjection() or {};local selected=p.selected
+                    return Run("WithdrawCoordinate",p.boundCofferId,selected and selected.groupKey,0)
+                end})
+            instance.treasureCancelWithdrawButton=RSUI:Button({id=prefix.."cancel_withdraw",parent=withdrawRow,text="停止取图",fontSize=9,compact=true,enabled=false,
+                slot={size="fixed",width=76},onClick=function()return Run("CancelWithdrawal")end})
+        end
         instance.treasureInteractionHint=RSUI:Text({id=prefix.."hint",parent=content,text=TreasureMapInteraction.hint,fontSize=9,
             tone="muted",overflow="ellipsis",slot={size="fixed",height=18,hAlign="fill"}})
         return true
     end,
-    refreshControls = function(instance, projection)
+    refreshControls = function(instance, projection, _, Feature)
         TreasureMapInteraction:SyncSelection(instance.table, projection)
         instance.treasureControlProjection=projection
         local sea=projection.viewKind=="seabugs" or projection.viewKind=="ships"
         local selected=projection.selected
+        local withdraw=projection.withdraw or {}
+        local running=withdraw.status=="running"
+        local boxId=projection.boundCofferId
+        local selectedCount=tonumber(boxId and selected and selected.boxes and selected.boxes[boxId]) or 0
         local same=selected and selected.kind==projection.viewKind and (projection.region=="all" or selected.region==projection.region)
         if instance.treasureMapButton then instance.treasureMapButton:SetEnabled(type(projection.selected)=="table") end
         if instance.treasureNearestButton then instance.treasureNearestButton:SetEnabled(sea) end
         if instance.treasureNextButton then instance.treasureNextButton:SetVisible(sea);instance.treasureNextButton:SetEnabled(same==true) end
         if instance.treasureNearestButton then instance.treasureNearestButton:SetVisible(sea)end
+        if instance.treasureIdentifyButton then
+            instance.treasureIdentifyButton:SetVisible(not sea)
+            instance.treasureIdentifyButton:SetEnabled(Feature.enabled==true and not running)
+        end
+        if instance.treasureWithdrawRow then
+            instance.treasureWithdrawRow:SetVisible(not sea)
+            instance.treasureWithdrawButton:SetEnabled(Feature.enabled==true and not sea and not running and not projection.inventoryUncertain
+                and boxId~=nil and selected~=nil and selected.groupKey~=nil and selectedCount>0)
+            instance.treasureWithdrawButton:SetText(running and ("正在取图 "..tostring(withdraw.moved or 0).."/"..tostring(withdraw.limit or 0)) or "取出同坐标")
+            instance.treasureCancelWithdrawButton:SetEnabled(Feature.enabled==true and running)
+        end
         instance.treasureKindDropdown:Render()
         if instance.treasureLastKind~=projection.viewKind then
             instance.treasureRegionDropdown:SetItems(projection.regionItems or {});instance.treasureLastKind=projection.viewKind
@@ -1126,7 +1164,18 @@ ok, err = Register({
         if instance.treasureInteractionHint then
             local errorText = instance.treasureActionError or projection.lastMapActionError
             local hint=TreasureMapInteraction.hint
-            if not sea and projection.inventoryContractVersion then hint="同坐标合并 · "..tostring(projection.totalMapCount or 0).." 张（含箱子扫描记录）" end
+            if not sea and projection.inventoryContractVersion then
+                hint="已识别 "..tostring(projection.scannedCofferCount or 0).." 箱 · 跨箱同坐标 "..tostring(projection.sharedCoordinateCount or 0).." 处 · 同箱重复识别更新记录"
+                if projection.inventoryError then hint=projection.inventoryHint end
+                -- 进度只显示Feature确认的移动；成功、主动停止和原生拒绝均有反馈，不能把发出移动当作已取出。
+                if running then
+                    hint="正在取图：已确认 "..tostring(withdraw.moved or 0).."/"..tostring(withdraw.limit or 0).." 张"
+                    errorText=instance.treasureActionError -- 历史地图动作错误不能遮住正在进行的取图进度。
+                elseif withdraw.error then hint="取图停止："..tostring(withdraw.error).." · 已确认 "..tostring(withdraw.moved or 0).." 张"
+                elseif withdraw.status=="done" then hint="本次已取出 "..tostring(withdraw.moved or 0).." 张 · "..hint
+                elseif withdraw.status=="cancelled" then hint="已停止取图：已确认 "..tostring(withdraw.moved or 0).." 张 · "..hint
+                elseif selectedCount>0 then hint="本箱该坐标 "..tostring(selectedCount).." 张 · 点击取出同坐标将全部取出 · "..hint end
+            end
             if sea then
                 hint="本轮 已搜 "..tostring(projection.roundSearched or 0).."/"..tostring(projection.roundTotal or 0)
                     .." · 待搜 "..tostring(projection.roundRemaining or 0)

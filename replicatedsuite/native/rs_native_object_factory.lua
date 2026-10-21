@@ -31,6 +31,7 @@ local KIND_TO_OBJECT = {
     statusbar = "STATUS_BAR",
     slider = "SLIDER",
     editbox = "EDITBOX",
+    slot = "SLOT",
 }
 
 local function ParentOrRoot(parent)

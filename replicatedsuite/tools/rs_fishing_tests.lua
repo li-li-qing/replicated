@@ -30,6 +30,10 @@ S.SafeChat = function(message) h.logs[#h.logs + 1] = { "chat", tostring(message)
 
 dofile("core/rs_demand.lua")
 dofile("features/rs_feature_registry.lua")
+-- 使用真实模块报告与详情格式器，证明取证接入用户现有导出入口，翻页不会再次采样 Native。
+dofile("core/rs_report_copy_transport.lua")
+dofile("core/rs_diagnostic_detail.lua")
+dofile("core/rs_module_diagnostics.lua")
 
 local combat = false
 local zoneGroup = 1
@@ -40,6 +44,56 @@ local failSetSlot = nil
 local failSaveHotkey = false
 local failBindingRead = false
 local failBindingReadSlot = nil
+local firstModeSkill, failModeRead, failModeEstablish = 10001, false, false
+local probeCreates, probeReads, probeWidget = 0, 0, nil
+local modeRows, tooltipReads, failTooltip = {}, 0, false
+
+-- 构造/导入走真实工厂，只有客户端Slot是替身；槽类型故意不用真实常量，验证生产读取导出值。
+_G.ISLOT_MODE_ACTION = 600
+dofile("native/rs_native_contract.lua")
+S.NativeImports = { AcquireObject = function(_, owner, name, required)
+    assert(owner == "native_factory" and name == "SLOT" and required == false)
+    assert(S.NativeContract:GetObject(name).id == 47, "Slot must use the source-verified optional ABI")
+    return true
+end }
+S.PhysicalId = function(logical)
+    assert(logical == "service:fishing_hotkey:mode_probe")
+    return "rs_fishing_probe"
+end
+_G.UIParent = { CreateWidget = function(_, kind, id, parent)
+    assert(kind == "slot" and id == "rs_fishing_probe" and parent == "UIParent")
+    probeCreates = probeCreates + 1
+    local slot = { shown = true, pickable = true }
+    function slot:Show(value) self.shown = value; return value end
+    function slot:EnablePick(value) self.pickable = value; return value end
+    function slot:DisableDefaultClick() self.defaultClickDisabled = true end
+    function slot:EstablishSlot(slotType, index)
+        assert(slotType == ISLOT_MODE_ACTION and index >= 1 and index <= 8, "mode probe must stay within eight diagnostic slots")
+        assert(not self.shown and not self.pickable and self.defaultClickDisabled, "probe must be inert before binding")
+        if failModeEstablish then return false end
+        self.established, self.slotIndex = true, index
+    end
+    function slot:GetSkillType()
+        assert(self.established)
+        probeReads = probeReads + 1
+        if failModeRead then error("mode skill unavailable") end
+        if self.slotIndex == 1 then return firstModeSkill end
+        return modeRows[self.slotIndex] and modeRows[self.slotIndex].skillId
+    end
+    function slot:GetTooltip()
+        assert(self.established, "read tooltip before ReleaseSlot")
+        tooltipReads = tooltipReads + 1
+        if failTooltip then error("tooltip unavailable") end
+        if self.slotIndex == 1 then
+            return { name = firstModeSkill == 22538 and "放生" or "测试技能名" .. tostring(firstModeSkill), skillType = firstModeSkill }
+        end
+        return modeRows[self.slotIndex]
+    end
+    function slot:ReleaseSlot() self.established = false end
+    probeWidget = slot
+    return slot
+end }
+dofile("native/rs_native_object_factory.lua")
 
 local function Copy(value)
     if type(value) ~= "table" then return value end
@@ -58,6 +112,8 @@ local function resetNative()
     failSaveHotkey = false
     failBindingRead = false
     failBindingReadSlot = nil
+    firstModeSkill, failModeRead, failModeEstablish = 10001, false, false
+    modeRows, failTooltip = {}, false
 end
 
 _G.X2Player = {
@@ -285,16 +341,50 @@ local function ResetMappedR()
     bindings[4], bindings[1] = "4", "R"
 end
 
+-- 用户实测：切目标时先恢复同一会话的原按键，不能让上一条鱼的R跨过新目标的Buff空档。
+-- 下一次真实观察才允许重新映射；原始快照和Auto-R租约必须保留，不能用重新Arm覆盖恢复基线。
+Test("T4m: Target switch restores original keys before mapping the next fish", function()
+    WithArmedFishing("test:target-reset-before-remap", function()
+        local diskBefore = h.writes
+        local sourceBefore = Hotkey.sessionSnapshot.sourceSlot
+        setFishBuff(5265)
+        S.Events:Dispatch("TARGET_CHANGED", "target")
+        assertBindings({ [1] = "R", [3] = "3", [4] = "4" })
+        assert(Fishing:IsAutoArmed() and Hotkey.currentSlot == nil)
+        assert(Hotkey.sessionSnapshot.sourceSlot == sourceBefore and h.writes == diskBefore)
+        assert(Fishing:GetProjection().slot == nil, "switch event must not remap from an unsettled buff snapshot")
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assertBindings({ [3] = "R", [4] = "4" })
+    end)
+end)
+
+Test("T4n: Clearing target restores the real source R and waits without repeated writes", function()
+    WithArmedFishing("test:target-reset-empty", function()
+        setFishBuff(nil)
+        S.Events:Dispatch("TARGET_CHANGED", "target")
+        assertBindings({ [1] = "R", [4] = "4" })
+        local writesBefore, savesBefore = Hotkey.stats.writes, Hotkey.stats.saves
+        for _ = 1, 10 do assert(S.Scheduler:RunTask("v3_life_fishing_poll")) end
+        assert(Fishing:IsAutoArmed() and Hotkey.currentSlot == nil)
+        assert(Hotkey.stats.writes == writesBefore and Hotkey.stats.saves == savesBefore)
+        setFishBuff(5264)
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assert(bindings[4] == "R", "another fish must resume from the retained original session")
+    end)
+end)
+
 Test("T4c: Switching fish with the same buff rechecks and repairs native R", function()
     WithArmedFishing("test:same-buff-target", function()
-        local driftsBefore = Hotkey.stats.bindingDrifts or 0
+        local resetsBefore = Hotkey.stats.targetResets or 0
         ResetMappedR()
         S.Events:Dispatch("TARGET_CHANGED", "target")
         local p = Fishing:GetProjection()
-        assert(p.lastRefreshReason == "target_changed" and p.buffId == 5264)
+        assert(p.lastRefreshReason == "target_changed" and p.buffId == nil and Hotkey.currentSlot == nil)
+        assertBindings({ [1] = "R", [4] = "4" }) -- 即使原生已重置，同动作换鱼也先明确退出上一条鱼的映射状态。
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
         assert(bindings[4] == "R", "same action on another fish must repair the lost R mapping")
         assert(Fishing:IsAutoArmed() == true)
-        assert(p.hotkey.stats.bindingDrifts == driftsBefore + 1, "diagnostic projection must record detected R drift")
+        assert((Fishing:GetProjection().hotkey.stats.targetResets or 0) == resetsBefore + 1, "diagnostics must record target initialization")
     end)
 end)
 
@@ -322,9 +412,13 @@ Test("T4e: Empty target then delayed buffs keeps Auto-R armed for both fish", fu
         assert(bindings[4] == "R", "delayed buff arrival must repair the same cached slot")
         setFishBuff(5265)
         S.Events:Dispatch("TARGET_CHANGED", "target")
+        assertBindings({ [1] = "R", [4] = "4" })
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
         assert(bindings[3] == "R" and bindings[4] == "4")
         setFishBuff(5264)
         S.Events:Dispatch("TARGET_CHANGED", "target")
+        assertBindings({ [1] = "R", [3] = "3" })
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
         assert(bindings[4] == "R" and bindings[3] == "3")
     end)
 end)
@@ -369,7 +463,7 @@ Test("T4i: First touch of another fish action stays durable before writing", fun
     WithArmedFishing("test:touch-persist-failure", function()
         h.failSave = true
         setFishBuff(5267)
-        local ok = Fishing:Refresh("target_changed")
+        local ok = Fishing:Refresh("poll") -- 首次触碰发生在初始化之后的实际观察，仍须先持久化再写新槽。
         assert(ok ~= true and Fishing:IsAutoArmed() == false)
         for _, row in ipairs(nativeLog) do
             assert(not (row.op == "set" and row.slot == 5), "failed durable backup must prevent touching the new action")
@@ -388,10 +482,14 @@ Test("T4j: All five fish actions switch repeatedly in normal and Mirage bars", f
                 local slot = action[2] - (zone == 49 and 1 or 0)
                 setFishBuff(action[1])
                 S.Events:Dispatch("TARGET_CHANGED", "target")
+                assert(bindings[1] == "R" and Hotkey.currentSlot == nil)
+                assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
                 assert(Fishing:IsAutoArmed() == true and bindings[slot] == "R")
                 -- 动作栏重置后，另一条鱼再次请求完全相同的动作。
                 bindings[slot], bindings[1] = tostring(slot), "R"
                 S.Events:Dispatch("TARGET_CHANGED", "target")
+                assert(bindings[1] == "R" and Hotkey.currentSlot == nil)
+                assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
                 assert(bindings[slot] == "R" and Fishing:GetProjection().slot == slot)
             end
         end
@@ -400,10 +498,151 @@ Test("T4j: All five fish actions switch repeatedly in normal and Mirage bars", f
     end)
 end)
 
+Test("R1: Both approved release IDs shift all five actions in normal and Mirage zones", function()
+    WithArmedFishing("test:release-all-actions", function()
+        for _, releaseId in ipairs({22536,22538}) do
+        firstModeSkill = releaseId
+        for _, zone in ipairs({ 1, 49 }) do
+            zoneGroup = zone
+            for _, action in ipairs({ {5264,4}, {5265,3}, {5267,5}, {5266,6}, {5508,7} }) do
+                setFishBuff(action[1])
+                S.Events:Dispatch("TARGET_CHANGED", "target")
+                assert(bindings[1] == "R" and Hotkey.currentSlot == nil)
+                assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+                local slot = action[2] - (zone == 49 and 1 or 0) + 1
+                local p = Fishing:GetProjection()
+                assert(p.slot == slot and bindings[slot] == "R", "release must shift the actual requested action")
+                assert(p.actionBarLayout.firstSkillId == releaseId and p.actionBarLayout.slotOffset == 1)
+            end
+        end
+        end
+        assert(Fishing:DisarmAuto(true))
+        assertBindings({ [1]="R", [2]="2", [3]="3", [4]="4", [5]="5", [6]="6", [7]="7", [8]="8" })
+    end)
+end)
+
+Test("R2: Picking up and dropping fish remaps the same buff and restores the old destination", function()
+    WithArmedFishing("test:release-transition", function()
+        assert(bindings[4] == "R")
+        firstModeSkill = 22536
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assertBindings({ [4]="4", [5]="R" })
+        firstModeSkill = 22538
+        local writes = Hotkey.stats.writes
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assert(Hotkey.stats.writes == writes, "equivalent release IDs must not rewrite a correct destination")
+        firstModeSkill = 21571 -- 新RU报告中未背鱼钓鱼阶段的首槽；不能因接近候选ID而误判偏移。
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assertBindings({ [4]="R", [5]="5" })
+        assert(Fishing:IsAutoArmed())
+    end)
+end)
+
+Test("R3: Slot eight is backed up before writes and unbound state survives release recovery", function()
+    resetNative(); bindings[8] = nil; firstModeSkill = 22538; setFishBuff(5508)
+    assert(Fishing:AcquireConsumer("test:release-eight"))
+    local ok, err = xpcall(function()
+        local originalSet = X2Hotkey.SetOptionBindingWithIndex
+        X2Hotkey.SetOptionBindingWithIndex = function(self, action, key, index, slot)
+            if slot == 8 then
+                local snapshot = Fishing.State.recovery.snapshot
+                assert(snapshot.slots[8].wasUnbound and snapshot.touched[8], "slot eight must have durable original evidence")
+                assert(h.disk ~= nil and h.writes > 0)
+            end
+            return originalSet(self, action, key, index, slot)
+        end
+        local armed, armErr = Fishing:ArmAuto()
+        X2Hotkey.SetOptionBindingWithIndex = originalSet
+        assert(armed, armErr)
+        assert(bindings[8] == "R")
+        assert(Fishing:DisarmAuto(true))
+        assert(bindings[1] == "R" and bindings[8] == nil)
+    end, debug.traceback)
+    Fishing:DisarmAuto(true); Fishing:ReleaseConsumer("test:release-eight")
+    if not ok then error(err) end
+end)
+
+Test("R4: Unreadable layout restores the previous mapping, waits and resumes without a new backup", function()
+    WithArmedFishing("test:release-unavailable", function()
+        local source = Hotkey.sessionSnapshot.sourceSlot
+        for _, value in ipairs({ 0, -1, math.huge, "unknown" }) do
+            firstModeSkill = value
+            assert(Fishing:Refresh("poll"))
+            assert(Fishing:GetProjection().slot == nil and Fishing:IsAutoArmed())
+            assertBindings({ [1]="R", [4]="4" })
+        end
+        firstModeSkill, failModeRead = 22538, true
+        local writes, disk = Hotkey.stats.writes, h.writes
+        assert(Fishing:Refresh("poll"))
+        assert(Hotkey.stats.writes == writes and h.writes == disk, "unknown layout must not repeatedly write")
+        failModeRead, failModeEstablish = false, true
+        assert(Fishing:Refresh("poll"))
+        assert(Fishing:GetProjection().slot == nil, "failed EstablishSlot cannot reuse an old skill id")
+        failModeEstablish = false
+        assert(Fishing:Refresh("poll"))
+        assertBindings({ [5]="R", [4]="4" })
+        assert(Hotkey.sessionSnapshot.sourceSlot == source and Fishing:IsAutoArmed())
+    end)
+end)
+
+Test("R5: Missing mode constant blocks mapping without guessing a slot type", function()
+    WithArmedFishing("test:release-no-constant", function()
+        local saved = _G.ISLOT_MODE_ACTION
+        _G.ISLOT_MODE_ACTION = nil
+        local ok, err = xpcall(function()
+            assert(Fishing:Refresh("poll"))
+            assert(Fishing:GetProjection().slot == nil and bindings[1] == "R")
+            assert(Fishing:GetProjection().actionBarLayout.status == "unavailable")
+        end, debug.traceback)
+        _G.ISLOT_MODE_ACTION = saved
+        if not ok then error(err) end
+    end)
+end)
+
+Test("R6: Optional Slot import failure is cached and cannot reach the constructor or hotkey writes", function()
+    resetNative()
+    local previous, acquire = S.Services.FishingHotkeyV3, S.NativeImports.AcquireObject
+    local attempts, creates = 0, probeCreates
+    S.NativeImports.AcquireObject = function(_, _, name, required)
+        assert(name == "SLOT" and required == false)
+        attempts = attempts + 1
+        return false, "slot import rejected"
+    end
+    dofile("services/rs_fishing_hotkey_v3.lua")
+    local reader = S.Services.FishingHotkeyV3
+    local ok, err = xpcall(function()
+        for _ = 1, 10 do
+            local layout = reader:ReadActionBarLayout()
+            assert(layout.status == "unavailable" and layout.slotOffset == nil and layout.reason == "slot import rejected")
+        end
+        assert(attempts == 1 and probeCreates == creates and findLog("set") == nil)
+        assert(S.BootError == nil, "optional mode probe must not fail the Suite boot")
+    end, debug.traceback)
+    S.Services.FishingHotkeyV3, S.NativeImports.AcquireObject = previous, acquire
+    if not ok then error(err) end
+end)
+
+Test("R7: Slot eight read failure and old snapshots cannot authorize unbacked writes", function()
+    resetNative()
+    failBindingReadSlot = 8
+    local snapshot = Hotkey:BuildSessionSnapshot(1)
+    assert(snapshot == nil and findLog("set") == nil, "every destination must have a readable original binding")
+    failBindingReadSlot = nil
+    snapshot = assert(Hotkey:BuildSessionSnapshot(1))
+    snapshot.slots[8] = nil -- 模拟重载前旧版的恢复记录；恢复旧槽仍可用，不能捏造第8槽原始按键。
+    assert(Hotkey:AdoptRecovery(snapshot))
+    local moved = Hotkey:MoveR(8, function() error("missing backup must not be persisted as valid") end)
+    assert(not moved and bindings[8] == "8" and findLog("set") == nil)
+    assert(Hotkey:RestoreSnapshot(snapshot))
+    Hotkey:ResetSession()
+end)
+
 Test("T4k: Confirmed unbound R destination is repaired; KEY_R stays read-only", function()
     WithArmedFishing("test:empty-native-binding", function()
         bindings[4], bindings[1] = nil, "R"
         S.Events:Dispatch("TARGET_CHANGED", "target")
+        assert(bindings[1] == "R" and Hotkey.currentSlot == nil)
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
         assert(Fishing:IsAutoArmed() == true and bindings[4] == "R")
         bindings[4] = "KEY_R"
         local writesBefore, savesBefore = Hotkey.stats.writes, Hotkey.stats.saves
@@ -412,9 +651,9 @@ Test("T4k: Confirmed unbound R destination is repaired; KEY_R stays read-only", 
     end)
 end)
 
-Test("T4l: Failed same-slot repair stops mapping and retains exact recovery", function()
+Test("T4l: Failed target initialization stops mapping and retains exact recovery", function()
     WithArmedFishing("test:repair-write-fault", function()
-        ResetMappedR()
+        -- 保持旧R仍在槽4，迫使切目标执行真实恢复；故障不能被“Native已自行复原”短路。
         failSetSlot = 4
         S.Events:Dispatch("TARGET_CHANGED", "target")
         assert(Fishing:IsAutoArmed() == false and Fishing:IsRecoveryPending() == true)
@@ -515,6 +754,261 @@ local function ReadText(path)
     f:close()
     return text
 end
+
+-- 仅替换 RU Native getter；事务、能力门、Feature、报告和持久化沿用真实实现。
+-- 每例还原宿主与开关，避免诊断故障注入污染原有 Auto-R 回归。
+local function WithFishingDiagnostics(fn)
+    resetNative()
+    local savedUnit, savedEquipment, savedImports = Copy(X2Unit), X2Equipment, S.ApiImports
+    local savedSlot, savedSlotType = _G.ES_BACKPACK, _G.EST_BACKPACK
+    local calls = { buffs = 0, equipment = 0, imports = 0, identity = 0 }
+    local playerBuffs = { { buff_id = 91001, timeLeft = 600 } }
+    local playerDebuffs = { { buff_id = 91002, timeLeft = 500 } }
+    local function Buffs(unit, debuff)
+        if unit == "player" then return debuff and playerDebuffs or playerBuffs end
+        return debuff and {} or targetBuffs
+    end
+    X2Unit.UnitBuffCount = function(_, unit) calls.buffs = calls.buffs + 1; return #Buffs(unit, false) end
+    X2Unit.UnitBuff = function(_, unit, index) calls.buffs = calls.buffs + 1; return Copy(Buffs(unit, false)[index]) end
+    X2Unit.UnitDeBuffCount = function(_, unit) calls.buffs = calls.buffs + 1; return #Buffs(unit, true) end
+    X2Unit.UnitDeBuff = function(_, unit, index) calls.buffs = calls.buffs + 1; return Copy(Buffs(unit, true)[index]) end
+    X2Unit.GetTargetUnitId = function() calls.identity = calls.identity + 1; return "fish:1" end
+    X2Unit.UnitName = function(_, unit) assert(unit == "target"); return "测试鱼" end
+    _G.ES_BACKPACK, _G.EST_BACKPACK = 27, 127
+    X2Equipment = { GetEquippedItemType = function(_, slot)
+        assert(slot == 27, "diagnostics must use ES_BACKPACK, never EST_BACKPACK")
+        calls.equipment = calls.equipment + 1
+        return 92001
+    end }
+    S.ApiImports = { Acquire = function(_, owner, dependencies)
+        assert(owner == "feature:life_fishing:diagnostics" and dependencies[1] == "X2Equipment:GetEquippedItemType")
+        calls.imports = calls.imports + 1
+        return true
+    end }
+    setFishBuff(5264)
+    local ok, err = xpcall(function() fn(calls, playerBuffs, playerDebuffs) end, debug.traceback)
+    for key in pairs(X2Unit) do X2Unit[key] = nil end
+    for key, value in pairs(savedUnit) do X2Unit[key] = value end
+    X2Equipment, S.ApiImports = savedEquipment, savedImports
+    _G.ES_BACKPACK, _G.EST_BACKPACK = savedSlot, savedSlotType
+    Fishing.enabled = true
+    if not ok then error(err) end
+end
+
+Test("D1: Explicit fishing diagnostics captures carry evidence without remapping or saving", function()
+    WithFishingDiagnostics(function(calls)
+        -- 原观察遇到匹配 Buff 后会停止；诊断必须保留其后的陌生 ID，不能照搬该短路扫描。
+        targetBuffs[2] = { buff_id = 91999, timeLeft = 300, stack = 2 }
+        bindings[8], bindings[9] = "KEY_R", nil
+        failBindingReadSlot = 10
+        local diskBefore, revisionBefore, consumersBefore = h.writes, Fishing.Authority.revision, Fishing.consumerCount
+        local d = Fishing:DescribeDiagnosticDetail()
+        assert(d.targetBuffs.rows[2].fields.buff_id == 91999 and d.targetBuffs.scannedCount == 2)
+        assert(d.playerBuffs.rows[1].fields.buff_id == 91001 and d.playerDebuffs.rows[1].fields.buff_id == 91002)
+        assert(d.backpack.slot == 27 and d.backpack.itemType == 92001 and d.backpack.status == "equipped")
+        assert(d.target.stable == true and d.zone.value == 1 and d.combat.value == false)
+        assert(d.hotkey.slots[8].isR == true and d.hotkey.slots[9].status == "unbound")
+        assert(d.hotkey.slots[10].status == "unreadable" and #d.hotkey.slots == 12)
+        assert(d.actionBarLayout.status == "captured_first_slot" and d.actionBarLayout.slotOffset == 0)
+        assert(calls.imports == 1 and calls.equipment == 1)
+        assert(findLog("set") == nil and findLog("remove") == nil and findLog("save_hotkey") == nil)
+        assert(h.writes == diskBefore and Fishing.Authority.revision == revisionBefore and Fishing.consumerCount == consumersBefore)
+        assert(d.observed ~= Fishing.Authority, "frozen evidence must not retain the mutable Authority table")
+    end)
+end)
+
+Test("D2: Fishing report samples once; projection, summary and paging never trigger diagnostics", function()
+    WithFishingDiagnostics(function(calls)
+        Fishing:GetProjection()
+        assert(S.ModuleDiagnosticsHub:BuildReport("life_fishing"))
+        assert(calls.buffs == 0 and calls.imports == 0, "ordinary projection/summary must not sample diagnostic Native")
+        local snapshot = assert(S.ModuleDiagnosticsHub:Capture("life_fishing", 900))
+        assert(snapshot.exportReport:find("provider.fishing_action_evidence", 1, true))
+        assert(snapshot.exportReport:find("92001", 1, true) and snapshot.exportReport:find("91002", 1, true))
+        assert(calls.imports == 1, "one detailed report must sample fishing evidence exactly once")
+        local samples = calls.buffs
+        assert(S.ModuleDiagnosticsHub:GetPage(snapshot, 1))
+        assert(S.ModuleDiagnosticsHub:Repage(snapshot, 700))
+        assert(calls.buffs == samples and calls.imports == 1, "frozen report paging must not sample again")
+    end)
+end)
+
+Test("D3: Disabled fishing diagnostics does not activate or import anything", function()
+    WithFishingDiagnostics(function(calls)
+        Fishing.enabled = false
+        local consumersBefore = Fishing.consumerCount -- Demand允许“尚无投影”为nil；验证不取得新Consumer，而非强造零值。
+        local d = Fishing:DescribeDiagnosticDetail()
+        assert(d.liveStatus == "not_sampled_feature_disabled")
+        assert(calls.buffs == 0 and calls.imports == 0 and calls.identity == 0 and #nativeLog == 0)
+        assert(Fishing.consumerCount == consumersBefore)
+    end)
+end)
+
+Test("D4: Missing API and bad reads remain unknown instead of empty or unbound", function()
+    WithFishingDiagnostics(function()
+        X2Unit.UnitBuffCount = function() error("buff count unavailable") end
+        X2Equipment.GetEquippedItemType = function() error("equipment unavailable") end
+        local d = Fishing:DescribeDiagnosticDetail()
+        assert(d.targetBuffs.status == "unavailable" and d.targetBuffs.reportedCount == nil)
+        assert(d.targetBuffs.error ~= nil and d.backpack.status == "unavailable" and d.backpack.itemType == nil)
+        X2Equipment.GetEquippedItemType = function() return nil end
+        S.ApiCapabilities:MarkRuntime("X2Equipment:GetEquippedItemType", "Unknown")
+        _G.ES_BACKPACK = nil
+        d = Fishing:DescribeDiagnosticDetail()
+        assert(d.backpack.slot == 27 and d.backpack.status == "empty")
+    end)
+end)
+
+Test("D5: Target changes and oversized buff lists are explicit in fishing evidence", function()
+    WithFishingDiagnostics(function(calls)
+        X2Unit.GetTargetUnitId = function() calls.identity = calls.identity + 1; return "fish:" .. calls.identity end
+        for i = 2, 140 do targetBuffs[i] = { buff_id = 93000 + i } end
+        local d = Fishing:DescribeDiagnosticDetail()
+        assert(d.target.stable == false and d.target.status == "changed_during_capture")
+        assert(d.targetBuffs.reportedCount == 140 and d.targetBuffs.scannedCount == 128 and d.targetBuffs.truncated == true)
+        targetBuffs[1].buff_id = 1
+        assert(d.targetBuffs.rows[1].fields.buff_id == 5264, "captured buff evidence must be detached")
+    end)
+end)
+
+Test("D6: Diagnostic equipment import failure cannot block fishing or read an unowned API", function()
+    WithFishingDiagnostics(function(calls)
+        S.ApiImports.Acquire = function() return false, "equipment import rejected" end
+        local d = Fishing:DescribeDiagnosticDetail()
+        assert(d.backpack.status == "unavailable" and d.backpack.error == "equipment import rejected")
+        assert(calls.equipment == 0 and Fishing.enabled == true)
+        assert(d.targetBuffs.rows[1].fields.buff_id == 5264)
+    end)
+end)
+
+Test("D7: Diagnostic history retains target switches, empty buff gaps and same-action recovery", function()
+    WithFishingDiagnostics(function()
+        WithArmedFishing("test:diagnostic-target-sequence", function()
+            setFishBuff(nil)
+            S.Events:Dispatch("TARGET_CHANGED", "target")
+            setFishBuff(5264)
+            S.Events:Dispatch("BUFF_UPDATE", "target")
+            assert(S.Scheduler:RunTask("v3_life_fishing_event_refresh"))
+            S.Events:Dispatch("TARGET_CHANGED", "target")
+            assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+            local writesBefore, diskBefore = Hotkey.stats.writes, h.writes
+            local d = Fishing:DescribeDiagnosticDetail()
+            assert(Hotkey.stats.writes == writesBefore and h.writes == diskBefore and Fishing:IsAutoArmed(),
+                "capturing an armed session must not remap, restore, disarm or save")
+            local gap, delayed, sameActionSwitch = false, false, false
+            for _, row in ipairs(d.recentObservations.rows) do
+                if row.reason == "target_changed" and row.buffId == nil and row.autoArmed == true then gap = true end
+                if gap and row.reason == "buff_update" and row.buffId == 5264 and row.mappedSlot == 4 then delayed = true end
+                if delayed and row.reason == "target_changed" and row.buffId == nil and row.mappedSlot == nil then sameActionSwitch = true end
+            end
+            assert(gap and delayed and sameActionSwitch, "history lost the target/buff transition being diagnosed")
+            assert(#d.recentObservations.rows <= 32 and d.recentObservations.targetIdentityScope == "event_sequence_only")
+            local capturedTotal = d.recentObservations.total
+            for _ = 1, 40 do S.Events:Dispatch("TARGET_CHANGED", "target") end
+            local full = Fishing:DescribeDiagnosticDetail()
+            assert(#full.recentObservations.rows == 32 and full.recentObservations.dropped > 0)
+            assert(d.recentObservations.total == capturedTotal and d.recentObservations.rows[#d.recentObservations.rows].sequence == capturedTotal
+                and full.recentObservations.total > capturedTotal, "later events mutated already captured history")
+        end)
+    end)
+end)
+
+Test("D8: Zone, carried item and current-target buff combinations remain independently observable", function()
+    WithFishingDiagnostics(function()
+        for _, zone in ipairs({ 1, 49 }) do
+            zoneGroup = zone
+            for _, itemType in ipairs({ 0, 92001 }) do
+                X2Equipment.GetEquippedItemType = function() return itemType end
+                for _, buffId in ipairs({ 0, 5264, 5265 }) do
+                    setFishBuff(buffId ~= 0 and buffId or nil)
+                    local d = Fishing:DescribeDiagnosticDetail()
+                    assert(d.zone.value == zone and d.backpack.status == (itemType == 0 and "empty" or "equipped"))
+                    if buffId == 0 then assert(#d.candidateActions == 0)
+                    else
+                        local normalSlots, mirageSlots = { [5264] = 4, [5265] = 3 }, { [5264] = 3, [5265] = 2 }
+                        local expected = (zone == 49 and mirageSlots or normalSlots)[buffId]
+                        assert(d.candidateActions[1].buffId == buffId and d.candidateActions[1].slot == expected)
+                    end
+                    assert(d.actionBarLayout.slotOffset == 0, "carrying an item must not fabricate a shifted action slot")
+                end
+            end
+        end
+        -- 同一目标同时命中多个动作时保留Native顺序，便于核对现有“首个命中”规则。
+        targetBuffs = { { buff_id = 5265 }, { buff_id = 5264 } }
+        local d = Fishing:DescribeDiagnosticDetail()
+        assert(#d.candidateActions == 2 and d.candidateActions[1].buffId == 5265 and d.candidateActions[2].buffId == 5264)
+    end)
+end)
+
+Test("D9: A confirmed empty target is distinct from an unavailable identity getter", function()
+    WithFishingDiagnostics(function()
+        setFishBuff(nil)
+        X2Unit.GetTargetUnitId = function() return nil end
+        X2Unit.UnitName = function() return nil end
+        local d = Fishing:DescribeDiagnosticDetail()
+        assert(d.target.status == "no_target" and d.target.stable == true and #d.candidateActions == 0)
+        X2Unit.UnitName = function() return "渔船梯子" end
+        d = Fishing:DescribeDiagnosticDetail()
+        assert(d.target.status == "named_target_without_unit_id" and d.target.stable == nil,
+            "a named interactable without UnitId must not be reported as an empty target")
+        X2Unit.GetTargetUnitId = function() error("identity read failed") end
+        d = Fishing:DescribeDiagnosticDetail()
+        assert(d.target.status == "identity_unavailable" and d.target.stable == nil)
+    end)
+end)
+
+Test("D10: Owned hidden first-slot probe reads skill 22538 without changing hotkeys or cached observations", function()
+    WithFishingDiagnostics(function()
+        local reads, creates = probeReads, probeCreates
+        local observed = Copy(Fishing:GetProjection())
+        firstModeSkill = 22538
+        local d = Fishing:DescribeDiagnosticDetail()
+        assert(d.actionBarLayout.releasePresent and d.actionBarLayout.firstSkillId == 22538)
+        assert(d.actionBarLayout.releaseMatch == "cast_cd_observed_id"
+            and d.actionBarLayout.slotIdEquivalence == "unverified_user_approved_trial", "cast/CD evidence must not be promoted to proven Slot identity")
+        assert(d.actionBarLayout.slotOffset == 1 and d.candidateActions[1].baseSlot == 4 and d.candidateActions[1].slot == 5)
+        assert(probeReads == reads + 8 and probeCreates == creates, "one detailed report reads eight slots using one inert probe")
+        assert(not probeWidget.shown and not probeWidget.pickable and not probeWidget.established)
+        assert(Fishing:GetProjection().slot == observed.slot, "explicit report must not change observation authority")
+        assert(findLog("set") == nil and findLog("remove") == nil)
+        firstModeSkill = nil
+        d = Fishing:DescribeDiagnosticDetail()
+        assert(d.actionBarLayout.slotOffset == nil and d.actionBarLayout.releasePresent == nil)
+        assert(d.candidateActions[1].slot == nil and d.candidateActions[1].baseSlot == 4)
+        failModeRead = true
+        d = Fishing:DescribeDiagnosticDetail()
+        assert(d.actionBarLayout.status == "unavailable" and d.backpack.status == "equipped")
+        assert(not probeWidget.established, "failed reads must release the probe too")
+    end)
+end)
+
+Test("D11: Candidate 22536 remains explicit and diagnostic tooltips preserve adjacent skill order", function()
+    WithFishingDiagnostics(function()
+        firstModeSkill = 22536
+        modeRows = { [2] = { skillId = 21571, name = "钓鱼" }, [5] = { skillId = 90005, name = "向左拉" } }
+        local tips, reads, writes = tooltipReads, probeReads, Hotkey.stats.writes
+        local d = Fishing:DescribeDiagnosticDetail()
+        local layout = d.actionBarLayout
+        assert(layout.firstSkillId == 22536 and layout.slotOffset == 1 and layout.releaseMatch == "candidate_ru_report")
+        assert(layout.candidateReleaseSkillId == 22536 and layout.releaseSkillId == 22538)
+        assert(layout.firstSkillName == "测试技能名22536", "do not fabricate a release name for the trial ID")
+        assert(layout.slots[2].skillId == 21571 and layout.slots[2].name == "钓鱼")
+        assert(layout.slots[5].skillId == 90005 and layout.slots[5].name == "向左拉")
+        assert(probeReads == reads + 8 and tooltipReads == tips + 3 and Hotkey.stats.writes == writes)
+        assert(not probeWidget.established and not probeWidget.shown)
+        failTooltip = true
+        layout = Fishing:DescribeDiagnosticDetail().actionBarLayout
+        assert(layout.firstSkillId == 22536 and layout.slotOffset == 1 and layout.slots[1].tooltipStatus == "unavailable")
+        assert(layout.slots[1].tooltipError and not probeWidget.established, "failed optional tooltip must not abort or retain the probe")
+        failTooltip = false
+        -- 日常观察仍只读首槽ID，不在100ms路径采样提示名/邻槽。
+        tips, reads = tooltipReads, probeReads
+        assert(Fishing:AcquireConsumer("test:diagnostic-mode-neighbors"))
+        assert(Fishing:Refresh("poll"))
+        assert(tooltipReads == tips and probeReads == reads + 2)
+        assert(Fishing:ReleaseConsumer("test:diagnostic-mode-neighbors"))
+    end)
+end)
 
 Test("T11: Registry exposes reversible Auto-R instead of runtime-block metadata", function()
     local text = ReadText("features/rs_feature_registry.lua")

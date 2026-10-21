@@ -47,13 +47,33 @@ Fishing.Authority = {
 } -- 诊断保留“事件/兜底/动作/写失败”边界，后续 RU 报告可以直接区分没事件、ID 不对还是 Hotkey 事务失败。
 local FA = Fishing.Authority
 local FISHING_DISPLAY_FIELDS={"status","message","buffId","slot","zoneGroup","autoArmed","autoAvailable","autoBlockedReason","lastWriteError"}
+-- 最近32条判定只记已有Lua事实，不增加Native读/任务/存档。切目标事件即使动作相同也留痕，
+-- 其序号仅标记事件先后，不冒充历史UnitId；当前目标身份由显式报告前后读取单独证明。
+local fishingObservationTrace = { rows = {}, limit = 32, total = 0, dropped = 0, targetIdentityScope = "event_sequence_only" }
+local function RecordFishingObservation(reason)
+    local hotkey = type(FishingHotkey) == "table" and type(FishingHotkey.GetDiagnostics) == "function" and FishingHotkey:GetDiagnostics() or {}
+    local stats = hotkey.stats or {}
+    local trace = fishingObservationTrace
+    trace.total = trace.total + 1
+    if #trace.rows >= trace.limit then table.remove(trace.rows, 1); trace.dropped = trace.dropped + 1 end
+    trace.rows[#trace.rows + 1] = { sequence = trace.total, at = FA.lastRefreshAt, reason = reason,
+        targetChangeSequence = FA.targetChangeSequence or 0, status = FA.status, buffId = FA.buffId,
+        recommendedSlot = FA.slot, mappedSlot = hotkey.currentSlot, zoneGroup = FA.zoneGroup,
+        actionBarLayout = Copy(FA.actionBarLayout),
+        scanCount = FA.lastScanCount, observedIds = Copy(FA.lastObservedIds), autoArmed = Fishing.autoArmed == true,
+        recoveryPending = Fishing:IsRecoveryPending(), writes = stats.writes, bindingDrifts = stats.bindingDrifts,
+        writeFailures = FA.writeFailures, lastWriteError = FA.lastWriteError }
+end
 -- 实时扫描/Hotkey事务仍每次执行；只有展示状态不变的100ms兜底才合并通知，诊断计数照常更新。
 local function PublishFishingObservation(reason)
     local old=FA.lastDisplayState
     local same=type(old)=="table" and old.recoveryPending==Fishing:IsRecoveryPending()
+    local layout=FA.actionBarLayout or {}
+    if same then same=old.firstModeSkillId==layout.firstSkillId and old.slotOffset==layout.slotOffset and old.layoutStatus==layout.status end
     if same then for _,key in ipairs(FISHING_DISPLAY_FIELDS) do if old[key]~=FA[key] then same=false;break end end end
+    if not same or reason == "target_changed" then RecordFishingObservation(reason) end -- 无变化轮询/Buff噪声不挤掉关键转换。
     if same and reason=="poll" then return true end
-    old={recoveryPending=Fishing:IsRecoveryPending()}
+    old={recoveryPending=Fishing:IsRecoveryPending(),firstModeSkillId=layout.firstSkillId,slotOffset=layout.slotOffset,layoutStatus=layout.status}
     for _,key in ipairs(FISHING_DISPLAY_FIELDS) do old[key]=FA[key] end
     FA.lastDisplayState=old;FA.revision=FA.revision+1
     PublishFeatureUpdate(Fishing,FA.revision,"fishing_observation:"..reason)
@@ -227,37 +247,55 @@ end
 
 function FA:Refresh(reason) -- 鱼动作识别是唯一 projection Authority；事件刷新和 100ms 兜底都走这里，防止 UI 与 Auto-R 读取不同 Buff 快照。
     reason = tostring(reason or "manual")
+    if reason == "target_changed" then self.targetChangeSequence = (self.targetChangeSequence or 0) + 1 end -- 仅诊断计数，不参与选鱼/改键。
     self.buffId, self.slot = nil, nil
     self.lastScanCount, self.lastObservedIds = 0, {}
     self.lastRefreshAt = S.NowMs and S.NowMs() or 0
     self.lastRefreshReason = reason
     if reason == "poll" then self.polls = (tonumber(self.polls) or 0) + 1 else self.nativeEventRefreshes = (tonumber(self.nativeEventRefreshes) or 0) + 1 end
-    if S.Api:IsCapabilityAllowed("X2Unit:UnitBuffCount") ~= true or S.Api:IsCapabilityAllowed("X2Unit:UnitBuff") ~= true then
+    local resetTarget = Fishing.autoArmed == true and reason == "target_changed" -- 切目标事件先恢复旧事务；事件边沿的Buff可能仍未切完，不能立即沿用。
+    if not resetTarget and (S.Api:IsCapabilityAllowed("X2Unit:UnitBuffCount") ~= true or S.Api:IsCapabilityAllowed("X2Unit:UnitBuff") ~= true) then
         self.status, self.message = "unavailable", "当前 RU 能力面未证明目标 Buff 读取"
         Fishing:RefreshAutoAvailability()
+        RecordFishingObservation(reason) -- 读取失败也留在同一有界时间线，不只记录成功动作。
         self.revision = self.revision + 1
         PublishFeatureUpdate(Fishing, self.revision, "fishing_observation_unavailable")
         return false
     end
     local map = CurrentFishingMap()
-    local ok, count = Call("X2Unit:UnitBuffCount", UnitApi, "UnitBuffCount", "target")
-    count = ok and Number(count) or 0
-    count = math.max(0, math.min(128, math.floor(count or 0)))
-    self.lastScanCount = count
-    for index = 1, count do
-        local readOk, buff = Call("X2Unit:UnitBuff", UnitApi, "UnitBuff", "target", index)
-        local id = readOk and type(buff) == "table" and Number(buff.buff_id or buff.buffId or buff.type or buff.id) or nil
-        if id ~= nil and #self.lastObservedIds < 16 then self.lastObservedIds[#self.lastObservedIds + 1] = math.floor(id) end
-        if id and map[id] then self.buffId, self.slot = math.floor(id), map[id].slot; break end
+    local oldOffset = self.actionBarLayout and self.actionBarLayout.slotOffset
+    self.actionBarLayout = type(FishingHotkey) == "table" and type(FishingHotkey.ReadActionBarLayout) == "function"
+        and FishingHotkey:ReadActionBarLayout() or { status = "unavailable", reason = "mode_slot_reader_missing" }
+    local offset = self.actionBarLayout.slotOffset
+    if not resetTarget then -- 下一次真实BUFF事件/现有100ms观察再读取新目标，不新增延时任务或每鱼独立状态。
+        local ok, count = Call("X2Unit:UnitBuffCount", UnitApi, "UnitBuffCount", "target")
+        count = ok and Number(count) or 0
+        count = math.max(0, math.min(128, math.floor(count or 0)))
+        self.lastScanCount = count
+        for index = 1, count do
+            local readOk, buff = Call("X2Unit:UnitBuff", UnitApi, "UnitBuff", "target", index)
+            local id = readOk and type(buff) == "table" and Number(buff.buff_id or buff.buffId or buff.type or buff.id) or nil
+            if id ~= nil and #self.lastObservedIds < 16 then self.lastObservedIds[#self.lastObservedIds + 1] = math.floor(id) end
+            if id and map[id] then
+                self.buffId = math.floor(id)
+                if offset ~= nil then self.slot = map[id].slot + offset end
+                break
+            end
+        end
     end
-    self.status = self.buffId and "ready" or "waiting"
-    if self.buffId then
+    self.status = self.slot and "ready" or "waiting"
+    -- 布局不可读，或无动作Buff期间背鱼布局改变时，撤回上一槽位；保留会话等待可验证的下一次观察。
+    local resetLayout = Fishing.autoArmed == true and type(FishingHotkey) == "table" and FishingHotkey.currentSlot ~= nil
+        and self.slot == nil and (offset == nil or oldOffset ~= offset)
+    if resetTarget then self.message = "目标已切换 · 正在恢复原 R"
+    elseif self.buffId and self.slot == nil then self.message = "等待模式技能栏可读 · 暂停自动映射"
+    elseif self.slot then
         self.message = map[self.buffId].text .. " · 技能栏 " .. tostring(self.slot) .. (Fishing.autoArmed and " · R 已自动映射" or "")
     else
         self.message = Fishing.autoArmed and "等待鱼的动作 Buff · R 保持当前映射" or "选中正在挣扎的鱼后显示推荐技能"
     end
 
-    if Fishing.autoArmed == true and self.slot ~= nil then
+    if Fishing.autoArmed == true and (self.slot ~= nil or resetTarget or resetLayout) then
         if type(FishingHotkey) ~= "table" then
             self.writeFailures = (tonumber(self.writeFailures) or 0) + 1
             self.lastWriteError = "FishingHotkeyV3 服务不可用"
@@ -265,13 +303,22 @@ function FA:Refresh(reason) -- 鱼动作识别是唯一 projection Authority；�
             Fishing:ReleaseAutoLease("fishing_auto_missing_service")
             self.status, self.message = "error", "自动 R 不可用：FishingHotkeyV3 服务缺失"
             Fishing:RefreshAutoAvailability()
+            RecordFishingObservation(reason) -- 缺服务时保留请求槽与停止状态，不执行任何诊断补偿。
             self.revision = self.revision + 1
             PublishFeatureUpdate(Fishing, self.revision, "fishing_auto_missing_service")
             return false
         end
-        local moved, moveErr = FishingHotkey:MoveR(self.slot, function(snapshot)
-            return Fishing:PersistRecoverySnapshot(snapshot, "fishing_hotkey_touch_slot")
-        end)
+        local moved, moveErr
+        if resetTarget or resetLayout then
+            moved, moveErr = FishingHotkey:ResetTargetMapping()
+            if moved == true then
+                self.message = resetTarget and "目标已切换 · 已恢复原 R · 等待新鱼动作" or "技能栏布局变化 · 已恢复原 R · 等待有效钓鱼动作"
+            end
+        else
+            moved, moveErr = FishingHotkey:MoveR(self.slot, function(snapshot)
+                return Fishing:PersistRecoverySnapshot(snapshot, "fishing_hotkey_touch_slot")
+            end)
+        end
         if moved ~= true then
             self.writeFailures = (tonumber(self.writeFailures) or 0) + 1
             self.lastWriteError = tostring(moveErr or "hotkey move failed")
@@ -283,6 +330,7 @@ function FA:Refresh(reason) -- 鱼动作识别是唯一 projection Authority；�
             -- 写入失败后不丢恢复快照；非战斗状态立即尝试回滚，战斗状态交给独立恢复任务，绝不继续切换新槽位。
             if FishingHotkey:InCombat() ~= true then Fishing:ProcessPendingRecovery(true, "auto_move_failure") end
             Fishing:RefreshAutoAvailability()
+            RecordFishingObservation(reason) -- 记录原事务的失败/恢复结果，诊断不能自行触发第二次恢复。
             self.revision = self.revision + 1
             PublishFeatureUpdate(Fishing, self.revision, "fishing_auto_write_failed")
             return false
@@ -297,6 +345,7 @@ function FA:GetProjection() -- Presentation 只读 detached projection；Hotkey 
     local hotkeyDiag = type(FishingHotkey) == "table" and type(FishingHotkey.GetDiagnostics) == "function" and FishingHotkey:GetDiagnostics() or nil
     return {
         patch = Fishing.Patch, revision = self.revision, status = self.status, message = self.message, buffId = self.buffId, slot = self.slot, zoneGroup = self.zoneGroup,
+        actionBarLayout = Copy(self.actionBarLayout),
         autoArmed = Fishing.autoArmed == true, autoAvailable = self.autoAvailable == true, autoBlockedReason = self.autoBlockedReason,
         lastScanCount = self.lastScanCount, lastObservedIds = Copy(self.lastObservedIds), lastRefreshAt = self.lastRefreshAt, lastRefreshReason = self.lastRefreshReason,
         polls = self.polls, nativeEventRefreshes = self.nativeEventRefreshes, writeFailures = self.writeFailures, lastWriteError = self.lastWriteError,
@@ -484,6 +533,131 @@ function Fishing:AcquireConsumer(token) if not self.enabled then return false, "
 function Fishing:ReleaseConsumer(token) return self.Demand:Release(token, "fishing_consumer") end
 function Fishing:Refresh(reason) if not self.enabled or self.consumerCount <= 0 then return true end return FA:Refresh(reason or "manual") end
 function Fishing:GetProjection() return FA:GetProjection() end
+
+-- 以下取证只在模块详细报告的Provider被显式调用时执行；不调用Refresh、Arm、Disarm或持久化，
+-- 不Acquire Consumer、不启动任务，也不把当前读取结果写回观察Authority/动作映射。
+local function FishingDiagnosticValue(capability, method, ...)
+    local ok, value, err = Call(capability, nil, method, ...)
+    local kind = type(value)
+    if ok ~= true then return { status = "unavailable", error = tostring(err or "getter_failed") } end
+    if kind ~= "nil" and kind ~= "boolean" and kind ~= "number" and kind ~= "string" then
+        return { status = "invalid_type", valueType = kind }
+    end
+    return { status = value == nil and "empty" or "ok", value = value, valueType = kind }
+end
+
+-- 与正常观察的“首个动作命中后停止”不同，诊断保留顺序与其后的陌生Buff；只复制有界标量字段，
+-- 不保存Native句柄/任意深层对象。失败、空集合和超过128项的截断分别明示，不能伪装成完整扫描。
+local function FishingDiagnosticBuffs(unit, debuff)
+    local countMethod, itemMethod = debuff and "UnitDeBuffCount" or "UnitBuffCount", debuff and "UnitDeBuff" or "UnitBuff"
+    local count = FishingDiagnosticValue("X2Unit:" .. countMethod, countMethod, unit)
+    local out = { unit = unit, kind = itemMethod, rows = {}, limit = 128, status = count.status, error = count.error }
+    if count.status ~= "ok" or type(count.value) ~= "number" or count.value ~= count.value or count.value < 0 or count.value == math.huge then
+        if count.status == "ok" or count.status == "empty" then out.status, out.error = "invalid_count", "buff_count_not_nonnegative_number" end
+        return out
+    end
+    out.reportedCount, out.scannedCount = math.floor(count.value), math.min(128, math.floor(count.value))
+    out.truncated, out.status = out.reportedCount > out.scannedCount, "ok"
+    for index = 1, out.scannedCount do
+        local ok, buff, err = Call("X2Unit:" .. itemMethod, nil, itemMethod, unit, index)
+        local row = { index = index, status = "unavailable" }
+        if ok == true and type(buff) == "table" then
+            row.status, row.fields = "ok", {}
+            -- 保留原字段名，避免把尚未证实含义的duration/stack等数据重新解释为业务事实。
+            for _, key in ipairs({ "buff_id", "buffId", "type", "id", "timeLeft", "duration", "stack", "name", "path" }) do
+                local value = buff[key]
+                if type(value) == "number" or type(value) == "boolean" then row.fields[key] = value
+                elseif type(value) == "string" then
+                    row.fields[key] = value:sub(1, 512)
+                    if #value > 512 then row.stringsTruncated = true end
+                end
+            end
+        else row.error = tostring(err or (ok == true and "buff_missing_or_invalid_type" or "buff_read_failed")); out.status = "partial" end
+        out.rows[index] = row
+    end
+    return out
+end
+
+function Fishing:DescribeDiagnosticDetail()
+    local out = { schema = "fishing-action-evidence-1", capturedAt = S.NowMs and S.NowMs() or 0,
+        generation = S.Generation, enabled = self.enabled == true, consumerCount = tonumber(self.consumerCount) or 0,
+        observed = self:GetProjection(), selectionPolicy = "current_target_only_first_matching_buff_in_native_order",
+        recentObservations = Copy(fishingObservationTrace), -- 固定快照复制时间线；后续切目标不会改写已导出的证据。
+        carryPolicy = "first_mode_skill_22538_or_candidate_22536_adds_one_slot; backpack_identity_is_evidence_only",
+        actionBarLayout = { status = "not_sampled", offsetInferred = false } }
+    out.observedAgeMs = math.max(0, out.capturedAt - (tonumber(out.observed.lastRefreshAt) or 0)) -- 缓存年龄与本次实时采样分列，避免旧投影被当成刚读取的事实。
+    -- 关闭的Feature只交付已有投影，不让打开诊断成为隐式启动或Native导入入口。
+    if self.enabled ~= true then out.liveStatus = "not_sampled_feature_disabled"; return out end
+    out.liveStatus = "sampled_on_explicit_report"
+    local before = FishingDiagnosticValue("X2Unit:GetTargetUnitId", "GetTargetUnitId")
+    out.target = { before = before, name = FishingDiagnosticValue("X2Unit:UnitName", "UnitName", "target") }
+    out.zone = FishingDiagnosticValue("X2Unit:GetCurrentZoneGroup", "GetCurrentZoneGroup")
+    out.combat = FishingDiagnosticValue("X2Player:PlayerInCombat", "PlayerInCombat")
+    out.targetBuffs, out.targetDebuffs = FishingDiagnosticBuffs("target", false), FishingDiagnosticBuffs("target", true)
+    out.playerBuffs, out.playerDebuffs = FishingDiagnosticBuffs("player", false), FishingDiagnosticBuffs("player", true)
+
+    -- 只为此次显式报告惰性取得Equipment，失败只影响该证据项；不加成钓鱼启动硬依赖。
+    -- 复用现有NativeImports Authority；ES_BACKPACK是实际装备槽，EST_BACKPACK是槽类型，不能混用。
+    local slot = Number(rawget(_G, "ES_BACKPACK"))
+    slot = slot ~= nil and slot > 0 and slot < math.huge and math.floor(slot) or 27
+    out.backpack = { slot = slot, slotSource = rawget(_G, "ES_BACKPACK") == slot and "ES_BACKPACK" or "verified_slot_27", status = "unavailable" }
+    local imports = S.ApiImports
+    local imported, importErr = false, "native_import_manager_unavailable"
+    if type(imports) == "table" and type(imports.Acquire) == "function" then
+        imported, importErr = imports:Acquire("feature:" .. self.Id .. ":diagnostics", { "X2Equipment:GetEquippedItemType" })
+    end
+    if imported == true then
+        local item = FishingDiagnosticValue("X2Equipment:GetEquippedItemType", "GetEquippedItemType", slot)
+        out.backpack.read = item
+        if item.status == "empty" or (item.status == "ok" and item.value == 0) then out.backpack.status = "empty"
+        elseif item.status == "ok" and type(item.value) == "number" and item.value > 0 and item.value < math.huge then
+            out.backpack.status, out.backpack.itemType = "equipped", math.floor(item.value)
+        else out.backpack.error = item.error or "equipment_item_type_unknown" end
+    else out.backpack.error = tostring(importErr or "equipment_import_failed") end
+    if type(FishingHotkey) == "table" and type(FishingHotkey.CaptureBindingDiagnostics) == "function" then
+        out.hotkey = FishingHotkey:CaptureBindingDiagnostics()
+    else out.hotkey = { status = "unavailable", error = "hotkey_diagnostic_service_missing" } end
+
+    if type(FishingHotkey) == "table" and type(FishingHotkey.CaptureActionBarDiagnostics) == "function" then
+        out.actionBarLayout = FishingHotkey:CaptureActionBarDiagnostics() -- 自有隐藏Slot只取证，不用物品分类推断“放生”。
+    end
+    -- 候选解释本次Native Buff顺序、区域基础槽及首槽实际技能导致的偏移，不改写FA.zoneGroup/观察缓存。
+    -- 不可读的Zone不按普通区推断；目标在采集期间变化时，明确声明快照无法证明单一目标。
+    local map = out.zone.status == "ok" and type(out.zone.value) == "number" and (out.zone.value == 49 and FISH_MIRAGE_MAP or FISH_NORMAL_MAP) or nil
+    out.mapKind, out.candidateActions = map and (out.zone.value == 49 and "mirage" or "normal") or "unknown", {}
+    for _, row in ipairs(out.targetBuffs.rows) do
+        local fields = row.fields or {}
+        local id = Number(fields.buff_id or fields.buffId or fields.type or fields.id)
+        local action = map and id and map[id] or nil
+        if action then
+            local offset = out.actionBarLayout.slotOffset
+            out.candidateActions[#out.candidateActions + 1] = { buffIndex = row.index, buffId = id, baseSlot = action.slot,
+                slot = offset ~= nil and action.slot + offset or nil, slotOffset = offset, action = action.text }
+        end
+    end
+    out.target.after = FishingDiagnosticValue("X2Unit:GetTargetUnitId", "GetTargetUnitId")
+    if before.status == "ok" and out.target.after.status == "ok" then
+        out.target.stable = before.value == out.target.after.value
+        out.target.status = out.target.stable and "stable" or "changed_during_capture"
+    elseif before.status == "empty" and out.target.after.status == "empty" then
+        -- RU实机：选中“渔船梯子”等交互物也可能没有UnitId；不能把有名字的目标误报成未选目标。
+        if out.target.name.status == "ok" then out.target.status = "named_target_without_unit_id"
+        elseif out.target.name.status == "empty" then out.target.status, out.target.stable = "no_target", true
+        else out.target.status = "identity_unavailable" end
+    elseif (before.status == "ok" and out.target.after.status == "empty") or (before.status == "empty" and out.target.after.status == "ok") then
+        out.target.status, out.target.stable = "changed_during_capture", false -- 采集中获得/失去目标同样不能拼成单一目标证据。
+    else out.target.status = "identity_unavailable" end
+    out.finishedAt = S.NowMs and S.NowMs() or out.capturedAt
+    return out
+end
+
+-- 接入模块原有TXT详情路径；普通摘要/GetProjection/翻页不运行此Provider，也不新增UI或后台轮询。
+if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
+    S.ModuleDiagnosticsHub:RegisterProvider(Fishing.Id, "fishing_action_evidence", function()
+        return Fishing:DescribeDiagnosticDetail()
+    end, 30, { detailOnly = true })
+end
+
 Fishing.Commands = {
     Refresh = function(_, reason) return Fishing:Refresh(reason) end,
     ArmAuto = function() return Fishing:ArmAuto() end,
