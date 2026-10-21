@@ -44,7 +44,8 @@ local failSetSlot = nil
 local failSaveHotkey = false
 local failBindingRead = false
 local failBindingReadSlot = nil
-local firstModeSkill, failModeRead, failModeEstablish = 10001, false, false
+local firstModeSkill, failModeRead, failModeEstablish = 21571, false, false
+local failModeReadSlot = nil
 local probeCreates, probeReads, probeWidget = 0, 0, nil
 local modeRows, tooltipReads, failTooltip = {}, 0, false
 
@@ -76,8 +77,9 @@ _G.UIParent = { CreateWidget = function(_, kind, id, parent)
     function slot:GetSkillType()
         assert(self.established)
         probeReads = probeReads + 1
-        if failModeRead then error("mode skill unavailable") end
+        if failModeRead or self.slotIndex == failModeReadSlot then error("mode skill unavailable") end
         if self.slotIndex == 1 then return firstModeSkill end
+        if self.slotIndex == 2 and modeRows[2] == nil and firstModeSkill ~= 21571 then return 21571 end
         return modeRows[self.slotIndex] and modeRows[self.slotIndex].skillId
     end
     function slot:GetTooltip()
@@ -85,6 +87,11 @@ _G.UIParent = { CreateWidget = function(_, kind, id, parent)
         tooltipReads = tooltipReads + 1
         if failTooltip then error("tooltip unavailable") end
         if self.slotIndex == 1 then
+            if modeRows[1] ~= nil then return modeRows[1] end
+            -- 同日两份RU诊断的放生ID不同，名称、描述和图标一致。
+            if firstModeSkill == 22548 or firstModeSkill == 22544 then
+                return { name = "放生", description = "放生大鱼。", path = "Game/ui/icon/icon_skill_fishing_08.dds" }
+            end
             return { name = firstModeSkill == 22538 and "放生" or "测试技能名" .. tostring(firstModeSkill), skillType = firstModeSkill }
         end
         return modeRows[self.slotIndex]
@@ -112,7 +119,8 @@ local function resetNative()
     failSaveHotkey = false
     failBindingRead = false
     failBindingReadSlot = nil
-    firstModeSkill, failModeRead, failModeEstablish = 10001, false, false
+    firstModeSkill, failModeRead, failModeEstablish = 21571, false, false
+    failModeReadSlot = nil
     modeRows, failTooltip = {}, false
 end
 
@@ -197,7 +205,7 @@ local function assertBindings(expected)
 end
 
 Test("T1: Auto-R is runtime-enabled behind transaction contract", function()
-    assert(Fishing.Patch == "fishing-auto-r-target-recheck-1", "fishing patch marker must identify the target recheck build")
+    assert(Fishing.Patch == "fishing-slot-anchor-21571-1", "fishing patch marker must identify the fishing-slot anchor build")
     assert(Fishing.HotkeyRuntimeBlocked == false, "Auto-R must no longer be hard-blocked")
     assert((tonumber(Fishing.HotkeyContractVersion) or 0) >= 3, "HotkeyContractVersion must be >=3")
     assert((tonumber(Hotkey.TransactionContractVersion) or 0) >= 3, "transaction service contract must be >=3")
@@ -498,9 +506,9 @@ Test("T4j: All five fish actions switch repeatedly in normal and Mirage bars", f
     end)
 end)
 
-Test("R1: Both approved release IDs shift all five actions in normal and Mirage zones", function()
+Test("R1: Both observed release variants and compatibility IDs shift all five actions in normal and Mirage zones", function()
     WithArmedFishing("test:release-all-actions", function()
-        for _, releaseId in ipairs({22536,22538}) do
+        for _, releaseId in ipairs({22544,22548,22536,22538}) do
         firstModeSkill = releaseId
         for _, zone in ipairs({ 1, 49 }) do
             zoneGroup = zone
@@ -524,12 +532,14 @@ end)
 Test("R2: Picking up and dropping fish remaps the same buff and restores the old destination", function()
     WithArmedFishing("test:release-transition", function()
         assert(bindings[4] == "R")
-        firstModeSkill = 22536
+        firstModeSkill = 22544
         assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
         assertBindings({ [4]="4", [5]="R" })
-        firstModeSkill = 22538
         local writes = Hotkey.stats.writes
-        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        for _, releaseId in ipairs({22536,22538,22548,22544}) do
+            firstModeSkill = releaseId
+            assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        end
         assert(Hotkey.stats.writes == writes, "equivalent release IDs must not rewrite a correct destination")
         firstModeSkill = 21571 -- 新RU报告中未背鱼钓鱼阶段的首槽；不能因接近候选ID而误判偏移。
         assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
@@ -539,7 +549,7 @@ Test("R2: Picking up and dropping fish remaps the same buff and restores the old
 end)
 
 Test("R3: Slot eight is backed up before writes and unbound state survives release recovery", function()
-    resetNative(); bindings[8] = nil; firstModeSkill = 22538; setFishBuff(5508)
+    resetNative(); bindings[8] = nil; firstModeSkill = 22548; setFishBuff(5508)
     assert(Fishing:AcquireConsumer("test:release-eight"))
     local ok, err = xpcall(function()
         local originalSet = X2Hotkey.SetOptionBindingWithIndex
@@ -596,6 +606,41 @@ Test("R5: Missing mode constant blocks mapping without guessing a slot type", fu
         end, debug.traceback)
         _G.ISLOT_MODE_ACTION = saved
         if not ok then error(err) end
+    end)
+end)
+
+Test("R8: Fishing 21571 in slot two shifts an arbitrary first skill without needing release tooltips", function()
+    WithArmedFishing("test:fishing-anchor", function()
+        firstModeSkill = 90042 -- 首格身份未知；仅第二格钓鱼21571证明偏移。
+        modeRows[2] = { skillId = 21571 }
+        failTooltip = true
+        local tips = tooltipReads
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assertBindings({ [4]="4", [5]="R" })
+        assert(Fishing:GetProjection().actionBarLayout.fishingSlot == 2)
+        for _ = 1, 5 do assert(S.Scheduler:RunTask("v3_life_fishing_poll")) end
+        assert(tooltipReads == tips, "runtime layout reads only skill identities, never release names/icons")
+        firstModeSkill = 21571
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assertBindings({ [4]="R", [5]="5" })
+        failTooltip = false
+    end)
+end)
+
+Test("R9: Missing or unreadable slot-two fishing anchor waits even for an old release ID", function()
+    WithArmedFishing("test:fishing-anchor-unavailable", function()
+        firstModeSkill = 22544
+        modeRows[2] = { skillId = 38924 }
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assert(Fishing:GetProjection().slot == nil and Fishing:IsAutoArmed())
+        assertBindings({ [1]="R", [4]="4", [5]="5" })
+        modeRows[2] = { skillId = 21571 }
+        failModeReadSlot = 2
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assert(Fishing:GetProjection().slot == nil)
+        failModeReadSlot = nil
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assertBindings({ [4]="4", [5]="R" })
     end)
 end)
 
@@ -957,15 +1002,15 @@ Test("D9: A confirmed empty target is distinct from an unavailable identity gett
     end)
 end)
 
-Test("D10: Owned hidden first-slot probe reads skill 22538 without changing hotkeys or cached observations", function()
+Test("D10: Owned hidden probe finds fishing in slot two without changing hotkeys or cached observations", function()
     WithFishingDiagnostics(function()
         local reads, creates = probeReads, probeCreates
         local observed = Copy(Fishing:GetProjection())
         firstModeSkill = 22538
         local d = Fishing:DescribeDiagnosticDetail()
         assert(d.actionBarLayout.releasePresent and d.actionBarLayout.firstSkillId == 22538)
-        assert(d.actionBarLayout.releaseMatch == "cast_cd_observed_id"
-            and d.actionBarLayout.slotIdEquivalence == "unverified_user_approved_trial", "cast/CD evidence must not be promoted to proven Slot identity")
+        assert(d.actionBarLayout.releaseMatch == "fishing_anchor_slot_2"
+            and d.actionBarLayout.fishingSlot == 2 and d.actionBarLayout.fishingSkillId == 21571)
         assert(d.actionBarLayout.slotOffset == 1 and d.candidateActions[1].baseSlot == 4 and d.candidateActions[1].slot == 5)
         assert(probeReads == reads + 8 and probeCreates == creates, "one detailed report reads eight slots using one inert probe")
         assert(not probeWidget.shown and not probeWidget.pickable and not probeWidget.established)
@@ -982,15 +1027,15 @@ Test("D10: Owned hidden first-slot probe reads skill 22538 without changing hotk
     end)
 end)
 
-Test("D11: Candidate 22536 remains explicit and diagnostic tooltips preserve adjacent skill order", function()
+Test("D11: Fishing anchor drives offset while optional diagnostic tooltips preserve adjacent skill order", function()
     WithFishingDiagnostics(function()
         firstModeSkill = 22536
         modeRows = { [2] = { skillId = 21571, name = "钓鱼" }, [5] = { skillId = 90005, name = "向左拉" } }
         local tips, reads, writes = tooltipReads, probeReads, Hotkey.stats.writes
         local d = Fishing:DescribeDiagnosticDetail()
         local layout = d.actionBarLayout
-        assert(layout.firstSkillId == 22536 and layout.slotOffset == 1 and layout.releaseMatch == "candidate_ru_report")
-        assert(layout.candidateReleaseSkillId == 22536 and layout.releaseSkillId == 22538)
+        assert(layout.firstSkillId == 22536 and layout.slotOffset == 1 and layout.releaseMatch == "fishing_anchor_slot_2")
+        assert(layout.fishingSkillId == 21571 and layout.fishingSlot == 2)
         assert(layout.firstSkillName == "测试技能名22536", "do not fabricate a release name for the trial ID")
         assert(layout.slots[2].skillId == 21571 and layout.slots[2].name == "钓鱼")
         assert(layout.slots[5].skillId == 90005 and layout.slots[5].name == "向左拉")
@@ -1001,12 +1046,32 @@ Test("D11: Candidate 22536 remains explicit and diagnostic tooltips preserve adj
         assert(layout.firstSkillId == 22536 and layout.slotOffset == 1 and layout.slots[1].tooltipStatus == "unavailable")
         assert(layout.slots[1].tooltipError and not probeWidget.established, "failed optional tooltip must not abort or retain the probe")
         failTooltip = false
-        -- 日常观察仍只读首槽ID，不在100ms路径采样提示名/邻槽。
+        -- 日常观察最多读取前两槽ID，不读取提示名。
         tips, reads = tooltipReads, probeReads
         assert(Fishing:AcquireConsumer("test:diagnostic-mode-neighbors"))
         assert(Fishing:Refresh("poll"))
-        assert(tooltipReads == tips and probeReads == reads + 2)
+        assert(tooltipReads == tips and probeReads == reads + 4)
         assert(Fishing:ReleaseConsumer("test:diagnostic-mode-neighbors"))
+    end)
+end)
+
+Test("D12: RU slot 22548 is release evidence and the reported reel-out action shifts from five to six", function()
+    WithFishingDiagnostics(function()
+        firstModeSkill = 22548
+        modeRows = { [2] = { skillId = 21571, name = "钓鱼" }, [3] = { skillId = 38924, name = "钓大鱼" } }
+        setFishBuff(5267)
+        local observed, writes, reads, tips = Copy(Fishing:GetProjection()), Hotkey.stats.writes, probeReads, tooltipReads
+        local d = Fishing:DescribeDiagnosticDetail()
+        local layout = d.actionBarLayout
+        assert(layout.firstSkillId == 22548 and layout.firstSkillName == "放生" and layout.releasePresent,
+            "the captured RU first-slot identity must be recognized as release")
+        assert(layout.releaseMatch == "fishing_anchor_slot_2" and layout.fishingSkillId == 21571 and layout.fishingSlot == 2)
+        assert(layout.slotOffset == 1 and d.candidateActions[1].buffId == 5267
+            and d.candidateActions[1].baseSlot == 5 and d.candidateActions[1].slot == 6,
+            "the reported reel-out action must address actual slot six while carrying fish")
+        assert(probeReads == reads + 8 and tooltipReads == tips + 3 and Hotkey.stats.writes == writes)
+        assert(Fishing:GetProjection().slot == observed.slot and not probeWidget.established,
+            "diagnostic capture must remain read-only and release its slot probe")
     end)
 end)
 

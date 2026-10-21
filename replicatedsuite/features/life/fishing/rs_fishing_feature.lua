@@ -21,7 +21,7 @@ local RegisterStore, LoadStore = LF.RegisterStore, LF.LoadStore
 -- 钓鱼：Demand 范围观察与可回滚 Auto-R 热键事务。
 local Fishing = { Id = "life_fishing", storeId = "v3.life.fishing", enabled = false, storeLoaded = false, autoArmed = false, autoLeaseHeld = false, recoveryNativeRestored = false } -- Fishing Feature 继续拥有业务生命周期；Auto-R 会话状态只在本模块存活，持久恢复证据进入 v3.life.fishing Store。
 S.Features.Fishing = Fishing -- 保持现有 FeatureRuntime/Presentation Authority 名称，用户升级无需迁移导航或 Consumer token。
-Fishing.Patch = "fishing-auto-r-target-recheck-1" -- 诊断区分多鱼切换同槽复核与旧版缓存直接跳过；持久恢复/战斗保护契约不变。
+Fishing.Patch = "fishing-slot-anchor-21571-1" -- 以钓鱼21571在第1/2格判定0/1偏移，不再依赖多变的放生ID；热键恢复契约不变。
 Fishing.UpdateTopic = "v3.life.fishing.updated" -- 页面与悬浮窗继续消费同一更新主题；识别/改键不能创建第二套 UI 状态源。
 Fishing.ObservationContractVersion = 2 -- v2 表示 TARGET/BUFF 事件 + 100ms Demand-scoped 兜底扫描；避免 RU 漏 BUFF_UPDATE 时长期不刷新。
 Fishing.HotkeyContractVersion = 3 -- v3 表示恢复旧版已验证的完整 R 快照/恢复事务，并要求持久化 durability barrier + Native readback。
@@ -583,7 +583,7 @@ function Fishing:DescribeDiagnosticDetail()
         generation = S.Generation, enabled = self.enabled == true, consumerCount = tonumber(self.consumerCount) or 0,
         observed = self:GetProjection(), selectionPolicy = "current_target_only_first_matching_buff_in_native_order",
         recentObservations = Copy(fishingObservationTrace), -- 固定快照复制时间线；后续切目标不会改写已导出的证据。
-        carryPolicy = "first_mode_skill_22538_or_candidate_22536_adds_one_slot; backpack_identity_is_evidence_only",
+        carryPolicy = "fishing_skill_21571_in_slot_2_adds_one_slot; slot_1_has_no_offset; backpack_identity_is_evidence_only",
         actionBarLayout = { status = "not_sampled", offsetInferred = false } }
     out.observedAgeMs = math.max(0, out.capturedAt - (tonumber(out.observed.lastRefreshAt) or 0)) -- 缓存年龄与本次实时采样分列，避免旧投影被当成刚读取的事实。
     -- 关闭的Feature只交付已有投影，不让打开诊断成为隐式启动或Native导入入口。
