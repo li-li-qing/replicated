@@ -94,14 +94,14 @@ Test('light appearance durable reload and failure rollback keep other preference
 end)
 Test('new palette preferences all survive durable reload without changing other workspace state',function()
  local W,S,h=Boot();assert(W:SetNavigation('life.tasks','favorite',true));assert(W:SetOption('density','compact'))
- for _,name in ipairs({'nord','dusk','dawn','sage'})do
+ for _,name in ipairs({'nord','dusk','dawn','sage','legacy'})do
   assert(W:SetOption('appearance',name),'new appearance rejected: '..name)
   local W2,S2,h2=Boot(h.disk)
   assert(W2:GetSettings().appearance==name and W2:GetSettings().density=='compact' and W2:GetNavPreference('life.tasks').favorite)
   h2.failSave=true;assert(W2:SetOption('appearance','dark')==false);assert(W2:GetSettings().appearance==name)
   W,S,h=Boot(h.disk)
  end
- local options=W:GetAppearanceOptions();assert(#options==8)
+ local options=W:GetAppearanceOptions();assert(#options==9)
  options[1].id='invalid';assert(W:GetAppearanceOptions()[1].id=='dark','appearance catalog aliases caller state')
  assert(W.Normalize({appearance='future'}).appearance=='dark')
 end)

@@ -305,17 +305,32 @@ local function Build(parent, route, feature, kind)
             onSettings=function()
                 root.treasureSettingsOpen=not root.treasureSettingsOpen
                 if root.treasureRefreshField then root.treasureRefreshField:SetVisible(root.treasureSettingsOpen) end
+                if root.treasureRadiusField then root.treasureRadiusField:SetVisible(root.treasureSettingsOpen) end
+                if root.treasureDistanceField then root.treasureDistanceField:SetVisible(root.treasureSettingsOpen) end
                 if root.treasureTimerField then root.treasureTimerField:SetVisible(root.treasureSettingsOpen) end
                 root:InvalidateMeasure("treasure_settings");return true
             end})
         -- 寻宝滑块只调整罗盘绘制，不加快500ms背包/地图观察；旧偏好与选择完整保留。
         root.treasureRefreshField = D:SettingsNumericSlider(root, {
-            id="v3_treasure_refresh",label="罗盘绘制间隔",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="ms",
+            id="v3_treasure_refresh",label="绘制间隔（ms）",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="",
             get=function()return feature:GetProjection().refreshMs or 33 end,
             set=function(value)return feature.Commands:SetRefreshMs(value)end,
             slot={size="fixed",height=42,hAlign="fill"},
         })
         root.treasureRefreshField:SetVisible(false)
+        root.treasureRadiusField = D:SettingsNumericSlider(root, {
+            id="v3_treasure_radius",label="地面圈半径（米）",labelWidth=130,min=0.5,max=10,fixedSliderRange=true,hardMin=0.5,hardMax=1000,step=0.5,unit="",
+            get=function()return feature:GetProjection().compassRadius or 2.5 end,
+            set=function(value)return feature.Commands:SetCompassRadius(value)end,
+            slot={size="fixed",height=42,hAlign="fill"},
+        })
+        root.treasureDistanceField = D:SettingsNumericSlider(root, {
+            id="v3_treasure_distance",label="最远显示距离（米）",labelWidth=130,min=1,max=5000,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="",
+            get=function()return feature:GetProjection().renderDistance or 60000 end,
+            set=function(value)return feature.Commands:SetRenderDistance(value)end,
+            slot={size="fixed",height=42,hAlign="fill"},
+        })
+        root.treasureRadiusField:SetVisible(false);root.treasureDistanceField:SetVisible(false)
         local timerItems={{value=0,text="沉船计时：仅记录已过时间（刷新周期待实测）"}}
         for _,hours in ipairs({1,2,4,6,12,24,48})do
             timerItems[#timerItems+1]={value=hours*60,text="沉船预估周期："..hours.."小时（手动搜查后起算）"}
@@ -485,6 +500,8 @@ local function Build(parent, route, feature, kind)
 
     function root:Refresh()
         if self.treasureRefreshField then self.treasureRefreshField:Render() end
+        if self.treasureRadiusField then self.treasureRadiusField:Render() end
+        if self.treasureDistanceField then self.treasureDistanceField:Render() end
         if self.treasureTimerField then self.treasureTimerField:Render() end
         local rows, projection = Rows()
         root.controlProjection = projection -- 缓存仅属页面这一轮展示；不回写 Feature/Store。

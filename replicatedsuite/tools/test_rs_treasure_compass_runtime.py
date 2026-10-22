@@ -108,6 +108,30 @@ class TreasureCompassRuntimeTests(unittest.TestCase):
         lua.execute((ROOT / "features/life/treasure/rs_treasure_feature.lua").read_text(encoding="utf-8-sig"))
         return lua
 
+    def test_circle_settings_change_geometry_and_visibility_without_changing_observation(self):
+        self.boot().execute('''
+        local S=ReplicatedSuite
+        S.Persistence.MutateStore=function(_,_,fn)return fn()end
+        local f=H.Start();local a=f.Authority
+        a.selected.worldX=21503+100;a.selected.worldY=28672
+        assert(a:UpdateCompass());local oldGeometry=a.compassGeometry;local key=a.selected.key
+        assert(f.Commands:SetCompassRadius(6));assert(a:UpdateCompass())
+        assert(a.compass.radius==6 and a.compassGeometry~=oldGeometry and f.CompassStyle.radius==2.5)
+        for _,point in ipairs(H.points)do
+          if point.kind=='ring' then
+            local radius=math.sqrt((point.x-100)^2+(point.y-200)^2)
+            assert(math.abs(radius-6)<.000001,'draw ignores the saved circle radius')
+          end
+        end
+        assert(f.Commands:SetRenderDistance(50));assert(a.compass.status=='out_of_range' and #a.compass.points==0)
+        assert(a.selected.key==key,'distance filter changed the selected treasure')
+        assert(f.Commands:SetRenderDistance(100));assert(#a.compass.points>0,'inclusive distance limit hides target')
+        local scans=H.scans;local geometry=a.compassGeometry
+        for i=1,20 do assert(a:UpdateCompass())end
+        assert(H.scans==scans and a.compassGeometry==geometry)
+        assert(H.tasks.v3_life_treasure_position.ms==500,'visual settings accelerated observations')
+        ''')
+
     def test_final_map_consumption_clears_rows_selection_and_guidance(self):
         self.boot().execute('''
         local f=H.Start();assert(f.Authority.selected)

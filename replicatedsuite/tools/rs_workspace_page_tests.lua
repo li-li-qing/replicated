@@ -67,8 +67,8 @@ Test('partial native theme repaint is not reported as fully applied',function()
  assert(ok==false and why:find('主题已保存',1,true));assert(S.UIV3.Workspace:GetSettings().appearance=='light')
 end)
 Test('all new palette choices are reachable and applicable through the appearance page',function()
- local root,S=Boot();assert(root:SetTab('appearance'));assert(#root.rows==8,'incomplete appearance catalog')
- for _,name in ipairs({'nord','dusk','dawn','sage'})do
+ local root,S=Boot();assert(root:SetTab('appearance'));assert(#root.rows==9,'incomplete appearance catalog')
+ for _,name in ipairs({'nord','dusk','dawn','sage','legacy'})do
   assert(root:SelectId(name),'new palette missing from appearance page: '..name)
   assert(root:PerformAction(1));assert(S.UIV3.Workspace:GetSettings().appearance==name)
  end

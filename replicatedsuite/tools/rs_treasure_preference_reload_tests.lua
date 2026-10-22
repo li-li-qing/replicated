@@ -216,5 +216,29 @@ Test('ship clock validates calendar and stays out of projections and compass fra
     time={year=2023,month=2,day=29,hour=0,minute=0};f.Authority:UpdateShipClock(true)
     assert(f.Authority.shipNowMinute==nil,'invalid calendar date accepted')
 end)
+Test('circle radius and render distance survive immediate login and failed writes roll back',function()
+    local S,R,n=Boot();local f=S.Features.Treasure
+    assert(f.State.compassRadius==nil and f.State.renderDistance==nil,'new defaults changed old canonical state')
+    assert(f:GetProjection().compassRadius==2.5 and f:GetProjection().renderDistance==60000)
+    assert(f.Commands:SetCompassRadius(5.5));assert(f.Commands:SetRenderDistance(750))
+    local fresh=Boot(n.disk);local projection=fresh.Features.Treasure:GetProjection()
+    assert(projection.compassRadius==5.5 and projection.renderDistance==750,'circle settings lost on immediate cold reload')
+    n.failSave=true
+    assert(f.Commands:SetCompassRadius(8)==false);assert(f.Commands:SetRenderDistance(1000)==false)
+    assert(f:GetProjection().compassRadius==5.5 and f:GetProjection().renderDistance==750,'failed save changed circle settings')
+    n.failSave=false;local writes=n.writes
+    for _,value in ipairs({0,-1,1001,math.huge,0/0,'invalid'})do assert(f.Commands:SetCompassRadius(value)==false)end
+    for _,value in ipairs({0,-1,60001,2.5,math.huge,0/0,'invalid'})do assert(f.Commands:SetRenderDistance(value)==false)end
+    assert(n.writes==writes,'invalid input wrote preferences')
+end)
+Test('draw interval is durable before returning and a rejected save rolls it back',function()
+    local S,R,n=Boot();local f=S.Features.Treasure
+    assert(f.Commands:SetRefreshMs(17))
+    local fresh=Boot(n.disk)
+    assert(fresh.Features.Treasure:GetProjection().refreshMs==17,'draw interval lost on immediate cold reload')
+    n.failSave=true
+    assert(f.Commands:SetRefreshMs(50)==false,'failed durable write reported success')
+    assert(f:GetProjection().refreshMs==17,'failed save changed committed draw interval')
+end)
 print(string.format('TREASURE PREFERENCE RESULT %d passed / %d failed (%s)',passed,failed,_VERSION))
 assert(failed==0,'treasure preference regression failures: '..failed)

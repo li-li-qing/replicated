@@ -121,6 +121,36 @@ class SeaUiTests(unittest.TestCase):
         assert(f.Commands:StopTracking());assert(f.consumerCount==0)
         ''')
 
+    def test_circle_settings_editors_dispatch_and_reopen_the_same_committed_values(self):
+        self.boot().execute('''
+        local parent=h.Native(nil,'treasure_circle_parent',0,0,700,700)
+        local page=assert(h.S.UIV3.PageHost.factories['life.treasure'](parent,'life.treasure'))
+        assert(page:OnActivated());page:Layout(0,0,700,700)
+        assert(page.treasureControls.settings.onClick())
+        for _,v in ipairs({{page.treasureRadiusField,'5.5','compassRadius'}, {page.treasureDistanceField,'750','renderDistance'}})do
+          local field=assert(v[1],'circle setting field missing');assert(field.visible)
+          assert(field.input:BeginEditing('test'));field.input.root:SetText(v[2])
+          assert(field:ApplyDraft('test'));assert(f:GetProjection()[v[3]]==tonumber(v[2]))
+          assert(field.input.root:GetText()==v[2],'units leaked into circle editor')
+        end
+        assert(page.treasureControls.settings.onClick());assert(not page.treasureRadiusField.visible and not page.treasureDistanceField.visible)
+        assert(page.treasureControls.settings.onClick());assert(page.treasureRadiusField.input.root:GetText()=='5.5')
+        assert(page.treasureDistanceField.input.root:GetText()=='750')
+        ''')
+
+    def test_draw_interval_editor_contains_only_digits_and_commits_the_user_value(self):
+        self.boot().execute('''
+        local parent=h.Native(nil,'treasure_settings_parent',0,0,700,520)
+        local page=assert(h.S.UIV3.PageHost.factories['life.treasure'](parent,'life.treasure'))
+        assert(page:OnActivated());page:Layout(0,0,700,520)
+        assert(page.treasureControls.settings.onClick())
+        local field=page.treasureRefreshField
+        assert(field.input.root:GetText()=='33','units leaked into numeric editor')
+        assert(field.input:BeginEditing('test'));field.input.root:SetText('17')
+        assert(field:ApplyDraft('test'));assert(f:GetProjection().refreshMs==17)
+        assert(field.input.root:GetText()=='17','committed numeric value regained a suffix')
+        ''')
+
     def test_assistant_content_map_action_uses_native_arrow_and_shares_selection(self):
         self.boot().execute('''
         local parent=h.Native(nil,'treasure_widget_parent',0,0,500,340)

@@ -18,6 +18,7 @@ local P = S.Persistence
 -- 外观名称与可选目录由 Workspace 统一声明，保存校验和页面选项共用此表，避免只加色表却遗漏入口。
 local APPEARANCES={
  {id='dark',name='经典深色',detail='保留原有默认风格'},
+ {id='legacy',name='旧版配色（1.2）',detail='灰蓝渐变背景、米白文字与亮蓝提示'},
  {id='light',name='柔和浅色',detail='中性灰白底与低饱和蓝灰强调'},
  {id='nord',name='极地蓝灰',detail='冷调蓝灰深底与冰蓝强调；轻渐变'},
  {id='dusk',name='夜幕紫灰',detail='紫灰深底与柔和薰衣草强调；轻渐变'},

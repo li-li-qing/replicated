@@ -355,8 +355,7 @@ function A:GetHistoryRows(limit)
     local settingLimit = math.max(1, math.min(30, math.floor(tonumber(F:GetSettings().maxHistory) or 10)))
     limit = math.max(1, math.min(settingLimit, math.floor(tonumber(limit) or settingLimit)))
     local rows, entries = {}, F.State.history.entries
-    local first = math.max(1, #entries - limit + 1)
-    for index = #entries, first, -1 do
+    for index = 1, #entries do
         local meta = entries[index]
         rows[#rows + 1] = {
             serial = tonumber(meta.serial) or index,
@@ -371,7 +370,13 @@ function A:GetHistoryRows(limit)
         }
     end
     local volatile = self.volatileRecord
-    if type(volatile) == "table" and (#rows == 0 or tonumber(rows[1].serial) ~= tonumber(volatile.serial)) then
+    local hasVolatileSerial = false
+    if type(volatile) == "table" then
+        for _, row in ipairs(rows) do
+            if tonumber(row.serial) == tonumber(volatile.serial) then hasVolatileSerial = true; break end
+        end
+    end
+    if type(volatile) == "table" and not hasVolatileSerial then
         local lethal = type(volatile.lethal) == "table" and volatile.lethal or {}
         table.insert(rows, 1, {
             serial = tonumber(volatile.serial) or 0, clock = tostring(volatile.clock or "--:--:--"),
@@ -381,8 +386,11 @@ function A:GetHistoryRows(limit)
             eventCount = type(volatile.events) == "table" and #volatile.events or 0,
             debuffCount = type(volatile.debuffs) == "table" and #volatile.debuffs or 0, persisted = false,
         })
-        while #rows > limit do table.remove(rows) end
     end
+    -- 记录序号跨登录持续递增；时分秒会跨天回绕，time 则是会话时钟，均不能作为历史先后依据。
+    -- 先合并/去重并排序本次只读投影，再截取条数；绝不原地调整存档索引或读取记录分片。
+    table.sort(rows, function(a, b) return a.serial > b.serial end)
+    while #rows > limit do table.remove(rows) end
     return rows, self.revision
 end
 

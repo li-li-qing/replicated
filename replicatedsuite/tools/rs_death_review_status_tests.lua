@@ -122,4 +122,22 @@ Test('status-change edge bypasses a fresh empty shared Aura cache',function()
     assert(f.Authority:RequestDebuffSample(nil,true));assert(h.tasks[f.Authority.debuffSampleTask]())
     local r=f.Authority:FinalizeDeath(5060,2);assert(#r.buffs==1 and r.buffs[1].name=='New shield','fresh shared cache swallowed status event')
 end)
+Test('history orders by record serial before limiting and never by clock or session time',function()
+    local h,s,f=Boot()
+    local entries={{serial=8,clock='23:59:59',time=90000},{serial=10,clock='00:01:00',time=100},{serial=9,clock='00:00:01',time=50}}
+    f.State.history.entries=entries;f.State.history.serial=10
+    local reads,writes=0,0;local load,save=ADDON.LoadData,ADDON.SaveData
+    ADDON.LoadData=function(...)reads=reads+1;return load(...)end
+    ADDON.SaveData=function(...)writes=writes+1;return save(...)end
+    local rows=f.Authority:GetHistoryRows(2)
+    assert(rows[1].serial==10 and rows[2].serial==9,'latest records were not sorted before truncation')
+    f.Authority.volatileRecord={serial=11,clock='00:00:00',time=1,lethal={source='unsaved'}}
+    rows=f.Authority:GetHistoryRows(2)
+    assert(rows[1].serial==11 and not rows[1].persisted and rows[2].serial==10,'unsaved latest record displaced the wrong history entry')
+    f.Authority.volatileRecord={serial=10,clock='00:00:00',time=1,lethal={source='stale'}}
+    rows=f.Authority:GetHistoryRows(10)
+    assert(#rows==3 and rows[1].serial==10 and rows[1].persisted and rows[2].serial==9 and rows[3].serial==8,'stale volatile record duplicated a saved serial')
+    assert(entries[1].serial==8 and entries[2].serial==10 and entries[3].serial==9,'read model sorted the stored index in place')
+    assert(reads==0 and writes==0,'history sorting read or wrote storage')
+end)
 print('DEATH_REVIEW_STATUS: '..passed..' pass / '..failed..' fail (Native modeled)');assert(failed==0)

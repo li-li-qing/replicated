@@ -124,10 +124,10 @@ Test('appearance shortcut stays clickable in the main title bar and opens the ac
   assert(shell:Navigate('home'));S.UIV3.WorkspacePage.requestedTab='navigation'
   assert(shortcut.root.events.OnClick(shortcut.root,'LeftButton'))
   assert(shell.lastRoute=='system.workspace' and H.pages['system.workspace'].tab=='appearance','shortcut opened the wrong workspace section')
-  local page=H.pages['system.workspace'];assert(#page.rows==8 and page:SelectId('light'))
+  local page=H.pages['system.workspace'];assert(#page.rows==9 and page:SelectId('legacy'))
   assert(shortcut.root.parent==parent,'header button was reparented')
  end
- assert(H.pages['system.workspace']:PerformAction(1));assert(S.UIV3.Workspace:GetSettings().appearance=='light')
+ assert(H.pages['system.workspace']:PerformAction(1));assert(S.UIV3.Workspace:GetSettings().appearance=='legacy')
  assert(shell:Close('test'));assert(shell:Open());assert(shortcut.root.events.OnClick(shortcut.root,'LeftButton'))
  assert(H.pages['system.workspace'].tab=='appearance')
 end)

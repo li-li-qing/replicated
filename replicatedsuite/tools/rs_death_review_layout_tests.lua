@@ -152,4 +152,18 @@ Test('layout preview identities pass the real RSUI generation fence',function()
         rsui.consumedLogicalIds[tostring(entry.spec.id)]=true
     end
 end)
+Test('history picker exposes sequence order and preserves the selected record on refresh',function()
+    local h=Boot()
+    h.f.GetProjection=function(_,request)
+        return {enabled=true,health={},historyRows={{serial=10,clock='00:01:00'},{serial=9,clock='23:59:59'}},
+            timelineRows={},record={serial=request and request.serial or 10}}
+    end
+    local picker=h.page.historyPicker
+    function picker:SetItems(items)self.items=items end
+    assert(h.page:Refresh())
+    assert(h.nodes.v3_death_review_history_title.text:find('最新在前',1,true),'history order is not visible')
+    assert(picker.items[1].text:find('#10',1,true) and picker.items[2].text:find('#9',1,true),'history options hide the record sequence')
+    assert(h.page.selectedSerial==10)
+    assert(picker.spec.set(9));assert(h.page:Refresh());assert(h.page.selectedSerial==9,'refresh switched away from the selected record')
+end)
 print('DEATH_REVIEW_LAYOUT PASS: '..passed..' cases (Native and storage boundaries modeled)')

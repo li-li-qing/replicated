@@ -181,8 +181,8 @@ local function Build(parent, route)
     -- 顶部选择历史，内容区完整留给伤害与状态两列。
     local historyRow = RSUI:HorizontalBox({ id = "v3_death_review_history_row", parent = root, gap = 6,
         slot = { size = "fixed", height = 30, hAlign = "fill" } })
-    RSUI:Text({ id = "v3_death_review_history_title", parent = historyRow, text = "历史记录", fontSize = 10,
-        tone = "strong", slot = { size = "fixed", width = 62 } })
+    RSUI:Text({ id = "v3_death_review_history_title", parent = historyRow, text = "历史记录 · 最新在前", fontSize = 10,
+        tone = "strong", slot = { size = "fixed", width = 132 } })
     local history = RSUI:Dropdown({ id = "v3_death_review_history", parent = historyRow, items = {}, maxVisible = 8,
         placeholder = "暂无死亡记录", get = function() return root.selectedSerial end,
         set = function(serial)
@@ -213,7 +213,7 @@ local function Build(parent, route)
         self.rows = projection.historyRows or {}
         local options, selected = {}, nil
         for _, row in ipairs(self.rows) do
-            options[#options + 1] = { value = tonumber(row.serial), text = tostring(row.clock or "--:--:--")
+            options[#options + 1] = { value = tonumber(row.serial), text = "#" .. tostring(row.serial or "?") .. " · " .. tostring(row.clock or "--:--:--")
                 .. " · " .. tostring(row.lethalSource or "--") .. " · " .. tostring(row.lethalAbility or "--")
                 .. " · 总伤害 " .. tostring(row.totalDamage or 0) }
             if tonumber(row.serial) == tonumber(previousSerial) then selected = tonumber(row.serial) end

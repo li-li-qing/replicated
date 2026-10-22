@@ -29,9 +29,11 @@ Treasure.UpdateTopic = "v3.life.treasure.updated"
 Treasure.CompassTopic = "v3.life.treasure.compass"
 Treasure.CompassDisplayContractVersion = 2
 -- GroundCompass v2.4 的显示语义：米制地面圈、四正方位、金色寻宝箭头、进圈变金并收箭。
--- 属于显示参数而非第二份寻宝状态，不改变选择/历史配置的 canonical。
+-- 默认显示参数；用户半径/显示距离单独保存为可选偏好，不改变旧档缺字段时的 canonical。
 Treasure.CompassStyle = { radius = 2.5, groundLift = 1.6, maxDistance = 60000,
     ringSegments = 120, maxPoints = 316, labelSize = 12, labelOut = 1.16, reachedDistance = 10 }
+local COMPASS_RADIUS_MIN, COMPASS_RADIUS_MAX = 0.5, 1000
+local RENDER_DISTANCE_MIN, RENDER_DISTANCE_MAX = 1, Treasure.CompassStyle.maxDistance
 Treasure.ObservationContractVersion = 2 -- 藏宝图仍由 InventorySnapshotV3 选择物理背包；2026-10-09 加入 500ms 选中槽核对、3 秒有限补采，罗盘帧不扫描背包。
 Treasure.MapLocationContractVersion = 2 -- v2 修复旧版把 ShowWorldmapLocation 首参固定为 2 的错误假设。RU 2025-11 后签名明确要求 zoneGroupId + 全局坐标；优先使用藏宝图原生条目显式区域组，缺失时只退化到玩家当前区域组，绝不再用魔数伪造地图上下文。
 Treasure.State = { selectedKey = nil, widgetVisible = false, widgetWindow = nil }
@@ -382,12 +384,11 @@ function XA:CheckInventory()
     if self.status ~= "ready" then return self:Refresh() end -- 读取恢复后重新核对列表，不能一直挂 unavailable。
     return true
 end
-local function CompassGeometry(style, previous)
-    if previous and previous.radius == style.radius and previous.ringSegments == style.ringSegments then return previous end
+local function CompassGeometry(style, previous, radius)
+    if previous and previous.radius == radius and previous.ringSegments == style.ringSegments then return previous end
     -- 固定圈、刻度和箭头模板只在显示参数变化时计算；每帧仍使用本帧位置/方向作平移旋转。
     -- 私有会话缓存，不保存坐标事实、不改变投影来源、点数或33ms刷新频率。
-    local geometry = { radius = style.radius, ringSegments = style.ringSegments, base = {}, arrow = {} }
-    local radius = style.radius
+    local geometry = { radius = radius, ringSegments = style.ringSegments, base = {}, arrow = {} }
     local function Add(rows, x, y, kind, size)
         rows[#rows + 1] = { x = x, y = y, kind = kind, size = size or 3 }
     end
@@ -433,11 +434,13 @@ function XA:UpdateCompass()
     if distance ~= distance or distance == math.huge or distance > style.maxDistance then
         ClearCompass("coordinate_space_mismatch"); return false
     end
-    local radius, points = style.radius, self.compassWorldPoints or {}
+    -- 显示距离是用户偏好，不取代上面的坐标空间安全门，也不清除追踪目标。
+    if distance > (Treasure.State.renderDistance or style.maxDistance) then ClearCompass("out_of_range"); return false end
+    local radius, points = Treasure.State.compassRadius or style.radius, self.compassWorldPoints or {}
     self.compassWorldPoints = points -- 有界工作区：120环点＋48刻度＋137箭头＋圆心＋4方位，共310个投影点。
     local pointPool = self.compassWorldPointPool or {}
     self.compassWorldPointPool = pointPool -- 进圈裁掉活动数组的箭头时，保留有界工作表供出圈复用。
-    local geometry = CompassGeometry(style, self.compassGeometry)
+    local geometry = CompassGeometry(style, self.compassGeometry, radius)
     self.compassGeometry = geometry
     local near = distance <= radius
     local used = 0
@@ -553,6 +556,8 @@ function XA:GetProjection()
         shipRespawnMinutes=Treasure.State.shipTimers and Treasure.State.shipTimers.intervalMinutes or 0,
         shipClockAvailable=self.shipNowMinute~=nil,recheckCount=recheck,
         refreshMs = Treasure.State.refreshMs or 33, -- 只读绘制偏好，无额外Native采样。
+        compassRadius = Treasure.State.compassRadius or Treasure.CompassStyle.radius,
+        renderDistance = Treasure.State.renderDistance or Treasure.CompassStyle.maxDistance,
         observationContractVersion = Treasure.ObservationContractVersion, mapLocationContractVersion = Treasure.MapLocationContractVersion,
         inventoryBagId = self.inventoryBagId, inventoryFallbackUsed = self.inventoryFallbackUsed == true,
         lastMapActionError = self.lastMapActionError, mapOpenAttempts = self.mapOpenAttempts,
@@ -560,12 +565,21 @@ function XA:GetProjection()
         lastMapZoneGroup = self.lastMapZoneGroup, lastMapZoneSource = self.lastMapZoneSource,
     }
 end
+local function NormalizeVisualNumber(value, minimum, maximum, fallback, integer)
+    if value == nil then return nil end -- 缺字段不能补进旧 canonical。
+    local number = Number(value)
+    if not number or number ~= number or number == math.huge or number == -math.huge then number = fallback end
+    number = math.max(minimum, math.min(maximum, number))
+    return integer and math.floor(number) or number
+end
 local function NormalizeTreasureState(value)
     value = type(value) == "table" and value or {}
     return {
         selectedKey = value.selectedKey ~= nil and tostring(value.selectedKey) or nil,
         -- 旧档缺字段保持 nil，避免改变历史 canonical 指纹；投影和调度回退33ms。
         refreshMs = value.refreshMs ~= nil and math.max(1,math.min(60000,math.floor(Number(value.refreshMs) or 33))) or nil,
+        compassRadius = NormalizeVisualNumber(value.compassRadius, COMPASS_RADIUS_MIN, COMPASS_RADIUS_MAX, Treasure.CompassStyle.radius),
+        renderDistance = NormalizeVisualNumber(value.renderDistance, RENDER_DISTANCE_MIN, RENDER_DISTANCE_MAX, Treasure.CompassStyle.maxDistance, true),
         widgetVisible = value.widgetVisible == true,
         widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil,
         seaRound = NormalizeSeaRound(value.seaRound),
@@ -576,6 +590,8 @@ RegisterStore(Treasure.storeId, "v3.life.treasure", function() return NormalizeT
     value = type(value) == "table" and value or {}
     Treasure.State.selectedKey = value.selectedKey
     Treasure.State.refreshMs = NormalizeTreasureState(value).refreshMs
+    Treasure.State.compassRadius = NormalizeVisualNumber(value.compassRadius, COMPASS_RADIUS_MIN, COMPASS_RADIUS_MAX, Treasure.CompassStyle.radius)
+    Treasure.State.renderDistance = NormalizeVisualNumber(value.renderDistance, RENDER_DISTANCE_MIN, RENDER_DISTANCE_MAX, Treasure.CompassStyle.maxDistance, true)
     Treasure.State.widgetVisible = value.widgetVisible == true
     Treasure.State.widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil
     Treasure.State.seaRound = NormalizeSeaRound(value.seaRound)
@@ -639,7 +655,13 @@ end
 function Treasure:AcquireConsumer(token) if not self.enabled then return false, "寻宝功能已关闭" end return self.Demand:Acquire(token, {}, "treasure_consumer") end
 function Treasure:ReleaseConsumer(token) return self.Demand:Release(token, "treasure_consumer") end
 function Treasure:Refresh() if not self.enabled or self.consumerCount <= 0 then return true end; XA:Refresh(); XA:UpdatePosition(); return true end
-function Treasure:GetProjection() return XA:GetProjection() end
+function Treasure:GetProjection()
+    -- 关闭模块也允许查看/修改绘制偏好；页面不能等到 Enable/Initialize 才回读已保存设置。
+    local ready, readErr = LoadStore(self)
+    local projection = XA:GetProjection()
+    if ready ~= true then projection.error = projection.error or tostring(readErr or "寻宝设置读取失败") end
+    return projection
+end
 -- 统一模块诊断的冷快照：只读缓存，不扫背包/位置、不取得租约，也不复制整张点位表。
 function Treasure:GetHealth()
     local compass=XA.compass or {}
@@ -867,7 +889,37 @@ function Treasure:ShowSelectedOnMap(deferred)
     PublishFeatureUpdate(self, XA.revision, "treasure_map_opened")
     return true
 end
+local function SetVisualPreference(field, value, reason)
+    -- 精确输入/滑块提交返回前完成耐久保存与回读；失败交给同一 Store 事务回滚，不伪报已保存。
+    local ok, why = P:MutateStore(Treasure.storeId, function()
+        Treasure.State[field] = value
+        return true
+    end, { durable = true, reason = reason })
+    if ok then
+        if field == "refreshMs" and S.Scheduler and type(S.Scheduler.SetTaskInterval) == "function" then
+            S.Scheduler:SetTaskInterval(TREASURE_COMPASS_TASK, value, true)
+        end
+        -- 修改显示距离立即隐藏/恢复现有圈；重建几何只在半径改变时发生，不增加点池和观察频率。
+        if Treasure.enabled == true and (tonumber(Treasure.consumerCount) or 0) > 0 then XA:UpdateCompass() end
+        Changed(reason)
+    end
+    return ok, why
+end
 Treasure.Commands = {
+    SetCompassRadius = function(_, value)
+        value = Number(value)
+        if not value or value ~= value or value < COMPASS_RADIUS_MIN or value > COMPASS_RADIUS_MAX then
+            return false, "地面圈半径必须为0.5～1000米"
+        end
+        return SetVisualPreference("compassRadius", value, "treasure_compass_radius")
+    end,
+    SetRenderDistance = function(_, value)
+        value = Number(value)
+        if not value or value < RENDER_DISTANCE_MIN or value > RENDER_DISTANCE_MAX or value ~= math.floor(value) then
+            return false, "最远显示距离必须为1～60000米整数"
+        end
+        return SetVisualPreference("renderDistance", value, "treasure_render_distance")
+    end,
     SetShipRespawnMinutes=function(_,value)
         value=tonumber(value)
         if not value or value<0 or value>10080 or value~=math.floor(value)then return false,"预估周期须为0～10080分钟，0仅记录已过时间" end
@@ -888,12 +940,7 @@ Treasure.Commands = {
     SetRefreshMs = function(_, value)
         value=Number(value)
         if not value or value<1 or value>60000 or value~=math.floor(value) then return false,"刷新间隔必须为1～60000毫秒整数" end
-        local ok,why=PersistLifeMutation(Treasure,"treasure_refresh_ms",function(state)state.refreshMs=value;return true end)
-        if ok then
-            if S.Scheduler and type(S.Scheduler.SetTaskInterval)=="function" then S.Scheduler:SetTaskInterval(TREASURE_COMPASS_TASK,value,true) end
-            XA.revision=XA.revision+1;PublishFeatureUpdate(Treasure,XA.revision,"treasure_refresh_ms")
-        end
-        return ok,why
+        return SetVisualPreference("refreshMs",value,"treasure_refresh_ms")
     end,
     Refresh = function(_, reason) return Treasure:Refresh(reason) end,
     Select = function(_, key) return Treasure:Select(key) end,

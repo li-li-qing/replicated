@@ -185,4 +185,31 @@ T('rejected native pressed text repaint is reported and can retry the same palet
  b.SetPushedTextColor=setter;assert(S.Theme:ApplyWorkspacePalette('light'))
  assert(Equal(b.nativeTextColors.pushed,S.Constants.Color.text),'rejected state color was not retried')
 end)
+T('archived palette repaints existing and late controls and restores current dark exactly',function()
+ local S,h=Boot()
+ local function Clone(v)if type(v)~='table'then return v end;local r={};for k,x in pairs(v)do r[k]=Clone(x)end;return r end
+ local initial=Clone(S.Constants.Color);local tokens={}
+ for _,key in ipairs({'button','scrollbar','input','slider','resize','decorations'})do tokens[key]=Clone(S.UITokens[key])end
+ local textRef=S.UITokens.tone.default;local bandRef=S.Constants.Color.Gradient.card
+ local panel=h:Widget('archived_panel',true);S.Theme:AddGradientBackground(panel,'card');S.Theme:SetBackgroundOpacity(panel,.4)
+ local label=h:Widget('archived_label');S.Theme:StyleLabel(label,12,'muted');S.Theme:SetTextOpacity(label,.7)
+ local button=h:Widget('archived_button',true);S.Theme:StyleButton(button,80,24,11,false,true)
+ local solid=h:Widget('archived_solid');S.Theme:StyleButton(solid,80,24,11,false,false)
+ local count=h.drawables
+ assert(S.Theme:ApplyWorkspacePalette('legacy'),'archived palette missing')
+ assert(S.UITokens.tone.default==textRef and S.Constants.Color.Gradient.card==bandRef and h.drawables==count)
+ assert(Equal(label.style.rgba,{.66,.68,.70,.7}) and Equal(button.style.rgba,{.94,.91,.84,1}))
+ assert(Equal(panel.rsBackground.bands,{{.060,.085,.115},{.038,.054,.075},{.022,.032,.048}}))
+ assert(math.abs(panel.rsBackground.alpha-.92*.4)<.000001,'archived background alpha lost user opacity')
+ assert(Equal(button.rsButtonBgs[1].bands,{{.120,.155,.200},{.080,.105,.140},{.048,.066,.092}}))
+ assert(Equal(button.rsButtonBgs[4].bands,S.Constants.Color.Gradient.buttonDisabled))
+ assert(Equal(solid.rsButtonBgs[1].rgba,{.075,.095,.120,.97}))
+ local late=h:Widget('archived_late',true);S.Theme:AddGradientBackground(late,'card')
+ local lateText=h:Widget('archived_late_text');S.Theme:StyleLabel(lateText,12,'muted');S.Theme:SetTextOpacity(lateText,.7)
+ assert(Equal(late.rsBackground.bands,panel.rsBackground.bands) and Equal(lateText.style.rgba,label.style.rgba))
+ assert(S.Theme:ApplyWorkspacePalette('light'));assert(S.Theme:ApplyWorkspacePalette('legacy'))
+ assert(Equal(late.rsBackground.bands,panel.rsBackground.bands) and Equal(label.style.rgba,{.66,.68,.70,.7}))
+ assert(S.Theme:ApplyWorkspacePalette('dark'));assert(Equal(initial,S.Constants.Color),'current dark palette drifted')
+ for key,value in pairs(tokens)do assert(Equal(value,S.UITokens[key]),'current dark token drift: '..key)end
+end)
 print('THEME RESULT '..p..' passed / '..f..' failed');if f>0 then error('theme failures')end

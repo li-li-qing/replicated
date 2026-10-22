@@ -21,6 +21,25 @@ local function Hex(value,alpha)
  return {tonumber(value:sub(1,2),16)/255,tonumber(value:sub(3,4),16)/255,tonumber(value:sub(5,6),16)/255,alpha or 1}
 end
 local palettes={
+ -- Addon1.2.zip 的共享 Color 原值；包含背景 alpha 和三段渐变，不按新主题算法近似生成。
+ legacy={
+  panel={.025,.035,.050,.94},panelAlt={.040,.052,.068,.94},card={.035,.046,.060,.92},cardHeader={.060,.072,.088,.96},
+  border={.34,.29,.20,.90},borderSoft={.20,.24,.28,.82},text={.94,.91,.84,1},textMuted={.66,.68,.70,1},
+  accent={.84,.67,.33,1},blue={.30,.75,1,1},green={.52,.88,.30,1},yellow={1,.78,.18,1},
+  orange={1,.42,.12,1},red={.95,.22,.16,1},purple={.77,.45,.98,1},
+  accentSoft={.84,.67,.33,.30},accentLine={.90,.75,.40,.85},divider={.30,.36,.44,.55},dividerSoft={.20,.24,.30,.40},
+  headerText={.98,.94,.85,1},rowHover={.16,.21,.27,.55},rowSelected={.22,.26,.18,.60},
+  Gradient={
+   panel={{.055,.085,.125},{.032,.048,.072},{.016,.024,.040}},
+   card={{.060,.085,.115},{.038,.054,.075},{.022,.032,.048}},
+   header={{.115,.150,.195},{.075,.098,.130},{.050,.066,.092}},
+   titlebar={{.135,.170,.215},{.090,.115,.150},{.060,.078,.105}},
+   button={{.120,.155,.200},{.080,.105,.140},{.048,.066,.092}},
+   buttonHover={{.175,.215,.265},{.115,.148,.190},{.070,.095,.128}},
+   buttonPushed={{.060,.085,.118},{.090,.118,.155},{.135,.170,.215}},
+   buttonDisabled={{.060,.066,.075},{.048,.052,.060},{.036,.040,.048}},
+  },
+ },
  gold={panel={0.030,0.026,0.022,0.98},panelAlt={0.047,0.040,0.030,0.98},card={0.043,0.036,0.027,0.97},cardHeader={0.075,0.058,0.035,0.98},
   border={0.67,0.49,0.23,0.65},borderSoft={0.34,0.27,0.16,0.65},text={0.96,0.92,0.83,1},textMuted={0.72,0.68,0.59,1},accent={0.97,0.76,0.38,1},accentLine={0.97,0.75,0.36,0.75}},
  contrast={panel={0.009,0.012,0.017,1},panelAlt={0.030,0.036,0.044,1},card={0.020,0.026,0.034,1},cardHeader={0.060,0.073,0.085,1},
@@ -55,7 +74,15 @@ end
 -- （2026-10-05）参考 Nord / Catppuccin / Rosé Pine 的表面层次，按游戏小字号加深浅色文字、调亮深色状态字。
 -- 仅扩充既有 Theme 的常量色表；旧四种主题原样保留。所有新主题为轻渐变，交互/滚动/输入仍由原组件所有。
 local paletteModes={light='light',nord='dark',dusk='dark',dawn='light',sage='light'}
-local tokenPalettes={light=lightTokens};local statusPalettes={}
+local legacyTokens=Copy(tokenDefaults)
+-- 纯色按钮取自旧版 Theme:StyleButton；输入框及滑杆原色与现有深色 token 一致。
+legacyTokens.button={normal={.075,.095,.120,.97},active={.17,.14,.09,.98},hover={.14,.19,.24,.99},
+ activeHover={.26,.21,.12,.99},pushed={.045,.060,.078,.99},disabled={.050,.052,.058,.70}}
+legacyTokens.input.placeholder=Copy(palettes.legacy.textMuted)
+-- 新框架的滚动条和布局装饰在旧包没有同一组件；采用旧色表的表面、按钮中段及分隔线角色。
+legacyTokens.scrollbar={track={.025,.035,.050,1},thumb={.080,.105,.140,1}}
+legacyTokens.decorations={separator=Copy(palettes.legacy.dividerSoft),split=Copy(palettes.legacy.divider),hover=Copy(palettes.legacy.blue)}
+local tokenPalettes={light=lightTokens,legacy=legacyTokens};local statusPalettes={}
 local function Mix(a,b,amount,alpha)
  return {a[1]+(b[1]-a[1])*amount,a[2]+(b[2]-a[2])*amount,a[3]+(b[3]-a[3])*amount,alpha or 1}
 end
@@ -102,6 +129,7 @@ function T:ApplyWorkspacePalette(name)
  local themeTokens=tokenPalettes[name]
  if palette then
   Assign(C,palette)
+  if not palette.Gradient then
   for _,kind in ipairs({'panel','card','header','titlebar','button','buttonHover','buttonPushed','buttonDisabled'})do
    local base=(kind=='header' or kind=='titlebar' or kind=='buttonHover') and C.cardHeader or kind=='card' and C.card or C.panelAlt
    if themeTokens then
@@ -109,6 +137,7 @@ function T:ApplyWorkspacePalette(name)
     if buttonKind then base=themeTokens.button[buttonKind]end
    end
    C.Gradient[kind]=C.Gradient[kind] or {};Assign(C.Gradient[kind],themeTokens and LightBand(base) or Band(base,kind=='buttonHover' and 0.10 or 0.025))
+  end
   end
   if S.UITokens then
    if themeTokens then for key,value in pairs(themeTokens)do Assign(S.UITokens[key],value)end
