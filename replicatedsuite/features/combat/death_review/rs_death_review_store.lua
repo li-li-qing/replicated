@@ -194,8 +194,9 @@ local function NormalizeRecord(value, fallbackSerial)
     return out
 end
 
--- codec2 用字符串字典与定长数值行压紧记录。字符串本身只在字典出现，逗号不会污染字段；
--- 14336 Native 字节硬门保持不变。旧记录返回旧 canonical，decode 永久读取原 payload。
+-- codec3 显式保留数字精度：RU 隐式转串可能把时间写成六位科学计数法，
+-- decode 后变成整数再编码便无法命中原指纹。禁止把 number 直接交 table.concat。
+-- 字典、行结构及 14336 Native 字节硬门不变；schema1 与 codec2 继续可读。
 local function EncodeRecord(value)
     local r = NormalizeRecord(value)
     if r.schemaVersion == 1 then return r end
@@ -205,16 +206,20 @@ local function EncodeRecord(value)
         if keys[v] == nil then pool[#pool + 1] = v; keys[v] = #pool end
         return keys[v]
     end
+    local function NumericRow(values)
+        for i = 1, #values do values[i] = string.format("%.17g", values[i]) end
+        return table.concat(values, ",")
+    end
     local function Event(e)
         if e == nil then return "" end
-        return table.concat({ e.time, Ref(e.source), Ref(e.ability), e.amount, e.environmental and 1 or 0, e.abilityId or 0, Ref(e.iconPath) }, ",")
+        return NumericRow({ e.time, Ref(e.source), Ref(e.ability), e.amount, e.environmental and 1 or 0, e.abilityId or 0, Ref(e.iconPath) })
     end
     local function Status(rows)
         local result = {}
-        for _, row in ipairs(rows) do result[#result + 1] = table.concat({ row.effectId or 0, Ref(row.name), row.stack, row.timeLeft or -1, Ref(row.path) }, ",") end
+        for _, row in ipairs(rows) do result[#result + 1] = NumericRow({ row.effectId or 0, Ref(row.name), row.stack, row.timeLeft or -1, Ref(row.path) }) end
         return table.concat(result, ";")
     end
-    local out = { codec = 2, serial = r.serial, time = r.time, noticeTime = r.noticeTime, clock = r.clock,
+    local out = { codec = 3, serial = r.serial, time = r.time, noticeTime = r.noticeTime, clock = r.clock,
         windowMs = r.windowMs, totalDamage = r.totalDamage, lethal = Event(r.lethal), events = {},
         statusSnapshot = r.statusSnapshot }
     for _, row in ipairs(r.events) do out.events[#out.events + 1] = Event(row) end
@@ -229,7 +234,7 @@ end
 local function DecodeRecord(raw)
     if type(raw) ~= "table" then return nil, "death record shape invalid" end
     if raw.codec == nil then return NormalizeRecord(raw.payload or raw) end
-    if raw.codec ~= 2 or type(raw.strings) ~= "string" then return nil, "death record codec invalid" end
+    if (raw.codec ~= 2 and raw.codec ~= 3) or type(raw.strings) ~= "string" then return nil, "death record codec invalid" end
     local strings, cursor = {}, 1
     while cursor <= #raw.strings do
         local start, finish, length = raw.strings:find("^(%d+):", cursor)
@@ -279,6 +284,29 @@ local function DecodeRecord(raw)
         debuffs = Status(raw.debuffs), buffs = Status(raw.buffs), statusSnapshot = raw.statusSnapshot }
     for _, line in ipairs(Lines(raw.events, MAX_EVENTS)) do r.events[#r.events + 1] = Event(line) end
     return NormalizeRecord(r)
+end
+
+-- codec2 的原行文本就是旧 canonical 证据；重新格式化会丢掉旧数字表示。
+-- Core 已验证身份、元数据封印、decode 和预算，此处仍须全份旧指纹精确匹配。
+-- 不枚举业务数值、不重盖坏章、不用于新 codec3 或本次保存回读的容错。
+local function RebuildLegacyRecordCanonical(value, stamp, canonical, raw)
+    local meta = type(raw) == "table" and raw.__rsmeta or nil
+    if type(meta) ~= "table" or raw.codec ~= 2 or tonumber(meta.schema) ~= RECORD_SCHEMA
+        or tonumber(meta.framework) ~= 3 or tonumber(meta.transportVersion) ~= 3
+        or tonumber(meta.integrityVersion) ~= 4 or meta.owner ~= "v3.death_review" then return nil end
+    local store = P:GetStore(meta.store)
+    if store == nil or store.owner ~= "v3.death_review" or store.decode ~= DecodeRecord then return nil end
+    local allowed = { codec=true, serial=true, time=true, noticeTime=true, clock=true, windowMs=true,
+        totalDamage=true, lethal=true, events=true, statusSnapshot=true, debuffs=true, buffs=true, strings=true }
+    local candidate = {}
+    for key, field in pairs(raw) do
+        if key ~= "__rsmeta" then
+            if allowed[key] ~= true then return nil end
+            candidate[key] = DeepCopy(field)
+        end
+    end
+    if P:FingerprintCanonicalValue(store, candidate) ~= stamp then return nil end
+    return candidate
 end
 
 local function NormalizeSummary(value, fallbackSerial, fallbackStorageId)
@@ -1260,6 +1288,7 @@ function F:EnsureRecordStore(storageId)
         nativeByteBudget = 14336,
         encode = EncodeRecord,
         decode = DecodeRecord,
+        rebuildCanonicalForIntegrity = RebuildLegacyRecordCanonical,
         default = function() return nil end,
         get = function() return self.Records[sid] ~= nil and NormalizeRecord(self.Records[sid]) or nil end,
         apply = function(value) self.Records[sid] = type(value) == "table" and NormalizeRecord(value) or nil end,

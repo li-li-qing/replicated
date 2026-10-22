@@ -398,7 +398,9 @@ function A:GetRecord(serial)
     serial = tonumber(serial)
     if type(self.volatileRecord) == "table" and (serial == nil or tonumber(self.volatileRecord.serial) == serial) then
         local latestMeta = F:FindHistoryMeta(nil)
-        if serial ~= nil or latestMeta == nil or (tonumber(self.volatileRecord.time) or 0) >= (tonumber(latestMeta.time) or 0) then
+        -- time 是各次登录的会话时钟，不能跨登录比较。与历史列表一致：
+        -- 只有序号更新且尚未提交的临时记录能覆盖“最近一次”；同序号以已存档为准。
+        if latestMeta == nil or (tonumber(self.volatileRecord.serial) or 0) > (tonumber(latestMeta.serial) or 0) then
             return DeepCopy(self.volatileRecord)
         end
     end

@@ -140,4 +140,67 @@ Test('history orders by record serial before limiting and never by clock or sess
     assert(entries[1].serial==8 and entries[2].serial==10 and entries[3].serial==9,'read model sorted the stored index in place')
     assert(reads==0 and writes==0,'history sorting read or wrote storage')
 end)
+-- 2026-10-22 实机诊断：codec2 事件时间在 canonical 往返中从
+-- 4.86385e+006 变成 4863850。这里只建模隐式数字转串，Native 仍为内存替身。
+Test('numeric event and status rows survive lossy implicit number formatting',function()
+    local h,s,f,p=Boot()
+    local concat=table.concat
+    table.concat=function(values,separator,first,last)
+        local copy=Copy(values)
+        for i=first or 1,last or #copy do
+            if type(copy[i])=='number' then
+                copy[i]=string.format(copy[i]==math.floor(copy[i]) and '%.0f' or '%.6g',copy[i])
+            end
+        end
+        return concat(copy,separator,first,last)
+    end
+    local ok,err=pcall(function()
+        local at=4863850.125
+        h:Damage('spell_damage',456,at)
+        h.snapshot.buff.rows[1].data.timeLeft=1389160.125
+        assert(f.Authority:SampleDebuffs(at,true))
+        local record=f.Authority:FinalizeDeath(at+170,2)
+        assert(f.Authority.volatileRecord==nil,'scientific/decimal drift still rejects this death')
+        local _,_,cold=Boot(h.disk);local loaded=assert(cold:LoadRecord(1))
+        assert(loaded.events[1].time==at and loaded.lethal.time==at,'event timestamp lost precision')
+        assert(loaded.buffs[1].timeLeft==1389160.125,'status duration lost precision')
+        assert(loaded.totalDamage==321 and loaded.events[1].amount==321)
+        assert(loaded.events[1].abilityId==record.events[1].abilityId)
+    end)
+    table.concat=concat
+    assert(ok,err)
+end)
+Test('latest unsaved death uses serial across sessions and honors explicit history selection',function()
+    local h,s,f=Boot();h:Damage('spell_damage',456,9000000);f.Authority:FinalizeDeath(9000100,2)
+    local originalLoad=f.LoadRecord;local reads=0
+    f.LoadRecord=function(...)reads=reads+1;return originalLoad(...)end
+    f.Authority.volatileRecord={schemaVersion=2,serial=2,time=1000,totalDamage=99,
+        events={{time=1000,source='Current enemy',ability='Current hit',amount=99}}}
+    local rows,record=f.Authority:GetTimelineRows()
+    assert(record.serial==2 and rows[1].amount==99 and reads==0,'old session time selected the wrong death')
+    assert(f.Authority:GetRecord(1).serial==1,'explicit saved history selection was ignored')
+    f.Authority.volatileRecord.serial=1
+    assert(f.Authority:GetRecord(1).totalDamage==321,'stale volatile serial replaced committed history')
+end)
+Test('sealed legacy codec2 scientific rows load only with their complete original fingerprint',function()
+    local h,s,f,p=Boot();local id=assert(f:EnsureRecordStore(1));local st=p:GetStore(id)
+    local encode=st.encode
+    st.encode=function(value)
+        local raw=encode(value);raw.codec=2
+        raw.events=raw.events:gsub('^[^,]+','4.86385e+006')
+        raw.lethal=raw.lethal:gsub('^[^,]+','4.86385e+006')
+        return raw
+    end
+    assert(f:CommitDeathRecord({schemaVersion=2,time=4863850,
+        events={{time=4863850,source='Legacy enemy',ability='Legacy hit',amount=50815}}}))
+    local disk=Copy(h.disk)
+    local _,_,cold,p2=Boot(disk);local record=assert(cold:LoadRecord(1))
+    assert(record.events[1].time==4863850 and record.totalDamage==50815)
+    assert(p2:GetStore(id).writeFenced~=true,'verified codec2 was fenced')
+    local raw=assert(p:DecodePhysicalEnvelope(disk[st.resolvedKey]))
+    raw.events=raw.events:gsub(',50815,',',50816,')
+    disk[st.resolvedKey]=assert(p:EncodePhysicalEnvelope(raw))
+    local _,_,damaged,p3=Boot(disk)
+    assert(damaged:LoadRecord(1)==nil and p3:GetStore(id).writeFenced,'tampered legacy damage bypassed proof')
+end)
 print('DEATH_REVIEW_STATUS: '..passed..' pass / '..failed..' fail (Native modeled)');assert(failed==0)
