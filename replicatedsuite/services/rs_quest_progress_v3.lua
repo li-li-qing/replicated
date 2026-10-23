@@ -148,11 +148,14 @@ function P:BuildActiveIndex()
     if questHost == nil then return map, false end
     local okCount, count = S.Api:CallCapability("X2Quest:GetActiveQuestListCount", questHost, "GetActiveQuestListCount")
     if okCount ~= true then return map, false end
-    count = math.max(0, math.floor(tonumber(count) or 0))
+    count = tonumber(count)
+    if count == nil or count < 0 or count ~= math.floor(count) or count == math.huge then return map, false end
     for index = 1, count do
         local okId, qid = S.Api:CallCapability("X2Quest:GetActiveQuestType", questHost, "GetActiveQuestType", index)
         qid = okId and tonumber(qid) or nil
-        if qid ~= nil then map[qid] = index end
+        -- 缺失任一活动 ID 时，空缺不能用来证明“目标已不在任务日志”。
+        if qid == nil or qid < 1 or qid ~= math.floor(qid) or qid == math.huge then return {}, false end
+        map[qid] = index
     end
     return map, true
 end

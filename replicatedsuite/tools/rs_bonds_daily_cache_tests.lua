@@ -337,5 +337,255 @@ Test('unavailable completion or active index breaks uncommitted transition evide
             'unavailable '..kind..' did not revoke the completion candidate')
     end
 end)
+-- 交付成功事件必须独立于页面需求；无日期的历史 true 仍不能补算成今日完成。
+local function CompletionHost(options)
+    local h=Boot(options); h.quest={id=9152,active=false,done=true,reads=0}
+    X2Quest.GetActiveQuestListCount=function()
+        h.quest.reads=h.quest.reads+1
+        if h.quest.failIndex then error('index unavailable') end
+        return h.quest.active and 1 or 0
+    end
+    X2Quest.GetActiveQuestType=function(_,i)
+        if h.quest.failType then error('quest type unavailable') end
+        return h.quest.active and i==1 and h.quest.id or nil
+    end
+    X2Quest.IsCompleted=function(_,qid)
+        h.quest.reads=h.quest.reads+1
+        if h.quest.failDone then error('completion unavailable') end
+        return qid==h.quest.id and h.quest.done
+    end
+    function h:QuestEvent(status,qid) self.S.Events:Dispatch('QUEST_CONTEXT_UPDATED',qid or self.quest.id,status) end
+    function h:CompletionTask()
+        for name,task in pairs(self.S.Scheduler.tasks) do
+            if name:find('life_bonds_completion:',1,true)==1 then return task end
+        end
+    end
+    return h
+end
+Test('closed page records an explicit Taichu turn-in durably and restores it after reload',function()
+    local h=CompletionHost({day='2026-10-23',zone=21}); h:QuestEvent('completed')
+    assert(h.B.State.completedMainlandKeys['today:v1:leather:60'],'explicit turn-in was lost while UI was closed')
+    assert(h.B.State.completionDateKey==h.day); h:AssertSaved()
+    assert(h.boardCalls==0 and (h.A.resourceReads or 0)==0,'background observer read board or bag')
+    assert((h.S.Services.QuestProgressV3.consumerCount or 0)==0 and not h:CompletionTask(),'observer acquired polling demand')
+    local r=Boot({disk=h.Copy(h.disk),day=h.day,zone=21}); r:Mainland(21)
+    X2Quest.IsCompleted=function(_,qid)return qid==9152 end
+    assert(r.B:AcquireConsumer('restore_turn_in'))
+    assert(r.B:GetProjection().rows[2].statusText=='已完成','confirmed turn-in did not survive reload')
+end)
+Test('completion event resolves active quests whose historical completion was already true',function()
+    local h=CompletionHost(); h:Mainland(21); h.quest.active=true
+    assert(h.B:AcquireConsumer('active_true')); assert(h.B:GetProjection().rows[2].statusText=='进行中')
+    h.quest.active=false; h:QuestEvent('completed')
+    assert(h.B:GetProjection().rows[2].statusText=='已完成'); h:AssertSaved()
+    assert(h.B:ReleaseConsumer('active_true')); local writes=h.writes
+    h.quest.id=9044; h:QuestEvent('completed')
+    assert(h.B.State.completedMainlandKeys['today:v1:fabric:20'] and h.writes==writes+1,'closing page removed completion observer')
+end)
+Test('unrelated malformed abandoned and dialog events never prove completion',function()
+    local h=CompletionHost(); local reads,writes=h.quest.reads,h.writes
+    h:QuestEvent('updated'); h:QuestEvent('dropped'); h:QuestEvent('completed',999999)
+    h.S.Events:Dispatch('QUEST_CONTEXT_UPDATED','completed',9152)
+    h.S.Events:Dispatch('QUEST_CONTEXT_UPDATED',9152.5,'completed')
+    h.S.Events:Dispatch('COMPLETE_QUEST_CONTEXT_NPC',9152)
+    h.S.Events:Dispatch('COMPLETE_QUEST_CONTEXT_DOODAD',9152)
+    assert(next(h.B.State.completedMainlandKeys)==nil and not h:CompletionTask())
+    assert(h.quest.reads==reads and h.writes==writes,'irrelevant event caused Native reads or writes')
+end)
+Test('completion observer requires a known non-rollback server day',function()
+    local h=CompletionHost({day='unknown'}); h:QuestEvent('completed')
+    assert(next(h.B.State.completedMainlandKeys)==nil and h.writes==0 and not h:CompletionTask())
+    h.day='2026-10-07'; h:Capture(); local disk=h.Copy(h.disk)
+    for _,field in ipairs({'dailyDateKey','completionDateKey'}) do
+        local r=CompletionHost({disk=h.Copy(disk),day='2026-10-06'})
+        r.B.State[field]='2026-10-08'; r:QuestEvent('completed')
+        assert(next(r.B.State.completedMainlandKeys)==nil and r.writes==0 and not r:CompletionTask(),'clock rollback accepted')
+    end
+end)
+Test('completed event retries only its target until native facts catch up',function()
+    for _,kind in ipairs({'active','failIndex','failDone','done'}) do
+        local h=CompletionHost(); h.quest[kind]=kind~='done'; h:QuestEvent('completed')
+        local task=assert(h:CompletionTask(),'missing bounded retry for '..kind)
+        assert(next(h.B.State.completedMainlandKeys)==nil and h.boardCalls==0)
+        h.quest[kind]=kind=='done'; task.callback()
+        assert(h.B.State.completedMainlandKeys['today:v1:leather:60'] and not h:CompletionTask()); h:AssertSaved()
+    end
+end)
+Test('partially unreadable active index cannot confirm an apparently inactive quest',function()
+    local h=CompletionHost(); h.quest.active,h.quest.failType=true,true; h:QuestEvent('completed')
+    assert(next(h.B.State.completedMainlandKeys)==nil,'partial active index was mistaken for no active quest')
+    assert(h:CompletionTask()); h.quest.active,h.quest.failType=false,false; h:CompletionTask().callback()
+    assert(h.B.State.completedMainlandKeys['today:v1:leather:60'])
+end)
+Test('duplicate completion events do not resave or extend a bounded retry',function()
+    local h=CompletionHost(); h:QuestEvent('completed'); local writes=h.writes
+    h:QuestEvent('completed'); assert(h.writes==writes and h.B.State.completedMainlandKeys['today:v1:leather:60'])
+    local r=CompletionHost(); r.quest.active=true; r:QuestEvent('completed'); local task=assert(r:CompletionTask())
+    r:QuestEvent('completed'); assert(r:CompletionTask()==task,'duplicate reset the attempt budget')
+    local count=0
+    while r:CompletionTask() do count=count+1; assert(count<=3,'unbounded completion polling'); r:CompletionTask().callback() end
+    assert(count==3 and next(r.B.State.completedMainlandKeys)==nil and r.boardCalls==0)
+end)
+Test('started and dropped cancel pending proof and started revokes a prior same-day completion',function()
+    for _,status in ipairs({'started','dropped'}) do
+        local h=CompletionHost(); h.quest.active=true; h:QuestEvent('completed'); local task=assert(h:CompletionTask())
+        h:QuestEvent(status); h.quest.active=false; task.callback()
+        assert(not h:CompletionTask() and next(h.B.State.completedMainlandKeys)==nil,'cancelled candidate wrote proof')
+    end
+    local h=CompletionHost(); h:QuestEvent('completed'); assert(h.B.State.completedMainlandKeys['today:v1:leather:60'])
+    h:QuestEvent('started'); h:QuestEvent('dropped')
+    assert(not h.B.State.completedMainlandKeys['today:v1:leather:60'],'reaccepted then abandoned quest retained an old proof')
+    h:AssertSaved()
+end)
+Test('late retry cannot move yesterday turn-in into today or survive observer shutdown',function()
+    for _,kind in ipairs({'midnight','unknown','disable','generation','reload'}) do
+        local h=CompletionHost(); h.quest.active=true; h:QuestEvent('completed'); local task=assert(h:CompletionTask())
+        if kind=='midnight' then h.day='2026-10-08'
+        elseif kind=='unknown' then h.day='unknown'
+        elseif kind=='disable' then assert(h.B:Disable()); assert(h.B:Enable())
+        elseif kind=='generation' then h.S.Generation=h.S.Generation+1
+        else ReplicatedSuite={} end
+        h.quest.active=false; task.callback()
+        assert(next(h.B.State.completedMainlandKeys)==nil and h.writes==0,'late '..kind..' callback saved a completion')
+    end
+end)
+Test('failed completion commit rolls back proof and can recover within its retry budget',function()
+    local h=CompletionHost(); h.failSave=true; h:QuestEvent('completed')
+    assert(next(h.B.State.completedMainlandKeys)==nil,'failed disk write left a completed in-memory proof')
+    local task=assert(h:CompletionTask()); h.failSave=false; task.callback()
+    assert(h.B.State.completedMainlandKeys['today:v1:leather:60'] and not h:CompletionTask()); h:AssertSaved()
+    local r=CompletionHost(); local store=r:Store(); store.writeFenced=true; store.writeFenceReason='integrity_failed'
+    r:QuestEvent('completed'); assert(store.writeFenced and r.writes==0 and next(r.B.State.completedMainlandKeys)==nil)
+end)
+Test('cancellation during a native read cannot commit or reschedule the old candidate',function()
+    for _,kind in ipairs({'dropped','disable','generation'}) do
+        local h=CompletionHost(); X2Quest.IsCompleted=function()
+            if kind=='dropped' then h:QuestEvent('dropped')
+            elseif kind=='disable' then assert(h.B:Disable())
+            else h.S.Generation=h.S.Generation+1 end
+            return true
+        end
+        h:QuestEvent('completed')
+        assert(next(h.B.State.completedMainlandKeys)==nil and h.writes==0 and not h:CompletionTask(),
+            'candidate cancelled during Native read still wrote proof: '..kind)
+    end
+end)
+Test('unverified completion readback cannot publish a confirmed proof',function()
+    local h=CompletionHost(); local save=ADDON.SaveData
+    ADDON.SaveData=function(self,key,value) local ok=save(self,key,value); h.disk[key]=nil; return ok end
+    h:QuestEvent('completed'); ADDON.SaveData=save
+    assert(next(h.B.State.completedMainlandKeys)==nil and h.B:DescribeDailyCache().completionEvents.confirmed==0,
+        'unverified completion save was published as confirmed')
+end)
+Test('failed reaccept revocation stays pending and cannot display or restore the old proof',function()
+    for _,uiOpen in ipairs({false,true}) do
+        local h=CompletionHost(); h:QuestEvent('completed')
+        if uiOpen then h:Mainland(21); assert(h.B:AcquireConsumer('revoke_failed')) end
+        h.failSave=true; h:QuestEvent('started'); local task=assert(h:CompletionTask(),'failed revocation has no retry')
+        if uiOpen then assert(h.B:GetProjection().rows[2].statusText=='待确认','failed revocation still displays completed') end
+        h:QuestEvent('started'); assert(h:CompletionTask()==task,'duplicate start reset revoke retry budget')
+        h.failSave=false; h:QuestEvent('dropped')
+        assert(h.B.State.completedMainlandKeys['today:v1:leather:60']==nil and not h:CompletionTask()); h:AssertSaved()
+        local r=Boot({disk=h.Copy(h.disk)}); r:Mainland(21); X2Quest.IsCompleted=function()return true end
+        assert(r.B:AcquireConsumer('revoked_reload')); assert(r.B:GetProjection().rows[2].statusText=='待确认')
+    end
+end)
+Test('explicit abandonment also clears the older active-incomplete observation',function()
+    local h=CompletionHost(); h:Mainland(21); h.quest.active,h.quest.done=true,false
+    assert(h.B:AcquireConsumer('drop_old_observation')); h.quest.active,h.quest.done=false,true
+    h:QuestEvent('dropped'); assert(h.S.Services.QuestProgressV3:Refresh('history_after_drop'))
+    assert(h.B:GetProjection().rows[2].statusText=='待确认' and next(h.B.State.completedMainlandKeys)==nil,
+        'old transition path ignored an explicit drop event')
+end)
+Test('server day is revalidated after native reads before mutating completion state',function()
+    local h=CompletionHost(); X2Quest.IsCompleted=function()
+        h.day='2026-10-08'; h.B.State.completionDateKey=h.day
+        h.B.State.completedMainlandKeys={['today:v1:fabric:20']=true}
+        return true
+    end
+    h:QuestEvent('completed')
+    assert(h.writes==0 and h.B.State.completionDateKey==h.day and h.B.State.completedMainlandKeys['today:v1:fabric:20'],
+        'yesterday candidate overwrote new-day completion state')
+    assert(not h.B.State.completedMainlandKeys['today:v1:leather:60'] and not h:CompletionTask())
+end)
+Test('Auroria event uses canonical token keys and observer diagnostics are detached',function()
+    local h=CompletionHost(); h.quest.id=h.S.Constants.AuroriaBondQuestByTokenQuantity.prince_purse[30]
+    h:QuestEvent('completed')
+    assert(h.B.State.completedMainlandKeys['today:v1:auroria:prince_purse:30'],'alias replaced canonical token')
+    assert(not h.B.State.completedMainlandKeys['today:v1:auroria:golden_bag:30'])
+    local d=assert(h.B:DescribeDailyCache().completionEvents); assert(d.subscribed and d.confirmed==1 and d.pendingCount==0)
+    d.last.reason='mutated'; assert(h.B:DescribeDailyCache().completionEvents.last.reason~='mutated')
+end)
+-- 覆盖当前地区目录与全部规范债券变体；地区不参与 QuestId，但必须验证板文本、完成 key 和冷载投影一致。
+local matrixHost=Boot()
+local matrixZones=matrixHost.Copy(matrixHost.S.GameIds.Zone.ById)
+local matrixVariants={mainland={},auroria={}}
+local function AddMatrixVariants(family,material,board,label,map)
+    local quantities={}; for quantity in pairs(map) do quantities[#quantities+1]=quantity end; table.sort(quantities)
+    for _,quantity in ipairs(quantities) do
+        matrixVariants[family][#matrixVariants[family]+1]={material=material,quantity=quantity,questId=map[quantity],board=board,label=label,
+            key='today:v1:'..(family=='auroria' and 'auroria:' or '')..material..':'..tostring(quantity)}
+    end
+end
+for board,material in ipairs({'fabric','leather','lumber','iron'}) do
+    AddMatrixVariants('mainland',material,board,nil,matrixHost.S.Constants.BondQuestByMaterialQuantity[material])
+end
+for _,entry in ipairs({
+    {'prince_purse',5,'Prince Coinpurses'},{'prince_crate',5,'Prince Crates'},
+    {'queen_purse',6,'Queen Coinpurses'},{'queen_crate',6,'Queen Crates'},
+    {'ancestor_purse',7,'Ancestor Coinpurses'},{'ancestor_crate',7,'Ancestor Crates'},
+}) do AddMatrixVariants('auroria',entry[1],entry[2],entry[3],matrixHost.S.Constants.AuroriaBondQuestByTokenQuantity[entry[1]]) end
+Test('region matrix covers every canonical quest once without alias collisions',function()
+    local ids={}
+    assert(#matrixVariants.mainland==12 and #matrixVariants.auroria==12,'canonical bond variant coverage changed')
+    for _,variants in pairs(matrixVariants) do for _,v in ipairs(variants) do
+        assert(not ids[v.questId],'different completion keys share a quest id'); ids[v.questId]=v.key
+    end end
+end)
+local matrixZoneIds={}; for zoneId,zone in pairs(matrixZones) do
+    assert(zone.continentKey=='west' or zone.continentKey=='east' or zone.continentKey=='auroria','unclassified bond location')
+    matrixZoneIds[#matrixZoneIds+1]=zoneId
+end
+table.sort(matrixZoneIds)
+local matrixCombinations=0
+for _,zoneId in ipairs(matrixZoneIds) do
+    local zone=matrixZones[zoneId]
+    Test('all bond variants persist and expire in '..zone.nameZh..' ('..tostring(zoneId)..')',function()
+        local family=zone.continentKey=='auroria' and 'auroria' or 'mainland'
+        local variants=matrixVariants[family]
+        local h=CompletionHost({day='2026-10-23',zone=zoneId}); local expected,boards={},{}
+        for _,v in ipairs(variants) do
+            expected[v.questId]=v
+            boards[v.board]=boards[v.board] or {faction=zone.continentKey=='east' and 'Haranya' or 'Nuia',contents={}}
+            local contents=boards[v.board].contents
+            contents[#contents+1]=zone.nameZh..': '..(v.label and v.label..' ' or '')..tostring(v.quantity)
+        end
+        -- 模拟历史 IsCompleted 全程为 true，不借用 active && false 跃迁。
+        X2Quest.IsCompleted=function(_,qid)return expected[qid]~=nil end
+        for _,v in ipairs(variants) do
+            h:QuestEvent('completed',v.questId)
+            assert(h.B.State.completedMainlandKeys[v.key],'missing completion '..v.key)
+        end
+        assert(h.writes==#variants and h.boardCalls==0 and (h.A.resourceReads or 0)==0,'background confirmation did unrelated work')
+        assert(h.S.Services.QuestProgressV3.consumerCount==0 and not h:CompletionTask()); h:AssertSaved()
+        local r=Boot({disk=h.Copy(h.disk),day=h.day,zone=zoneId}); r.boards=h.Copy(boards)
+        X2Quest.IsCompleted=function(_,qid)return expected[qid]~=nil end
+        assert(r.B:AcquireConsumer('region_matrix'))
+        local rows=r.B:GetProjection().rows; assert(#rows==#variants,'reload lost region board rows')
+        for _,row in ipairs(rows) do
+            local v=assert(expected[row.questId],'wrong regional quest id')
+            assert(row.completed and row.statusText=='已完成' and row.materialKey==v.material and row.quantity==v.quantity,
+                'regional completion does not match canonical quest')
+            assert(row.continentKey==zone.continentKey and (family=='auroria' or row.regionZoneId==zoneId),'wrong region classification')
+        end
+        r:AssertSaved()
+        r.day='2026-10-24'; assert(r.A:Refresh('manual'))
+        assert(next(r.B.State.completedMainlandKeys)==nil,'yesterday proof survived a new server day')
+        rows=r.B:GetProjection().rows; assert(#rows==#variants)
+        for _,row in ipairs(rows) do assert(not row.completed and row.statusText=='待确认','history alone relatched the next day') end
+        matrixCombinations=matrixCombinations+#variants
+    end)
+end
+print(string.format('BONDS_REGION_MATRIX: %d regions / %d quest-region combinations',#matrixZoneIds,matrixCombinations))
 print(string.format('BONDS_DAILY_CACHE: %d passed / %d failed (runtime=%s)',passed,failed,_VERSION))
 if failed>0 then os.exit(1) end

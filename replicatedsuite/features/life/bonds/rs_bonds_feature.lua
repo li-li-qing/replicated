@@ -617,6 +617,191 @@ local function BondCompletionKey(materialKey, quantity, continentKey)
     if continentKey == "auroria" then return "auroria:" .. suffix end
     return suffix
 end
+
+-- IsCompleted 只有无日期的历史标记；关闭页面时也必须保留当天交付事件这一份证据。
+-- 客户端 quest_context.lua 的 QUEST_CONTEXT_UPDATED(qtype, status) 区分 completed/started/dropped：
+-- https://github.com/Noviern/aagamedump/blob/05b989aa52678b7332502c44b7fa37c63e133ab5/scriptsbin/x2ui/questcontext/quest_context.lua
+-- 事件仅作候选，还须核对同一服务器日、完整活动索引及 Native 完成标记，不能把 NPC 交互当成交付。
+-- 独立 owner 不随页面 Demand 释放；仅匹配静态债券 ID 后读取任务事实，不启动背包/居民板轮询。
+local BOND_COMPLETION_KEYS = {}
+for material, quantities in pairs(S.Constants and S.Constants.BondQuestByMaterialQuantity or {}) do
+    for quantity, qid in pairs(quantities) do
+        BOND_COMPLETION_KEYS[tonumber(qid)] = "today:v1:" .. BondCompletionKey(material, quantity)
+    end
+end
+for token, quantities in pairs(S.Constants and S.Constants.AuroriaBondQuestByTokenQuantity or {}) do
+    if AURORIA_BOND_LABEL[token] ~= nil then -- 排除 legacy alias，避免覆盖规范完成 key。
+        for quantity, qid in pairs(quantities) do
+            BOND_COMPLETION_KEYS[tonumber(qid)] = "today:v1:" .. BondCompletionKey(token, quantity, "auroria")
+        end
+    end
+end
+local BONDS_COMPLETION_DELAYS = { 200, 750, 1500 }
+local completionOwner, completionPending = { Id = Bonds.Id }, {}
+local completionRevocations = {} -- 撤销写入失败时，运行期也不能继续展示旧 proof。
+local completionEvents = { received = 0, confirmed = 0 }
+local completionEpoch = 0
+local function CompletionTaskName(qid) return "life_bonds_completion:" .. tostring(qid) end
+local function ClearCompletionCandidate(qid)
+    completionPending[qid] = nil
+    if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(CompletionTaskName(qid)) end
+end
+local function CompletionCandidateCurrent(candidate)
+    if completionPending[candidate.questId] ~= candidate then return false end
+    if ReplicatedSuite ~= S or S.Generation ~= candidate.generation or completionEpoch ~= candidate.epoch or Bonds.enabled ~= true then
+        ClearCompletionCandidate(candidate.questId)
+        return false
+    end
+    return true
+end
+local function CompletionServerDay()
+    local date = S.Utils and type(S.Utils.ServerDateKey) == "function" and tostring(S.Utils.ServerDateKey()) or "unknown"
+    if not string.match(date, "^%d%d%d%d%-%d%d%-%d%d$") then return nil, "server_date_unknown" end
+    local state = Bonds.State
+    local latest = state.dailyDateKey
+    if state.completionDateKey and (latest == nil or state.completionDateKey > latest) then latest = state.completionDateKey end
+    if latest and date < latest then return nil, "server_date_rollback" end
+    return date
+end
+local function RefreshCompletionProjection()
+    local progress = S.Services and S.Services.QuestProgressV3
+    if (tonumber(Bonds.consumerCount) or 0) > 0 and progress and type(progress.RequestRefresh) == "function" then
+        -- 先刷新共享活动索引，不能拿旧 activeIndex 撤销刚确认的完成记录。
+        progress:RequestRefresh(200, "bonds_completion_event")
+    end
+end
+local TryCompletionCandidate
+TryCompletionCandidate = function(candidate)
+    local qid = candidate.questId
+    if not CompletionCandidateCurrent(candidate) then return true end
+    candidate.attempt = candidate.attempt + 1
+    local revoke = candidate.action == "revoke"
+    local last = { questId = qid, eventDateKey = candidate.dateKey, action = candidate.action, attempt = candidate.attempt }
+    completionEvents.last = last
+    local loaded = LoadStore(Bonds)
+    local date, dateErr = CompletionServerDay()
+    if loaded ~= true or (not revoke and date ~= candidate.dateKey) then
+        last.reason = loaded ~= true and "store_unavailable" or (dateErr or "server_day_changed")
+        ClearCompletionCandidate(qid)
+        return true
+    end
+    local key = BOND_COMPLETION_KEYS[qid]
+    local progress = S.Services and S.Services.QuestProgressV3
+    local fact
+    if not revoke and progress and type(progress.BuildActiveIndex) == "function" and type(progress.GetQuestCompletionFact) == "function" then
+        local activeIndex, activeAvailable = progress:BuildActiveIndex()
+        fact = progress:GetQuestCompletionFact(qid, activeIndex, activeAvailable)
+    end
+    last.fact = Copy(fact)
+    -- Native getter 可能同步触发取消/重接/停用；回读结束后重验候选身份及服务器日，再允许提交。
+    if not CompletionCandidateCurrent(candidate) then return true end
+    if not revoke then
+        date, dateErr = CompletionServerDay()
+        if date ~= candidate.dateKey then
+            last.reason = dateErr or "server_day_changed"
+            ClearCompletionCandidate(qid)
+            return true
+        end
+    end
+    if not CompletionCandidateCurrent(candidate) then return true end
+    if revoke or (fact and fact.activeAvailable == true and fact.active ~= true and fact.completedReadOk == true and fact.completed == true) then
+        local saved, saveErr = P:MutateStore(Bonds.storeId, function()
+            if revoke then
+                if Bonds.State.completionDateKey == candidate.dateKey then Bonds.State.completedMainlandKeys[key] = nil end
+            else
+                if Bonds.State.completionDateKey ~= date then
+                    Bonds.State.completionDateKey, Bonds.State.completedMainlandKeys = date, {}
+                end
+                Bonds.State.completedMainlandKeys[key] = true
+            end
+            return true
+        end, { durable = true, reason = revoke and "bonds_quest_reaccepted_event" or "bonds_quest_completed_event" })
+        if saved == true then
+            last.reason = revoke and "revoked" or "confirmed"
+            if not revoke then
+                completionEvents.confirmed = completionEvents.confirmed + 1
+                completionRevocations[qid] = nil
+            end
+            ClearCompletionCandidate(qid)
+            if BA.completionObservations then BA.completionObservations[qid] = nil end
+            RefreshCompletionProjection()
+            return true
+        end
+        last.reason, last.error = revoke and "revoke_failed" or "save_failed", tostring(saveErr or "unknown")
+    else
+        last.reason = "native_evidence_pending"
+    end
+    if not CompletionCandidateCurrent(candidate) then return true end
+    local delay = BONDS_COMPLETION_DELAYS[candidate.attempt]
+    if delay and S.Scheduler and type(S.Scheduler.AddOneShot) == "function" then
+        local name = CompletionTaskName(qid)
+        local added = S.Scheduler:AddOneShot(name, delay, function() return TryCompletionCandidate(candidate) end, completionOwner, "P2", 1)
+        if added == true then
+            if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(name, Bonds.Id, false) end
+            return true
+        end
+    end
+    last.exhausted = true
+    ClearCompletionCandidate(qid)
+    return true
+end
+function Bonds:StartCompletionObserver()
+    if self.completionSubscribed == true then return true end
+    completionEpoch = completionEpoch + 1
+    local epoch, generation = completionEpoch, S.Generation
+    if S.Events and type(S.Events.SubscribeOptional) == "function" then
+        self.completionSubscribed = S.Events:SubscribeOptional("QUEST_CONTEXT_UPDATED", completionOwner, function(_, qid, status)
+            if ReplicatedSuite ~= S or S.Generation ~= generation or completionEpoch ~= epoch or Bonds.enabled ~= true then return end
+            qid = tonumber(qid)
+            local key = qid and BOND_COMPLETION_KEYS[qid]
+            if key == nil or (status ~= "completed" and status ~= "started" and status ~= "dropped") then return end
+            if status ~= "completed" then
+                local pending = completionPending[qid]
+                if BA.completionObservations then BA.completionObservations[qid] = nil end
+                if pending and pending.action == "revoke" then
+                    if status == "started" then return end
+                    -- 放弃不能取消尚未落盘的撤销；恢复存储后在此事件立即重试，仍共用原预算。
+                    if S.Scheduler then S.Scheduler:RemoveTask(CompletionTaskName(qid)) end
+                    return TryCompletionCandidate(pending)
+                end
+                ClearCompletionCandidate(qid)
+                -- 重新接取后即便随后放弃，也不能继续沿用该任务之前的今日完成证据。
+                if status == "started" and Bonds.State.completedMainlandKeys[key] == true then
+                    completionRevocations[qid] = true
+                    local candidate = { questId = qid, dateKey = Bonds.State.completionDateKey,
+                        generation = generation, epoch = epoch, attempt = 0, action = "revoke" }
+                    completionPending[qid] = candidate
+                    TryCompletionCandidate(candidate)
+                end
+                RefreshCompletionProjection()
+                return
+            end
+            completionEvents.received = completionEvents.received + 1
+            if completionPending[qid] then
+                if completionPending[qid].action == "completed" then return end -- 重复事件不重置有限重试预算。
+                ClearCompletionCandidate(qid)
+            end
+            local loaded = LoadStore(Bonds)
+            local date, dateErr = CompletionServerDay()
+            if loaded ~= true or date == nil then
+                completionEvents.last = { questId = qid, reason = loaded ~= true and "store_unavailable" or dateErr }
+                return
+            end
+            if Bonds.State.completionDateKey == date and Bonds.State.completedMainlandKeys[key] == true and not completionRevocations[qid] then return end
+            local candidate = { questId = qid, dateKey = date, generation = generation, epoch = epoch, attempt = 0, action = "completed" }
+            completionPending[qid] = candidate
+            return TryCompletionCandidate(candidate)
+        end) == true
+    end
+    return true -- 可选事件注册失败仍保留原有查询路径，诊断暴露 subscribed=false。
+end
+function Bonds:StopCompletionObserver()
+    completionEpoch = completionEpoch + 1
+    if S.Events and type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(completionOwner) end
+    for qid in pairs(completionPending) do ClearCompletionCandidate(qid) end
+    self.completionSubscribed = false
+    return true
+end
 local function BondContinentKey(line)
     if type(line) ~= "table" then return nil end
     local value = line.continentKey or line.continent_key or line.continentId or line.continent_id or line.continent
@@ -861,15 +1046,17 @@ function BA:Refresh(reason)
                 completionDirty = true
             end
         elseif dateReady and fact.activeAvailable and fact.completedReadOk and fact.completed == true
-            and observation.sawActiveIncomplete == true and state.completedMainlandKeys[verifiedKey] ~= true then
+            and observation.sawActiveIncomplete == true and (state.completedMainlandKeys[verifiedKey] ~= true or completionRevocations[questId]) then
             state.completedMainlandKeys[verifiedKey], Bonds.State.completedMainlandKeys[verifiedKey] = true, true
+            completionRevocations[questId] = nil
+            if completionPending[questId] and completionPending[questId].action == "revoke" then ClearCompletionCandidate(questId) end
             completionDirty = true
         end
         if observation and fact.active ~= true then observation.sawActiveIncomplete = false end
         local status, reason = "UNKNOWN", "completion_unavailable"
         if fact.active then
             status, reason = fact.ready == true and "READY_TO_TURN_IN" or "IN_PROGRESS", "active_quest"
-        elseif state.completedMainlandKeys[verifiedKey] == true then
+        elseif state.completedMainlandKeys[verifiedKey] == true and not completionRevocations[questId] then
             status, reason = "COMPLETED", "observed_today"
         elseif fact.activeAvailable and fact.completedReadOk and fact.completed == false then
             status, reason = "NOT_ACCEPTED", "native_incomplete"
@@ -1283,8 +1470,16 @@ function Bonds:ReconcileDemand(_, before, after)
     end
     return true
 end
-function Bonds:Enable() self.enabled = true; return true end
-function Bonds:Disable(reason) local ok, err = self.Demand:Clear(reason or "bonds_disable"); if ok ~= true then return false, err end; self.enabled = false; return true end
+function Bonds:Enable()
+    self.enabled = true
+    return self:StartCompletionObserver()
+end
+function Bonds:Disable(reason)
+    local ok, err = self.Demand:Clear(reason or "bonds_disable")
+    if ok ~= true then return false, err end
+    self.enabled = false
+    return self:StopCompletionObserver()
+end
 function Bonds:AcquireConsumer(token) if not self.enabled then return false, "居民板功能已关闭" end return self.Demand:Acquire(token, {}, "bonds_consumer") end
 function Bonds:ReleaseConsumer(token) return self.Demand:Release(token, "bonds_consumer") end
 function Bonds:Refresh(reason)
@@ -1343,6 +1538,11 @@ function Bonds:DescribeDailyCache()
         refreshPatch = self.RefreshPatch, currentLocation = Copy(BA.currentLocation), probeHistory = Copy(BA.probeHistory),
         filteredRowCount = tonumber(BA.filteredRowCount) or 0, filterHint = BA.filterHint,
         completionEvidence = Copy(BA.completionEvidence),
+        completionEvents = { patch = "bonds-completion-event-1", subscribed = self.completionSubscribed == true,
+            nativeRegistered = S.Events ~= nil and S.Events.registered ~= nil and S.Events.registered.QUEST_CONTEXT_UPDATED == true,
+            received = completionEvents.received,
+            confirmed = completionEvents.confirmed, last = Copy(completionEvents.last),
+            pendingCount = (function() local n = 0 for _ in pairs(completionPending) do n = n + 1 end return n end)() },
         coverage = coverage, persistence = persistence, lastSaveIntent = Copy(BA.lastSaveIntent),
         recovery = { status = self.locationRecoveryStatus or "idle", attempt = tonumber(self.locationAttempt) or 0,
             maxAttempts = #BONDS_LOCATION_DELAYS, reason = self.locationReason },
