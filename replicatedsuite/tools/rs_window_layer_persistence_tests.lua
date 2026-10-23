@@ -50,6 +50,7 @@ local function ShellHost(initialTopmost)
             S.testWindowingSpec = spec
             return {
                 id=spec.id, dragHandle=spec.dragHandle.root or spec.dragHandle,
+                CancelInteraction=function()return true end, -- 本套件只替换 Windowing；保留隐藏时的完整控制器契约。
                 LayoutHandles=function()return true end, BringToFront=function()return true end, IsResizing=function()return false end,
                 IsInteracting=function()return false end, SetLocked=function(_,v)return true,v,true end, SetOpacity=function(_,v)return true,v,true end,
             }

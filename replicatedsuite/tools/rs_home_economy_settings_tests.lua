@@ -12,8 +12,14 @@ local function Test(name,fn)
  local ok,err=xpcall(fn,debug.traceback)
  if ok then pass=pass+1;print('PASS home settings '..name)else fail=fail+1;print('FAIL home settings '..name..': '..tostring(err))end
 end
-local function Boot()
- local S,p,n,c,enabled,h=Host({visible={'trade','bonds'},enabled={life_trade=true,life_bonds=true,life_daily_stats=true}})
+local function Boot(disk)
+ local S,p,n,c,enabled,h=Host({disk=disk,visible={'trade','bonds'},enabled={life_trade=true,life_bonds=true,life_daily_stats=true}})
+ -- 使用真实窗口规范化与持久化，顶层窗口绘制仍由下方叶节点替身提供。
+ local proxy=S.RSUI.FloatingSurface
+ S.UI.CreateWindowShell=S.UI.CreateWindowShell or function()return nil,'native shell not requested in storage setup'end
+ dofile('ui/framework/rs_ui_floating_surface.lua')
+ for key,value in pairs(S.RSUI.FloatingSurface)do proxy[key]=value end
+ S.RSUI.FloatingSurface=proxy;dofile('presentation/v3/rs_v3_aux_window_store.lua')
  local surfaces={}
  S.RSUI.FloatingSurface.Create=function(_,spec)
   local height=spec.statePolicy.defaultHeight
@@ -151,6 +157,8 @@ Test('real FloatingSurface and WindowShell build, show, minimize and dispose the
  S.Api.GetUiMetrics=function()return {logicalWidth=1280,logicalHeight=768,screenWidth=1280,screenHeight=768,uiScale=1,effectiveUiScale=1,source='test'}end
  S.NativeObjectFactory={CreateWindow=function(_,id)
   local native=h.Native(UIParent,id,0,0,1,1)
+  function native:GetEffectiveOffset()return self.x,self.y end
+  function native:GetEffectiveExtent()return self.width,self.height end
   function native:SetUILayer(value)self.layer=value;return true end
   function native:SetCloseOnEscape()return true end
   function native:SetWindowModal()return true end
@@ -184,6 +192,30 @@ Test('real FloatingSurface and WindowShell build, show, minimize and dispose the
  for _,control in pairs(bonds.controls)do local ok,why=h:VisibleRect(control);assert(ok,control.id..':'..tostring(why))end
  assert(p:OnDispose());assert(not panel.surface.visible)
  assert(c.quotes==0 and c.enabledWrites==0)
+end)
+Test('settings reopen consumes the latest shared layout rather than an instance-local copy',function()
+ local S,p,n,c,e,s,state,bond,Settings=Boot()
+ assert(n.v3_home_trade_settings.onClick());local panel=Settings('trade');local aux=S.UIV3.AuxWindowStoreV3
+ local value=aux:GetWindowState('trade_settings');value.x,value.y,value.userMoved=640,210,true
+ value.coordinateSpace='logical-free-v2'
+ assert(aux:SetWindowState('trade_settings',value,'geometry'))
+ assert(panel.surface:Close());assert(n.v3_home_trade_settings.onClick())
+ assert(panel.surface.spec.getState().x==640,'settings reopened from stale instance-local geometry')
+end)
+Test('both settings forms retain committed placement across reopen and cold reload',function()
+ local S,p,n,c,e,s,state,bond,Settings,h=Boot()
+ for index,key in ipairs({'trade','bonds'})do
+  assert(n['v3_home_'..key..'_settings'].onClick());local panel=Settings(key);local spec=panel.surface.spec
+  assert(spec.boundaryMode=='free','settings bypass shared drag containment')
+  local value=spec.getState();value.x,value.y,value.userMoved=300+index,200+index,true;value.coordinateSpace='logical-free-v2'
+  assert(spec.setState(value,'geometry'));assert(spec.persist('geometry'))
+  assert(panel.surface:Close());assert(n['v3_home_'..key..'_settings'].onClick());assert(spec.getState().x==300+index)
+ end
+ local FS,fp,fn,fc,fe,fs,fstate,fbond,FreshSettings=Boot(h.Copy(h.disk))
+ for index,key in ipairs({'trade','bonds'})do
+  assert(fn['v3_home_'..key..'_settings'].onClick());local value=FreshSettings(key).surface.spec.getState()
+  assert(value.x==300+index and value.y==200+index and value.userMoved)
+ end
 end)
 print('HOME ECONOMY SETTINGS: '..pass..' passed, '..fail..' failed')
 if fail>0 then os.exit(1)end

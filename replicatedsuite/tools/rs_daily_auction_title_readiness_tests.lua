@@ -298,15 +298,53 @@ end
 Test('user screenshot and independently verified neighboring recipes retain exact material counts', function()
     local h = Boot(); h.ids = {}; h.titles = {}
     -- 中文维护注释：数量直接来自截图与官方 RU Craft 6245/6244/9336/9340/9332/6243，
+    -- 翡翠谷保存特产按用户本次实机反馈固定为干净的肉脯 ×200、百合 ×5。
     -- 不从当前材料表生成期望，才能发现“名字和材料一起串到邻区”的问题。
     local cases = {
         {'棋盘石林','保存','30898:200|773:5'}, {'哈里洛废墟','保存','30899:200|7992:15'},
         {'太初之地','标准','30903:180|8013:15'}, {'西风脊','保存','14630:15|30898:200'},
         {'青铜岩石山','标准','30905:180|8005:15'}, {'草原之脉','保存','14629:6|30903:200'},
+        {'翡翠谷','保存','30905:200|3564:5'},
+        -- 独立核对官方 RU Craft 6270/9615、6224、7793，避免其他三类只与同一份配方表互证。
+        {'翡翠谷','保存传统','2178:5|30899:160'},
+        {'翡翠谷','保存特制','19946:10|23633:2|30903:300'},
+        {'翡翠谷','保存肥料','30898:50|30900:50|30902:50|30905:50'},
     }
     for i, case in ipairs(cases) do h.ids[i] = 993000 + i; h.titles[h.ids[i]] = '[特产] ' .. case[1] .. '的' .. case[2] .. '特产' end
     h:Open()
     for i, case in ipairs(cases) do Eq(RowSignature(assert(h:Task(h.ids[i])).materials), case[3], case[1]) end
+end)
+Test('Hasla product IDs and both local crafting entries retain independently checked ingredients', function()
+    local h = Boot(); local identity = h.S.Services.TradeMaterialIdentityV3
+    -- 官方 RU Craft 6247/6270/6224 的产物链接分别指向这些 ItemID；9615 与 6270 制作同一传统货物。
+    local cases = {
+        {31876,6247,'Hasla Preserved Specialty','30905:200|3564:5'},
+        {31916,6270,'Hasla Preserved Local Specialty','2178:5|30899:160'},
+        {31916,9615,'Hasla Preserved Local Specialty','2178:5|30899:160'},
+        {31853,6224,'Hasla Preserved Gilda Specialty','19946:10|23633:2|30903:300'},
+    }
+    for _, case in ipairs(cases) do
+        local recipe = assert(h.S.Data.TradeStaticV2:GetRecipeByCraftId(case[2]))
+        Eq(recipe.productItemId, case[1]); Eq(recipe.legacyName, case[3]); Eq(recipe.originZoneId, 23)
+        -- 用故意不对应的展示名验证真实商品身份优先；另一区域不得借用这份材料。
+        local resolved = assert(identity:ResolveStatic('[翡翠谷]保存肥料特产', 23, case[1]))
+        Eq(resolved.label, case[3]); Eq(RowSignature(resolved.rows), case[4])
+        Eq(identity:ResolveStatic(case[3], 16, case[1]), nil, 'Hasla product in another region')
+    end
+    Eq(identity.liveReads, 0)
+end)
+Test('Hasla named packs and larders never borrow preserved specialty ingredients', function()
+    local h = Boot(); local identity = h.S.Services.TradeMaterialIdentityV3
+    for _, name in ipairs({'翡翠谷持国天特产','翡翠谷偃月刀'}) do
+        -- 尚未接入静态配方的独立货物保持待匹配，不能仅凭地区伪装成普通保存特产。
+        Eq(identity:ResolveStatic(name, 23), nil, name)
+    end
+    for _, name in ipairs({'翡翠谷加工发酵蜂蜜','翡翠谷加工发酵奶酪','翡翠谷加工发酵药材'}) do
+        local resolved = assert(identity:ResolveStatic(name, 23))
+        Eq(resolved.source, 'static_family', name)
+        assert(resolved.label ~= 'Hasla Preserved Specialty', name)
+    end
+    Eq(identity.liveReads, 0)
 end)
 Test('two different region names in one title never choose arbitrary longest region', function()
     local h = Boot(); h.titles[QB] = '[特产] 棋盘石林与哈里洛废墟的保存特产'; h:Open()

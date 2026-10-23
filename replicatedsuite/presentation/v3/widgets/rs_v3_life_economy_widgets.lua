@@ -251,13 +251,19 @@ local function BuildSettingsHeader(instance,parent,Feature,name)
             if instance.headerSettings and instance.headerSettings.surface.visible then return instance:CloseHeaderSettings()end
             local panel=instance.headerSettings
             if not panel then
-                local state={} -- 只保留本次会话的窗口几何，不保存第二份业务设置。
                 local prefix=instance.contentPrefix..'settings_'
+                local aux=S.UIV3 and S.UIV3.AuxWindowStoreV3
+                if not aux then return false,'辅助窗口布局存储不可用' end
+                local layoutId=name=='Trade' and 'trade_settings' or 'bonds_settings'
+                local state,loadErr=aux:GetWindowState(layoutId,prefix..'window')
+                if not state then return false,loadErr end
                 local surface,err=Floating:Create({id=prefix..'window',owner='v3:'..prefix,title=name=='Trade' and '贸易设置' or '债券设置',
-                    persistSessionLock=true, -- 会话几何不升级为业务存档；标题小锁由统一 Chrome 偏好永久保存。
-                    movable=true,resizable=false,appearanceControls=false,footer=true,boundaryMode='clamp',defaultPlacement='center',
-                    statePolicy={defaultWidth=380,defaultHeight=name=='Trade' and 320 or 210,minWidth=320,minHeight=name=='Trade' and 294 or 190},
-                    getState=function()return state end,setState=function(value)state=value;return true end,persist=function()return true end,
+                    movable=true,resizable=false,appearanceControls=false,footer=true,boundaryMode='free',defaultPlacement='center',
+                    statePolicy=aux:GetPolicy(layoutId),
+                    -- 首页与独立助手可打开同一种设置窗；每次从同一布局 Authority 读取，不能用旧实例副本恢复位置。
+                    getState=function()return aux:GetWindowState(layoutId,prefix..'window') end,
+                    setState=function(value,reason)return aux:SetWindowState(layoutId,value,reason) end,
+                    persist=function(reason,delay)return aux:PersistWindow(layoutId,reason,delay) end,
                     onStateChanged=function(_,value)if value.minimized then CloseSettingsChoices(instance)end end,
                     onClosed=function()
                         if Contents.openHeaderSettings==instance then Contents.openHeaderSettings=nil end

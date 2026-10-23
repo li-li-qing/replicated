@@ -1114,13 +1114,18 @@ end
 function L:IsRectFullyVisible(x, y, width, height, options)
     options = type(options) == "table" and options or {}
     local context = self:GetContext()
-    local edge = math.max(0, tonumber(options.edge) or context.safeLeft or C.SafeArea or 12)
+    local edge=Finite(options.edge)
+    if edge~=nil then edge=math.max(0,edge) end
+    local left,top=edge or context.safeLeft,edge or context.safeTop
+    local right,bottom=edge or context.safeRight,edge or context.safeBottom
     x, y = tonumber(x), tonumber(y)
     width, height = math.max(1, tonumber(width) or 1), math.max(1, tonumber(height) or 1)
     if x == nil or y == nil then return false end
-    return x >= edge and y >= edge
-        and x + width <= context.logicalWidth - edge
-        and y + height <= context.logicalHeight - edge
+    -- Effective 坐标换算会产生约 1e-13 的浮点尾数；只吞数值误差，不容忍真实像素越界。
+    local epsilon=1e-7
+    return x >= left-epsilon and y >= top-epsilon
+        and x + width <= context.logicalWidth - right+epsilon
+        and y + height <= context.logicalHeight - bottom+epsilon
 end
 
 function L:EnsureWidgetVisible(widget, options)
@@ -1431,6 +1436,59 @@ function L:IsWindowRecoverable(x, y, width, height, titleHeight)
     return vx >= math.min(72,width,c.usableWidth) and vy >= math.min(14,title,c.usableHeight)
 end
 
+-- 普通窗口松手吸附安全视口边缘。阈值使用逻辑单位，Native/UI Scale 仅在统一读几何入口换算。
+-- 每轴独立选择最近边；不更改尺寸，也不写存档。兄弟控件吸附仍由原 ScreenSnap 管理。
+function L:ResolveWindowEdgeSnap(x,y,width,height,distance)
+    local c=self:GetContext()
+    local d=math.max(0,Finite(distance,12))
+    local left,top=c.safeLeft,c.safeTop
+    local right,bottom=math.max(left,c.logicalWidth-c.safeRight-width),math.max(top,c.logicalHeight-c.safeBottom-height)
+    local function Axis(v,a,b)
+        if math.abs(v-a)<=d and math.abs(v-a)<=math.abs(v-b) then return a end
+        if math.abs(v-b)<=d then return b end
+        return v
+    end
+    return Axis(x,left,right),Axis(y,top,bottom)
+end
+
+-- 展开/缩小时保留旧矩形已贴住的边缘，其余位置保留左上角；随后按新可见尺寸夹紧。
+-- 贴边识别容差小于一个逻辑像素，不能把普通靠近边缘的自由位置悄悄当作吸附。
+function L:GetWindowEdgeAffinity(x,y,width,height,hintH,hintV)
+    local c=self:GetContext()
+    local left,right=math.abs(x-c.safeLeft)<.01,math.abs(x+width-(c.logicalWidth-c.safeRight))<.01
+    local top,bottom=math.abs(y-c.safeTop)<.01,math.abs(y+height-(c.logicalHeight-c.safeBottom))<.01
+    local eh=left and right and (hintH or "LEFT") or (left and "LEFT" or (right and "RIGHT" or nil))
+    local ev=top and bottom and (hintV or "TOP") or (top and "TOP" or (bottom and "BOTTOM" or nil))
+    return eh,ev
+end
+
+-- 窗口拟合后恰好占满某轴时，x/y+中心比例无法区分原来贴左还是贴右。
+-- 仅这种有歧义的提交使用已有 logical-edge-v1 表达边缘意图；不增加持久字段或改变规范化契约。
+function L:StoreWindowPlacementRect(target,x,y,width,height,options)
+    if type(target)~="table" then return end
+    options=options or {}
+    local c=self:GetContext()
+    local ambiguous=(options.edgeH~=nil and math.abs(width-c.usableWidth)<.01)
+        or (options.edgeV~=nil and math.abs(height-c.usableHeight)<.01)
+    if ambiguous and (options.mode==nil or options.mode=="free" or options.mode=="strict") then
+        self:StorePlacementRect(target,x,y,width,height,{mode="edge"})
+        if options.edgeH then target.anchorH=options.edgeH;target.offsetX=0 end
+        if options.edgeV then target.anchorV=options.edgeV;target.offsetY=0 end
+        return
+    end
+    return self:StorePlacementRect(target,x,y,width,height,options)
+end
+
+function L:ResolveWindowSizeTransition(x,y,oldWidth,oldHeight,width,height,hintH,hintV)
+    local c=self:GetContext()
+    width,height=math.min(width,c.usableWidth),math.min(height,c.usableHeight)
+    local eh,ev=self:GetWindowEdgeAffinity(x,y,oldWidth,oldHeight,hintH,hintV)
+    if eh=="RIGHT" then x=c.logicalWidth-c.safeRight-width end
+    if ev=="BOTTOM" then y=c.logicalHeight-c.safeBottom-height end
+    x,y=self:ClampTopLeft(x,y,width,height)
+    return x,y,width,height,eh,ev
+end
+
 function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, options)
     options = type(options) == "table" and options or {}
     local c = self:GetContext()
@@ -1450,6 +1508,7 @@ function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, 
     local scaleChanged = ss ~= nil and ss > 0 and math.abs(ss-c.uiScale)>=0.0005 or false
     local changed = logicalChanged or scaleChanged
     local source = "default"
+    local edgeH,edgeV
     local rx, ry = p and Finite(p.normalizedCenterX), p and Finite(p.normalizedCenterY)
     if rx ~= nil and (rx < -2 or rx > 3) then rx = nil end
     if ry ~= nil and (ry < -2 or ry > 3) then ry = nil end
@@ -1465,10 +1524,23 @@ function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, 
             x, y = rx*c.logicalWidth-w*0.5, ry*c.logicalHeight-h*0.5
             source = "normalized_reproject"
         elseif changed and not known then source = "legacy_recovery" end
+        -- 已有 x/y + 保存视口 + 中心比例足以还原当时的实际可见矩形，无需给冻结存档加字段。
+        -- 仅精确贴边的矩形保留边缘；自由位置继续按现有中心比例投影。展开与 compact 都使用本次尺寸。
+        if known and rx ~= nil and ry ~= nil then
+            local oldW,oldH=2*(rx*sw-Finite(p.x)),2*(ry*sh-Finite(p.y))
+            if oldW>0 and oldW<=sw and oldH>0 and oldH<=sh then
+                if math.abs(Finite(p.x)-c.safeLeft)<.01 then x=c.safeLeft;edgeH="LEFT"
+                elseif math.abs(Finite(p.x)+oldW-(sw-c.safeRight))<.01 then x=c.logicalWidth-c.safeRight-w;edgeH="RIGHT" end
+                if math.abs(Finite(p.y)-c.safeTop)<.01 then y=c.safeTop;edgeV="TOP"
+                elseif math.abs(Finite(p.y)+oldH-(sh-c.safeBottom))<.01 then y=c.logicalHeight-c.safeBottom-h;edgeV="BOTTOM" end
+            end
+        end
     elseif intent and (p.anchorH ~= nil or p.anchorV ~= nil or p.offsetX ~= nil or p.offsetY ~= nil) then
         local ox, oy = math.max(0,Finite(p.offsetX,0)), math.max(0,Finite(p.offsetY,0))
         x = p.anchorH == "RIGHT" and c.logicalWidth-c.safeRight-ox-w or c.safeLeft+ox
         y = p.anchorV == "BOTTOM" and c.logicalHeight-c.safeBottom-oy-h or c.safeTop+oy
+        if ox==0 then edgeH=p.anchorH=="RIGHT" and "RIGHT" or "LEFT" end
+        if oy==0 then edgeV=p.anchorV=="BOTTOM" and "BOTTOM" or "TOP" end
         source = "legacy_recovery"
     end
     if reason == "explicit_reset" then source = "explicit_reset" end
@@ -1498,6 +1570,7 @@ function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, 
         normalizedCenterX=rx,normalizedCenterY=ry,currentLogicalWidth=c.logicalWidth,currentLogicalHeight=c.logicalHeight,
         currentUiScale=c.uiScale,currentScreenWidth=c.screenWidth,currentScreenHeight=c.screenHeight,
         metricsSource=c.metricsSource,fullyVisible=self:IsRectFullyVisible(x,y,w,h),
+        edgeH=edgeH,edgeV=edgeV,
         recoverable=self:IsWindowRecoverable(x,y,w,h,options.topReachHeight), x=x,y=y,width=w,height=h,
     }
 end

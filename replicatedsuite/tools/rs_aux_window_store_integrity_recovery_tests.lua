@@ -217,11 +217,12 @@ Test("real three-window schema1 reproduces original stamp and preserves quest ge
     assert(freshP:GetStore(STORE_ID).writeFenced~=true)
 end)
 Test("three-window recovery refuses altered geometry or already present module state", function()
-    for _,kind in ipairs({"quest_position","quest_width","module_present","wrong_stamp","schema2"}) do
+    for _,kind in ipairs({"quest_position","quest_width","module_present","new_optional","wrong_stamp","schema2"}) do
         local raw=Copy(REPORT_SCHEMA1)
         if kind=="quest_position" then raw.payload.quest_detail.x="__rs_t3:n968.99779510708322"
         elseif kind=="quest_width" then raw.payload.quest_detail.width="__rs_t3:n561.00001525877451"
         elseif kind=="module_present" then raw.payload.module_diagnostics={width=801,height=620}
+        elseif kind=="new_optional" then raw.payload.player_notes={width=500,height=600,x=123}
         elseif kind=="wrong_stamp" then raw.__rsmeta.encodedFingerprint="DEADBEEF"
         elseif kind=="schema2" then raw.__rsmeta.schema=2 end
         local S,P,io=Boot({[REPORT_KEY]=raw});dofile("presentation/v3/rs_v3_aux_window_store.lua")
@@ -230,6 +231,51 @@ Test("three-window recovery refuses altered geometry or already present module s
         assert(P:GetStore(STORE_ID).writeFenced==true,"bad input lost fence: "..kind)
         assert(io.writes==0,"rejected evidence must never be written")
     end
+end)
+
+Test("optional draggable windows persist immediately and cold reload without adding defaults to old layouts", function()
+    local S,P,io=Boot();dofile("presentation/v3/rs_v3_aux_window_store.lua")
+    local A=S.UIV3.AuxWindowStoreV3;assert(A:EnsureLoaded())
+    local ids={"trade_settings","bonds_settings","bag_settings","player_notes"}
+    for index,id in ipairs(ids)do
+        assert(type(A:GetPolicy(id))=="table","missing geometry policy: "..id)
+        local beforeWrites=io.writes;local state=assert(A:GetWindowState(id))
+        assert(A.state[id]==nil and io.writes==beforeWrites,"reading optional defaults changed persistent shape")
+        state.x,state.y=100+index,200+index;state.userMoved=true;state.coordinateSpace="logical-free-v2"
+        state.savedLogicalWidth,state.savedLogicalHeight,state.savedUiScale=1920,1080,1
+        state.businessDraft="must remain session only"
+        assert(A:SetWindowState(id,state,"geometry"));assert(A:PersistWindow(id,"geometry"))
+        assert(io.writes>beforeWrites,"geometry was only queued: "..id)
+    end
+    local R,RP=Boot(Copy(io.disk));dofile("presentation/v3/rs_v3_aux_window_store.lua")
+    local restored=R.UIV3.AuxWindowStoreV3;assert(restored:EnsureLoaded())
+    for index,id in ipairs(ids)do
+        local state=assert(restored:GetWindowState(id));assert(state.x==100+index and state.y==200+index and state.userMoved)
+        assert(state.businessDraft==nil,"aux geometry retained business draft")
+    end
+    assert(RP:GetStore(STORE_ID).writeFenced~=true)
+end)
+
+Test("fitted edge placement reuses the existing canonical format and survives durable reload",function()
+    local S,P,io=Boot();dofile("presentation/v3/rs_v3_aux_window_store.lua")
+    local A=S.UIV3.AuxWindowStoreV3;assert(A:EnsureLoaded())
+    local ids={"trade_settings","bonds_settings","bag_settings","player_notes"}
+    for index,id in ipairs(ids)do
+        local state=assert(A:GetWindowState(id));state.width=1200;state.height=950;state.userMoved=true
+        state.coordinateSpace="logical-edge-v1";state.anchorH=index%2==0 and "LEFT" or "RIGHT"
+        state.anchorV=index<=2 and "TOP" or "BOTTOM";state.offsetX=0;state.offsetY=0;state.savedUiScale=.8
+        state.minimized=index%2==0
+        assert(A:SetWindowState(id,state,"minimized"));assert(A:PersistWindow(id,"minimized"))
+    end
+    local R,RP=Boot(Copy(io.disk));dofile("presentation/v3/rs_v3_aux_window_store.lua")
+    local restored=R.UIV3.AuxWindowStoreV3;assert(restored:EnsureLoaded())
+    for index,id in ipairs(ids)do
+        local state=assert(restored:GetWindowState(id));assert(state.coordinateSpace=="logical-edge-v1")
+        assert(state.anchorH==(index%2==0 and "LEFT" or "RIGHT"));assert(state.anchorV==(index<=2 and "TOP" or "BOTTOM"))
+        assert(state.offsetX==0 and state.offsetY==0 and state.minimized==(index%2==0))
+    end
+    assert(RP:GetStore(STORE_ID).lastIntegrityStatus=="verified_canonical")
+    assert(RP:GetStore(STORE_ID).writeFenced~=true)
 end)
 
 print(string.format("AUX WINDOW INTEGRITY RESULT: %d passed, %d failed", passed, failed))

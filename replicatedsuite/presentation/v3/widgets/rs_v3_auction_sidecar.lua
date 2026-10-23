@@ -23,7 +23,7 @@ local WIDTH, HEIGHT = 300, 440
 local DAILY_TOKEN = "widget:auction_sidecar:daily"
 
 local Controller = {
-    version = 6,
+    version = 7,
     ScaledPlacementContractVersion = 1,
     FreePlacementContractVersion = 1, DurablePlacementContractVersion = 1,
     AuctionWorkspaceContractVersion = 1,
@@ -42,7 +42,19 @@ local POSITION_STORE="v3.presentation.auction_sidecar_position"
 local function NormalizePosition(value)
     value=type(value)=="table" and value or {}
     local out={userMoved=value.userMoved==true}
+    -- 缺失字段保持缺失，已发布 schema1 的自由坐标 canonical 不补默认；schema2 才保存缩小状态。
+    if value.minimized~=nil then out.minimized=value.minimized==true end
     if out.userMoved then
+        if value.coordinateSpace=="logical-edge-v1" then
+            out.coordinateSpace="logical-edge-v1"
+            out.anchorH=value.anchorH=="RIGHT" and "RIGHT" or "LEFT"
+            out.anchorV=value.anchorV=="BOTTOM" and "BOTTOM" or "TOP"
+            for _,key in ipairs({"offsetX","offsetY","savedUiScale"})do
+                local n=tonumber(value[key]);if n and n==n and n~=math.huge and n~=-math.huge then out[key]=math.max(0,n) end
+            end
+            out.offsetX,out.offsetY=out.offsetX or 0,out.offsetY or 0
+            return out
+        end
         out.coordinateSpace="logical-free-v2"
         for _,key in ipairs({"x","y","savedUiScale","savedLogicalWidth","savedLogicalHeight","normalizedCenterX","normalizedCenterY"})do
             local n=tonumber(value[key])
@@ -57,11 +69,12 @@ Controller.positionStore=POSITION_STORE
 if type(Persistence)=="table" and type(Persistence.RegisterV3Store)=="function" then
     local store,err=Persistence:RegisterV3Store({
         id=POSITION_STORE,owner=POSITION_STORE,scope=Persistence.Scope.Account,lifetime=Persistence.Lifetime.Permanent,
-        schemaVersion=1,key=Persistence.V3KeyPrefix.."presentation_auction_sidecar_position",
+        schemaVersion=2,legacySchemaVersion=1,key=Persistence.V3KeyPrefix.."presentation_auction_sidecar_position",
         budget={maxDepth=3,maxNodes=32,maxStringBytes=256,maxEntriesPerTable=16},
         default=function()return NormalizePosition(nil) end,
         get=function()return NormalizePosition(Controller.positionState) end,
         apply=function(value)Controller.positionState=NormalizePosition(value) end,
+        migrate=function(value)return NormalizePosition(value) end,
     })
     if store==nil then Controller.positionError=tostring(err or "拍卖助手位置存档注册失败") end
 else Controller.positionError="拍卖助手位置存档不可用" end
@@ -337,7 +350,7 @@ local function CreateSidecar()
             return true
         end,
         persist = function(reason)
-            if reason~="geometry" and reason~="layout_reset" then return true end
+            if reason~="geometry" and reason~="layout_reset" and reason~="minimized" and reason~="size" then return true end
             local loaded,loadErr=Controller:EnsurePositionLoaded()
             if loaded~=true then return false,loadErr end
             local saved,saveErr=Persistence:SaveStore(POSITION_STORE,{durable=true,consumeDirty=true,reason="auction_sidecar:"..tostring(reason)})

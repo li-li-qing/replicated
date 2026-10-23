@@ -8,7 +8,7 @@
 local Base=dofile('tools/rs_gear_page_test_host.lua')
 local passed=0
 local function Boot(options)
-    options=options or {};local h=Base();assert(h.page:OnDeactivated());local S=h.S
+    options=options or {};local h=Base({disk=options.disk});assert(h.page:OnDeactivated());local S=h.S
     dofile('core/rs_demand.lua')
     h.friendReads=0;h.friendRequests=0;h.eventReject=options.eventReject
     S.Events.host={RegisterEvent=function(_,name)h.registeredEvent=name;return not h.eventReject end,UnregisterEvent=function()return true end}
@@ -54,6 +54,7 @@ local function Boot(options)
         return shell
     end
     dofile('ui/framework/rs_ui_floating_surface.lua');dofile('presentation/v3/widgets/rs_v3_widget_host.lua')
+    dofile('presentation/v3/rs_v3_aux_window_store.lua')
     dofile('services/rs_player_notes_surface_v3.lua');dofile('features/shared/rs_feature_slice_factory.lua')
     dofile('features/tools/social/rs_player_notes_feature.lua')
     if options.diagnostics then dofile('features/rs_feature_registry.lua');dofile('core/rs_module_diagnostics.lua')end
@@ -379,5 +380,13 @@ Test('response and subsequent scheduled observation record distinct raw-call pha
     local h,S,F,V,W=Boot({nativeSurface=true,nativeCallAudit=true});local count=V.nativeCallAuditCount
     h:Receive();assert(V.nativeCallAuditCount==count+1 and V.nativeCallAudit[V.nativeCallAuditCount].reason=='friend_response')
     assert(V:RefreshNativeVisibility());assert(V.nativeCallAuditCount==count+2 and V.nativeCallAudit[V.nativeCallAuditCount].reason=='after_list_response')
+end)
+Test('dragged note layout survives close reopen and cold reload through the real auxiliary Store',function()
+    local h,S,F,V,W=Boot();local instance=assert(h:Receive());local spec=instance.surface.spec
+    local state=spec.getState();state.x,state.y,state.userMoved=345,234,true;state.coordinateSpace='logical-free-v2'
+    assert(spec.setState(state,'geometry'));assert(spec.persist('geometry'));local disk=h.Copy(h.disk)
+    h:Close();assert(S.UIV3.PlayerNotesSidecar:Open());assert(instance.state.x==345 and instance.state.y==234)
+    local fresh,FS,FF,FV,FW=Boot({disk=disk});local restored=assert(fresh:Receive())
+    assert(restored.state.x==345 and restored.state.y==234 and restored.state.userMoved)
 end)
 print('PLAYER_NOTES_SIDECAR_TOTAL: '..passed..' cases passed (Native modeled)')

@@ -259,5 +259,27 @@ Test('one physical pixel of UIParent extent rounding cannot move a minimized win
     Same(p,before)
 end)
 
+Test('floating window families share four-edge drag close reopen and cold placement behavior',function()
+    local ids={'activities','tasks','dps','buff_display','death_review','trade','bonds','treasure','fishing',
+        'auction_sidecar','trade_detail','trade_diagnostics','quest_detail','module_diagnostics',
+        'trade_settings','bonds_settings','bag_settings','player_notes'}
+    -- 业务创建入口另行核对；本矩阵只运行真实共享框架，覆盖不同窗口尺寸与两种标题高度。
+    for index,id in ipairs(ids)do
+        for edge=1,4 do
+            local h=Boot();local p=State(h,300,200,360+index*4,240+index*3)
+            local spec={id=id,titleHeight=index%2==0 and 22 or 34};local s=h:Surface(p,spec);assert(s:Show(true))
+            local drag=s.windowController.dragHandle;assert(drag.handlers.OnDragStart())
+            local points={{-200,200},{300,-200},{3000,200},{300,3000}}
+            s.window.x,s.window.y=points[edge][1],points[edge][2];assert(drag.handlers.OnUpdate)()
+            assert(s.window.x>=0 and s.window.y>=0 and s.window.x+s.window.w<=h.w and s.window.y+s.window.h<=h.h,id..' live edge')
+            assert(drag.handlers.OnDragStop());local x,y=s.window.x,s.window.y;local saved=Copy(p)
+            assert(s:Close('test'));assert(s:Show(true));Eq(s.window.x,x,id..' reopen x');Eq(s.window.y,y,id..' reopen y');Same(p,saved)
+            s:Destroy();local cold=Boot();local restored=cold:Surface(Copy(p),{id=id,titleHeight=spec.titleHeight})
+            assert(restored:Show(true));Eq(restored.window.x,x,id..' cold x');Eq(restored.window.y,y,id..' cold y')
+            assert(cold.writes==0,'cold construction rewrote placement: '..id)
+            restored:Destroy()
+        end
+    end
+end)
 print(string.format('RELOAD POSITION RESULT %d passed / %d failed (%s)',passed,failed,_VERSION))
 assert(failed==0,'reload-position regression failures: '..failed)

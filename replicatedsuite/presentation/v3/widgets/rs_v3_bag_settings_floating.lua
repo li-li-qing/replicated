@@ -86,13 +86,20 @@ end
 
 function M:EnsureCreated()
     if self.surface then return true end
+    local aux=S.UIV3 and S.UIV3.AuxWindowStoreV3
+    if not aux then return false,"辅助窗口布局存储不可用" end
+    local state,loadErr=aux:GetWindowState("bag_settings","v3_bag_settings_floating")
+    if not state then return false,loadErr end
+    self.windowState=state
     local surface,err=R.FloatingSurface:Create({
         id="v3_bag_settings_floating",owner="v3:bag_settings:floating",title="整理背包设置",footer=true,
-        persistSessionLock=true, -- 窗口会话几何沿用原设计，小锁复用统一 Chrome 偏好并在重载后恢复。
         movable=true,resizable=true,minimizeMode="compact",boundaryMode="free",defaultPlacement="center",
-        statePolicy={defaultWidth=530,defaultHeight=430,minWidth=410,minHeight=300},
+        statePolicy=aux:GetPolicy("bag_settings"),
         getState=function()return self.windowState end,
-        setState=function(value)self.windowState=value;return true end,persist=function()return true end,
+        setState=function(value,reason)
+            local ok,why=aux:SetWindowState("bag_settings",value,reason);if ok~=true then return false,why end
+            self.windowState=value;return true
+        end,persist=function(reason,delay)return aux:PersistWindow("bag_settings",reason,delay) end,
         onClosed=function()return self:Deactivate() end,
     })
     if surface==nil then return false,err end

@@ -36,6 +36,12 @@ return function(options)
         function n:UnregisterEvent(name)if self.events then self.events[name]=nil end;return true end
         function n:Raise()self.raiseCount=(self.raiseCount or 0)+1;return true end;function n:EnableDrag()return true end
         function n:StartMoving()self.moving=true;return true end
+        -- 模拟已开放的 UIBounds 屏幕修正；不替代生产拖动绑定、调度或位置提交。
+        function n:CorrectOffsetByScreen()
+            h.screenCorrections=(h.screenCorrections or 0)+1
+            self.x=math.max(0,math.min(self.x,h.w-self.w));self.y=math.max(0,math.min(self.y,h.h-self.h))
+            return false -- 原生无须修正时也可能返回 false；不是 transport 失败。
+        end
         function n:StartSizing()self.moving=true;return true end
         function n:StopMovingOrSizing()self.moving=false;return true end
         function n:SetMinResizingExtent(w1,h1)self.minW=w1;self.minH=h1;h.resizeConfigCalls=h.resizeConfigCalls+1;return true end

@@ -15,7 +15,7 @@ if type(UI) ~= "table" or type(RSUI) ~= "table" or type(UI.CreateWindowShell) ~=
 local generation = tonumber(S.Generation) or 0
 if type(RSUI.FloatingSurface) ~= "table" or tonumber(RSUI.FloatingSurface.generation) ~= generation then
     RSUI.FloatingSurface = {
-        version = 12,
+        version = 13,
         generation = generation,
         instances = setmetatable({}, { __mode = "v" }),
         metrics = {
@@ -26,7 +26,7 @@ if type(RSUI.FloatingSurface) ~= "table" or tonumber(RSUI.FloatingSurface.genera
         },
     }
 end
-RSUI.FloatingSurface.version = 12
+RSUI.FloatingSurface.version = 13
 RSUI.FloatingSurface.IdempotentMutationContractVersion = 1
 RSUI.FloatingSurface.CompactMinimizeContractVersion = 1
 RSUI.FloatingSurface.TitleAppearanceContractVersion = 1
@@ -165,7 +165,8 @@ local function PersistSpec(spec, reason)
     -- 持久化调度。geometry 传入 delay=0，但真正耐久由所属 Feature/Aux Store 在 geometry/
     -- layout_reset/minimized 边沿 SaveStore + 回读完成；MarkDirty(0) 本身不会写盘。
     -- 透明度/字体等连续调整仍保留去抖，避免高频写入。
-    local delay = tostring(reason or "") == "geometry" and 0 or math.max(0, tonumber(spec.persistDelayMs) or 250)
+    local immediate=reason=="geometry" or reason=="minimized"
+    local delay = immediate and 0 or math.max(0, tonumber(spec.persistDelayMs) or 250)
     local ok, err = SafeCall(spec.persist, tostring(reason or "state"), delay)
     if ok ~= true then
         F.metrics.failures = (tonumber(F.metrics.failures) or 0) + 1
@@ -318,11 +319,15 @@ function F:Create(spec)
     local scale = spec.scaleWithAddon == false and 1 or math.max(0.01, tonumber(context.addonScale) or 1)
     local width = math.max(1, tonumber(state.width) or policy.defaultWidth) * scale
     local height = math.max(1, tonumber(state.height) or policy.defaultHeight) * scale
-    local defaultX, defaultY = ResolveDefaultPosition(spec, context, math.min(width,context.usableWidth),math.min(height,context.usableHeight))
-    local x,y,meta
-    -- 维护：消费 ResolvePlacement 的全部四个几何返回值，过去只取 x/y，尺寸 fit 被丢弃。
-    x,y,width,height,meta = S.Layout:ResolvePlacement(state.userMoved and state or nil,width,height,defaultX,defaultY,
+    local initialCompact=state.minimized==true and tostring(spec.minimizeMode or "compact")=="compact"
+    local placementW=initialCompact and math.max(136,tonumber(spec.minimizedWidth) or 156) or width
+    local placementH=initialCompact and math.max(30,tonumber(spec.minimizedSize) or 30) or height
+    if state.minimized and tostring(spec.minimizeMode)=="collapse" then placementH=tonumber(spec.titleHeight) or 24 end
+    local defaultX, defaultY = ResolveDefaultPosition(spec, context, math.min(placementW,context.usableWidth),math.min(placementH,context.usableHeight))
+    -- 初载按当前可见尺寸定位；normal 尺寸单独拟合，不能把 compact 的尺寸当成展开偏好。
+    local x,y,_,_,meta = S.Layout:ResolvePlacement(state.userMoved and state or nil,placementW,placementH,defaultX,defaultY,
         {mode=tostring(spec.boundaryMode or "free"),topLevel=true,topReachHeight=tonumber(spec.titleHeight) or 24})
+    width,height=math.min(width,context.usableWidth),math.min(height,context.usableHeight)
 
     local surface = {
         id = id, owner = owner, spec = spec, statePolicy = policy, visible = false,
@@ -397,6 +402,7 @@ function F:Create(spec)
         -- 悬浮 HUD 使用紧凑外框，普通状态比应用对话框低；紧凑最小化把全部外框折成可拖动方形恢复按钮。
         compactChrome = true,
         minimizedSize = tonumber(spec.minimizedSize) or 30,
+        minimizedWidth = tonumber(spec.minimizedWidth),
         titleHeight = tonumber(spec.titleHeight) or 24,
         titleFontSize = tonumber(spec.titleFontSize) or 11,
         titlePadding = tonumber(spec.titlePadding) or 2,
@@ -437,6 +443,7 @@ function F:Create(spec)
             if current == nil then return false end
             local target = F:NormalizeState(current, policy)
             local reason = tostring(snapshot and snapshot.reason or "state")
+            if reason=="minimize" then reason="minimized" end
             target.minimized = snapshot.minimized == true
             target.locked = snapshot.locked == true
             target.overallOpacity = Clamp(snapshot.overallOpacity, 0, 1, FirstNonNil(target.overallOpacity, policy.defaultOverallOpacity))
@@ -444,7 +451,7 @@ function F:Create(spec)
             target.textOpacity = Clamp(snapshot.textOpacity, 0, 1, FirstNonNil(target.textOpacity, policy.defaultTextOpacity))
             target.fontScale = Clamp(snapshot.fontScale, policy.minFontScale, policy.maxFontScale, FirstNonNil(target.fontScale, policy.defaultFontScale))
 
-            if reason == "geometry" then
+            if reason == "geometry" or reason == "minimized" then
                 -- 维护（2026-09-16，floating-committed-geometry-1）：WindowShell 传入的 snapshot
                 -- 是 Windowing 事务提交后的唯一几何事实。旧代码在这里再次 GetLogicalRect，正是钓鱼
                 -- 等悬浮窗重登漂移的来源。若启用吸附，CommitScreenSnap 也消费同一矩形并把解析后的
@@ -484,8 +491,10 @@ function F:Create(spec)
                     target.width = math.max(policy.minWidth, (tonumber(snapshot.normalWidth) or placementW) / liveScale)
                     target.height = math.max(policy.minHeight, (tonumber(snapshot.normalHeight) or placementH) / liveScale)
                 end
-                if type(S.Layout.StorePlacementRect) == "function" then
-                    S.Layout:StorePlacementRect(target, placementX, placementY, placementW, placementH, { mode = tostring(spec.boundaryMode or "free") })
+                if type(S.Layout.StoreWindowPlacementRect) == "function" then
+                    S.Layout:StoreWindowPlacementRect(target,placementX,placementY,placementW,placementH,{mode=tostring(spec.boundaryMode or "free"),edgeH=snapshot.edgeH,edgeV=snapshot.edgeV})
+                elseif type(S.Layout.StorePlacementRect) == "function" then
+                    S.Layout:StorePlacementRect(target,placementX,placementY,placementW,placementH,{mode=tostring(spec.boundaryMode or "free")})
                 elseif type(S.Layout.StorePlacement) == "function" then
                     -- 仅兼容部分升级的开发树；发布 toc 始终加载 StorePlacementRect。
                     S.Layout:StorePlacement(target, surface.shell.window, { mode = tostring(spec.boundaryMode or "free") })
@@ -559,6 +568,7 @@ function F:Create(spec)
         local w,h = math.min(pw,live.usableWidth),math.min(ph,live.usableHeight)
         local compact = target.minimized == true and self.shell.minimizeMode == "compact"
         local placementW,placementH = compact and self.shell.minimizedWidth or pw,compact and self.shell.minimizedSize or ph
+        if target.minimized and self.shell.minimizeMode=="collapse" then placementH=tonumber(spec.titleHeight) or 24 end
         local dx,dy = ResolveDefaultPosition(spec,live,compact and placementW or w,compact and placementH or h)
         local px,py,_,_,info = S.Layout:ResolvePlacement(target.userMoved and target or nil,placementW,placementH,dx,dy,
             {mode=tostring(spec.boundaryMode or "free"),topLevel=true,topReachHeight=tonumber(spec.titleHeight) or 24,reason=reason})
@@ -615,12 +625,19 @@ function F:Create(spec)
         local target = CurrentState(); if target == nil then return false end
         local previous = target.minimized == true
         local nextValue = value == true
+        -- 同一种设置窗的两个入口共享 Aux 状态；隐藏实例的 Shell 可能仍是旧形态。
+        -- 先消费最新状态再执行动作，不能让 Shell 的无变化返回跳过本次 Store 提交。
         if previous == nextValue and self.shell.minimized == nextValue then return true, false end
-        local shellOk, shellErr = self.shell:SetMinimized(nextValue, false)
-        if shellOk ~= true then return false, shellErr end
+        local synced,syncErr=self:ApplyLayout(false,"state_sync",target)
+        if synced~=true then return false,syncErr end
         local candidate = F:NormalizeState(target, policy); candidate.minimized = nextValue
-        local stateOk, stateErr = persist ~= false and Save("minimized", candidate) or Stage("minimized", candidate)
-        if stateOk ~= true then self.shell:SetMinimized(previous, false); return false, stateErr end
+        local shellOk, shellErr = self.shell:SetMinimized(nextValue, false, function(rect)
+            S.Layout:StoreWindowPlacementRect(candidate,rect.x,rect.y,rect.width,rect.height,{mode=tostring(spec.boundaryMode or "free"),edgeH=rect.edgeH,edgeV=rect.edgeV})
+            candidate.userMoved=true
+            if persist~=false then return Save("minimized",candidate) end
+            return Stage("minimized",candidate)
+        end)
+        if shellOk ~= true then return false, shellErr end
         F.metrics.minimizeChanges = (tonumber(F.metrics.minimizeChanges) or 0) + 1
         return true, true
     end
@@ -694,7 +711,7 @@ function F:Create(spec)
 
     function surface:SetSize(designWidth, designHeight, persist)
         local target = CurrentState(); if target == nil then return false end
-        local before = F:NormalizeState(target, policy)
+        if self.windowController and self.windowController:IsInteracting() then return false,"window_interacting" end
         local nextWidth = Clamp(designWidth, policy.minWidth, policy.maxWidth, target.width or policy.defaultWidth)
         local nextHeight = Clamp(designHeight, policy.minHeight, policy.maxHeight, target.height or policy.defaultHeight)
         local changed = math.abs(nextWidth - (tonumber(target.width) or nextWidth)) > 0.0001
@@ -704,21 +721,27 @@ function F:Create(spec)
 
         local candidate = F:NormalizeState(target, policy)
         candidate.width, candidate.height, candidate.minimized = nextWidth, nextHeight, false
-        if self.shell.minimized == true then
-            local restoreOk, restoreErr = self.shell:SetMinimized(false, false)
-            if restoreOk ~= true then return false, restoreErr end
+        local bx,by,bw,bh=self.shell:GetPlacementRect()
+        if bx==nil or by==nil or bw==nil or bh==nil then return false,"window_geometry_unavailable" end
+        local oldMin,oldW,oldH,oldInfo=self.shell.minimized,self.shell.normalWidth,self.shell.normalHeight,self.shell.placementInfo
+        local function Rollback(err)
+            self.shell.minimized=oldMin
+            local ok=self.shell:ApplyPlacementRect(bx,by,oldW,oldH,oldInfo,true)
+            self.shell.minimizeButton:SetText(oldMin and "+" or "—")
+            return false,tostring(err or "floating_size_rejected")..(ok~=true and ":rollback_rejected" or "")
         end
-        local stateOk, stateErr = persist ~= false and Save("size", candidate) or Stage("size", candidate)
-        if stateOk ~= true then
-            if before.minimized == true then self.shell:SetMinimized(true, false) end
-            return false, stateErr
-        end
-        local layoutOk, layoutErr = self:ApplyLayout(false)
+        -- 按候选展开尺寸先验证 Native；保存失败绝不能通过 and/or 再执行 Stage 冒充成功。
+        local layoutOk, layoutErr = self:ApplyLayout(false,"size",candidate)
         if layoutOk ~= true then
-            if persist ~= false then Save("size_rollback", before) else Stage("size_rollback", before) end
-            self:ApplyLayout(false)
-            return false, layoutErr or "floating_size_layout_failed"
+            return Rollback(layoutErr)
         end
+        local x,y,w,h=self.shell:GetPlacementRect()
+        local info=self.shell.placementInfo or {}
+        S.Layout:StoreWindowPlacementRect(candidate,x,y,w,h,{mode=tostring(spec.boundaryMode or "free"),edgeH=info.edgeH,edgeV=info.edgeV})
+        candidate.userMoved=true
+        local stateOk,stateErr
+        if persist~=false then stateOk,stateErr=Save("size",candidate) else stateOk,stateErr=Stage("size",candidate) end
+        if stateOk~=true then return Rollback(stateErr) end
         return true, nextWidth, nextHeight, true
     end
 

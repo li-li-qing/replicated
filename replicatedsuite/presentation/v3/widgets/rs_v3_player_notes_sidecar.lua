@@ -35,17 +35,24 @@ local function Position(snapshot)
     return math.floor(math.max(left,(left+right-WIDTH)/2)),math.floor(math.max(top,(top+bottom-HEIGHT)/2))
 end
 local function Create()
-    local instance={visible=false,acquired=false,state={width=WIDTH,height=HEIGHT,locked=false,userMoved=false,coordinateSpace="logical-free-v2"}}
-    instance.state.x,instance.state.y=Position(C.snapshot)
+    local aux=S.UIV3 and S.UIV3.AuxWindowStoreV3
+    if not aux then return nil,"辅助窗口布局存储不可用" end
+    local state,loadErr=aux:GetWindowState("player_notes")
+    if not state then return nil,loadErr end
+    local instance={visible=false,acquired=false,state=state}
+    if state.userMoved~=true then state.x,state.y=Position(C.snapshot) end
     local surface,why=R.FloatingSurface:Create({id="v3_player_notes_sidecar",owner="v3:widget:player_notes",title="人员备注",status="打开名单时显示",
         -- 420×460是可读最小尺寸而非固定尺寸；拖动/边缘缩放仍由共享Windowing事务负责，刷新不能重置用户几何。
         width=WIDTH,height=HEIGHT,minWidth=WIDTH,maxWidth=1000,minHeight=HEIGHT,maxHeight=1000,
         -- 对齐用户提供的 expnote/main.lua:119 原生 Escape 关闭策略；关闭后仍走 Host 清理而非只隐藏画面。
         resizable=true,movable=true,closeButton=true,appearanceControls=false,closeOnEscape=true,
-        statePolicy={defaultWidth=WIDTH,defaultHeight=HEIGHT,minWidth=WIDTH,maxWidth=1000,minHeight=HEIGHT,maxHeight=1000,defaultLocked=false},
+        statePolicy=aux:GetPolicy("player_notes"),
         getState=function()return instance.state end,
-        setState=function(value)instance.state=value;return true end,
-        persist=function()return true end,
+        setState=function(value,reason)
+            local ok,why=aux:SetWindowState("player_notes",value,reason);if ok~=true then return false,why end
+            instance.state=value;return true
+        end,
+        persist=function(reason,delay)return aux:PersistWindow("player_notes",reason,delay) end,
         onClosed=function(_,reason)
             C.dismissed=true;C.manualRequested=false;C.session=C.session+1;C.lastCloseReason=tostring(reason or "close")
             if reason=="native_hide"then C.nativeHideCount=(C.nativeHideCount or 0)+1 end

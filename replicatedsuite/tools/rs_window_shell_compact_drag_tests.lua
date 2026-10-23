@@ -29,6 +29,8 @@ local function Boot(options)
     S.Layout.GetLogicalRect = function(_, w) return w.x or 0, w.y or 0, w.width or 1, w.height or 1 end
     S.NativeObjectFactory = { CreateWindow = function(_, id)
         local n = h.Native(UIParent, id, 0, 0, 1, 1)
+        function n:GetEffectiveOffset()return self.x,self.y end
+        function n:GetEffectiveExtent()return self.width,self.height end
         function n:SetUILayer() return true end
         function n:SetCloseOnEscape(value) self.nativeCloseOnEscape=value;return true end
         -- 模拟原生直接隐藏及 OnHide，仍使用真实 Shell 的显隐与关闭通知链。
@@ -57,6 +59,7 @@ local function Boot(options)
             S.testWindowingSpec = spec
             return {
                 id=spec.id, dragHandle=spec.dragHandle.root or spec.dragHandle,
+                CancelInteraction=function()return true end, -- 外壳隐藏会取消手势；真实捕获释放由视口套件验证。
                 LayoutHandles=function()return true end, BringToFront=function()return true end, IsResizing=function()return false end, IsInteracting=function()return false end,
                 SetLocked=function(_,v)return true,v,true end, SetOpacity=function(_,v)return true,v,true end,
             }

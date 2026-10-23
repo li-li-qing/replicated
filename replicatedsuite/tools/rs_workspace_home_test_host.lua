@@ -7,7 +7,7 @@
 ------------------------------------------------------------------------
 return function(options)
  options=options or {}
- local h=dofile('tools/rs_gear_page_test_host.lua')();local S=h.S;local counts={quotes=0,enabledWrites=0,pauseWrites=0,reads=0,acquired=0,released=0,widgetWrites=0}
+ local h=dofile('tools/rs_gear_page_test_host.lua')({disk=options.disk});local S=h.S;local counts={quotes=0,enabledWrites=0,pauseWrites=0,reads=0,acquired=0,released=0,widgetWrites=0}
  local enabled=options.enabled or {life_trade=true,life_activities=true,life_tasks=true,life_bonds=false,life_daily_stats=true}
  S.FeatureRuntime.IsEnabled=function(_,key)return enabled[key]==true end
  S.FeatureRuntime.SetPreferredEnabled=function(_,key,v)counts.enabledWrites=counts.enabledWrites+1;enabled[key]=v;return true end

@@ -13,7 +13,7 @@ local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" or type(RSUI.Windowing) ~= "table" then return end
 
 local Shell = {
-    version = 26,
+    version = 27,
     visibilityTransactionContract = 1,
     stateMutationTransactionContract = 1,
     stateCallbackTransactionContract = 1,
@@ -333,6 +333,7 @@ function Shell:Create(spec)
             minimized = self.minimized == true, locked = self.locked == true, opacity = self.opacity,
             overallOpacity = self.opacity, backgroundOpacity = self.backgroundOpacity, textOpacity = self.textOpacity, fontScale = self.fontScale,
             reason = tostring(reason or "state"), geometryKind = tostring(geometryKind or ""),
+            edgeH=committedRect and committedRect.edgeH,edgeV=committedRect and committedRect.edgeV,
         })
         if ok ~= true then
             Shell.metrics.stateCallbackRejects = (tonumber(Shell.metrics.stateCallbackRejects) or 0) + 1
@@ -348,6 +349,23 @@ function Shell:Create(spec)
 
     local function IsCompactMinimized(self)
         return self.minimized == true and self.minimizeMode == "compact"
+    end
+
+    -- 展开尺寸与缩小后的可见尺寸分开计算，compact 在极小视口也不能越界。
+    function shell:GetVisibleSize(width,height)
+        local c=S.Layout:GetContext()
+        local w=IsCompactMinimized(self) and self.minimizedWidth or width
+        local h=IsCompactMinimized(self) and self.minimizedSize or (self.minimized and titleH or height)
+        return math.min(w,c.usableWidth),math.min(h,c.usableHeight)
+    end
+
+    function shell:GetPlacementRect()
+        local cache=UI.NativeStateCache and UI.NativeStateCache[self.window]
+        if cache and type(cache.anchorX)=="number" and type(cache.anchorY)=="number"
+            and type(cache.width)=="number" and type(cache.height)=="number" then
+            return cache.anchorX,cache.anchorY,cache.width,cache.height
+        end
+        return S.Layout:GetWindowLogicalRect(self.window)
     end
 
     local function ApplyMinimizedChrome(self)
@@ -394,8 +412,7 @@ function Shell:Create(spec)
         width, height = math.max(1, tonumber(width) or self.normalWidth), math.max(1, tonumber(height) or self.normalHeight)
         local chromeOk, compact, chromeErr = ApplyMinimizedChrome(self)
         if chromeOk ~= true then return false, chromeErr or "window_chrome_visibility_failed" end
-        local currentW = compact and self.minimizedWidth or width
-        local currentH = compact and self.minimizedSize or (self.minimized and titleH or height)
+        local currentW,currentH = self:GetVisibleSize(width,height)
         self.root:Layout(0, 0, currentW, currentH)
         self.chrome:Layout(0, 0, currentW, currentH)
         self.titleBar:Layout(0, 0, currentW, compact and currentH or titleH)
@@ -444,8 +461,7 @@ function Shell:Create(spec)
         end
         local chromeOk, compact, chromeErr = ApplyMinimizedChrome(self)
         if chromeOk ~= true then return false, chromeErr or "window_chrome_visibility_failed" end
-        local currentW = compact and self.minimizedWidth or width
-        local currentH = compact and self.minimizedSize or (self.minimized and titleH or height)
+        local currentW,currentH = self:GetVisibleSize(width,height)
         -- 维护：顶层 extent 拒绝必须阻断 Layout/Store，不能只判断 diff changed。
         local extentOk,_,extentErr = UI:EnsureExtent(self.window,currentW,currentH,self.owner)
         if extentOk ~= true then return false,extentErr or "window_extent_rejected" end
@@ -535,9 +551,7 @@ function Shell:Create(spec)
             self.windowController.pendingPlacement = true
             return true
         end
-        local compact = self.minimized and self.minimizeMode == "compact"
-        local rw = compact and self.minimizedWidth or w
-        local rh = compact and self.minimizedSize or (self.minimized and titleH or h)
+        local rw,rh = self:GetVisibleSize(w,h)
         -- 维护：子布局失败回滚到上次已提交的几何，不把正常内容更新变成 Native 坐标轮询。
         -- 真正需要强制重放的边沿由 Windowing 一次采集实际 Native，Shell 不重复采样。
         local cache=UI.NativeStateCache and UI.NativeStateCache[self.window]
@@ -580,7 +594,7 @@ function Shell:Create(spec)
         local c = S.Layout:GetContext()
         local w,h = math.min(pw,c.usableWidth),math.min(ph,c.usableHeight)
         local x,y,_,_,meta = S.Layout:ResolvePlacement(self.placementIntent,compact and self.minimizedWidth or pw,
-            compact and self.minimizedSize or ph,dx,dy,{topLevel=true,mode=tostring(spec.boundaryMode or "free"),topReachHeight=titleH,reason=reason})
+            compact and self.minimizedSize or (self.minimized and titleH or ph),dx,dy,{topLevel=true,mode=tostring(spec.boundaryMode or "free"),topReachHeight=titleH,reason=reason})
         return self:ApplyPlacementRect(x,y,w,h,meta,fromMetrics==true or reason=="explicit_reset" or reason=="show")
     end
 
@@ -643,6 +657,8 @@ function Shell:Create(spec)
             if self.windowController ~= nil then self.windowController:BringToFront() end
             Shell.metrics.shown = (tonumber(Shell.metrics.shown) or 0) + 1
         else
+            -- 隐藏意味着当前拖动已取消；松手事件可能不再派发，须立即释放捕获与手势任务。
+            if self.windowController ~= nil then self.windowController:CancelInteraction() end
             Shell.metrics.hidden = (tonumber(Shell.metrics.hidden) or 0) + 1
         end
         return true
@@ -717,31 +733,45 @@ function Shell:Create(spec)
         return released
     end
 
-    function shell:SetMinimized(minimized, persist)
+    function shell:SetMinimized(minimized, persist, commit)
         if self.destroyed == true then return false, "window_destroyed" end
         local nextValue = minimized == true
         if self.minimized == nextValue then return true, false end
+        if self.windowController and self.windowController:IsInteracting() then return false,"window_interacting" end
         local previous = self.minimized == true
         local previousVisible = self.visible == true
+        local bx,by,bw,bh=self:GetPlacementRect()
+        if bx==nil or by==nil or bw==nil or bh==nil then return false,"window_geometry_unavailable" end
+        local normalW,normalH=self.normalWidth,self.normalHeight
+        local previousInfo=self.placementInfo
+        local function Rollback(err)
+            self.minimized,self.visible=previous,previousVisible
+            self.normalWidth,self.normalHeight=normalW,normalH
+            local layoutOk=self:Layout(normalW,normalH)
+            local rectOk=RSUI.Windowing:ApplyGeometry(self.window,self.owner,bx,by,bw,bh,true)
+            local visibleOk=EnsureWindowVisible(self,previousVisible,"minimize_rollback")
+            self.placementInfo=previousInfo
+            self.minimizeButton:SetText(previous and "+" or "—")
+            Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
+            return false,tostring(err or "minimize_rejected")..((layoutOk~=true or rectOk~=true or visibleOk~=true) and ":rollback_rejected" or "")
+        end
 
-        -- 先建立 Native/布局，全部必需步骤成功后才发布并持久化 self.minimized/self.visible。
+        -- 大小切换也是几何事务：用旧实际矩形识别贴边，再按新实际矩形定位；保存失败回滚位置和尺寸。
+        local rect={x=bx,y=by,width=bw,height=bh}
         if self.minimizeMode == "collapse" or self.minimizeMode == "compact" then
             self.minimized = nextValue
-            local layoutOk, layoutErr = self:Layout(self.normalWidth, self.normalHeight)
-            if layoutOk ~= true then
-                self.minimized = previous
-                self:Layout(self.normalWidth, self.normalHeight)
-                Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
-                return false, layoutErr or "window_minimize_layout_failed"
-            end
+            local c=S.Layout:GetContext()
+            local w,h=math.min(normalW,c.usableWidth),math.min(normalH,c.usableHeight)
+            local rw,rh=self:GetVisibleSize(w,h)
+            local x,y,_,_,eh,ev=S.Layout:ResolveWindowSizeTransition(bx,by,bw,bh,rw,rh,
+                previousInfo and previousInfo.edgeH,previousInfo and previousInfo.edgeV)
+            local layoutOk,layoutErr=self:ApplyPlacementRect(x,y,w,h,{recoveryReason="size_transition",edgeH=eh,edgeV=ev},false)
+            if layoutOk~=true then return Rollback(layoutErr) end
+            eh,ev=S.Layout:GetWindowEdgeAffinity(x,y,rw,rh,eh,ev)
+            rect={x=x,y=y,width=rw,height=rh,edgeH=eh,edgeV=ev}
             if previousVisible then
                 local visibleOk, visibleErr = EnsureWindowVisible(self, true, "minimize_compact")
-                if visibleOk ~= true then
-                    self.minimized = previous
-                    self:Layout(self.normalWidth, self.normalHeight)
-                    Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
-                    return false, visibleErr
-                end
+                if visibleOk ~= true then return Rollback(visibleErr) end
                 if self.windowController ~= nil then self.windowController:BringToFront() end
             end
         elseif nextValue then
@@ -752,35 +782,25 @@ function Shell:Create(spec)
         else
             self.minimized = false
             local layoutOk, layoutErr = self:Layout(self.normalWidth, self.normalHeight)
-            if layoutOk ~= true then
-                self.minimized = previous
-                Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
-                return false, layoutErr or "window_restore_layout_failed"
-            end
+            if layoutOk ~= true then return Rollback(layoutErr) end
             local shownOk, shownErr = EnsureWindowVisible(self, true, "minimize_restore")
-            if shownOk ~= true then
-                self.minimized = previous
-                self:Layout(self.normalWidth, self.normalHeight)
-                Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
-                return false, shownErr
-            end
+            if shownOk ~= true then return Rollback(shownErr) end
             self.visible = true
             if self.windowController ~= nil then self.windowController:BringToFront() end
         end
 
         self.minimizeButton:SetText(self.minimized and "+" or "—")
-        if persist ~= false then
-            local stateOk, stateErr = self:NotifyState("minimize")
-            if stateOk ~= true then
-                self.minimized = previous
-                self.visible = previousVisible
-                self:Layout(self.normalWidth, self.normalHeight)
-                local visibilityOk = EnsureWindowVisible(self, previousVisible, "minimize_persist_rollback")
-                self.minimizeButton:SetText(self.minimized and "+" or "—")
-                Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
-                if visibilityOk ~= true then return false, "minimize_persist_rollback_visibility_failed:" .. tostring(stateErr or "state_rejected") end
-                return false, stateErr or "minimize_state_rejected"
-            end
+        -- Surface API 可在同一事务内选择持久或仅 Stage；按钮仍走原 NotifyState 入口。
+        if type(commit)=="function" then
+            local callOk,stateOk,stateErr=pcall(commit,rect)
+            if callOk~=true or stateOk~=true then return Rollback(stateErr or stateOk) end
+        elseif persist ~= false then
+            local stateOk,stateErr=self:NotifyState("minimize",nil,rect)
+            if stateOk~=true then return Rollback(stateErr) end
+        end
+        if spec.placementManagedExternally ~= true then
+            self.placementIntent={}
+            S.Layout:StoreWindowPlacementRect(self.placementIntent,rect.x,rect.y,rect.width,rect.height,{mode="free",edgeH=rect.edgeH,edgeV=rect.edgeV})
         end
         if nextValue then Shell.metrics.minimized = (tonumber(Shell.metrics.minimized) or 0) + 1
         else Shell.metrics.restored = (tonumber(Shell.metrics.restored) or 0) + 1 end
@@ -1155,6 +1175,7 @@ function Shell:Create(spec)
         local bound, bindErr = UI:RequireHandler(window, "OnHide", function()
             if shell.destroyed or shell.visibilityMutation or shell.visible ~= true then return true end
             shell.visible = false
+            if shell.windowController ~= nil then shell.windowController:CancelInteraction() end
             if type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(window) end
             -- 原生直接隐藏绕过 EnsureVisible，也须释放本窗口输入；不能清理游戏聊天或其它窗的焦点。
             if type(UI.ReleaseFocusWithin) == "function" then UI:ReleaseFocusWithin(window, shell.owner, "native_hide") end
@@ -1184,8 +1205,8 @@ function Shell:Create(spec)
     end
     shell.normalWidth, shell.normalHeight = width, height
     UI:SetAnchor(window, UIParent, x, y, owner)
-    local initialCompact = shell.minimized == true and shell.minimizeMode == "compact"
-    UI:SetExtent(window, initialCompact and shell.minimizedWidth or width, initialCompact and shell.minimizedSize or (shell.minimized and titleH or height), owner)
+    local initialW,initialH=shell:GetVisibleSize(width,height)
+    UI:SetExtent(window, initialW,initialH, owner)
     local initialHidden, initialHideErr = EnsureWindowVisible(shell, false, "initial_hide")
     if initialHidden ~= true then return FailBuild("window initial hide failed:" .. tostring(initialHideErr or "unknown")) end
     shell.windowController = RSUI.Windowing:Attach({
@@ -1216,7 +1237,8 @@ function Shell:Create(spec)
                 shell:Layout(previousW, previousH)
                 return false, layoutErr or "geometry_layout_rejected"
             end
-            local stateOk, stateErr = shell:NotifyState("geometry", geometryKind, { x = x, y = y, width = w, height = h })
+            local eh,ev=S.Layout:GetWindowEdgeAffinity(x,y,w,h,shell.placementInfo and shell.placementInfo.edgeH,shell.placementInfo and shell.placementInfo.edgeV)
+            local stateOk, stateErr = shell:NotifyState("geometry", geometryKind, { x = x, y = y, width = w, height = h,edgeH=eh,edgeV=ev })
             if stateOk ~= true then
                 shell.normalWidth, shell.normalHeight = previousW, previousH
                 shell:Layout(previousW, previousH)
@@ -1226,13 +1248,19 @@ function Shell:Create(spec)
             if spec.placementManagedExternally ~= true then
                 if geometryKind == "resize" then shell.preferredWidth,shell.preferredHeight=w,h end
                 shell.placementIntent = {}
-                S.Layout:StorePlacementRect(shell.placementIntent,x,y,w,h,{mode="free"})
+                S.Layout:StoreWindowPlacementRect(shell.placementIntent,x,y,w,h,{mode="free",edgeH=eh,edgeV=ev})
             end
+            shell.placementInfo=shell.placementInfo or {}
+            shell.placementInfo.edgeH,shell.placementInfo.edgeV=eh,ev
             return true
         end,
         onLiveGeometry = function(_, _, _, w, h, kind)
             if tostring(kind or "") == "resize" then return shell:LayoutInteractive(w, h) end
             return true
+        end,
+        onGeometryRollback = function(_, _, _, w, h)
+            if not shell.minimized then shell.normalWidth,shell.normalHeight=w,h end
+            return shell:Layout(shell.normalWidth,shell.normalHeight)
         end,
     })
     if shell.windowController == nil then return FailBuild("windowing attach failed") end

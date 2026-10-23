@@ -41,6 +41,10 @@ local POLICIES = {
         defaultOverallOpacity = 0.98, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
         defaultFontScale = 1.0, minFontScale = 0.85, maxFontScale = 1.20,
     },
+    trade_settings = { defaultWidth=380, defaultHeight=320, minWidth=320, minHeight=294 },
+    bonds_settings = { defaultWidth=380, defaultHeight=210, minWidth=320, minHeight=190 },
+    bag_settings = { defaultWidth=530, defaultHeight=430, minWidth=410, minHeight=300 },
+    player_notes = { defaultWidth=420, defaultHeight=460, minWidth=420, maxWidth=1000, minHeight=460, maxHeight=1000, defaultLocked=false },
 }
 
 local function Copy(value)
@@ -58,6 +62,7 @@ local function NormalizeWindow(id, value)
 end
 
 local CURRENT_POLICY_IDS = { "trade_detail", "trade_diagnostics", "quest_detail", "module_diagnostics" }
+local OPTIONAL_POLICY_IDS = { "trade_settings", "bonds_settings", "bag_settings", "player_notes" }
 local HISTORICAL_POLICY_SETS = {
     -- 约束（2026-09-22，aux-window-canonical-recovery-1）：quest_detail 在原 schema1 发布后
     -- 才加入 POLICIES，但旧 NormalizeState 会对“缺失窗口”主动补默认表。于是仅新增一个窗口类型就改变了
@@ -82,10 +87,17 @@ local function NormalizeStateWithPolicies(value, ids)
 end
 
 local function NormalizeState(value)
-    return NormalizeStateWithPolicies(value, CURRENT_POLICY_IDS)
+    local out = NormalizeStateWithPolicies(value, CURRENT_POLICY_IDS)
+    -- 新增辅助窗仅在首次真实提交后进入存档；缺失项不补默认，保持已发布 schema2 的旧 canonical 完全不变。
+    for _, id in ipairs(OPTIONAL_POLICY_IDS) do
+        if type(value) == "table" and type(value[id]) == "table" then out[id] = NormalizeWindow(id, value[id]) end
+    end
+    return out
 end
 
 local function RebuildHistoricalCanonical(decoded, stampedFingerprint, _currentCanonical, raw)
+    -- schema1 历史指纹从未覆盖这些新增窗口；不能在恢复旧章时夹带未经校验的新布局。
+    for _, id in ipairs(OPTIONAL_POLICY_IDS) do if type(decoded) == "table" and decoded[id] ~= nil then return nil end end
     local meta = type(raw) == "table" and raw.__rsmeta or nil
     local store = P:GetStore(STORE_ID)
     if type(store) ~= "table" then return nil end
@@ -164,12 +176,18 @@ function A:GetPolicy(id)
     return Copy(POLICIES[tostring(id or "")])
 end
 
-function A:GetWindowState(id)
+function A:GetWindowState(id, legacyWindowId)
     id = tostring(id or "")
     if POLICIES[id] == nil then return nil, "unknown auxiliary window: " .. id end
     local ok, err = self:EnsureLoaded()
     if ok ~= true then return nil, err end
-    return Copy(NormalizeWindow(id, self.state[id]))
+    local state = Copy(NormalizeWindow(id, self.state[id]))
+    -- 原会话设置窗的小锁已由 Chrome 保存；首次提交完整布局前继承它，之后只由本 Store 持有窗口状态。
+    local preferences = S.RSUI and S.RSUI.WindowPreferences
+    if self.state[id] == nil and legacyWindowId ~= nil and type(preferences) == "table" and type(preferences.GetLocked) == "function" then
+        state.locked = preferences:GetLocked(legacyWindowId) == true
+    end
+    return state
 end
 
 function A:SetWindowState(id, value, reason)

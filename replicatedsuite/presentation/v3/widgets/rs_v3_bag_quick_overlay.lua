@@ -84,13 +84,13 @@ function P:EnsurePositionLoaded(retry)
     return true
 end
 
-function P:CommitPosition(x,y)
+function P:CommitPosition(x,y,width,height)
     local loaded,err=self:EnsurePositionLoaded()
     if loaded~=true then return false,err end
     local ok,saveErr=Persistence:MutateStore(STORE_ID,function()
         local state={userMoved=true}
-        -- 固定使用静默栏尺寸记录位置意图，进度/错误文字扩展不能改变保存的中心点。
-        S.Layout:StorePlacementRect(state,x,y,COMPACT_WIDTH,32,{mode="free"})
+        -- 使用 Windowing 已提交的实际矩形；宽栏若仍按232保存，后续缩窄便无法识别原来的右边缘。
+        S.Layout:StorePlacementRect(state,x,y,math.max(1,tonumber(width) or COMPACT_WIDTH),math.max(1,tonumber(height) or 32),{mode="free"})
         self.positionState=NormalizePosition(state)
         return true
     end,{durable=true,reason="bag_quick_overlay:drag"})
@@ -277,7 +277,7 @@ function P:EnsureCreated()
                 end
                 return loaded==true
             end,
-            onGeometryChanged=function(_,x,y)return self:CommitPosition(x,y) end,
+            onGeometryChanged=function(_,x,y,w,h)return self:CommitPosition(x,y,w,h) end,
             onDragStop=function()self.appliedGeometry=nil;return self:Refresh() end,
         })
     end
@@ -337,8 +337,8 @@ function P:Refresh(forceGeometry)
         self.defaultPositionState=initial
     end
     local intent=self.positionState.userMoved==true and self.positionState or self.defaultPositionState
-    local x,y=S.Layout:ResolvePlacement(intent,COMPACT_WIDTH,32,defaultX,defaultY,{mode="free",topLevel=true,topReachHeight=32})
     width=math.min(width,tonumber(viewport.usableWidth) or logicalWidth)
+    local x,y=S.Layout:ResolvePlacement(intent,width,32,defaultX,defaultY,{mode="free",topLevel=true,topReachHeight=32})
     x,y=S.Layout:ClampTopLeft(x,y,width,32)
     self.placement={x=x,y=y,width=width,height=32,
         source=self.positionState.userMoved==true and "saved_free_position" or "default_free_position",

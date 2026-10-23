@@ -91,4 +91,21 @@ T('visible page retains one lease and geometry heartbeat does not rebind the ite
     assert(page:OnDeactivated());assert(F.consumerCount==0);assert(page:OnDeactivated());assert(F.consumerCount==0)
     assert(page:OnActivated());assert(F.consumerCount==1)
 end)
+T('floating bag settings use the persistent auxiliary geometry callbacks after cold reload',function()
+    local function Capture(options)
+        local h,S=Build(options)
+        S.UI.CreateWindowShell=S.UI.CreateWindowShell or function()return nil end
+        dofile('ui/framework/rs_ui_floating_surface.lua');dofile('presentation/v3/rs_v3_aux_window_store.lua')
+        local create=S.RSUI.FloatingSurface.Create;local captured
+        S.RSUI.FloatingSurface.Create=function(_,spec)captured=spec;return nil,'captured native boundary'end
+        dofile('presentation/v3/widgets/rs_v3_bag_settings_floating.lua')
+        local ok=S.UIV3.BagSettingsFloatingV3:EnsureCreated();assert(ok==false and captured,'bag settings did not reach surface')
+        S.RSUI.FloatingSurface.Create=create
+        return h,captured
+    end
+    local h,spec=Capture();local state=spec.getState();state.x,state.y,state.userMoved=456,234,true
+    state.coordinateSpace='logical-free-v2';assert(spec.setState(state,'geometry'));assert(spec.persist('geometry'))
+    local cold,restored=Capture({disk=h.Copy(h.disk),bag=h.bag});local value=restored.getState()
+    assert(value.x==456 and value.y==234 and value.userMoved,'bag settings lost its position on reload')
+end)
 print(('BAG_PAGE_RESULT passed=%d failed=%d'):format(passed,failed));if failed>0 then os.exit(1)end

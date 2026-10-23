@@ -554,6 +554,76 @@ Test('free FloatingSurface drag commit cannot persist an offscreen window',funct
     Full(h.S.Layout:GetContext(),n.x,n.y,n.w,n.h)
     Full(h.S.Layout:GetContext(),state.x,state.y,n.w,n.h)
 end)
+Test('ordinary floating windows stay onscreen during native drag before any Store commit',function()
+    for _,titleHeight in ipairs({22,34})do -- 活动窗与生活助手使用不同标题高度，但边界规则相同。
+        local h=Boot();local state=Save(h,300,200,420,286);local before=Snap(state)
+        local surface=h:Surface(state,{titleHeight=titleHeight});assert(surface:Show(true))
+        local n=surface.window;local c=surface.windowController;local drag=c.dragHandle
+        assert(drag.handlers.OnDragStart());local update=assert(drag.handlers.OnUpdate,'no shared live drag containment')
+        local writes,samples,resizeConfig=h.writes,h.samples,h.resizeConfigCalls
+        for _,point in ipairs({{-200,200},{300,-100},{3000,200},{300,3000}})do
+            n.x,n.y=point[1],point[2];update()
+            assert(n.x>=0 and n.y>=0 and n.x+n.w<=h.w and n.y+n.h<=h.h,'dragging window escaped screen')
+            assert(c:IsDragging() and n.moving,'boundary correction cancelled native drag')
+        end
+        Eq(h.writes,writes);Eq(h.samples,samples);Eq(h.resizeConfigCalls,resizeConfig)
+        assert(Snap(state)==before,'live drag wrote placement intent')
+        assert(drag.handlers.OnDragStop());assert(drag.handlers.OnUpdate==nil,'drag frame handler leaked')
+        Full(h.S.Layout:GetContext(),state.x,state.y,n.w,n.h)
+        local corrections=h.screenCorrections;update();Eq(h.screenCorrections,corrections,'retired drag callback still corrected')
+    end
+end)
+Test('live drag containment uses the shared gesture task and releases it on cancel',function()
+    local h=Boot();local state=Save(h,300,200,420,286);local surface=h:Surface(state);assert(surface:Show(true))
+    function h.S.Scheduler:AddInteractiveTask(id,interval,fn)
+        Eq(interval,16);h.tasks[id]=fn;return true
+    end
+    local c=surface.windowController;local drag=c.dragHandle;assert(drag.handlers.OnDragStart())
+    local taskName=assert(c.liveTaskName,'drag did not acquire interactive task');local tick=assert(h.tasks[taskName])
+    assert(drag.handlers.OnUpdate==nil,'scheduler and fallback both active')
+    surface.window.x=-300;tick();assert(surface.window.x>=0,'scheduled live drag did not constrain')
+    assert(c:CancelInteraction());assert(h.tasks[taskName]==nil,'cancel leaked interactive task')
+    local corrections=h.screenCorrections;tick();Eq(h.screenCorrections,corrections,'cancelled task still corrected')
+    assert(not surface.window.moving and surface.window.lease==false)
+end)
+Test('explicit recoverable floating windows keep their partial offscreen drag policy',function()
+    local h=Boot();local surface=h:Surface(Save(h,300,200,420,286),{boundaryMode='recoverable'});assert(surface:Show(true))
+    local c=surface.windowController;local drag=c.dragHandle;assert(drag.handlers.OnDragStart())
+    assert(c.liveTaskName==nil and drag.handlers.OnUpdate==nil,'recoverable window acquired full-screen drag constraint')
+    surface.window.x=-100;assert(drag.handlers.OnDragStop());Eq(surface.window.x,-100)
+    assert((h.screenCorrections or 0)==0)
+end)
+Test('hide close and destruction release live drag capture without committing a cancelled position',function()
+    for _,action in ipairs({'hide','close','destroy'})do
+        local h=Boot();local state=Save(h,300,200,420,286);local surface=h:Surface(state);assert(surface:Show(true))
+        local before=Snap(state);local c=surface.windowController;local drag=c.dragHandle
+        assert(drag.handlers.OnDragStart());local update=assert(drag.handlers.OnUpdate);local dragStop=drag.handlers.OnDragStop
+        local stop=surface.window.StopMovingOrSizing;local stopped=false
+        function surface.window:StopMovingOrSizing()
+            stop(self)
+            -- 原生释放捕获可能同步派发 DragStop；取消必须先撤销提交资格。
+            if not stopped then stopped=true;dragStop()end
+            return true
+        end
+        surface.window.x=-300
+        if action=='destroy' then surface.shell:Destroy()
+        elseif action=='close' then assert(surface.shell:Close('test'))else assert(surface:Show(false))end
+        assert(not c:IsInteracting() and not surface.window.moving,'hidden window retained native drag')
+        assert(drag.handlers.OnUpdate==nil and c.liveTaskName==nil,'hidden window retained drag work')
+        update();dragStop();assert(Snap(state)==before,'hidden drag persisted position')
+    end
+end)
+Test('native drag correction failures stay observable and do not write Store',function()
+    local h=Boot();local surface=h:Surface(Save(h,300,200,420,286));assert(surface:Show(true))
+    local c=surface.windowController;local drag=c.dragHandle;assert(drag.handlers.OnDragStart())
+    local correct=surface.window.CorrectOffsetByScreen;surface.window.CorrectOffsetByScreen=function()error('injected_screen_correction_failure')end
+    local writes=h.writes;assert(c:PulseLiveGeometry(false)==false);Eq(h.writes,writes)
+    Eq(h.S.RSUI.Windowing:Describe().liveDragBoundaryFailures,1)
+    surface.window.CorrectOffsetByScreen=correct;surface.window.x=-100
+    assert(c:PulseLiveGeometry(false));Eq(surface.window.x,0)
+    Eq(h.S.RSUI.Windowing:Describe().liveDragBoundaryChecks,1)
+    assert(c:CancelInteraction())
+end)
 -- 与功能方案相同的空拖动必须保留 Gear 点击，不得为静止手势写位置。
 Test('Gear stationary native drag does not suppress click or persist placement',function()
     local h=Boot();local gear,row=BootGear(h);gear.visible=true
