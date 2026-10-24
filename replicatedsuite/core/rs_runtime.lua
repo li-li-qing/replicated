@@ -92,8 +92,19 @@ function R:Stop()
     if S.RefreshCoordinator ~= nil and type(S.RefreshCoordinator.ClearAll) == "function" then
         pcall(function() S.RefreshCoordinator:ClearAll() end)
     end
+    -- 维护：共享 Service 的租约不一定属于 Feature；ClearAll 失败不能被 pcall 的“调用未抛错”吞掉。
+    -- 无论释放是否成功仍继续停 Events/Scheduler/外壳，最后向调用者返回失败，保留正常重试入口。
+    local demandOk, demandErr = true, nil
     if S.Demand ~= nil and type(S.Demand.ClearAll) == "function" then
-        pcall(function() S.Demand:ClearAll("runtime_stop") end)
+        local callOk, cleared, clearErr = pcall(function() return S.Demand:ClearAll("runtime_stop") end)
+        if callOk ~= true or cleared ~= true then
+            demandOk = false
+            demandErr = callOk == true and tostring(clearErr or "demand cleanup failed") or tostring(cleared)
+            if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Emit) == "function" then
+                S.DiagnosticsManager:Emit("error", "runtime", "RUNTIME_STOP_DEMAND_FAILED",
+                    "Runtime 关闭时共享需求释放失败；已继续静默事件、任务和外壳", { error = demandErr })
+            end
+        end
     end
     if S.Layout and type(S.Layout.StopMetricsEvents) == "function" then pcall(function() S.Layout:StopMetricsEvents() end) end
     if S.Events ~= nil and type(S.Events.Stop) == "function" then pcall(function() S.Events:Stop() end) end
@@ -104,6 +115,7 @@ function R:Stop()
     end
     if persistenceOk ~= true then return false, persistenceErr end
     if featureOk ~= true then return false, featureErr end
+    if demandOk ~= true then return false, demandErr end
     return true
 end
 

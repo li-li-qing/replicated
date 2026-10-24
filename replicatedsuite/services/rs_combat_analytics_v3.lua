@@ -156,29 +156,65 @@ function A:NotifyMetricChanged(reason)
     return self:_SchedulePublish(reason or "metric_changed")
 end
 
+-- 维护：固定位置的紧凑数组复用容量，避免每条事件重建 37 项字符串键快照。
+local function CaptureCombatFact(v, fact)
+    v[1], v[2], v[3], v[4] = fact.schemaVersion, fact.sequence, fact.receivedAt, fact.transport
+    v[5], v[6], v[7], v[8] = fact.kind, fact.category, fact.environmental, fact.amount
+    v[9], v[10], v[11], v[12] = fact.sourceName, fact.targetName, fact.sourceId, fact.targetId
+    v[13], v[14], v[15], v[16] = fact.sourceKind, fact.targetKind, fact.abilityName, fact.boundRole
+    v[17], v[18], v[19], v[20] = fact.boundConfidence, fact.rawUnitId, fact.rawEventType, fact.rawAbilityId
+    v[21], v[22], v[23], v[24] = fact.rawDamageType, fact.rawEffectType, fact.rawIsActive, fact.rawMore1
+    v[25], v[26], v[27], v[28] = fact.rawMore2, fact.rawMore3, fact.rawMore4, fact.rawMore5
+    v[29], v[30], v[31], v[32] = fact.subjectName, fact.rawNotice2, fact.rawNotice3, fact.rawNotice4
+    v[33], v[34], v[35], v[36] = fact.rawNotice5, fact.auraType, fact.auraId, fact.auraName
+    v[37] = fact.auraEvidence
+end
 local function RestoreCombatFact(fact, v)
-    fact.schemaVersion, fact.sequence, fact.receivedAt, fact.transport = v.schemaVersion, v.sequence, v.receivedAt, v.transport
-    fact.kind, fact.category, fact.environmental, fact.amount = v.kind, v.category, v.environmental, v.amount
-    fact.sourceName, fact.targetName, fact.sourceId, fact.targetId = v.sourceName, v.targetName, v.sourceId, v.targetId
-    fact.sourceKind, fact.targetKind, fact.abilityName = v.sourceKind, v.targetKind, v.abilityName
-    fact.boundRole, fact.boundConfidence = v.boundRole, v.boundConfidence
-    fact.rawUnitId, fact.rawEventType, fact.rawAbilityId = v.rawUnitId, v.rawEventType, v.rawAbilityId
-    fact.rawDamageType, fact.rawEffectType, fact.rawIsActive = v.rawDamageType, v.rawEffectType, v.rawIsActive
-    fact.rawMore1, fact.rawMore2, fact.rawMore3, fact.rawMore4, fact.rawMore5 = v.rawMore1, v.rawMore2, v.rawMore3, v.rawMore4, v.rawMore5
-    fact.subjectName, fact.rawNotice2, fact.rawNotice3, fact.rawNotice4, fact.rawNotice5 = v.subjectName, v.rawNotice2, v.rawNotice3, v.rawNotice4, v.rawNotice5
-    fact.auraType, fact.auraId, fact.auraName, fact.auraEvidence = v.auraType, v.auraId, v.auraName, v.auraEvidence
+    fact.schemaVersion, fact.sequence, fact.receivedAt, fact.transport = v[1], v[2], v[3], v[4]
+    fact.kind, fact.category, fact.environmental, fact.amount = v[5], v[6], v[7], v[8]
+    fact.sourceName, fact.targetName, fact.sourceId, fact.targetId = v[9], v[10], v[11], v[12]
+    fact.sourceKind, fact.targetKind, fact.abilityName = v[13], v[14], v[15]
+    fact.boundRole, fact.boundConfidence = v[16], v[17]
+    fact.rawUnitId, fact.rawEventType, fact.rawAbilityId = v[18], v[19], v[20]
+    fact.rawDamageType, fact.rawEffectType, fact.rawIsActive = v[21], v[22], v[23]
+    fact.rawMore1, fact.rawMore2, fact.rawMore3, fact.rawMore4, fact.rawMore5 = v[24], v[25], v[26], v[27], v[28]
+    fact.subjectName, fact.rawNotice2, fact.rawNotice3, fact.rawNotice4, fact.rawNotice5 = v[29], v[30], v[31], v[32], v[33]
+    fact.auraType, fact.auraId, fact.auraName, fact.auraEvidence = v[34], v[35], v[36], v[37]
 end
 local function CombatFactChanged(fact, v)
-    return fact.schemaVersion ~= v.schemaVersion or fact.sequence ~= v.sequence or fact.receivedAt ~= v.receivedAt or fact.transport ~= v.transport
-        or fact.kind ~= v.kind or fact.category ~= v.category or fact.environmental ~= v.environmental or fact.amount ~= v.amount
-        or fact.sourceName ~= v.sourceName or fact.targetName ~= v.targetName or fact.sourceId ~= v.sourceId or fact.targetId ~= v.targetId
-        or fact.sourceKind ~= v.sourceKind or fact.targetKind ~= v.targetKind or fact.abilityName ~= v.abilityName
-        or fact.boundRole ~= v.boundRole or fact.boundConfidence ~= v.boundConfidence
-        or fact.rawUnitId ~= v.rawUnitId or fact.rawEventType ~= v.rawEventType or fact.rawAbilityId ~= v.rawAbilityId
-        or fact.rawDamageType ~= v.rawDamageType or fact.rawEffectType ~= v.rawEffectType or fact.rawIsActive ~= v.rawIsActive
-        or fact.rawMore1 ~= v.rawMore1 or fact.rawMore2 ~= v.rawMore2 or fact.rawMore3 ~= v.rawMore3 or fact.rawMore4 ~= v.rawMore4 or fact.rawMore5 ~= v.rawMore5
-        or fact.subjectName ~= v.subjectName or fact.rawNotice2 ~= v.rawNotice2 or fact.rawNotice3 ~= v.rawNotice3 or fact.rawNotice4 ~= v.rawNotice4 or fact.rawNotice5 ~= v.rawNotice5
-        or fact.auraType ~= v.auraType or fact.auraId ~= v.auraId or fact.auraName ~= v.auraName or fact.auraEvidence ~= v.auraEvidence
+    return fact.schemaVersion ~= v[1] or fact.sequence ~= v[2] or fact.receivedAt ~= v[3] or fact.transport ~= v[4]
+        or fact.kind ~= v[5] or fact.category ~= v[6] or fact.environmental ~= v[7] or fact.amount ~= v[8]
+        or fact.sourceName ~= v[9] or fact.targetName ~= v[10] or fact.sourceId ~= v[11] or fact.targetId ~= v[12]
+        or fact.sourceKind ~= v[13] or fact.targetKind ~= v[14] or fact.abilityName ~= v[15]
+        or fact.boundRole ~= v[16] or fact.boundConfidence ~= v[17]
+        or fact.rawUnitId ~= v[18] or fact.rawEventType ~= v[19] or fact.rawAbilityId ~= v[20]
+        or fact.rawDamageType ~= v[21] or fact.rawEffectType ~= v[22] or fact.rawIsActive ~= v[23]
+        or fact.rawMore1 ~= v[24] or fact.rawMore2 ~= v[25] or fact.rawMore3 ~= v[26] or fact.rawMore4 ~= v[27] or fact.rawMore5 ~= v[28]
+        or fact.subjectName ~= v[29] or fact.rawNotice2 ~= v[30] or fact.rawNotice3 ~= v[31] or fact.rawNotice4 ~= v[32] or fact.rawNotice5 ~= v[33]
+        or fact.auraType ~= v[34] or fact.auraId ~= v[35] or fact.auraName ~= v[36] or fact.auraEvidence ~= v[37]
+end
+
+-- 维护：团战热路复用最多 8 层私有工作区，保护快照和 xpcall 闭包不再逐事件/逐指标分配。
+-- 每层独立避免指标同步重入覆盖外层事实；更深层仍用临时帧，不能无限扩大常驻缓存。
+local factFrames, factDepth, FACT_FRAME_LIMIT, FACT_FIELD_COUNT = {}, 0, 8, 37
+local function AcquireFactFrame(fact)
+    factDepth = factDepth + 1
+    local frame = factFrames[factDepth]
+    if frame == nil then
+        frame = { snapshot = {} }
+        for index = 1, FACT_FIELD_COUNT do frame.snapshot[index] = false end -- 只在创建工作区时保留数组容量。
+        frame.invoke = function() return frame.metric.OnFact(frame.metric, frame.fact, A) end
+        if factDepth <= FACT_FRAME_LIMIT then factFrames[factDepth] = frame end
+    end
+    frame.fact = fact
+    CaptureCombatFact(frame.snapshot, fact) -- 完整覆盖 nil 可选字段，不能把上一条事实带到下一条。
+    return frame
+end
+local function ReleaseFactFrame(frame)
+    -- 借用事实和原生尾参可能含对象；结束后清引用，只保留固定表容量，不延长对象生命周期。
+    frame.fact, frame.metric = nil, nil
+    for index = 1, FACT_FIELD_COUNT do frame.snapshot[index] = nil end
+    factDepth = factDepth - 1
 end
 -- （2026-10-08）首个指标前的过滤过去没有死者证据。只为 death 类记录32槽标量环，
 -- 由 Analytics 自己解释采集范围；不扩大自身 Actor、伤害账本或订阅，计数保留本代全部过滤原因。
@@ -221,24 +257,15 @@ function A:_DispatchFact(fact)
     if self:GetCollectionScope() == "self" and self:IsRelevantSelfFact(fact) ~= true then RecordDeathIngress(self,fact,"self_scope_filtered");return false end -- 排除他人仍保留有界死亡入口证据。
     RecordDeathIngress(self,fact,"accepted") -- 只证明进入指标链，最终归属仍以 kills 的 decision 为准。
     self.factsReceived = self.factsReceived + 1
-    -- 一个紧凑标量快照保护同级指标互不污染；上层 CombatEventBus 仍执行完整消费者隔离。
-    local v = {
-        schemaVersion=fact.schemaVersion, sequence=fact.sequence, receivedAt=fact.receivedAt, transport=fact.transport,
-        kind=fact.kind, category=fact.category, environmental=fact.environmental, amount=fact.amount,
-        sourceName=fact.sourceName, targetName=fact.targetName, sourceId=fact.sourceId, targetId=fact.targetId,
-        sourceKind=fact.sourceKind, targetKind=fact.targetKind, abilityName=fact.abilityName,
-        boundRole=fact.boundRole, boundConfidence=fact.boundConfidence,
-        rawUnitId=fact.rawUnitId, rawEventType=fact.rawEventType, rawAbilityId=fact.rawAbilityId,
-        rawDamageType=fact.rawDamageType, rawEffectType=fact.rawEffectType, rawIsActive=fact.rawIsActive,
-        rawMore1=fact.rawMore1, rawMore2=fact.rawMore2, rawMore3=fact.rawMore3, rawMore4=fact.rawMore4, rawMore5=fact.rawMore5,
-        subjectName=fact.subjectName, rawNotice2=fact.rawNotice2, rawNotice3=fact.rawNotice3, rawNotice4=fact.rawNotice4, rawNotice5=fact.rawNotice5,
-        auraType=fact.auraType, auraId=fact.auraId, auraName=fact.auraName, auraEvidence=fact.auraEvidence,
-    }
+    -- 复用的完整标量快照仍保护同级指标互不污染；上层 CombatEventBus 保留完整消费者隔离。
+    local frame = AcquireFactFrame(fact)
+    local v = frame.snapshot
     local changed = false
     for _, id in ipairs(plan) do
         local metric = self.metrics[id]
         if metric and type(metric.OnFact) == "function" then
-            local ok, result = xpcall(function() return metric.OnFact(metric, fact, A) end, Trace)
+            frame.metric = metric
+            local ok, result = xpcall(frame.invoke, Trace)
             self.metricDispatches = self.metricDispatches + 1
             if CombatFactChanged(fact, v) then
                 self.metricMutations = self.metricMutations + 1
@@ -249,6 +276,7 @@ function A:_DispatchFact(fact)
             elseif result == true then changed = true end
         end
     end
+    ReleaseFactFrame(frame)
     if changed then self:_SchedulePublish("combat_fact") end
     return changed
 end

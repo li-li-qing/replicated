@@ -233,12 +233,14 @@ function F:GetRaidOverlayProjection()
     local roster = self:GetRosterProjection()
     local recommendation = self.Recommendation
     if type(recommendation) ~= "table" or type(recommendation.GetRaidDisplayProjection) ~= "function" then
-        return { revision=0, rosterCount=tonumber(roster and roster.count) or 0, candidateCount=0, rows={} }
+        return { revision=0, rosterCount=tonumber(roster and roster.count) or 0, candidateCount=0, rows={} }, roster
     end
     local presentation = type(self.GetPresentationSettings) == "function" and self:GetPresentationSettings("raid") or nil
+    -- 同轮复用已 detached 的名单供覆盖层定位槽位，避免再深拷贝全员；首返回投影保持原形状。
+    -- 名单只经本次返回传递，不跨帧缓存；调用方反向修改仍不能污染 Roster Authority。
     return recommendation:GetRaidDisplayProjection(type(roster) == "table" and roster.members or {}, {
         proximityMode = type(presentation) ~= "table" or presentation.proximityMode ~= false,
-    })
+    }), roster
 end
 
 -- 解析可见覆盖面板的团队身份；RaidTeam 与屏幕容器 RaidPanel 解耦，Native 团队切换/手动覆盖可改变绑定而不改几何。返回有序 {id=A或B,team=1或2,geometry,isOnly} 列表。

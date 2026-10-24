@@ -305,8 +305,11 @@ function F:EnsureStoreLoaded()
 end
 
 function F:MarkStoreDirty(delayMs, reason)
-    -- 低频窗口位置/折叠事务需要回读耐久；连续外观调整仍去抖。
-    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" then
+    -- 低频窗口位置/折叠事务需要回读耐久；外观预览由 Native 单独承担。
+    -- 维护：活动窗锁定/解锁属于已完成的用户操作，沿原 Store 同步回读；兼容旧标题按钮 widget_lock 原因。
+    -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" or reason == "widget_locked" or reason == "widget_lock"
+        or reason == "widget_overall_opacity" or reason == "widget_background_opacity" or reason == "widget_text_opacity" or reason == "widget_font_scale" then
         return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason })
     end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 500, reason or "activity_changed")

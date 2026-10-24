@@ -79,20 +79,22 @@ local function IsStatusValidForRule(status, rule)
 end
 
 local function RuleMatches(settings, rule, statuses, healthPercent, distance)
-    if not rule.enabled or #(rule.ids or {}) == 0 then return false, {} end
-    if rule.healthRangeEnabled and (healthPercent < rule.healthMin or healthPercent > rule.healthMax) then return false, {} end
+    if not rule.enabled or #(rule.ids or {}) == 0 then return false end
+    if rule.healthRangeEnabled and (healthPercent < rule.healthMin or healthPercent > rule.healthMax) then return false end
     local ruleDistance = rule.distanceMode == 2 and rule.customDistance or settings.maxDistance
-    if distance == nil or distance > ruleDistance then return false, {} end
-    local matched = {}
+    if distance == nil or distance > ruleDistance then return false end
+    -- 评分与显示只消费命中布尔值，不构造无人读取的 ID 数组；ANY 首次命中即可返回，ALL 仍逐项校验。
+    local matched = 0
     for _, id in ipairs(rule.ids or {}) do
         if IsStatusValidForRule(statuses[id], rule) then
-            matched[#matched + 1] = id
+            if rule.matchMode == 1 then return true end
+            matched = matched + 1
         elseif rule.matchMode == 2 then
-            return false, {}
+            return false
         end
     end
-    if rule.matchMode == 1 then return #matched > 0, matched end
-    return #matched == #(rule.ids or {}), matched
+    if rule.matchMode == 1 then return false end
+    return matched == #(rule.ids or {})
 end
 
 local function HasSimpleDisplayGroups(settings)
@@ -135,9 +137,8 @@ local function FindHighestDisplayRuleMatch(settings, statuses, healthPercent, di
     local best = nil
     for ruleIndex, rule in ipairs(settings.rules or {}) do
         if rule ~= nil and rule.simpleDisplayGroup == true then
-            local matched, matchedIds = RuleMatches(settings, rule, statuses or {}, healthPercent, distance)
-            if matched then
-                local candidate = { rule = rule, ruleIndex = ruleIndex, matchedIds = matchedIds }
+            if RuleMatches(settings, rule, statuses or {}, healthPercent, distance) then
+                local candidate = { rule = rule, ruleIndex = ruleIndex }
                 if best == nil
                     or rule.displayPriority > best.rule.displayPriority
                     or (rule.displayPriority == best.rule.displayPriority and ruleIndex < best.ruleIndex) then
@@ -250,9 +251,8 @@ function D:Evaluate(member, snapshot, statuses, memoryStore, evaluationTime)
     local highestDisplayRule = nil
 
     for ruleIndex, rule in ipairs(settings.rules or {}) do
-        local matched, matchedIds = RuleMatches(settings, rule, statuses, healthPercent, distance)
-        if matched then
-            local match = { rule = rule, ruleIndex = ruleIndex, matchedIds = matchedIds }
+        if RuleMatches(settings, rule, statuses, healthPercent, distance) then
+            local match = { rule = rule, ruleIndex = ruleIndex }
             matchedRules[#matchedRules + 1] = match
             if rule.countsAsProtection then hasProtection = true end
             if rule.effectType == 3 then
@@ -532,7 +532,8 @@ function D:GetRaidDisplayProjection(members, options)
                         isSelf = member.isSelf == true,
                         healthPercent = healthPercent,
                         distance = distance,
-                        color = CopyColor(color),
+                        -- 两条分支都已生成独立色表；直接交给本次投影，不再复制后丢弃中间表。
+                        color = color,
                         colorReason = colorReason,
                         visualPriority = visualPriority,
                         isCandidate = type(candidate) == "table",

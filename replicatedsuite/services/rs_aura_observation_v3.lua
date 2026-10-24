@@ -55,40 +55,49 @@ local function CopyShallow(value)
     return out
 end
 
-local function ExtractEffectId(data, tooltip)
+local function PickEffectId(row)
     -- 优先 buff_id：唯一有实机证据的字段，wbdebuff/buffblackdragon.lua:46 用 UnitDeBuff(...)["buff_id"] 匹
     -- 配 23474/25846。若 effectId 与其不同，不能拿来作状态 map 键，否则数字 ID 规则全部静默失配。
-    local function Pick(row)
-        if type(row) ~= "table" then return nil end
-        return tonumber(row.buff_id or row.buffId or row.buffID or row.effectId or row.effect_id or row.id or row.buffType or row.buff_type or row.type)
-    end
-    return Pick(data) or Pick(tooltip)
+    if type(row) ~= "table" then return nil end
+    return tonumber(row.buff_id or row.buffId or row.buffID or row.effectId or row.effect_id or row.id or row.buffType or row.buff_type or row.type)
 end
 
+local function ExtractEffectId(data, tooltip)
+    return PickEffectId(data) or PickEffectId(tooltip)
+end
+
+-- 每行会多次提取字段；直接检查两份原始来源，避免反复创建捕获keys的临时闭包。
+-- 仍先完整扫描primary的别名，再扫描secondary；0有效，false/非法数字不阻止后续别名。
 local function PickNumber(primary, secondary, keys)
-    local function Pick(row)
-        if type(row) == "table" then
-            for _, key in ipairs(keys) do
-                local value = tonumber(row[key])
-                if value ~= nil then return value end
-            end
+    if type(primary) == "table" then
+        for _, key in ipairs(keys) do
+            local value = tonumber(primary[key])
+            if value ~= nil then return value end
         end
-        return nil
     end
-    return Pick(primary) or Pick(secondary)
+    if type(secondary) == "table" then
+        for _, key in ipairs(keys) do
+            local value = tonumber(secondary[key])
+            if value ~= nil then return value end
+        end
+    end
+    return nil
 end
 
 local function PickString(primary, secondary, keys)
-    local function Pick(row)
-        if type(row) == "table" then
-            for _, key in ipairs(keys) do
-                local value = row[key]
-                if type(value) == "string" and value ~= "" then return value end
-            end
+    if type(primary) == "table" then
+        for _, key in ipairs(keys) do
+            local value = primary[key]
+            if type(value) == "string" and value ~= "" then return value end
         end
-        return nil
     end
-    return Pick(primary) or Pick(secondary)
+    if type(secondary) == "table" then
+        for _, key in ipairs(keys) do
+            local value = secondary[key]
+            if type(value) == "string" and value ~= "" then return value end
+        end
+    end
+    return nil
 end
 
 -- Buff ID 到名称/图标解析归共享 BuffMetadataV3，通过 X2Ability:GetBuffTooltip、有界缓存及负缓存；此文件只保

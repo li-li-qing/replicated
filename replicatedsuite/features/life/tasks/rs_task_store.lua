@@ -177,7 +177,10 @@ end
 
 function F:MarkStoreDirty(delayMs, reason)
     -- 位置/折叠提交当场写入并回读；delay=0 仍是待保存，不能保证重载耐久。
-    if reason == "task_widget_geometry" or reason == "task_widget_layout_reset" or reason == "task_widget_minimized" then
+    -- 维护：任务窗锁定与解锁也要同步耐久，保留 task_widget 前缀及旧按钮 lock 原因的兼容入口。
+    -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+    if reason == "task_widget_geometry" or reason == "task_widget_layout_reset" or reason == "task_widget_minimized" or reason == "task_widget_locked" or reason == "task_widget_lock"
+        or reason == "task_widget_overall_opacity" or reason == "task_widget_background_opacity" or reason == "task_widget_text_opacity" or reason == "task_widget_font_scale" then
         return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason })
     end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 350, reason or "task_tracking_changed")

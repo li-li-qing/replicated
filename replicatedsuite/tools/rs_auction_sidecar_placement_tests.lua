@@ -88,5 +88,23 @@ Test('rejected minimize save restores actual and stored expanded rectangle',func
     assert(not s.shell.minimized and not h.sidecarSpec.getState().minimized)
     Eq(s.window.x,x);Eq(s.window.y,y);Eq(s.window.w,w);Eq(s.window.h,hh)
 end)
+-- 维护：小锁只在原 Position Store 中持有 true，解锁缺键必须保留旧 canonical，冷启不依赖 Scheduler/退出 Flush。
+Test('lock and unlock survive immediate reload and unlocked canonical omits the new key',function()
+    local h=Boot();local s=h:CreateSidecar();assert(s.shell.lockButton.spec.onClick());assert(h.controller.positionState.locked==true)
+    local cold=Boot(Copy(h.disk));local restored=cold:CreateSidecar();assert(restored:IsLocked(),'title lock lost on cold creation')
+    assert(cold.S.Persistence:GetStore(STORE).lastIntegrityStatus=='verified_canonical')
+    assert(restored:SetLocked(false,true));assert(cold.controller.positionState.locked==nil,'unlock added false to old canonical')
+    local again=Boot(Copy(cold.disk));assert(again:CreateSidecar():IsLocked()==false,'unlock lost on cold creation')
+    assert(again.S.Persistence:GetStore(STORE).lastIntegrityStatus=='verified_canonical')
+end)
+-- 维护：拒写必须沿 Floating/Shell 的原回滚链恢复位置档与 Native 小锁；显式预览继续不产生存档写入。
+Test('lock save rejection restores Native and position state while preview remains memory only',function()
+    local h=Boot();local s=h:CreateSidecar();Drag(s,440,280);h.failSave=true
+    assert(s:SetLocked(true,true)==false,'failed lock persistence reported success')
+    assert(s:IsLocked()==false and h.controller.positionState.locked==nil)
+    assert(s.shell.lockButton.spec.onClick()==false,'failed title lock persistence reported success')
+    assert(s:IsLocked()==false and h.controller.positionState.locked==nil)
+    local before=h.diskWrites;assert(s:SetLocked(true,false));assert(s:IsLocked());assert(h.diskWrites==before)
+end)
 print(string.format('AUCTION PLACEMENT RESULT %d passed / %d failed (%s)',pass,fail,_VERSION))
 assert(fail==0,'auction placement failures: '..fail)

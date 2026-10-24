@@ -586,6 +586,13 @@ local function MakeDynamicOccurrence(options)
     options = type(options) == "table" and options or {}
     local active = options.active == true
     local seconds = math.max(0, math.floor(tonumber(options.seconds) or 0))
+    local status = active and ("预计"..FormatCountdown(seconds).."后结束") or (FormatCountdown(seconds).."后开始")
+    -- 维护：鲸鱼 Boss 行回答“何时出现”；到点后的短提示窗口不是 Boss 存活时间，不能写成“后结束”。
+    if options.phase == "boss_countdown" then
+        status = tostring(math.ceil(seconds / 60)) .. "分钟后出现" -- 维护：不足一分钟仍显示 1 分钟，避免尚未到点就显示 0。
+    elseif options.phase == "boss_active" then
+        status = "已到预计出现时间"
+    end
     return {
         key = tostring(options.key or "dynamic:unknown"),
         name = tostring(options.name or "活动"),
@@ -610,9 +617,8 @@ local function MakeDynamicOccurrence(options)
         -- 这里只消费已经计算出的 active/seconds，不把 live 区域的原始 tone 传播进来；upcoming 在 10 分钟内由统一 TimelineTone 标红，
         -- live 区域本身继续由 ZONE_VIEW 独立着色；不改变区域 Authority、扫描频率、排序或存档。
         tone = TimelineTone(active, active and 0 or seconds),
-        -- 区域推导倒计时仍需明确方向；不将 Boss/战争计划窗口声称为存活事实。
-        -- 区域推导活动与固定日程采用同样的开始/结束方向；不把计划结束声明为首领死亡时间。
-        status = active and ("预计"..FormatCountdown(seconds).."后结束") or (FormatCountdown(seconds).."后开始"),
+        -- 普通活动继续表达开始/计划结束方向；首领出现提示使用上方显式 phase 文案。
+        status = status,
         scheduleText = "实时推导",
         occurrenceKey = tostring(options.key or "dynamic:unknown") .. ":" .. tostring(options.phase or "derived"),
     }

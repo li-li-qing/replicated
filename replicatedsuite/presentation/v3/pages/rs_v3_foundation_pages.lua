@@ -257,8 +257,11 @@ local function BuildWidgets(parent, route)
     -- 维护（2026-09-15，numeric-range-v2）：透明度百分比是归一化业务量，不属于“推荐窗口”。
     -- 明确固定 0..100，防止通用自适应 Slider 把非法精确输入扩展成新的范围；Authority 仍由 WidgetHost/Feature
     -- 回读确认，旧 appearance 配置与持久化键不变。
+    -- 维护：NumericField 拖动预览不调用 set；完成操作直接由 Host/原 Feature Owner 耐久提交。
+    -- 不再附 storeId 二次持久绑定，否则 PersistentBinding 会把 Domain setter 当成 false 暂存并只排期，立即退出仍可能丢值。
     local overallOpacityField = D:NumericSetting(activityStack, {
         id = "v3_widgets_activity_overall_opacity", label = "整体透明度", hint = "作用于整个悬浮窗，并与背景/文字透明度相乘；可直接输入 0–100。",
+        autoCommit = true, -- 原 Owner 已耐久提交；这里只清理 Binding 草稿反馈，不再创建第二次保存。
         min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function()
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
@@ -268,13 +271,13 @@ local function BuildWidgets(parent, route)
         set = function(value)
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             if host == nil then return false, "悬浮组件宿主不可用" end
-            return host:SetAppearance("life.activities", "overall", (tonumber(value) or 94) / 100, false)
+            return host:SetAppearance("life.activities", "overall", (tonumber(value) or 94) / 100, true) -- 原窗口 Owner 保存并读回后才向 NumericField 报成功。
         end,
-        storeId = ACTIVITIES_STORE_ID, persistDelayMs = 250, persistReason = "activity_widget_overall_opacity",
         slot = { size = "auto", minHeight = 62, hAlign = "fill" },
     })
     local backgroundOpacityField = D:NumericSetting(activityStack, {
         id = "v3_widgets_activity_background_opacity", label = "背景透明度", hint = "只调整面板、边框、按钮等背景，不降低文字清晰度；可直接输入 0–100。",
+        autoCommit = true,
         min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function()
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
@@ -284,13 +287,13 @@ local function BuildWidgets(parent, route)
         set = function(value)
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             if host == nil then return false, "悬浮组件宿主不可用" end
-            return host:SetAppearance("life.activities", "background", (tonumber(value) or 100) / 100, false)
+            return host:SetAppearance("life.activities", "background", (tonumber(value) or 100) / 100, true) -- 背景零透明度也经原 Store durable 保护。
         end,
-        storeId = ACTIVITIES_STORE_ID, persistDelayMs = 250, persistReason = "activity_widget_background_opacity",
         slot = { size = "auto", minHeight = 62, hAlign = "fill" },
     })
     local textOpacityField = D:NumericSetting(activityStack, {
         id = "v3_widgets_activity_text_opacity", label = "文字透明度", hint = "只调整标题、状态、表格文字和按钮文字；可直接输入 0–100。",
+        autoCommit = true,
         min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function()
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
@@ -300,9 +303,8 @@ local function BuildWidgets(parent, route)
         set = function(value)
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             if host == nil then return false, "悬浮组件宿主不可用" end
-            return host:SetAppearance("life.activities", "text", (tonumber(value) or 100) / 100, false)
+            return host:SetAppearance("life.activities", "text", (tonumber(value) or 100) / 100, true) -- 保存失败由 Surface/Adapter 恢复原值，不能留成成功草稿。
         end,
-        storeId = ACTIVITIES_STORE_ID, persistDelayMs = 250, persistReason = "activity_widget_text_opacity",
         slot = { size = "auto", minHeight = 62, hAlign = "fill" },
     })
     local activityFeature = S.Features and S.Features.Activities or nil
@@ -387,32 +389,33 @@ local function BuildWidgets(parent, route)
     local function GearAppearanceSet(channel, value)
         local host = S.UIV3 and S.UIV3.WidgetHost or nil
         if host == nil then return false, "悬浮组件宿主不可用" end
-        return host:SetAppearance("combat.gear.quick", channel, (tonumber(value) or 100) / 100, false)
+        -- 维护：三个 NumericField 的 set 仅接完成边沿；Gear Commands 是唯一保存 Authority，不再让页面 PersistentBinding 重复标脏。
+        return host:SetAppearance("combat.gear.quick", channel, (tonumber(value) or 100) / 100, true)
     end
     -- 同一 Numeric Range v2 规则：换装快捷按钮透明度是真实 0..100 百分比，因此保留 fixedRange。
     -- 这里只声明 Presentation 安全语义，不新增 Store，也不改变 Gear Appearance 的 Authority/升级兼容。
     local gearOverallOpacityField = D:NumericSetting(gearStack, {
         id = "v3_widgets_gear_overall_opacity", label = "整体透明度", hint = "同时作用于所有换装快捷按钮，并与背景/文字透明度相乘；可直接输入 0–100。",
+        autoCommit = true, -- Gear Store 保存成功后才清除已应用输入的本地脏反馈。
         min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return GearAppearanceGet("overallOpacity", 0.94) end,
         set = function(value) return GearAppearanceSet("overall", value) end,
-        storeId = GEAR_INDEX_STORE_ID, persistDelayMs = 250, persistReason = "gear_quick_overall_opacity",
         slot = { size = "auto", minHeight = 62, hAlign = "fill" },
     })
     local gearBackgroundOpacityField = D:NumericSetting(gearStack, {
         id = "v3_widgets_gear_background_opacity", label = "背景透明度", hint = "只调整所有换装快捷按钮的背景，不降低文字清晰度。",
+        autoCommit = true,
         min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return GearAppearanceGet("backgroundOpacity", 1.0) end,
         set = function(value) return GearAppearanceSet("background", value) end,
-        storeId = GEAR_INDEX_STORE_ID, persistDelayMs = 250, persistReason = "gear_quick_background_opacity",
         slot = { size = "auto", minHeight = 62, hAlign = "fill" },
     })
     local gearTextOpacityField = D:NumericSetting(gearStack, {
         id = "v3_widgets_gear_text_opacity", label = "文字透明度", hint = "只调整换装按钮上的方案名称文字。",
+        autoCommit = true,
         min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return GearAppearanceGet("textOpacity", 1.0) end,
         set = function(value) return GearAppearanceSet("text", value) end,
-        storeId = GEAR_INDEX_STORE_ID, persistDelayMs = 250, persistReason = "gear_quick_text_opacity",
         slot = { size = "auto", minHeight = 62, hAlign = "fill" },
     })
 
@@ -477,6 +480,9 @@ local function BuildWidgets(parent, route)
 end
 
 local function BuildSettings(parent, route)
+    -- 四个应用字段由各自 Owner 完成耐久提交，页面读值前先加载 Owner；不再用第二层持久绑定重复标脏/写盘。
+    if S.AppState and type(S.AppState.EnsureLoaded)=="function" then S.AppState:EnsureLoaded() end
+    if S.UIV3 and type(S.UIV3.EnsureShellStoreLoaded)=="function" then S.UIV3:EnsureShellStoreLoaded() end
     local root, rootErr = D:ScrollablePageRoot(parent, "v3_page_system_settings")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
     D:PageHeader(root, "v3_settings_header", "全局设置", "这里只保存应用级设置。业务设置由对应功能自己管理。")
@@ -490,6 +496,20 @@ local function BuildSettings(parent, route)
     local function ApplyUiSetting(key, value)
         if S.AppState == nil or type(S.AppState.Set) ~= "function" then return false, "应用设置不可用" end
         local previous = S.AppState.settings and S.AppState.settings[key] or nil
+        -- 已完成的数值提交同时拥有布局和耐久结果；保存拒绝时恢复原设置并重新布局，不能只提示失败却留下新缩放。
+        local function RollbackUiSetting(reason)
+            local restored, restoreErr = S.AppState:Set(key, previous, false)
+            if S.Layout ~= nil and type(S.Layout.Invalidate) == "function" then S.Layout:Invalidate() end
+            local layoutOk, layoutErr = pcall(function()
+                if S.Layout ~= nil and type(S.Layout.RefreshNow) == "function" then return S.Layout:RefreshNow(true) end
+                if S.UIHostManager ~= nil and type(S.UIHostManager.ApplyResponsiveLayout) == "function" then return S.UIHostManager:ApplyResponsiveLayout(true) end
+                return true
+            end)
+            if restored ~= true or layoutOk ~= true or layoutErr == false then
+                return false, tostring(reason) .. "; 设置回滚失败：" .. tostring(restoreErr or layoutErr)
+            end
+            return false, reason
+        end
         local ok, err = S.AppState:Set(key, value, false)
         if ok ~= true then return false, err end
         if S.Layout ~= nil and type(S.Layout.Invalidate) == "function" then S.Layout:Invalidate() end
@@ -501,11 +521,11 @@ local function BuildSettings(parent, route)
             layoutOk = applied ~= false
         end
         if layoutOk ~= true then
-            S.AppState:Set(key, previous, false)
-            if S.Layout ~= nil and type(S.Layout.Invalidate) == "function" then S.Layout:Invalidate() end
-            if S.Layout ~= nil and type(S.Layout.RefreshNow) == "function" then pcall(function() S.Layout:RefreshNow(true) end) end
-            return false, "界面布局应用失败"
+            return RollbackUiSetting("界面布局应用失败")
         end
+        -- 滑块预览不进此 setter；输入应用/滑块释放才由 App Store 完成持久事务，不再等待绑定的500ms脏标记。
+        local saved, saveErr = S.AppState:Set(key, value, true)
+        if saved ~= true then return RollbackUiSetting(saveErr or "应用设置保存失败") end
         return true
     end
 
@@ -528,6 +548,32 @@ local function BuildSettings(parent, route)
         return true
     end
 
+    -- 设置按钮与标题栏拖动共用 Shell Store 提交契约；Native 布局成功不等于位置/大小已经保存。
+    -- 完整快照仅覆盖小型 Shell 表，拒写时恢复原始字段形状和布局，不修改 Store/schema 或另建保存权威。
+    local function CommitShellLayout(reason, apply)
+        local current = S.UIV3 and S.UIV3.ShellState
+        local shell = S.UIV3 and S.UIV3.Shell
+        if type(current) ~= "table" or shell == nil then return false, "主窗口不可用" end
+        local before = {}; for key, item in pairs(current) do before[key] = item end
+        local ok, err = apply()
+        if ok == true then
+            if type(S.UIV3.MarkShellStoreDirty) == "function" then ok, err = S.UIV3:MarkShellStoreDirty(0, reason)
+            else ok, err = false, "主窗口存档不可用" end
+        end
+        if ok ~= true then
+            for key in pairs(current) do current[key] = nil end
+            for key, item in pairs(before) do current[key] = item end
+            if type(shell.ApplyMinimizedState) == "function" then
+                local restored, restoreErr = shell:ApplyMinimizedState(false)
+                if restored ~= true then return false, tostring(err or "主窗口设置保存失败") .. "; 状态回滚失败：" .. tostring(restoreErr) end
+            end
+            local restored, restoreErr = shell:ApplyLayout(false)
+            if restored ~= true then return false, tostring(err or "主窗口设置保存失败") .. "; 布局回滚失败：" .. tostring(restoreErr) end
+            return false, err or "主窗口设置保存失败"
+        end
+        return true
+    end
+
     local function RunSettingAction(id, execute)
         if S.ActionRunner ~= nil and type(S.ActionRunner.Run) == "function" then
             return S.ActionRunner:Run({ id = "settings." .. tostring(id), execute = execute, notify = false })
@@ -538,23 +584,20 @@ local function BuildSettings(parent, route)
     local windowActions = RSUI:HorizontalBox({ id = "v3_settings_window_actions", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
     RSUI:Button({ id = "v3_settings_center", parent = windowActions, text = "主窗口居中", compact = true, slot = { size = "fixed", width = 120 }, onClick = function()
         return RunSettingAction("center", function()
-            local shellState = S.UIV3 and S.UIV3.ShellState or nil
-            local shell = S.UIV3 and S.UIV3.Shell or nil
-            if shellState == nil or shell == nil then return false end
-            shellState.userMoved = false
-            shellState.minimized = false
-            if type(shell.ApplyMinimizedState) == "function" then shell:ApplyMinimizedState(false) end
-            local ok = shell:ApplyLayout(false)
-            if ok == true and type(S.UIV3.MarkShellStoreDirty) == "function" then S.UIV3:MarkShellStoreDirty(250, "settings_center") end
-            return ok
+            return CommitShellLayout("settings_center", function()
+                local shellState, shell = S.UIV3.ShellState, S.UIV3.Shell
+                shellState.userMoved, shellState.minimized = false, false
+                local ready, err = shell:ApplyMinimizedState(false)
+                if ready ~= true then return false, err end
+                return shell:ApplyLayout(false)
+            end)
         end)
     end })
     RSUI:Button({ id = "v3_settings_default_size", parent = windowActions, text = "恢复默认大小", compact = true, slot = { size = "fixed", width = 130 }, onClick = function()
         return RunSettingAction("default_size", function()
-            local ok = ApplyShellSize(shellSize.defaultWidth, shellSize.defaultHeight)
-            if ok == true and type(S.UIV3.MarkShellStoreDirty) == "function" then S.UIV3:MarkShellStoreDirty(250, "settings_default_size") end
+            local ok, err = CommitShellLayout("settings_default_size", function() return ApplyShellSize(shellSize.defaultWidth, shellSize.defaultHeight) end)
             if ok == true then shellCard:SetData({ value = tostring(shellSize.defaultWidth) .. " × " .. tostring(shellSize.defaultHeight) }) end
-            return ok
+            return ok, err
         end)
     end })
     RSUI:Button({ id = "v3_settings_reset_widgets", parent = windowActions, text = "恢复全部窗口位置", compact = true, slot = { size = "fixed", width = 146 }, onClick = function()
@@ -602,29 +645,30 @@ local function BuildSettings(parent, route)
         id = "v3_settings_shell_width", label = "主窗口宽度", hint = "直接输入设计宽度；不设屏幕/预设上限，拖动边缘缩放与这里使用同一份尺寸。",
         min = shellSize.minWidth, step = 1, integer = true, unit = " px", slider = false, stepButtons = false,
         get = function() return tonumber(S.UIV3 and S.UIV3.ShellState and S.UIV3.ShellState.width) or shellSize.defaultWidth end,
-        set = function(value) return ApplyShellSize(value, nil) end,
-        storeId = S.UIV3 and S.UIV3.ShellStoreId or nil, persistDelayMs = 250, persistReason = "settings_width",
+        -- 数值应用与拖动缩放共享 Shell 的完整状态/布局回滚事务，不能只让绑定稍后标脏。
+        set = function(value) return CommitShellLayout("settings_width", function() return ApplyShellSize(value, nil) end) end,
+        autoCommit = true,
     })
     local shellHeightField = D:NumericSetting(root, {
         id = "v3_settings_shell_height", label = "主窗口高度", hint = "直接输入设计高度；不设屏幕/预设上限，也不会通过预设按钮循环。",
         min = shellSize.minHeight, step = 1, integer = true, unit = " px", slider = false, stepButtons = false,
         get = function() return tonumber(S.UIV3 and S.UIV3.ShellState and S.UIV3.ShellState.height) or shellSize.defaultHeight end,
-        set = function(value) return ApplyShellSize(nil, value) end,
-        storeId = S.UIV3 and S.UIV3.ShellStoreId or nil, persistDelayMs = 250, persistReason = "settings_height",
+        set = function(value) return CommitShellLayout("settings_height", function() return ApplyShellSize(nil, value) end) end,
+        autoCommit = true,
     })
     local scaleField = D:NumericSetting(root, {
         id = "v3_settings_ui_scale", label = "界面缩放", hint = "可直接输入 75–125 的百分比；不使用档位轮换按钮。",
         min = 75, max = 125, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return math.floor(((S.AppState and S.AppState.settings and tonumber(S.AppState.settings.addonScale)) or 1) * 100 + 0.5) end,
         set = function(value) return ApplyUiSetting("addonScale", (tonumber(value) or 100) / 100) end,
-        storeId = S.AppState and S.AppState.storeId or nil, persistDelayMs = 500, persistReason = "settings_addon_scale",
+        autoCommit = true,
     })
     local fontField = D:NumericSetting(root, {
         id = "v3_settings_font_scale", label = "字体缩放", hint = "可直接输入 75–150 的百分比；输入框始终显示精确值。",
         min = 75, max = 150, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return math.floor(((S.AppState and S.AppState.settings and tonumber(S.AppState.settings.fontScale)) or 1) * 100 + 0.5) end,
         set = function(value) return ApplyUiSetting("fontScale", (tonumber(value) or 100) / 100) end,
-        storeId = S.AppState and S.AppState.storeId or nil, persistDelayMs = 500, persistReason = "settings_font_scale",
+        autoCommit = true,
     })
 
     D:StatusRow(root, "v3_settings_appearance", "界面外观", "深色（当前）", "default")

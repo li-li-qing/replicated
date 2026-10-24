@@ -49,6 +49,12 @@ end
 
 function F:Enable(reason)
     if self.enabled == true then return true end
+    -- 维护：上次失败可能尚欠 Native 恢复，baseline 是该义务的唯一凭证；先清理再捕获新基线，
+    -- 否则直接调用 Feature 的重试可能把插件残留值当作玩家原值。Runtime 入口也沿用同一 Disable。
+    if self.Authority.baseline ~= nil then
+        local cleaned, cleanupErr = self:Disable("startup_failure")
+        if cleaned ~= true then return false, cleanupErr end
+    end
     self.lifecycleMetrics.enableAttempts = (tonumber(self.lifecycleMetrics.enableAttempts) or 0) + 1
     self.lastLifecycleStage = "enable_store"
     local loaded, loadErr = self:EnsureStoreLoaded()
@@ -62,6 +68,10 @@ function F:Enable(reason)
     self.lastLifecycleStage = "enable_apply_native"
     local applied, applyErr = self.Authority:ApplySettings(self:GetSettings(), reason or "feature_enable")
     if applied ~= true then
+        -- 维护：Apply 的逐项回滚也可能被 Native 拒绝；在恢复确认前保留原始 baseline，供 Core 清理/关闭重试。
+        local restored, restoreErr = self.Authority:RestoreBaseline("enable_apply_rollback")
+        if restored ~= true then return FailLifecycle("enable_apply_rollback_failed",
+            tostring(applyErr) .. "；Native 回滚同时失败：" .. tostring(restoreErr)) end
         self.Authority:ReleaseBaseline()
         return FailLifecycle("enable_apply_failed", applyErr)
     end
@@ -79,8 +89,9 @@ function F:Enable(reason)
     end)
     if subscribed ~= true then
         local restored, restoreErr = self.Authority:RestoreBaseline("enable_subscribe_rollback")
-        self.Authority:ReleaseBaseline()
+        -- 维护：恢复失败不能释放旧值，否则 enabled=false 的后续关闭将再也无法撤销本次 Native 写入。
         if restored ~= true then return FailLifecycle("enable_subscribe_rollback_failed", "ENTERED_WORLD 订阅失败；Native 回滚同时失败：" .. tostring(restoreErr)) end
+        self.Authority:ReleaseBaseline()
         return FailLifecycle("enable_subscribe_failed", "ENTERED_WORLD 订阅失败")
     end
 
@@ -92,8 +103,8 @@ end
 
 function F:Disable(reason)
     self.lifecycleMetrics.disableAttempts = (tonumber(self.lifecycleMetrics.disableAttempts) or 0) + 1
-    if self.enabled ~= true then
-        if self.Authority.baseline ~= nil then self.Authority:ReleaseBaseline() end
+    -- 维护：启用未完成时 enabled 可仍是 false；只要旧值凭证还在，就必须实际恢复再释放，不能提前报清理成功。
+    if self.enabled ~= true and self.Authority.baseline == nil then
         self.lastLifecycleStage = "disabled"
         return true
     end

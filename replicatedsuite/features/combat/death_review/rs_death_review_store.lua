@@ -1371,7 +1371,10 @@ end
 
 function F:MarkStoreDirty(delayMs, reason)
     -- 只保存既有轻量索引，位置/折叠完成时即时回读，不重写死亡记录分片。
-    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" then
+    -- 维护：复盘窗锁定/解锁仅提交原轻量索引并当场回读，不新增死亡记录写入或跨 Store 锁 Authority。
+    -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" or reason == "widget_locked" or reason == "widget_lock"
+        or reason == "widget_overall_opacity" or reason == "widget_background_opacity" or reason == "widget_text_opacity" or reason == "widget_font_scale" then
         return P:SaveStore(INDEX_STORE, { durable=true, consumeDirty=true, reason=reason })
     end
     return P:MarkDirty(INDEX_STORE, tonumber(delayMs) or 350, reason or "death_review_changed")

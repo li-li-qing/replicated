@@ -86,8 +86,20 @@ local store,storeErr=P:RegisterV3Store({id=I.storeId,owner="v3.life.treasure",sc
 if not store then error(storeErr or "Treasure inventory store registration failed") end
 
 function I:Initialize()
-    if self.loaded then return true end
-    local ok,err=P:PrepareRead(self.storeId);if ok~=true then self.lastError=tostring(err or "箱子记录读取失败");return false,err end
+    -- 同代切角时 Core 绑定才是就绪权威；取消上一角色箱交互/取图任务，但不清 Domain，避免破坏待刷新旧角色存档。
+    if self.loaded and P:IsStoreLoaded(self.storeId)==true then return true end
+    if self.loaded then
+        -- 背包地图是本 Feature 的会话缓存，也属于上一角色；库存重绑前作废，不改任何角色存档，等待原扫描链补齐新背包。
+        A.maps={};A.selected=nil;A.lastInventoryScanAt=nil;A.inventoryBagId=nil
+        A.inventoryError="角色已变化，等待重新读取背包";A.status="unavailable"
+        if type(F.CancelPendingMapAction)=="function" then F:CancelPendingMapAction() end
+    end
+    self.loaded=false;self.bound=nil;self.openRecord=nil
+    if self.job then self:Stop("cancelled","角色库存绑定已变化，请重新识别保管箱") end
+    if A.selected and A.selected.kind=="catalog" then A.selected=nil end
+    local ok,err=P:PrepareRead(self.storeId)
+    if ok~=true then self.lastError=tostring(err or "箱子记录读取失败");self:RebuildGroups();return false,err end
+    self.lastError=nil
     self.loaded=true;self.bound=nil;self.openRecord=nil;self.job=nil;self.withdraw={status="idle",moved=0}
     self:RebuildGroups();return true
 end
@@ -352,12 +364,12 @@ function I:ResetCofferRound()
             state.boxes={};state.pendingCoffer=nil;state.scanRound=true
         end)
     else
-        local current=P:GetStore(self.storeId);local fence=tostring(current and current.writeFenceReason or "")
         -- 重载后被隔离的截断快照不能按“已读”使用，也不能自动清空。仅用户点击清空时完整替换此组件自己的Store；
-        -- 暂时读失败、未来schema与身份错误继续拒绝。Core仍执行scope/预算/写入及立即回读校验，成功才应用新轮。
-        local replaceable=current and current.writeFenced==true and (fence=="decode_failed" or fence:match("^integrity_failed:")
-            or fence:match("^envelope_integrity_failed:") or fence:match("^transport_decode_failed:"))
-        if not replaceable then return false,self.lastError or "箱子记录尚不可安全重置" end
+        -- 归属/版本/故障类型只由 Core 授权，禁止 UI 用宽泛 envelope 前缀把身份不符误认作可丢弃损坏。
+        -- 同一角色有完整 metadata 证据的内容损坏可重建；另一角色、未知归属、未来格式和暂时读失败继续拒绝。
+        -- 查询不读盘不清隔离；实际 SaveValue 仍重新检查当前 scope、预算和授权，并立即回读，成功才应用新轮。
+        local replaceable,replaceErr=P:CanReplaceCorrupt(self.storeId)
+        if replaceable~=true then return false,replaceErr or self.lastError or "箱子记录尚不可安全重置" end
         local fresh=Normalize(nil);fresh.scanRound=true
         ok,err=P:SaveValue(self.storeId,fresh,{replaceCorrupt=true,allowUnloadedWrite=true,durable=true,reason="treasure_coffer_round_reset_corrupt"})
         if ok then self.State=fresh;self.loaded=true;self:RebuildGroups()else self.lastError=tostring(err or "箱子记录重置失败")end
@@ -503,7 +515,11 @@ function F:Initialize()
     if I:Initialize()~=true then I:RebuildGroups()end
     return true
 end
-function A:GetProjection()return I:Decorate(projection(self))end
+function A:GetProjection()
+    -- 先按当前角色准备库存，再让原投影复制 selection；否则上一角色目录选择和数量会进入新角色页面。
+    I:Initialize()
+    return I:Decorate(projection(self))
+end
 function F:Select(key)
     local group=I.byKey[key];if not group then return select(self,key)end
     if not self.enabled then return false,"寻宝功能已关闭" end

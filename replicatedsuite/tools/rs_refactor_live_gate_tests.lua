@@ -169,8 +169,11 @@ Test('nullable keys clear old selection and default tables are deep-copied', fun
     store.apply(value); f.State.options.nested.n = 88
     assert(value.options.nested.n == 2, 'stored table alias')
 end)
-Test('real TOC retains all 27 migrated runtime checks even with missing implementations', function()
+Test('real TOC retains all 28 explicit runtime checks even with missing implementations', function()
     local s, g = Boot()
+    -- 本例故意缺少实现及 Registry：未知访问元数据不能被当成 manualAccessAllowed=false 而漏检。
+    -- 朝向仍保留独立失败证据；真实 Registry 的手工访问开关不能由此空宿主猜测。
+    assert(next(s.Features) == nil and s.FeatureRegistry == nil, 'missing-implementation fixture is not empty')
     for _, path in ipairs(Toc()) do
         if path:match('^features/.*_acceptance%.lua$') then dofile(path) end
     end
@@ -189,14 +192,24 @@ Test('real TOC retains all 27 migrated runtime checks even with missing implemen
         'v3_combat_unit_lines_visual_guide_contract', 'v3_m15_2h_death_review_contract',
         -- 中文维护（5.3 发布自检）：朝向功能已加入实际 TOC，必须计入只读契约并保留缺实现的失败证据。
         'v3_facing_indicator_contract',
+        -- 当前 TOC 的寻宝 acceptance 已显式注册库存组件契约；不能继续冻结在组件新增前的27项。
+        'v3_life_treasure_inventory_contract',
+    }
+    local failureReasons = {
+        v3_combat_team_tools_visual_marker_contract = 'visual_implementation_not_registered',
+        v3_facing_indicator_contract = 'facing_feature_unavailable',
+        v3_life_treasure_inventory_contract = 'treasure_inventory_component_missing',
     }
     local report = g:Run({skipSequences=true})
-    assert(report.runtimeContracts.total == #required and report.runtimeContracts.failed == #required)
+    assert(report.runtimeContracts.total == #required,
+        'runtime contract exact count changed: expected ' .. #required .. ', got ' .. tostring(report.runtimeContracts.total))
+    assert(report.runtimeContracts.failed == #required and report.runtimeContracts.passed == 0,
+        'empty implementations must fail all ' .. #required .. ' contracts, got failed=' .. tostring(report.runtimeContracts.failed)
+        .. ', passed=' .. tostring(report.runtimeContracts.passed))
     for _, id in ipairs(required) do
         local row = Find(report, 'runtime_contract:' .. id)
-        -- 职责/牺牲之舞已拆分：视觉实现缺失由独立 visual 错误码报告；保留逐项严格失败断言。
-        local expected = id == 'v3_combat_team_tools_visual_marker_contract' and 'visual_implementation_not_registered'
-            or id == 'v3_facing_indicator_contract' and 'facing_feature_unavailable' or 'implementation_not_registered'
+        -- 各切片保留自己明确声明的缺实现错误，不能统一抹成通用错误或按实际结果反填期望。
+        local expected = failureReasons[id] or 'implementation_not_registered'
         assert(row and not row.ok and row.detail == expected, id .. ' silently omitted or wrong failure')
     end
     for _, id in ipairs({'v3_m16_dps_skill_proxy_source','v3_m15_2h_death_review_widget_close','v3_m16_18_buff_display_plate_geometry'}) do

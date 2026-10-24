@@ -52,10 +52,21 @@ local function Publish()
     F.revision=F.revision+1
     if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish(F.UpdateTopic,F.revision)end
 end
+local function InvalidateScopeReceipts()
+    -- 只作废会话连续性，不改已验证账本金额；投影观察到切角也必须记住这个间隙，不能等下一次5s任务才发现。
+    F.sessions={};F.scopeBaselinePending={}
+    for _,key in ipairs(KEYS)do F.scopeBaselinePending[key]=true end
+end
 function F:EnsureStoreLoaded()
-    if self.loaded then return true end
+    -- Feature 的 loaded 不能替代 Core 的角色绑定：同一 Lua 代际切角后必须重新加载，并丢弃上一角色的回执序号/余额基线。
+    if self.loaded and P:IsStoreLoaded(self.StoreId)==true then self.scopeObservationLost=false;return true end
+    if self.loaded then
+        -- 即使切回原角色，离开期间也没有连续观察余额；仅在各来源首个成功回执后解除间隙，不能计入离线/别角色期间变化。
+        InvalidateScopeReceipts()
+    end
+    self.loaded=false;self.sessions={};self.clockAvailable=false
     local ok,_,err=P:LoadStore(self.StoreId)
-    if ok==true or ok=="empty" then self.loaded=true;return true end
+    if ok==true or ok=="empty" then self.loaded=true;self.lastError=nil;return true end
     self.lastError=tostring(err or ok);return false,self.lastError
 end
 -- 时钟只由5s生命周期任务和 Observe 拥有，禁止 UI getter 读取；失败不能变成日期字符串或给昨日重新标日。
@@ -68,7 +79,8 @@ function F:CheckDay()
     end
     local day,err=P:GetPeriodId(P.Lifetime.Daily,{kind="server_date"})
     if not day then return Fail(err or "server_time_unavailable")end
-    local wasLoaded=self.loaded==true
+    -- 跨角色重绑等同冷启动，不能把旧角色的已加载标志用于携带新角色昨日余额。
+    local wasLoaded=self.loaded==true and P:IsStoreLoaded(self.StoreId)==true
     local loaded,loadErr=self:EnsureStoreLoaded();if not loaded then return Fail(loadErr)end
     if self.State.day~="" and day<self.State.day then return Fail("server_clock_regressed")end
     local rolled=self.State.day~=day
@@ -145,7 +157,8 @@ function F:Observe(key,value,sourceId,sequence)
         -- balance 模式仅为其他已核实绝对余额来源保留；PLAYER_MONEY/HONOR/LIVING 是直接增量来源，跳过前值路径。未来 continuousBalance 来源只可跨同日文件重载沿用持久末余额；显式观察间隙必须作废。
         local previous=nil
         if session then previous=session.value
-        elseif source.mode=="balance" and source.continuousBalance==true and ch.balance~=nil then previous=ch.balance end
+        elseif source.mode=="balance" and source.continuousBalance==true and ch.balance~=nil
+            and not (self.scopeBaselinePending and self.scopeBaselinePending[key]) then previous=ch.balance end
         if source.mode=="delta" then
             -- PLAYER_* 来源存储的 balance 证明旧适配器误按余额计算；同日 net/gain/spent 已受污染，在接受首个权威直接增量前只清除一次。其他增量来源不启用此保护，真实历史总量保持不变。
             if source.resetLegacyBalanceOnFirstDelta==true and ch.balance~=nil then
@@ -172,6 +185,7 @@ function F:Observe(key,value,sourceId,sequence)
     if not success then self.lastError=tostring(why);return false,why end
     -- 序号只在变更被Core接收后前进，保存拒绝不能吞掉重试收据；无后台重放原生事件。
     self.sessions[key]={sequence=sequence,value=value}
+    if self.scopeBaselinePending then self.scopeBaselinePending[key]=nil end -- 只接受成功观察后恢复当前来源连续性，拒绝路径必须允许原回执重试。
     if source.runtimeVerified~=true then source.runtimeVerified=true end
     Publish();return true
 end
@@ -248,22 +262,28 @@ function F:SetPaused(paused,reason)
 end
 -- 只读表现：保留总量是真实已保存观察，不是新余额；重新建立基线前显示保存日期与暂停/中断标识。缺来源或 Store 加载失败不能编造0。
 function F:GetProjection()
+    -- 不加载磁盘、时钟或改业务金额；丢失身份时仅作废会话回执，避免A→B只看页面→A漏过绑定变化并沿用旧余额。
+    local current=self.loaded==true and P:IsStoreLoaded(self.StoreId)==true
+    if self.loaded and not current and not self.scopeObservationLost then
+        InvalidateScopeReceipts();self.scopeObservationLost=true
+    elseif current then self.scopeObservationLost=false end
+    local clockAvailable=current and self.clockAvailable==true
     local rows,verified={},0
     for _,key in ipairs(KEYS)do
         local source=self.sources[key];local ch=self.State.channels[key]
         local runtimeVerified=source~=nil and source.runtimeVerified==true
         if runtimeVerified then verified=verified+1 end
-        local retained=runtimeVerified and self.loaded and ch.samples>0
+        local retained=runtimeVerified and current and ch.samples>0
         local status=not self.enabled and "off" or self.paused==true and "paused" or not source and "unconnected"
             or not runtimeVerified and source.baselineReady==true and "baselined" or not runtimeVerified and "probing"
-            or not self.clockAvailable and "unavailable" or not self.sessions[key] and (retained and "retained" or "waiting") or "ready"
-        local show=retained or (status=="ready" and self.loaded)
+            or not clockAvailable and "unavailable" or not self.sessions[key] and (retained and "retained" or "waiting") or "ready"
+        local show=retained or (status=="ready" and current)
         rows[#rows+1]={key=key,name=LABELS[key],status=status,value=show and ch.net or nil,
             observedGain=show and ch.gain or nil,observedSpent=show and ch.spent or nil,
             coverageGap=ch.coverageGap or (retained and self.sessions[key]==nil),unit=UNITS[key],mode=source and source.mode or nil}
     end
     return {patch=self.patch,rows=rows,revision=self.revision,enabled=self.enabled,paused=self.paused==true,
-        day=self.State.day~="" and self.State.day or nil,error=self.lastError,clockAvailable=self.clockAvailable,
+        day=current and self.State.day~="" and self.State.day or nil,error=self.lastError,clockAvailable=clockAvailable,
         verifiedSources=verified,missingSources=4-verified,
         sourceNote="已验证收益来源 "..verified.."/4；未接入的项目不显示伪造的0。"}
 end

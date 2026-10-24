@@ -46,10 +46,10 @@ STANDALONE_REQUIRED_NAMESPACES = {
 # lazy：只有用户启用子能力或实际进入详情路径时才需要，
 # 其导入责任必须留在服务或延迟能力边界。
 SERVICE_EDGE_NATIVE_POLICY = {
-    # 中文维护（2026-10-13）：人员备注选家族时才调用ReadFamilyList，由名单Service取得Native lease。
-    # 好友、黑名单、团队及已保存备注不能为此强制导入FAMILY；此策略与实际AcquireApi边界成对维护。
+    # 中文维护：人员备注显式刷新经 ReadFriendList 调用 X2Friend Getter，Feature 已声明 FRIEND。
+    # 选家族时才调用 ReadFamilyList，由名单 Service 取得 Native lease；FAMILY 仍不能升为启动依赖。
     ("tools_player_notes", "PlayerNotesSurfaceV3"): {
-        "required": set(),
+        "required": {"X2Friend"},
         "optional": set(),
         "lazy": {"X2Family"},
     },
@@ -253,13 +253,96 @@ def load_registry() -> Dict[str, List[str]]:
     return result
 
 
+def _toc_feature_paths() -> Iterable[Path]:
+    """仅按实际 TOC 顺序读取运行时 Feature，磁盘上的未装配组件不提供依赖。"""
+    text = _mask_comments((ROOT / "toc.g").read_text(encoding="utf-8", errors="replace"))
+    feature_root = FEATURES.resolve()
+    for line in text.splitlines():
+        name = line.strip()
+        if not re.fullmatch(r"features/[^\s]+\.lua", name):
+            continue
+        path = (ROOT / name).resolve()
+        if path.is_relative_to(feature_root) and path.is_file():
+            yield path
+
+
+def _suite_aliases(bare: str) -> List[str]:
+    return [m.group(1) for m in re.finditer(
+        r"\blocal\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*ReplicatedSuite\b", bare
+    ) if _at_top_level(bare, m.start())]
+
+
+def _feature_component_bindings(text: str, exports: Dict[str, str]) -> Dict[str, Tuple[str, int]]:
+    """只接受从前序已确认的 Suite Feature 导出取得的本地组件身份。"""
+    bare = _mask_strings(text)
+    bindings: Dict[str, Tuple[str, int]] = {}
+    for suite in _suite_aliases(bare):
+        suite = re.escape(suite)
+        for m in re.finditer(
+            rf"\blocal\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+            rf"(?:{suite}\.Features\s+and\s+)?{suite}\.Features\.([A-Za-z_][A-Za-z0-9_]*)\b",
+            bare,
+        ):
+            if m.group(2) in exports and _at_top_level(bare, m.start()):
+                bindings[m.group(1)] = (exports[m.group(2)], m.end())
+    return bindings
+
+
+def _at_top_level(bare: str, at: int) -> bool:
+    """保守识别 Lua 块嵌套，函数体或条件路径中的追加不能证明启动装配。"""
+    blocks: List[str] = []
+    for token in re.finditer(r"\b(function|if|for|while|do|repeat|end|until)\b", bare[:at]):
+        word = token.group()
+        if word in {"function", "if", "for", "while", "repeat"}:
+            blocks.append(word)
+        elif word == "do":
+            if blocks and blocks[-1] in {"for", "while"}:
+                blocks[-1] += ":body"
+            else:
+                blocks.append(word)
+        elif word in {"end", "until"}:
+            if not blocks or (word == "until" and blocks[-1] != "repeat"):
+                return False
+            blocks.pop()
+    return not blocks
+
+
+def _dependency_appends(text: str, constants: Dict[str, List[str]]) -> Iterable[Tuple[int, str, List[str]]]:
+    """识别确定的 ipairs(字面量/常量表) 追加，未知 Lua 控制流不推断、不执行。"""
+    bare = _mask_strings(text)
+    for loop in re.finditer(
+        r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s+in\s+ipairs\s*\(",
+        bare,
+    ):
+        if not _at_top_level(bare, loop.start()):
+            continue
+        open_at = text.find("(", loop.start())
+        end = _balanced(text, open_at, "(", ")")
+        if end is None:
+            continue
+        argument = text[open_at + 1:end].strip()
+        if not (re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", argument)
+                or (argument.startswith("{") and _balanced(argument, 0, "{", "}") == len(argument) - 1)):
+            continue
+        deps = _extract_table_expr(argument, 0, constants)
+        append = re.match(
+            r"\s*do\s+(?P<owner>[A-Za-z_][A-Za-z0-9_]*)\.ApiDependencies\s*"
+            r"\[\s*#\s*(?P=owner)\.ApiDependencies\s*\+\s*1\s*\]\s*=\s*"
+            + re.escape(loop.group(1)) + r"\s+end\b",
+            bare[end + 1:],
+        )
+        if deps is not None and append is not None:
+            yield loop.start(), append.group("owner"), deps
+
+
 def load_implementation_overrides() -> Tuple[Dict[str, List[str]], Dict[str, str]]:
     """返回 feature_id 对应的显式实现依赖和源码路径。
 
 缺少条目表示实现没有覆盖声明，FeatureRuntime 应回退到 FeatureRegistry 元数据。"""
     result: Dict[str, List[str]] = {}
     sources: Dict[str, str] = {}
-    for path in FEATURES.rglob("*.lua"):
+    exports: Dict[str, str] = {}
+    for path in _toc_feature_paths():
         if path.name in {"rs_feature_registry.lua", "rs_feature_runtime.lua"}:
             continue
         raw = path.read_text(encoding="utf-8", errors="replace")
@@ -278,6 +361,8 @@ def load_implementation_overrides() -> Tuple[Dict[str, List[str]], Dict[str, str
 
         # 识别随后注册的具名功能表，包括 Trade、Bonds 和独立 F。
         var_to_id: Dict[str, str] = {}
+        component_bindings = _feature_component_bindings(text, exports)
+        var_to_id.update({var: binding[0] for var, binding in component_bindings.items()})
         for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\.Id\s*=\s*(['\"])(.*?)\2", text):
             var_to_id[m.group(1)] = m.group(3)
         # 功能表声明示例：local F = { Id = "...", ..., ApiDependencies = {...} }。
@@ -312,6 +397,32 @@ def load_implementation_overrides() -> Tuple[Dict[str, List[str]], Dict[str, str
             if deps is not None:
                 result[feature_id] = deps
                 sources[feature_id] = str(path.relative_to(ROOT))
+
+        # 中文维护：Treasure 等后置组件通过已导出的 Feature 表扩展同一依赖列表。
+        # 必须同时有 TOC 顺序、Feature 身份绑定和真实追加语句；任意能力字符串不算声明。
+        bare = _mask_strings(text)
+        for at, var, deps in _dependency_appends(text, constants):
+            feature_id = var_to_id.get(var)
+            binding = component_bindings.get(var)
+            if binding is not None:
+                _, bound_at = binding
+                if at < bound_at or re.search(rf"\b{re.escape(var)}\s*=", bare[bound_at:at]):
+                    continue
+            if feature_id in result:
+                result[feature_id].extend(deps)
+
+        # 导出名与 Id 分开建图；不从 Treasure 等名称猜 life_treasure，也不读取 Registry 补回缺项。
+        for suite in _suite_aliases(bare):
+            for m in re.finditer(
+                rf"\b{re.escape(suite)}\.Features\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\b",
+                bare,
+            ):
+                if not _at_top_level(bare, m.start()):
+                    continue
+                if m.group(2) in var_to_id:
+                    exports[m.group(1)] = var_to_id[m.group(2)]
+                else:
+                    exports.pop(m.group(1), None)
     return result, sources
 
 

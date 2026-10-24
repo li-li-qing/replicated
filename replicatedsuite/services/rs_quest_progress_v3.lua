@@ -335,6 +335,27 @@ function P:HasInstanceDemand()
     return false
 end
 
+function P:ReleaseInstanceConsumer()
+    if self.instanceConsumerHeld ~= true then return true end
+    local service = S.Services and S.Services.InstanceCatalogV3 or nil
+    -- 中文维护注释：正常释放与强制静默共用同一租约偿还边界；缺接口不是“已经释放”的证据。
+    if type(service) ~= "table" or type(service.ReleaseConsumer) ~= "function" then
+        return false, "instance catalog release unavailable"
+    end
+    local demand = service.Demand
+    -- 中文维护注释：父 quiesce 失败后，全局关闭仍会继续清理 Catalog；下一轮子 token 可能已不存在。
+    -- 仅在子 Demand 无忙事务、无静默故障且明确 Has=false 时承认已偿还，避免父层永远 consumer-not-held。
+    local alreadyReleased = type(demand) == "table" and type(demand.Has) == "function"
+        and demand.transitioning ~= true and demand.quiescing ~= true and demand.needsQuiesce ~= true
+        and demand:Has(self.instanceConsumerToken) == false
+    if alreadyReleased ~= true then
+        local released, releaseErr = service:ReleaseConsumer(self.instanceConsumerToken)
+        if released ~= true then return false, releaseErr or "instance catalog release failed" end
+    end
+    self.instanceConsumerHeld = false
+    return true
+end
+
 function P:SyncInstanceConsumer()
     local needsInstances = self:HasInstanceDemand()
     local service = S.Services and S.Services.InstanceCatalogV3 or nil
@@ -348,12 +369,8 @@ function P:SyncInstanceConsumer()
         return true
     end
     if needsInstances ~= true and self.instanceConsumerHeld == true then
-        if type(service) ~= "table" or type(service.ReleaseConsumer) ~= "function" then
-            return false, "instance catalog release unavailable"
-        end
-        local ok, err = service:ReleaseConsumer(self.instanceConsumerToken)
-        if ok ~= true then return false, err or "instance catalog release failed" end
-        self.instanceConsumerHeld = false
+        -- 中文维护注释：不能因普通 options 对账绕开故障重试的幂等证据规则。
+        return self:ReleaseInstanceConsumer()
     end
     return true
 end
@@ -538,17 +555,12 @@ function P:ReconcileDemand(before, after, context)
 end
 
 function P:QuiesceDemand(reason, cause)
-    local ok = self:Stop() == true
-    if self.instanceConsumerHeld == true then
-        local service = S.Services and S.Services.InstanceCatalogV3 or nil
-        if type(service) ~= "table" or type(service.ReleaseConsumer) ~= "function" then
-            ok = false
-        else
-            local released = service:ReleaseConsumer(self.instanceConsumerToken)
-            if released ~= true then ok = false else self.instanceConsumerHeld = false end
-        end
-    end
-    return ok
+    -- 中文维护注释：停止自身和偿还 Catalog 是两项真实清理；只要任一失败就保留 Demand 的故障证据。
+    -- 子层已被全局清空的情况由同一释放边界判定，不能无条件吞失败，也不能永久卡在不存在的 token 上。
+    local stopped, stopErr = self:Stop()
+    local released, releaseErr = self:ReleaseInstanceConsumer()
+    if stopped ~= true then return false, stopErr or "quest progress stop failed" end
+    return released, releaseErr
 end
 
 if S.Demand == nil or type(S.Demand.Create) ~= "function" then error("Demand unavailable for QuestProgressV3") end

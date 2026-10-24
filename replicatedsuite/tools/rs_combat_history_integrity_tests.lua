@@ -102,5 +102,26 @@ Test('genuine NPC preference has a public fallback without rewriting canonical d
     store.loaded=false;assert(h.F:EnsureStoreLoaded() and h.F:GetSelectedValueKey('kills')=='deaths')
     assert(h.clears==0)
 end)
+Test('recorded date catalog survives filtering and durable reload without inventing unknown dates',function()
+    local h=Boot();assert(h.H:EnsureLoaded())
+    for _,sample in ipairs({{5,2,3},{7,5,1},{9,3,2}}) do
+        h.S.Utils.GetServerTime=function()return {year=2026,month=10,day=sample[1],hour=8,minute=30}end
+        h.ms=h.ms+1500;assert(h.H:Record({kills=sample[2],deaths=sample[3]}))
+    end
+    h.S.Utils.GetServerTime=function()return nil end
+    h.ms=h.ms+1500;assert(h.H:Record({kills=4,deaths=6}))
+    assert(h.P:SaveStore(h.H.StoreId,{reason='daily_dates_roundtrip',durable=true}))
+    h.store.loaded=false;h.H.loaded=false;assert(h.H:EnsureLoaded())
+    local reads,writes,revision=h.reads,h.writes,h.H.revision
+    local p=h.H:GetProjection({fromDate='2026-10-07',toDate='2026-10-07'})
+    assert(p.dateOptions and #p.dateOptions==3,'date picker needs the complete recorded-date catalog')
+    assert(p.dateOptions[1]=='2026-10-09' and p.dateOptions[3]=='2026-10-05','catalog must be sorted and exclude unknown')
+    assert(#p.rows==1 and p.rows[1].date=='2026-10-07' and p.totals.kills==5 and p.totals.deaths==1)
+    p.dateOptions[1]='invalid';assert(h.H.state.days['2026-10-09'],'UI catalog must not alias persistent state')
+    local all=h.H:GetProjection()
+    assert(all.rows[1].date=='2026-10-09' and all.rows[#all.rows].date=='unknown','undated totals must follow the dated rows')
+    assert(all.totals.kills==14 and all.totals.deaths==12,'date query must preserve all historical counts')
+    assert(h.reads==reads and h.writes==writes and h.H.revision==revision,'date catalog projection must stay read-only')
+end)
 print('RESULT combat-history passed='..passed..' failed='..failed)
 if failed>0 then os.exit(1)end

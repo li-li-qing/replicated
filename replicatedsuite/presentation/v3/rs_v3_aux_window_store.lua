@@ -208,7 +208,10 @@ function A:PersistWindow(id, reason, delayMs)
     local ok, err = self:EnsureLoaded()
     if ok ~= true then return false, err end
     -- 约束（2026-10-04）：详情/诊断窗也必须跨立即重载保留位置；不依赖下一次保存心跳。
-    if reason == "geometry" or reason == "layout_reset" or reason == "minimized" then
+    -- 维护：辅助窗小锁归本 Store；标题按钮 lock 与公开 API locked 均须在返回前写入并回读，保留 false 解锁值。
+    -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+    if reason == "geometry" or reason == "layout_reset" or reason == "minimized" or reason == "locked" or reason == "lock"
+        or reason == "overall_opacity" or reason == "background_opacity" or reason == "text_opacity" or reason == "font_scale" then
         return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason="aux_window:" .. id .. ":" .. reason })
     end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 250,

@@ -99,6 +99,9 @@ end
 
 function V3:MarkLauncherStoreDirty(delayMs, reason)
     if self.LauncherStoreSessionFallback == true then return true, "session_fallback_no_persist" end
+    -- 中文维护：R 入口的拖动结束、锁定与显式恢复都是用户已完成的提交边沿；MarkDirty(0) 仍须等心跳，立即退出时会丢失。
+    -- 中文维护：耐久性归共享 Persistence，返回前写盘并回读；拒写沿原命令事务回滚 Native 与 LauncherState，不改 schema/canonical。
+    if reason == "launcher_drag" or reason == "launcher_lock" or reason == "launcher_reset" then return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason }) end -- 中文维护：仅低频显式提交同步保存，普通显示/视口重排不得产生写入。
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 250, reason or "launcher_changed")
 end
 

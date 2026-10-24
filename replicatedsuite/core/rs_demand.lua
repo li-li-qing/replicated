@@ -74,7 +74,14 @@ function D:Create(spec)
         generation = S.Generation,
         transitions = 0,
         rollbacks = 0,
+        -- 消费者计数只描述意图；回滚/强制静默失败必须另存故障，不能被空快照掩盖。
+        needsQuiesce = false,
+        -- 单租约只允许一个副作用事务；同步投影回调不能在旧快照尚未提交时再改消费者。
+        transitioning = false,
+        quiescing = false,
     }
+    -- 只在执行栈内持有已提交前快照；忙中幂等确认必须证明目标早已存在，不能把临时投影当提交成功。
+    local transitionBefore = nil
 
     function lease:_Normalize(options)
         local value = type(options) == "table" and options or {}
@@ -141,8 +148,11 @@ function D:Create(spec)
 
         self.transitions = self.transitions + 1
         D.transitions = D.transitions + 1
+        -- 正向及逆向 reconcile 共用同一事务栅栏；其它租约仍可正常获取/释放。
+        transitionBefore = before
+        self.transitioning = true
         local ok, err = self:_Invoke(before, after, context)
-        if ok == true then return true, true end
+        if ok == true then self.transitioning = false; transitionBefore = nil; return true, true end
 
         self.rollbacks = self.rollbacks + 1
         D.rollbacks = D.rollbacks + 1
@@ -155,7 +165,10 @@ function D:Create(spec)
             cause = tostring(err or "reconcile failed"),
         }
         local rollbackOk, rollbackErr = self:_Invoke(after, before, rollbackContext)
+        self.transitioning = false -- 失败也必须释放执行栅栏，让独立 quiesce 能在关闭时重试。
+        transitionBefore = nil -- 外层结算后释放快照，禁止后续事务沿用上一轮的“已提交”证据。
         if rollbackOk ~= true then
+            self.needsQuiesce = true -- RAM 已回到 before，不代表下游资源已恢复；直到成功静默前禁止丢失此证据。
             D.rollbackFailures = D.rollbackFailures + 1
             Emit("error", "DEMAND_ROLLBACK_FAILED", "Demand 回滚副作用失败", {
                 id = self.id, error = tostring(rollbackErr or "unknown"), cause = tostring(err or "unknown"),
@@ -170,6 +183,14 @@ function D:Create(spec)
         if tonumber(self.generation) ~= tonumber(S.Generation) then return false, "stale demand generation" end
         local normalized, normalizeErr = self:_Normalize(options)
         if normalized == nil then return false, normalizeErr end
+        -- 故障租约不能对新消费者声称就绪；成功 quiesce 后才恢复正常业务获取。
+        if self.needsQuiesce == true or self.quiescing == true then return false, "demand requires quiesce" end
+        -- 无变化获取没有副作用，但忙中还必须命中事务前已提交的同值 token；外层新建/更新随后可能失败，不能提前承诺成功。
+        if self.consumers[token] ~= nil and DeepEqual(self.consumers[token], normalized) then
+            local committed = transitionBefore and transitionBefore.consumers[token] -- 本轮 before 是唯一已提交证据，不从临时投影推断。
+            if self.transitioning ~= true or (committed ~= nil and DeepEqual(committed, normalized)) then return true, false end
+        end
+        if self.transitioning == true then return false, "demand transition in progress" end
         local before = self:Snapshot()
         self.consumers[token] = normalized
         return self:_Commit(before, { action = before.consumers[token] ~= nil and "update" or "acquire", token = token, reason = reason })
@@ -178,19 +199,27 @@ function D:Create(spec)
     function lease:Release(token, reason)
         token = tostring(token or "")
         if token == "" or self.consumers[token] == nil then return false, "consumer not held" end
+        -- 正常 Release 不能覆盖进行中的快照或不可信资源态；关闭恢复由 Clear/ForceQuiesce 承担。
+        if self.transitioning == true or self.quiescing == true then return false, "demand transition in progress" end
+        if self.needsQuiesce == true then return false, "demand requires quiesce" end
         local before = self:Snapshot()
         self.consumers[token] = nil
         return self:_Commit(before, { action = "release", token = token, reason = reason })
     end
 
     function lease:Clear(reason)
+        -- 零消费者也可能有失败回滚留下的资源；只有正常空租约才能直接按幂等成功返回。
+        if self.needsQuiesce == true then return self:ForceQuiesce(reason or "clear_retry", "pending demand cleanup") end
         if self.count <= 0 then return true, false end
+        if self.transitioning == true or self.quiescing == true then return false, "demand transition in progress" end
         local before = self:Snapshot()
         for token in pairs(self.consumers) do self.consumers[token] = nil end
         return self:_Commit(before, { action = "clear", reason = reason or "clear" })
     end
 
     function lease:ForceClear()
+        -- 强制逻辑清空也不能从 reconcile 内截断正在提交的事务，且不会自行洗掉 needsQuiesce。
+        if self.transitioning == true or self.quiescing == true then return false, "demand transition in progress" end
         for token in pairs(self.consumers) do self.consumers[token] = nil end
         self.count = 0
         self:_Project()
@@ -198,24 +227,35 @@ function D:Create(spec)
     end
 
     function lease:ForceQuiesce(reason, cause)
+        -- quiesce 是独立恢复事务，不能重入正向/逆向 reconcile，也不能在自己的回调中重开消费者。
+        if self.transitioning == true or self.quiescing == true then return false, "demand transition in progress" end
+        local hadCleanupFailure = self.needsQuiesce == true
+        self.quiescing = true
         local quiesced, quiesceErr = true, nil
         if self.quiesce ~= nil then
             local ok, result, err = xpcall(function() return self.quiesce(self, reason or "runtime_quiesce", cause) end, S.SafeTraceback)
             quiesced = ok == true and result ~= false
             quiesceErr = ok == true and err or result
-            if quiesced ~= true then
-                D.quiesceFailures = D.quiesceFailures + 1
-                Emit("error", "DEMAND_FORCE_QUIESCE_FAILED", "Demand 强制静默下游资源失败", {
-                    id = self.id, reason = tostring(reason or "runtime_quiesce"), error = tostring(quiesceErr or "unknown"), cause = tostring(cause or "")
-                })
-            end
+        elseif hadCleanupFailure then
+            -- 已知清理失败不能被“没有恢复回调”伪装为成功；保留故障交给 Runtime 诊断。
+            quiesced, quiesceErr = false, "demand quiesce unavailable"
+        end
+        self.quiescing = false -- 回调异常/返回失败也必须解锁，否则后续关闭无法重试恢复。
+        self.needsQuiesce = quiesced ~= true -- 只有实际成功静默才清除失败证据，ForceClear 只撤销消费者意图。
+        if quiesced ~= true then
+            D.quiesceFailures = D.quiesceFailures + 1
+            Emit("error", "DEMAND_FORCE_QUIESCE_FAILED", "Demand 强制静默下游资源失败", {
+                id = self.id, reason = tostring(reason or "runtime_quiesce"), error = tostring(quiesceErr or "unknown"), cause = tostring(cause or "")
+            })
         end
         self:ForceClear()
         return quiesced, quiesceErr
     end
 
     function lease:Describe()
-        return { id = self.id, consumers = self.count, transitions = self.transitions, rollbacks = self.rollbacks, generation = self.generation }
+        -- 诊断必须能区分“健康零需求”和“逻辑已清空但下游未确认停止”。
+        return { id = self.id, consumers = self.count, transitions = self.transitions, rollbacks = self.rollbacks, generation = self.generation,
+            needsQuiesce = self.needsQuiesce == true }
     end
 
     lease:_Project()
@@ -234,13 +274,15 @@ function D:ClearAll(reason)
     for index = #self.order, 1, -1 do
         local lease = self.registry[self.order[index]]
         if lease ~= nil then
+            -- 故障租约的 Clear 已执行一次恢复；每轮关闭只尝试一次 quiesce，失败留给下一次显式重试。
+            local retryingQuiesce = lease.needsQuiesce == true
             local cleared, clearErr = lease:Clear(reason or "runtime_clear")
             if cleared ~= true then
                 ok = false
                 Emit("warning", "DEMAND_FORCE_QUIESCE", "Demand 正常释放失败，进入强制静默", {
                     id = lease.id, reason = tostring(reason or "runtime_clear"), error = tostring(clearErr or "unknown"),
                 })
-                lease:ForceQuiesce(reason or "runtime_clear", clearErr)
+                if retryingQuiesce ~= true then lease:ForceQuiesce(reason or "runtime_clear", clearErr) end
             end
         end
     end

@@ -114,7 +114,8 @@ function A:Set(key, value, persist)
     -- 启动兜底仅为会话安全状态；当前会话可继续操作设置，但不能向已隔离或尚未加载的物理 Store 写入。
     if self.sessionFallback == true then return ApplyMutation() end
     if type(P.MutateStore) ~= "function" then return false, "persistence transaction unavailable" end
-    local ok, err = P:MutateStore(STORE_ID, ApplyMutation, { delayMs = 500, reason = "app_setting:" .. key })
+    -- persist=false 专供预览；显式应用缩放/字体后必须在返回前写盘回读，避免用户立即退出时丢失设置。
+    local ok, err = P:MutateStore(STORE_ID, ApplyMutation, { durable = true, reason = "app_setting:" .. key })
     if ok ~= true then return false, err or "v3 app setting transaction failed" end
     return true
 end

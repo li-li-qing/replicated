@@ -158,18 +158,25 @@ function H:GetProjection(options)
     if (from~="" and not ValidDate(from)) or (to~="" and not ValidDate(to)) or (from~="" and to~="" and from>to) then
         return {available=false,error="请输入有效日期 YYYY-MM-DD，开始日期不能晚于结束日期",totals=Counts(nil,LEGACY_KEYS),rows={}}
     end
-    local filtered=from~="" or to~="";local rows={};local totals=filtered and Counts(nil,LEGACY_KEYS) or Counts(self.state.totals,LEGACY_KEYS)
+    local filtered=from~="" or to~="";local rows,dateOptions={},{};local totals=filtered and Counts(nil,LEGACY_KEYS) or Counts(self.state.totals,LEGACY_KEYS)
     local complete=true
     for date,row in pairs(self.state.days) do
+        -- 下拉目录必须来自完整日账，不能随筛选结果缩小；未定日期仍留在全期记录，不伪造日期选项。
+        if ValidDate(date) then dateOptions[#dateOptions+1]=date end
         if not filtered or (date~="unknown" and (from=="" or date>=from) and (to=="" or date<=to)) then
             local out=ConfirmedCounts(row);out.date=date;out.firstAt=row.firstAt;out.lastAt=row.lastAt;rows[#rows+1]=out
             if filtered then Add(totals,row,LEGACY_KEYS) end
         elseif date=="unknown" then complete=false end
     end
-    table.sort(rows,function(a,b) return a.date>b.date end)
+    table.sort(dateOptions,function(a,b)return a>b end)
+    table.sort(rows,function(a,b)
+        if a.date=="unknown" then return false end
+        if b.date=="unknown" then return true end
+        return a.date>b.date
+    end)
     if filtered and self.state.archiveTo and (from=="" or from<=self.state.archiveTo) then complete=false end
     local store=P:GetStore(self.StoreId)
-    return {available=true,complete=complete,totals=ConfirmedCounts(totals),rows=rows,firstAt=self.state.firstAt,lastAt=self.state.lastAt,
+    return {available=true,complete=complete,totals=ConfirmedCounts(totals),rows=rows,dateOptions=dateOptions,firstAt=self.state.firstAt,lastAt=self.state.lastAt,
         archive=ConfirmedCounts(self.state.archive),archiveFrom=self.state.archiveFrom,archiveTo=self.state.archiveTo,
         revision=self.revision,failures=self.failures,error=self.lastError or (store and store.lastError),scope=A:GetCollectionScope(),
         coverage="仅记录开启期间客户端可见的伤害、治疗、承伤、击杀玩家、死亡；自身与所有人模式都只计明确归属，来源不明时不计击杀。旧版推断记录保留，但不计入击杀合计。日期时间为服务器时间（分钟精度）。"}

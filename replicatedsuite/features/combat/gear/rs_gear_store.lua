@@ -614,7 +614,9 @@ function F:SaveIndexNow(reason)
     if loaded ~= true then return false, loadErr or "读取换装索引失败" end
     local previous = math.max(0, math.floor(tonumber(self.State.revision) or 0))
     self.State.revision = previous + 1
-    local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = reason })
+    -- 快捷按钮拖动结束/位置重置必须在返回前确认真实磁盘读回，不能把Native接受但丢写的位置当成已保存；其它索引命令保持原验证策略。
+    local geometry = reason == "gear_quick_button_position" or reason == "gear_quick_button_positions_reset"
+    local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = reason, durable = geometry })
     if ok ~= true then self.State.revision = previous end
     return ok, err
 end

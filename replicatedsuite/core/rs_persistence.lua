@@ -521,7 +521,9 @@ local function CharacterScopeIdentity()
     local identity = nil
     if X2Unit ~= nil and S.Api ~= nil and type(S.Api.CallCapability) == "function" then
         local ok, value = S.Api:CallCapability("X2Unit:UnitNameWithWorld", X2Unit, "UnitNameWithWorld", "player")
-        if ok then identity = NonEmptyText(value) end
+        -- 身份只能接收 Native 明确返回的文本；false/数字/table 都代表尚未取得可靠角色身份，不能被通用文本
+        -- 归一化器 tostring 成 "false"/"0"/内存地址后创建永久角色键。其它元数据仍沿用 NonEmptyText 契约。
+        if ok and type(value) == "string" then identity = NonEmptyText(value) end
     end
     return identity
 end
@@ -529,12 +531,15 @@ end
 local function CharacterScopeToken(identity)
     identity = NonEmptyText(identity)
     if identity == nil then return nil end
-    -- 物理键算法保持不变以兼容升级；v6 元数据另盖精确带世界名身份指纹，避免非 ASCII 或有损归一化后两个角色
-    -- 折成相同 token 而静默互载。
-    local token = NormalizeId("world:" .. identity)
-    if token == "" then return nil end
-    if #token > 80 then token = token:sub(1, 80) end
-    return token
+    -- 无损 ASCII 延续旧物理键；只有大小写折叠是原契约，替换字符、合并下划线和截断都不能丢掉角色区别。
+    -- 显式检查非 ASCII 字节，使结果不依赖 Lua/C locale 对 %w 的解释；旧 token 只作为只读迁移候选。
+    local fullToken = NormalizeId("world:" .. identity)
+    local legacyToken = fullToken:sub(1, 80)
+    local lossy = identity:find("[\128-\255]") ~= nil or fullToken ~= "world_" .. identity:lower() or #fullToken > 80
+    if lossy ~= true then return legacyToken, nil end
+    -- 复用已持久化的稳定双哈希，不接入新的游戏 API。v2_ 与永远以 world 开头的旧 token 命名空间分离，
+    -- 总长仍不超过旧上限80；envelope 的 scope 指纹校验继续保留，不能因物理键已分开而删除归属门。
+    return "v2_" .. ScopeIdentityFingerprint(identity) .. "_" .. legacyToken:sub(1, 60), legacyToken
 end
 
 function P:ResolveStoreKey(storeOrId)
@@ -546,9 +551,11 @@ function P:ResolveStoreKey(storeOrId)
     if store.scope == SCOPE.Account then return baseKey, nil, nil end
     if store.scope == SCOPE.Character then
         local identity = CharacterScopeIdentity()
-        local token = CharacterScopeToken(identity)
+        local token, legacyToken = CharacterScopeToken(identity)
         if token == nil then return nil, "character scope unavailable", nil end
-        return baseKey .. "_char_" .. token, nil, ScopeIdentityFingerprint(identity)
+        -- 第四返回值只供 Core 的缺键迁移读取；当前绑定、所有保存和耐久验证始终使用第一返回的新权威键。
+        return baseKey .. "_char_" .. token, nil, ScopeIdentityFingerprint(identity),
+            legacyToken ~= nil and (baseKey .. "_char_" .. legacyToken) or nil
     end
     return nil, "unsupported scope: " .. tostring(store.scope), nil
 end
@@ -701,6 +708,8 @@ function P:RegisterStore(def)
         loadStatus = "not_loaded",
         writeFenced = false,
         writeFenceReason = nil,
+        replacementOwnershipOk = false,
+        replacementOwnershipError = nil,
         lastError = nil,
         lastSaveAt = nil,
         lastLoadAt = nil,
@@ -894,17 +903,137 @@ function P:RebuildFramework2SerializerOmissions(store, decoded, stampedFingerpri
     return historicalCanonical, recovered
 end
 
--- 仅完整替换 journal 分片可修复读取损坏非活动副本造成的隔离；未来 schema 和暂时 LoadData 错误不在此列，覆盖
--- 会破坏当前构建无法理解或暂不可读的数据。
+-- 完整替换只修复已经确认归属的内容损坏，不能把“读不到/读不懂/不是本角色”当作可丢弃数据。
+-- 必须使用明确的内容错误白名单；尤其不能放行整个 metadata/envelope/integrity 前缀，其中还包括
+-- owner/store/scope 身份不符及未来契约。否则中文/俄文姓名折到相同旧物理键时，显式重新统计会覆盖另一角色。
 local function IsRecoverableReplacementFence(reason)
     reason = tostring(reason or "")
     return reason == "decode_failed"
-        or reason:match("^metadata_mismatch:") ~= nil
-        or reason:match("^integrity_failed:") ~= nil
-        or reason:match("^envelope_integrity_failed:") ~= nil
+        or reason:match("^integrity_failed:fingerprint_") ~= nil
+        or reason:match("^integrity_failed:decode_failed:") ~= nil
+        or reason:match("^envelope_integrity_failed:envelope_fingerprint_") ~= nil
         or reason:match("^encoded_load_rejected:") ~= nil
         or reason:match("^decoded_load_rejected:") ~= nil
         or reason:match("^transport_decode_failed:") ~= nil
+end
+
+local REPLACEMENT_METADATA_BUDGET = { maxDepth = 4, maxNodes = 96, maxStringBytes = 4096, maxEntriesPerTable = 32 }
+
+local function ReplacementMetadataOwnership(store, meta, expectedScopeFingerprint)
+    if type(meta) ~= "table" then return false, "replacement_metadata_missing" end
+    for _, field in ipairs({ "store", "owner", "lifetime", "scope" }) do
+        if NonEmptyText(meta[field]) == nil or tostring(meta[field]) ~= tostring(store[field == "store" and "id" or field]) then
+            return false, "replacement_metadata_mismatch:" .. field
+        end
+    end
+    -- schema 等版本即使被更早的 payload/transport 错误遮住，也不能获得完整替换许可。这里仅检查冷加载
+    -- 提取的元数据，不修改 stamp、canonical 或物理键；缺失/非整数版本也不足以证明当前构建理解该档。
+    local function Supported(value, maximum)
+        local version = tonumber(value)
+        return version ~= nil and version >= 1 and version == math.floor(version) and version <= maximum
+    end
+    for _, entry in ipairs({
+        { "framework", P.FrameworkVersion }, { "contractVersion", store.contractVersion },
+        { "schema", store.schemaVersion }, { "reliabilityContract", P.ReliabilityContractVersion },
+        { "integrityVersion", P.IntegrityContractVersion }, { "envelopeIntegrityVersion", P.EnvelopeIntegrityContractVersion },
+    }) do
+        if not Supported(meta[entry[1]], entry[2]) then return false, "replacement_unsupported_metadata:" .. entry[1] end
+    end
+    if tonumber(meta.framework) >= 3 and not Supported(meta.transportVersion, P.SupportedTransportContractVersion) then
+        return false, "replacement_unsupported_metadata:transportVersion"
+    end
+    if store.scope == SCOPE.Character then
+        if tonumber(meta.scopeBindingContract) ~= tonumber(P.ScopeBindingContractVersion) then
+            return false, "replacement_scope_binding_contract"
+        end
+        -- 迁移只读检查可显式提供候选章的身份以验证其完整元数据；所有原有替换调用不传第三参数，仍严格绑定
+        -- 当前 Store 身份，不能借迁移检查放宽 CanReplaceCorrupt 的跨角色写隔离。
+        local expectedFingerprint = expectedScopeFingerprint or store.resolvedScopeFingerprint
+        if NonEmptyText(meta.scopeIdentityFingerprint) == nil or expectedFingerprint == nil
+            or tostring(meta.scopeIdentityFingerprint) ~= tostring(expectedFingerprint) then
+            return false, "replacement_scope_identity_fingerprint"
+        end
+    end
+    return true, nil
+end
+
+local function PhysicalReplacementOwnership(store, raw)
+    local meta = type(raw) == "table" and raw.__rsmeta or nil
+    if type(meta) ~= "table" then return false, "replacement_metadata_missing" end
+    local inspection = P:InspectPayload(meta, REPLACEMENT_METADATA_BUDGET)
+    if inspection.ok ~= true then return false, "replacement_metadata_rejected:" .. tostring(inspection.reason) end
+    -- 截断 payload 可使整个 transport 在正常 metadata 门之前失败。只解码有界的 metadata 副本，独立核对
+    -- 归属/版本；绝不解码或信任损坏的业务内容。没有完整归属证据的裸表/旧档仍隔离，不能按默认值认领。
+    local decoded, err = P:DecodePhysicalEnvelope({ __rsmeta = DeepCopy(meta) })
+    if decoded == nil then return false, "replacement_metadata_decode_failed:" .. tostring(err) end
+    return ReplacementMetadataOwnership(store, decoded.__rsmeta)
+end
+
+-- 有损旧键可能同时是多个角色的历史候选，不能凭“此键有值”认领，也不能把损坏候选当作新档。
+-- 本检查只读，不调用 Apply/Save/Clear；自己的候选随后仍必须走 LoadStore 的完整恢复/预算/schema 链。
+-- 明确属于另一角色时额外精确验业务章，只有完整可信的 foreign 源才允许当前角色在独立新键创建默认档。
+local function InspectLegacyCharacterSource(store, physicalRaw, currentFingerprint)
+    if type(physicalRaw) ~= "table" then return nil, "raw_type" end
+    local physicalInspection = P:InspectPayload(physicalRaw, store.encodedBudget)
+    if physicalInspection.ok ~= true then return nil, "physical_budget" end
+    local physicalMeta = physicalRaw.__rsmeta
+    if type(physicalMeta) ~= "table" then return nil, "metadata_missing" end
+    local metaInspection = P:InspectPayload(physicalMeta, REPLACEMENT_METADATA_BUDGET)
+    if metaInspection.ok ~= true then return nil, "metadata_budget" end
+    local metadataRaw, metadataError = P:DecodePhysicalEnvelope({ __rsmeta = DeepCopy(physicalMeta) })
+    if metadataRaw == nil or metadataError ~= nil then return nil, "metadata_decode:" .. tostring(metadataError) end
+    local meta = metadataRaw.__rsmeta
+    local stampedIdentity = type(meta) == "table" and meta.scopeIdentityFingerprint or nil
+    if type(stampedIdentity) ~= "string" or #stampedIdentity ~= 16 or stampedIdentity:find("[^%x]") ~= nil then
+        return nil, "identity_stamp_missing"
+    end
+    local ownedMetadata, metadataReason = ReplacementMetadataOwnership(store, meta, stampedIdentity)
+    if ownedMetadata ~= true then return nil, tostring(metadataReason) end
+    if (tonumber(meta.reliabilityContract) or 0) < 6 or NonEmptyText(meta.envelopeFingerprint) == nil
+        or NonEmptyText(meta.encodedFingerprint or meta.payloadFingerprint) == nil then return nil, "envelope_stamp_missing" end
+    local actualEnvelope = P:FingerprintEnvelopeIntegrity(metadataRaw)
+    if actualEnvelope == nil or tostring(actualEnvelope) ~= tostring(meta.envelopeFingerprint) then return nil, "envelope_fingerprint" end
+    if stampedIdentity == currentFingerprint then return "owned", nil end
+
+    -- Foreign 只运行已约定为纯函数的 decoder/canonicalizer，绝不应用外角色数据。内容盲 v3 或需要恢复候选
+    -- 才能证明的外国档不在此认定健康；保持隔离，比猜测并创建新档更安全。
+    local raw, transportError = P:DecodePhysicalEnvelope(physicalRaw)
+    if raw == nil or transportError ~= nil then return nil, "foreign_transport:" .. tostring(transportError) end
+    local actualFingerprint, fingerprintError
+    local integrityVersion = tonumber(meta.integrityVersion)
+    if integrityVersion == tonumber(P.IntegrityContractVersion) then
+        local value, decodeError = DecodeValue(store, raw)
+        if value == nil or decodeError ~= nil then return nil, "foreign_decode:" .. tostring(decodeError) end
+        local decodedInspection = P:InspectPayload(value, store.budget)
+        if decodedInspection.ok ~= true then return nil, "foreign_decoded_budget" end
+        local canonical, canonicalError = P:CanonicalIntegrityValue(store, value)
+        if canonical == nil then return nil, "foreign_canonical:" .. tostring(canonicalError) end
+        actualFingerprint, fingerprintError = P:FingerprintCanonicalValue(store, canonical)
+    elseif integrityVersion == tonumber(P.PreCanonicalIntegrityContractVersion) then
+        actualFingerprint, fingerprintError = P:FingerprintEncodedPayload(raw, store.encodedBudget)
+    elseif integrityVersion == tonumber(P.LegacyIntegrityContractVersion) then
+        actualFingerprint, fingerprintError = P:FingerprintEncodedPayloadV1(raw, store.encodedBudget)
+    else return nil, "foreign_integrity_contract" end
+    if actualFingerprint == nil then return nil, "foreign_fingerprint:" .. tostring(fingerprintError) end
+    if tostring(actualFingerprint) ~= tostring(meta.encodedFingerprint or meta.payloadFingerprint) then return nil, "foreign_payload_fingerprint" end
+    return "foreign", nil
+end
+
+-- 这是完整替换的唯一授权入口，供可再生 Store 的显式恢复 UI 查询；SaveValue 还会再次执行，防止调用者
+-- 绕过前置检查。证据仅属于本次 Load 的绑定，当前角色变化时即失效；查询不读盘、不清 fence、不写数据。
+function P:CanReplaceCorrupt(id)
+    local store = self:GetStore(id)
+    if store == nil then return false, "unknown store" end
+    if store.recoverableReplacement ~= true then return false, "store_replacement_not_enabled" end
+    if store.writeFenced ~= true or not IsRecoverableReplacementFence(store.writeFenceReason) then
+        return false, store.writeFenceReason or "store_not_write_fenced"
+    end
+    if store.replacementOwnershipOk ~= true then
+        return false, store.replacementOwnershipError or "replacement_ownership_unverified"
+    end
+    local bindingOk, bindingErr = CurrentScopeBinding(store)
+    if bindingOk ~= true then return false, bindingErr end
+    return true, nil
 end
 
 -- 字符串序号恢复同时需要加载与保存读回语义一致。只在当前代际/current schema mismatch 冷路径尝试一次，外层先
@@ -1196,7 +1325,7 @@ function P:LoadStore(id, options)
         return true, DeepCopy(store.memory), nil
     end
     if S.Api == nil or type(S.Api.LoadData) ~= "function" then return false, nil, "LoadData unavailable" end
-    local resolvedKey, scopeErr, scopeFingerprint = self:ResolveStoreKey(store)
+    local resolvedKey, scopeErr, scopeFingerprint, legacyScopeKey = self:ResolveStoreKey(store)
     if resolvedKey == nil then
         store.loaded = false
         store.loadStatus = "scope_pending"
@@ -1246,7 +1375,34 @@ function P:LoadStore(id, options)
     store.lastPhysicalTransportRepairOk = false
     store.lastPhysicalTransportRepairError = nil
     store.lastPhysicalTransportRepairProbe = nil
+    -- 归属许可不跨读取复用。失败/空返回也先清证据，防止上一次健康档的所有权替本次未知档背书。
+    store.replacementOwnershipOk = false
+    store.replacementOwnershipError = "replacement_ownership_unverified"
     local raw, loadErr = S.Api:LoadData(resolvedKey)
+    local scopeKeyMigration = false
+    -- 只在新键明确不存在且读取无错时检查一次旧键。新键损坏/未来契约/读失败都不得退回陈旧副本；resolvedKey
+    -- 从始至终保留新键，因此迁移排队、显式恢复、debounce 和 Flush 都不可能回写或删除旧物理值。
+    if raw == nil and loadErr == nil and legacyScopeKey ~= nil then
+        local legacyRaw, legacyError = S.Api:LoadData(legacyScopeKey)
+        if legacyError ~= nil then loadErr = legacyError
+        elseif legacyRaw ~= nil then
+            local ownership, ownershipError = InspectLegacyCharacterSource(store, legacyRaw, scopeFingerprint)
+            if ownership == "owned" then
+                raw = legacyRaw
+                scopeKeyMigration = true
+            elseif ownership ~= "foreign" then
+                -- 未盖身份章/坏章/不能完整证明的源是终态隔离，不沿用旧 legacy_unstamped 自动认领出口。
+                store.loaded, store.loadStatus = true, "scope_migration_failed"
+                store.writeFenced = true
+                store.writeFenceReason = "legacy_scope_unverified:" .. tostring(ownershipError or "unknown")
+                store.lastError = store.writeFenceReason
+                self.stats.loadFailures = (tonumber(self.stats.loadFailures) or 0) + 1
+                Emit("error", "STORE_SCOPE_MIGRATION_REJECTED", "旧角色键无法证明完整归属，已拒绝迁移和默认值覆盖", { store = store.id })
+                return false, nil, store.lastError
+            end
+            -- 可信 foreign 不 Apply、不 Save，保留旧盘原样；raw 继续为 nil，复用下方新角色空档初始化。
+        end
+    end
     store.lastLoadAt = NowMs()
     if loadErr ~= nil then
         store.loaded = false
@@ -1304,7 +1460,11 @@ function P:LoadStore(id, options)
         return false, nil, store.lastError
     end
 
-    -- Framework3 的第一条读取边界必须是物理预算 + transport decode。
+    if store.recoverableReplacement == true then
+        store.replacementOwnershipOk, store.replacementOwnershipError = PhysicalReplacementOwnership(store, raw)
+    end
+
+    -- Framework3 的第一条业务读取边界必须是物理预算 + transport decode。
     -- 这一步位于 metadata/canonical/decode/apply 之前；因此所有 Feature 仍只接触原始 Lua boolean/table，
     -- 并且未来版本/损坏 transport 会 fail-closed，不会被当成“空存档”后用默认值覆盖。
     local physicalTransportRepairNeeded = false
@@ -1341,6 +1501,10 @@ function P:LoadStore(id, options)
         end
     end
     raw = transportRaw
+    -- 有界 physical repair 可能恢复 metadata；只有通过生产 transport 的当前结果才可更新归属证据。
+    if store.recoverableReplacement == true then
+        store.replacementOwnershipOk, store.replacementOwnershipError = ReplacementMetadataOwnership(store, raw.__rsmeta)
+    end
 
     -- Reliability v4 在读和写两侧验证编码 envelope；不能因截断或畸形值技术上仍是 Lua 表，就允许进入业务
     -- decoder/apply。遍历仅发生在持久化冷边界，不进入 Feature Tick。
@@ -1392,7 +1556,11 @@ function P:LoadStore(id, options)
     local metaReliabilityContract = meta and tonumber(meta.reliabilityContract) or nil
     local stampedEnvelopeVersion = meta and tonumber(meta.envelopeIntegrityVersion) or nil
     local stampedEnvelopeFingerprint = meta and NonEmptyText(meta.envelopeFingerprint) or nil
-    local envelopeAdvertised = stampedEnvelopeFingerprint ~= nil or stampedEnvelopeVersion ~= nil
+    -- v2 角色物理命名空间只由当前有章写者创建，没有历史裸档兼容来源；当前键的 metadata 若被截掉，
+    -- 必须仍进入完整封印/身份/业务章门，不能落入 legacy_unstamped 后应用并重写。自己的旧键候选已由专门
+    -- 迁移检查证明归属，ASCII/Account 则保留原来的历史兼容判定，不扩改其 schema/恢复语义。
+    local envelopeAdvertised = (legacyScopeKey ~= nil and scopeKeyMigration ~= true)
+        or stampedEnvelopeFingerprint ~= nil or stampedEnvelopeVersion ~= nil
         or (metaReliabilityContract ~= nil and metaReliabilityContract >= 6)
     if envelopeAdvertised then
         self.stats.envelopeIntegrityLoadChecks = (tonumber(self.stats.envelopeIntegrityLoadChecks) or 0) + 1
@@ -2108,6 +2276,13 @@ function P:LoadStore(id, options)
                                 -- debounce 降级。
     end
 
+    -- 旧角色键只有通过上述完整 transport/envelope/业务指纹/schema 链后才获得新键写意图；只排队不提前写。
+    -- 保留更强恢复原因，但迁移必须立即可被既有 Scheduler/Flush 收口，不能被普通 schema debounce 延后。
+    if scopeKeyMigration == true then
+        deferredSaveReason = deferredSaveReason or "scope_key_upgrade"
+        deferredSaveDelayMs = 0
+    end
+
     -- 迁移与周期重置也是可扩张 payload 的业务代码；Domain apply 前立即复查最终值。
     local finalDecodedInspection = self:InspectPayload(value, store.budget)
     store.lastDecodedInspection = finalDecodedInspection
@@ -2171,7 +2346,7 @@ function P:SaveValue(id, value, options)
         replacingFencedShard = options.replaceCorrupt == true
             and store.recoverableReplacement == true
             and verifyRequired == true
-            and IsRecoverableReplacementFence(store.writeFenceReason)
+            and self:CanReplaceCorrupt(store.id) == true
         if replacingFencedShard ~= true then
             Count("STORE_WRITE_FENCED", 1)
             return false, store.writeFenceReason or "write fenced"
@@ -2687,15 +2862,74 @@ function P:ClearStore(id, options)
         store.loaded, store.loadStatus, store.dirty, store.dueAt = true, "session", false, 0
         return true
     end
-    local key, keyErr
+    local key, keyErr, legacyScopeKey
     if store.scope == SCOPE.Character then
         local prepared, prepareErr = self:PrepareWrite(id)
         if prepared ~= true then return false, prepareErr or "character store not ready for clear" end
         key = store.resolvedKey
         if key == nil then return false, "character store key unavailable" end
+        -- 清空选择物理删除/默认章之前必须完整重验身份；解析失败的第四返回同样是 nil，绝不能把“身份不可用”
+        -- 当成“当前角色没有旧候选”而误删已迁移键。普通 ASCII 清空也遵守此守卫，避免切角后仍操作旧绑定键。
+        local currentKey, scopeErr, currentFingerprint, legacyCandidate = self:ResolveStoreKey(store)
+        local bindingError = currentKey == nil and (scopeErr or "character scope unavailable") or nil
+        if bindingError == nil and tostring(currentKey) ~= tostring(store.resolvedKey) then bindingError = "scope_binding_key_changed" end
+        if bindingError == nil and (currentFingerprint == nil or store.resolvedScopeFingerprint == nil
+            or tostring(currentFingerprint) ~= tostring(store.resolvedScopeFingerprint)) then bindingError = "scope_binding_identity_changed" end
+        if bindingError ~= nil then
+            store.lastScopeBindingError = bindingError
+            self.stats.scopeBindingMismatches = (tonumber(self.stats.scopeBindingMismatches) or 0) + 1
+            return false, bindingError
+        end
+        legacyScopeKey = legacyCandidate
     else
         key, keyErr = self:ResolveStoreKey(store)
         if key == nil then return false, keyErr end
+    end
+    if legacyScopeKey ~= nil then
+        -- 有旧角色源的键不能物理删除：旧键按迁移契约必须保留，删除新键会让下次冷启动再次认领旧内容。
+        -- 默认 payload 的完整 envelope 是新的清空权威，沿用现有耐久 SaveValue 全链；旧键始终不写不删。
+        local fresh, defaultErr = DefaultValue(store)
+        if defaultErr ~= nil then
+            store.writeFenced, store.writeFenceReason, store.lastError = true, "clear_default_failed", tostring(defaultErr)
+            return false, defaultErr
+        end
+        if S.Api == nil or type(S.Api.LoadData) ~= "function" then
+            self.stats.clearFailures = (tonumber(self.stats.clearFailures) or 0) + 1
+            store.writeFenced, store.writeFenceReason, store.lastError = true, "clear_verify_unavailable", "clear_verify_unavailable"
+            return false, store.lastError
+        end
+        self.stats.clearVerifyAttempts = (tonumber(self.stats.clearVerifyAttempts) or 0) + 1
+        local saved, saveErr = self:SaveValue(id, fresh, { durable = true, reason = options.reason or "clear_store" })
+        if saved ~= true then
+            -- Native 拒绝或假成功 drop 都不得应用默认值。保存可能已触碰新键，隔离陈旧 Domain 和 dirty 重试，
+            -- 保留耐久义务；只有重新证明磁盘状态后才能恢复写入，绝不能以旧 getter 自动盖掉清空权威。
+            local reason = "clear_default_save_failed:" .. tostring(saveErr or "unknown")
+            self.stats.clearFailures = (tonumber(self.stats.clearFailures) or 0) + 1
+            self.stats.clearVerifyFailures = (tonumber(self.stats.clearVerifyFailures) or 0) + 1
+            store.loadStatus = "clear_verify_failed"
+            store.writeFenced, store.writeFenceReason, store.lastError = true, reason, reason
+            store.needsBarrierVerify = true
+            Emit("error", "STORE_CLEAR_VERIFY_FAILED", "角色清空默认档未通过耐久保存，已保留当前 Domain 并隔离陈旧写入", { store = store.id })
+            return false, reason
+        end
+        if options.applyDefault ~= false then
+            local applied, applyErr = ApplyValue(store, fresh, options.reason or "clear_store")
+            if applied ~= true then
+                -- 磁盘默认章已耐久，但 Domain 仍旧；必须显式 fence，防止后续变更从旧内存复活已清空数据。
+                store.loadStatus = "clear_apply_failed"
+                store.writeFenced, store.writeFenceReason, store.lastError = true, "clear_apply_failed", tostring(applyErr)
+                return false, applyErr
+            end
+        end
+        -- applyDefault=false 明确保留调用方内存，因此标记待重新加载；下次 PrepareRead/Write 必须读取默认章。
+        -- 不使用 empty：新键实际存在受信 envelope，诊断不能声称物理缺键或把旧 Domain 标为当前权威。
+        store.loaded = options.applyDefault ~= false
+        store.loadStatus = options.applyDefault == false and "cleared_pending_apply" or "saved"
+        store.lastBarrierVerifyAt, store.lastBarrierVerifyOk, store.lastBarrierVerifyError = NowMs(), true, nil
+        store.lastLoadAt = NowMs()
+        self.stats.clears = (tonumber(self.stats.clears) or 0) + 1
+        Count("STORE_CLEARED", 1)
+        return true
     end
     if S.Api == nil or type(S.Api.ClearData) ~= "function" then return false, "ClearData unavailable" end
     local cleared, clearErr = S.Api:ClearData(key)

@@ -470,14 +470,14 @@ local function HostLocalPoint(transform, x, y)
         (tonumber(y) or 0) - (tonumber(transform.originY) or 0)
 end
 
-function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransform)
+-- 同帧一行的字形大小/透明度只解析一次；本地 helper 只接收已解析样式，
+-- 仍逐点执行锚点、Native 字体缓存和显隐检查。旧公开方法保留原参数与直接调用语义。
+local function PlacePreparedUnitDot(self, dot, x, y, size, alpha, pairKey, r, g, b, hostTransform)
     -- LABEL 点的颜色/大小通过标签样式设置，不使用 drawable；原因见 EnsureUnitPairPool。
     if type(dot)~="table" or dot.root==nil then return 0,0,0 end
     -- 点大小设置范围为 2..10，但字形需按 rp_ui 参考保持 >=15px 可读；不能将设置值直接钳制为
     -- 字形可读下限，否则大小滑块会变成无操作（“设置没有用”）。
     -- 应使用单调映射：设置 2→16px、4→22、6→28、8→34、10→40。
-    size=ResolveVisualPointFontSize(size)
-    local alpha=math.max(0.1,math.min(1,tonumber(opacity) or 0.78))
     local cr,cg,cb=r,g,b
     if cr==nil then
         local c=UNIT_COLORS[tostring(pairKey or "target")] or UNIT_COLORS.target
@@ -518,13 +518,17 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransfor
     return anchorWrites,styleWrites,visibilityWrites,state.visible==true
 end
 
-function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b, hostTransform)
+function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransform)
+    if type(dot)~="table" or dot.root==nil then return 0,0,0 end
+    return PlacePreparedUnitDot(self,dot,x,y,ResolveVisualPointFontSize(size),
+        math.max(0.1,math.min(1,tonumber(opacity) or 0.78)),pairKey,r,g,b,hostTransform)
+end
+
+local function PlacePreparedRangeDot(self, dot, x, y, size, alpha, kind, pairKey, r, g, b, hostTransform)
     if type(dot)~="table" or dot.root==nil then return false end
-    size=ResolveVisualPointFontSize(size)
     local localX, localY = HostLocalPoint(hostTransform, x, y)
     local px,py=math.floor(localX+0.5),math.floor(localY+0.5)
     local cr,cg,cb=r or 0.20,g or 0.82,b or 1.00
-    local alpha=math.max(0.1,math.min(1,tonumber(opacity) or 0.68))
     local state=type(dot.renderState)=="table" and dot.renderState or {};dot.renderState=state
     local host=kind=="unit" and self.unitHost or self.rangeHost
 
@@ -548,6 +552,12 @@ function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b, hostTransf
     self:SetDotVisible(dot,true)
     -- 维护（range-continuity-1）：Show 被拒绝时不能把请求点计为已接受的可见点。
     return state.visible==true
+end
+
+function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b, hostTransform)
+    if type(dot)~="table" or dot.root==nil then return false end
+    return PlacePreparedRangeDot(self,dot,x,y,ResolveVisualPointFontSize(size),
+        math.max(0.1,math.min(1,tonumber(opacity) or 0.68)),kind,pairKey,r,g,b,hostTransform)
 end
 
 -- ScreenProjectionV3 已返回 OverlayWindow 子锚点使用的左上 UIParent 屏幕坐标；addonScale 是布局大小偏好，不能作世界/屏幕转换。
@@ -578,6 +588,10 @@ function P:RenderUnit()
     local anchorWrites,styleWrites,visibilityWrites,poolGrowth=0,0,0,0
     local uniqueSeen={}
     local uniquePositions=0
+    -- px/py 在下方经 floor 得到整数。仅已知小视口的非负有界点用精确数字键；
+    -- 32769 进制在 0..32768 两轴内无冲突且远低于 Lua number 的整数精度上限。
+    -- 未知视口/超大分辨率/越界点仍保留原字符串语义，不缓存或更改实时坐标。
+    local numericUnique=sampleStats.viewportKnown and viewportW<=32768 and viewportH<=32768
     local growthRemaining=UnitLinePoolGrowthBudget(pressure)
     local remainingPlans=#plans
     for planIndex,plan in ipairs(plans) do
@@ -594,16 +608,20 @@ function P:RenderUnit()
         remainingPlans=math.max(0,remainingPlans-1)
         local count=math.min(requested,#pool)
         active[key]=true
+        local preparedFontSize=ResolveVisualPointFontSize(size)
+        local preparedAlpha=math.max(0.1,math.min(1,tonumber(projection.opacity) or 0.78))
         for i=1,count do
             local t=(i-1)/math.max(1,count-1)
             local px=math.floor((plan.x1+(plan.x2-plan.x1)*t)+0.5)
             local py=math.floor((plan.y1+(plan.y2-plan.y1)*t)+0.5)
-            local aw,sw,vw,placed=self:PlaceUnitDot(pool[i],px,py,size,projection.opacity,key,cr,cg,cb,hostTransform)
+            local aw,sw,vw,placed=PlacePreparedUnitDot(self,pool[i],px,py,preparedFontSize,preparedAlpha,key,cr,cg,cb,hostTransform)
             anchorWrites=anchorWrites+(tonumber(aw) or 0); styleWrites=styleWrites+(tonumber(sw) or 0); visibilityWrites=visibilityWrites+(tonumber(vw) or 0)
             -- 计数Native确认的可显示点而不是池容量；失败点不冒充“可见”。
             if placed==true then
                 visibleDots=visibleDots+1
-                local uk=tostring(px)..","..tostring(py)
+                local uk
+                if numericUnique and px>=0 and py>=0 and px<=32768 and py<=32768 then uk=py*32769+px
+                else uk=tostring(px)..","..tostring(py) end
                 if uniqueSeen[uk]~=true then uniqueSeen[uk]=true;uniquePositions=uniquePositions+1 end
             else placementFailures=placementFailures+1 end
         end
@@ -667,6 +685,8 @@ function P:RenderRange()
             local color = type(row.color)=="table" and row.color or nil
             local rr,rg,rb = color and (tonumber(color[1]) or 0.20) or 0.20, color and (tonumber(color[2]) or 0.82) or 0.82, color and (tonumber(color[3]) or 1.00) or 1.00
             local acceptedCount = 0
+            local preparedFontSize=ResolveVisualPointFontSize(row.pointSize or projection.pointSize)
+            local preparedAlpha=math.max(0.1,math.min(1,tonumber(row.opacity or projection.opacity) or 0.68))
             for i=1,count do
                 local px,py=FinitePointNumber(points[i].x),FinitePointNumber(points[i].y)
                 -- 维护（2026-10-07，range-viewport-visibility-1）：R22 大圈比近镜头距离更大时，
@@ -676,7 +696,7 @@ function P:RenderRange()
                     self:SetDotVisible(pool[i],false);sample.invalidPoints=sample.invalidPoints+1
                 elseif sample.viewportKnown and (px<0 or py<0 or px>viewportW or py>viewportH) then
                     self:SetDotVisible(pool[i],false);sample.offscreenPoints=sample.offscreenPoints+1
-                elseif self:PlaceDot(pool[i],px,py,row.pointSize or projection.pointSize,row.opacity or projection.opacity,"range",nil,rr,rg,rb,hostTransform)==true then
+                elseif PlacePreparedRangeDot(self,pool[i],px,py,preparedFontSize,preparedAlpha,"range",nil,rr,rg,rb,hostTransform)==true then
                     acceptedCount = acceptedCount + 1
                     if firstPoint == "?" then firstPoint = tostring(math.floor(tonumber(points[i].x) or 0)) .. "," .. tostring(math.floor(tonumber(points[i].y) or 0)) end
                 else sample.placementFailures = sample.placementFailures + 1 end

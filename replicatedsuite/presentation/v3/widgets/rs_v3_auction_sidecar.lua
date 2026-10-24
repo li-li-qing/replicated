@@ -44,6 +44,8 @@ local function NormalizePosition(value)
     local out={userMoved=value.userMoved==true}
     -- 缺失字段保持缺失，已发布 schema1 的自由坐标 canonical 不补默认；schema2 才保存缩小状态。
     if value.minimized~=nil then out.minimized=value.minimized==true end
+    -- 维护：小锁属于原独立 Presentation Store；只保留显式 true，旧档缺省和解锁仍缺键，避免改变已发布 canonical。
+    if value.locked==true then out.locked=true end
     if out.userMoved then
         if value.coordinateSpace=="logical-edge-v1" then
             out.coordinateSpace="logical-edge-v1"
@@ -350,7 +352,8 @@ local function CreateSidecar()
             return true
         end,
         persist = function(reason)
-            if reason~="geometry" and reason~="layout_reset" and reason~="minimized" and reason~="size" then return true end
+            -- 维护：标题按钮与 API 的锁定/解锁必须沿原位置 Store 同步回读，不能只变更本会话 Native 状态。
+            if reason~="geometry" and reason~="layout_reset" and reason~="minimized" and reason~="size" and reason~="locked" and reason~="lock" then return true end
             local loaded,loadErr=Controller:EnsurePositionLoaded()
             if loaded~=true then return false,loadErr end
             local saved,saveErr=Persistence:SaveStore(POSITION_STORE,{durable=true,consumeDirty=true,reason="auction_sidecar:"..tostring(reason)})

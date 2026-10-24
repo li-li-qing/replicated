@@ -200,40 +200,66 @@ local function Build(parent)
         slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
     if not content then error(contentErr or "个人历史滚动正文不可用") end
     D:PageHeader(content,"v3_personal_history_header","个人战斗历史","仅记录功能开启期间的个人数据；记录保存在本地当前角色存档。清空实时统计不会删除这里的记录。")
-    local transfer=BuildTransfer(content,function()return root:RefreshData()end) -- 全期交换独立于下方日期筛选；导入完成立即刷新现有只读查询。
-    local ranges=UI:HorizontalBox({id="v3_personal_history_ranges",parent=content,gap=8,slot={size="fixed",height=32,hAlign="fill"}})
-    UI:Text({id="v3_personal_history_range_label",parent=ranges,text="日期范围：",slot={size="fixed",width=80}})
-    local from=UI:TextInput({id="v3_personal_history_from",parent=ranges,value="",maxLength=10,allowEmpty=true,buildOptional=true,submitOnLostFocus=false,
-        slot={size="fill",fill=1,minWidth=110},onSubmit=function() return root:RefreshData() end})
-    local to=UI:TextInput({id="v3_personal_history_to",parent=ranges,value="",maxLength=10,allowEmpty=true,buildOptional=true,submitOnLostFocus=false,
-        slot={size="fill",fill=1,minWidth=110},onSubmit=function() return root:RefreshData() end})
-    UI:Button({id="v3_personal_history_query",parent=ranges,text="查询",compact=true,slot={size="fixed",width=70},onClick=function()
-        if from then from:SetValue(from:GetDraftValue(),false) end
-        if to then to:SetValue(to:GetDraftValue(),false) end
-        return root:RefreshData()
-    end})
-    UI:Button({id="v3_personal_history_all",parent=ranges,text="全期累计",compact=true,slot={size="fixed",width=100},onClick=function()
-        if from then from:SetValue("") end;if to then to:SetValue("") end;return root:RefreshData()
+    -- 日期只是本页只读筛选状态；复用 RSUI 下拉弹层，不要求输入日期，也不写回历史 Store。
+    local selectedFrom,selectedTo,lastDates="","",nil
+    local ranges=UI:HorizontalBox({id="v3_personal_history_ranges",parent=content,gap=6,slot={size="fixed",height=32,hAlign="fill"}})
+    UI:Text({id="v3_personal_history_range_label",parent=ranges,text="日期：",slot={size="fixed",width=46}})
+    local from=UI:Dropdown({id="v3_personal_history_from",parent=ranges,items={{value="",text="开始：不限"}},maxVisible=8,
+        get=function()return selectedFrom end,set=function(value)
+            selectedFrom=tostring(value or "")
+            if selectedFrom~="" and selectedTo~="" and selectedFrom>selectedTo then selectedTo=selectedFrom end
+            return true
+        end,onChanged=function()return root:RefreshData()end,slot={size="fill",fill=1,minWidth=106}})
+    UI:Text({id="v3_personal_history_range_separator",parent=ranges,text="至",slot={size="fixed",width=14}})
+    local to=UI:Dropdown({id="v3_personal_history_to",parent=ranges,items={{value="",text="结束：不限"}},maxVisible=8,
+        get=function()return selectedTo end,set=function(value)
+            selectedTo=tostring(value or "")
+            if selectedFrom~="" and selectedTo~="" and selectedTo<selectedFrom then selectedFrom=selectedTo end
+            return true
+        end,onChanged=function()return root:RefreshData()end,slot={size="fill",fill=1,minWidth=106}})
+    UI:Button({id="v3_personal_history_all",parent=ranges,text="全部日期",compact=true,slot={size="fixed",width=80},onClick=function()
+        selectedFrom,selectedTo="","";return root:RefreshData()
     end})
     -- 查询和结果同属滚动正文；顶层只保留稳定导航，不改变历史的读取/存储 Authority。
-    UI:Text({id="v3_personal_history_range_hint",parent=content,text="日期：YYYY-MM-DD（含首尾当天）；留空查询全部。服务器时间，分钟精度。列表显示最近120个记录日，累计包含完整查询范围。",fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=30}})
+    UI:Text({id="v3_personal_history_range_hint",parent=content,text="选择后立即查询，含首尾当天；选同一天可查看当天。采用服务器日期；已选日期若无每日明细，会保留边界并标注。",fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=26}})
     local period=UI:Text({id="v3_personal_history_period",parent=content,text="记录期间：--",fontSize=10,tone="strong",overflow="wrap",slot={size="auto",minHeight=26}})
     local totals=UI:Text({id="v3_personal_history_totals",parent=content,text="--",fontSize=12,tone="strong",overflow="wrap",slot={size="auto",minHeight=44}})
-    local details=UI:Text({id="v3_personal_history_evidence",parent=content,text="--",fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=48}})
+    local dailySummary=UI:Text({id="v3_personal_history_daily_summary",parent=content,text="每日记录",fontSize=10,tone="strong",overflow="wrap",slot={size="auto",minHeight=22}})
     local tableView=UI:TableView({id="v3_personal_history_table",parent=content,items={},rowHeight=24,headerHeight=25,desiredRows=14,scrollbar=true,columnResize=true,
         columns={
-            {id="date",title="日期",field="dateDisplay",size="fixed",width=92,minWidth=66},
-            {id="period",title="采集起止",field="period",size="fill",fill=1,minWidth=90},
+            {id="date",title="日期",field="dateDisplay",size="fixed",width=100,minWidth=92},
+            {id="kills",title="击杀玩家",field="kills",size="fixed",width=76,minWidth=56},
+            {id="deaths",title="死亡",field="deaths",size="fixed",width=44,minWidth=28},
             {id="damage",title="伤害",field="damage",size="fixed",width=70,minWidth=38},
             {id="healing",title="治疗",field="healing",size="fixed",width=70,minWidth=38},
             {id="taken",title="承伤",field="taken",size="fixed",width=70,minWidth=38},
-            {id="kills",title="击杀玩家",field="kills",size="fixed",width=76,minWidth=56},
-            {id="deaths",title="死亡",field="deaths",size="fixed",width=42,minWidth=28},
+            {id="period",title="采集起止",field="period",size="fill",fill=1,minWidth=70},
         },slot={size="fixed",height=410,hAlign="fill"}})
+    local details=UI:Text({id="v3_personal_history_evidence",parent=content,text="--",fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=48}})
+    -- 先呈现每日击杀/死亡，再放交换和长说明，避免常见窗口高度下先看到导出操作却找不到记录。
+    local transfer=BuildTransfer(content,function()return root:RefreshData()end)
     function root:RefreshData()
         scope:Render()
-        local p=F:GetPersonalHistoryProjection({fromDate=from and from:GetValue() or "",toDate=to and to:GetValue() or ""})
-        if p.available~=true then period:SetText(tostring(p.error or "历史不可用"));totals:SetText("--");details:SetText("");tableView:SetItems({},"history_error");return true end
+        local p=F:GetPersonalHistoryProjection({fromDate=selectedFrom,toDate=selectedTo})
+        if p.available~=true then period:SetText(tostring(p.error or "历史不可用"));totals:SetText("--");details:SetText("");dailySummary:SetText("每日记录不可用");tableView:SetItems({},"history_error");return true end
+        -- 日账满额归档、导入或角色切换后，原边界可能不再有日明细；保留筛选并明确标注，不能显示“请选择”却继续暗中筛选。
+        local fromListed,toListed=selectedFrom=="",selectedTo==""
+        for _,date in ipairs(p.dateOptions or {}) do
+            if date==selectedFrom then fromListed=true end;if date==selectedTo then toListed=true end
+        end
+        local missingFrom,missingTo=fromListed and "" or selectedFrom,toListed and "" or selectedTo
+        -- 战斗通知很频繁，只在日期目录或缺失边界变化时更新选项，保持用户选择及弹层滚动位置。
+        local token=table.concat(p.dateOptions or {},"|").."|from:"..missingFrom.."|to:"..missingTo
+        if token~=lastDates then
+            local starts,ends={{value="",text="开始：不限"}},{{value="",text="结束：不限"}}
+            if missingFrom~="" then starts[#starts+1]={value=missingFrom,text=missingFrom.."（无每日明细）"} end
+            if missingTo~="" then ends[#ends+1]={value=missingTo,text=missingTo.."（无每日明细）"} end
+            for _,date in ipairs(p.dateOptions or {}) do
+                starts[#starts+1]={value=date,text=date};ends[#ends+1]={value=date,text=date}
+            end
+            from:SetItems(starts);to:SetItems(ends);lastDates=token
+        end
+        from:Render();to:Render()
         local t=p.totals or {}
         period:SetText("全期记录："..tostring(p.firstAt or "尚无已知时间样本").." → "..tostring(p.lastAt or "--"))
         totals:SetText("所选期间 · 击杀玩家 "..tostring(t.kills or 0).." · 死亡 "..tostring(t.deaths or 0)
@@ -242,14 +268,18 @@ local function Build(parent)
             ..(p.complete==false and " · 此日期筛选不完整：存在早期归档或未定日期记录" or "")
             ..(p.archiveTo and (" · 早期归档截至 "..tostring(p.archiveTo).."（计入全期累计）") or "")
             ..(p.error and (" · 保存异常："..tostring(p.error)) or ""))
+        local count=#(p.rows or {})
+        local dailyText=count==0 and "所选日期暂无每日记录" or ("每日击杀 / 死亡 · "..tostring(math.min(count,120)).." 个记录日"
+            ..(count>120 and ("（共 "..count.." 日，显示最近120日；累计包含完整范围）") or ""))
+        dailySummary:SetText(dailyText..(p.complete==false and " · 筛选不完整：存在归档或未定日期记录" or ""))
         local rows={}
         for i,row in ipairs(p.rows or {}) do
             if i>120 then break end
             row.dateDisplay=row.date=="unknown" and "日期未定" or row.date
-            row.period=tostring(row.firstAt or "--"):sub(12).." → "..tostring(row.lastAt or "--"):sub(12)
+            row.period=(row.firstAt and row.firstAt:sub(12) or "--").." → "..(row.lastAt and row.lastAt:sub(12) or "--")
             rows[#rows+1]=row
         end
-        tableView:SetItems(rows,"personal_history:"..tostring(p.revision)..":"..tostring(from and from:GetValue() or "")..":"..tostring(to and to:GetValue() or ""))
+        tableView:SetItems(rows,"personal_history:"..tostring(p.revision)..":"..selectedFrom..":"..selectedTo)
         return true
     end
     function root:OnActivated()

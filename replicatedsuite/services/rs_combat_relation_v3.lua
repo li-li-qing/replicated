@@ -381,6 +381,17 @@ function R:GetHealth()
         if row.manual == true then manual = manual + 1 end
         if row.relation == R.Relation.UNKNOWN then unknown = unknown + 1 end
     end
+    -- 维护：DPS 每次刷新也读取此诊断，只为人数不得深拷贝全部成员。
+    -- 复用名单服务的实时轻量计数；旧宿主未提供计数时仍兼容完整快照，不跨调用缓存事实。
+    local roster, rosterMembers = TeamRoster(), nil
+    if roster ~= nil and type(roster.GetHealth) == "function" then
+        local health = roster:GetHealth()
+        rosterMembers = type(health) == "table" and tonumber(health.members) or nil
+    end
+    if rosterMembers == nil then
+        local snap = roster ~= nil and type(roster.GetSnapshot) == "function" and roster:GetSnapshot() or nil
+        rosterMembers = snap and tonumber(snap.count) or 0
+    end
     return {
         version = self.version,
         consumers = tonumber(self.consumerCount) or 0,
@@ -395,11 +406,7 @@ function R:GetHealth()
         manualOverrides = self.manualOverrides,
         nameHintEnabled = self.nameHintEnabled == true,
         rosterHeld = self.rosterHeld == true,
-        rosterMembers = (function()
-            local roster = TeamRoster()
-            local snap = roster ~= nil and type(roster.GetSnapshot) == "function" and roster:GetSnapshot() or nil
-            return snap and tonumber(snap.count) or 0
-        end)(),
+        rosterMembers = rosterMembers,
     }
 end
 

@@ -7,6 +7,14 @@
 ------------------------------------------------------------------------
 local h=dofile('tools/rs_gear_page_test_host.lua')({width=820,height=680})
 local S=h.S
+-- 几何取自可控 Native 父链；弹层的位置求解、打开、关闭及选项按钮使用生产实现。
+S.Layout={GetContext=function()return {logicalWidth=1024,logicalHeight=768}end,
+    ResolveSuiteOwnedViewportLogicalRect=function(_,native)
+        local x,y,current=0,0,native
+        while current do x=x+(current.x or 0);y=y+(current.y or 0);current=current.parent end
+        return x,y,native.width,native.height
+    end}
+dofile('ui/framework/rs_ui_popup_positioning.lua')
 dofile('features/rs_feature_registry.lua')
 dofile('ui/framework/rs_ui_forms.lua')
 S.UIV3.WidgetHost={IsVisible=function() return false end}
@@ -35,6 +43,12 @@ dofile('presentation/v3/pages/rs_v3_dps_page.lua')
 dofile('presentation/v3/pages/rs_v3_combat_analytics_page.lua')
 local function Index(node,out) out[node.id]=node;for _,child in ipairs(node.children or {}) do Index(child,out) end end
 local function Fields(widget) local out={} for _,column in ipairs(widget:GetColumns()) do out[column.id]=true end return out end
+-- 使用真实每日入账生成跨日样本，防止界面只验证列名却没有可选日期和每日击杀/死亡。
+local history=S.Features.CombatAnalytics.PersonalHistory
+for _,sample in ipairs({{5,2,3},{7,5,1},{9,3,2}}) do
+    S.Utils.GetServerTime=function() return {year=2026,month=10,day=sample[1],hour=12,minute=30} end
+    h.ms=h.ms+1500;assert(history:Record({kills=sample[2],deaths=sample[3]}))
+end
 local statsPage
 for _,route in ipairs({'combat.stats','combat.statistics_settings','combat.personal_history','combat.analytics'}) do
     local page=assert(S.UIV3.PageHost.factories[route](h.page.spec.parent))
@@ -59,9 +73,51 @@ for _,route in ipairs({'combat.stats','combat.statistics_settings','combat.perso
         assert(tree.v3_statistics_config_metric_kills,'kill/death preference remains usable')
         for _,id in ipairs({'encounter','casts','performance','control','songcraft','utility','aura','mechanics'}) do assert(not tree['v3_statistics_config_metric_'..id],'paused toggle remains visible '..id) end
     elseif route=='combat.personal_history' then
-        local fields=Fields(assert(tree.v3_personal_history_table))
+        local daily=assert(tree.v3_personal_history_table)
+        local fields=Fields(daily)
         for _,id in ipairs({'damage','healing','taken','kills','deaths'}) do assert(fields[id],'missing history column '..id) end
         assert(not fields.npcKills and not fields.assists,'retired columns remain in history UI')
+        local from,to=assert(tree.v3_personal_history_from),assert(tree.v3_personal_history_to)
+        assert(from.kind=='Dropdown' and to.kind=='Dropdown','history dates must be selectable, without manual input')
+        assert(#from.items==4 and from.items[2].value=='2026-10-09' and from.items[4].value=='2026-10-05','dropdown must list all recorded dates, latest first')
+        assert(daily:GetColumns()[2].id=='kills' and daily:GetColumns()[3].id=='deaths','daily kill/death counts must follow their date')
+        assert(daily:GetItem(1).date=='2026-10-09' and daily:GetItem(1).kills==3 and daily:GetItem(1).deaths==2)
+        local beforeReads,beforeWrites,beforeRevision=h.reads,h.writes,history.revision
+        assert(from:SetValue('2026-10-07'));assert(to:SetValue('2026-10-07'))
+        assert(daily:GetItem(1).date=='2026-10-07' and daily:GetItem(1).kills==5 and daily:GetItem(1).deaths==1 and not daily:GetItem(2),'selection must immediately show the chosen day')
+        assert(#from.items==4 and #to.items==4,'range filtering must not hide other selectable days')
+        assert(from:SetValue('2026-10-09'));assert(to:GetValue()=='2026-10-09','start after end must adjust the other bound')
+        assert(to:SetValue('2026-10-05'));assert(from:GetValue()=='2026-10-05','end before start must adjust the other bound')
+        assert(tree.v3_personal_history_all.spec.onClick());assert(from:GetValue()=='' and to:GetValue()=='' and daily:GetItem(3))
+        assert(h.reads==beforeReads and h.writes==beforeWrites and history.revision==beforeRevision,'read-only date selection must not mutate or reload history')
+        for _,width in ipairs({820,620,480}) do
+            h.page.spec.parent.width=width;page:Layout(0,0,width,680)
+            assert(h:VisibleRect(from));assert(h:VisibleRect(to))
+            for _,cell in ipairs(daily.header.cells) do local visible,detail=h:VisibleRect(cell);assert(visible,tostring(detail)) end
+        end
+        -- 走真实 Native 弹层选项回调，覆盖关闭弹层后同步刷新日期列表的重入路径。
+        assert(from:Open());assert(from.optionButtons[3].events.OnClick());assert(from:GetValue()=='2026-10-07' and from.open==false)
+        assert(to:SetValue('2026-10-07'))
+        S.Utils.GetServerTime=function() return {year=2026,month=10,day=11,hour=9,minute=10} end
+        h.ms=h.ms+1500;assert(history:Record({kills=8,deaths=4}));assert(page:RefreshData())
+        assert(#from.items==5 and from.items[2].value=='2026-10-11','newly recorded dates must enter both selectors')
+        assert(from:GetValue()=='2026-10-07' and to:GetValue()=='2026-10-07' and daily:GetItem(1).kills==5,'new combat samples must preserve the selected day')
+        assert(tree.v3_personal_history_all.spec.onClick())
+        -- 满额日账新增一天会归档最旧日；已选边界仍须明确显示，不能退成“请选择”却暗中筛选。
+        local original=history.state;local days={}
+        for i=0,2047 do
+            local date=string.format('%04d-%02d-%02d',2020+math.floor(i/336),math.floor(i%336/28)+1,i%28+1)
+            days[date]={kills=1,deaths=2}
+        end
+        history.state=history:NormalizeState({days=days,totals={kills=2048,deaths=4096}});history.revision=history.revision+1
+        assert(page:RefreshData());assert(from:SetValue('2020-01-01'));assert(to:SetValue('2020-01-01'))
+        assert(daily:GetItem(1).kills==1 and daily:GetItem(1).deaths==2)
+        h.ms=h.ms+1500;assert(history:Record({kills=1}));assert(page:RefreshData())
+        assert(from:GetValue()=='2020-01-01' and to:GetValue()=='2020-01-01' and from.selectedIndex>0 and to.selectedIndex>0,'archiving a selected date must not hide the active boundary')
+        assert(from.items[from.selectedIndex].text:find('无每日明细',1,true),'archived selection must explain the missing daily row')
+        assert(tree.v3_personal_history_daily_summary.text:find('筛选不完整',1,true),'archive warning must be visible above the daily table')
+        assert(tree.v3_personal_history_all.spec.onClick());assert(#from.items==2049 and #to.items==2049,'clearing filters must remove temporary boundary choices')
+        history.state=original;history.revision=history.revision+1;assert(page:RefreshData())
     else
         local selector=assert(page.valueSelectors.kills)
         for _,item in ipairs(selector.items) do assert(item.value~='npcKills' and item.value~='assists','retired selector on legacy route') end

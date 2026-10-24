@@ -24,6 +24,12 @@ local C = {
     optionalKillEvents = {},
     killNoticeRows = 0,
     killNoticeRejected = 0,
+    killNoticeSources = { private = { received = 0, rejected = 0 }, global = { received = 0, rejected = 0 } },
+    killGlobalOwner = { Id = "v3.combat_event_bus.kill_global" },
+    killGlobalEpoch = 0,
+    killGlobalStarted = false,
+    killGlobalActive = false,
+    killGlobalEvents = {},
     privateParked = false,
     globalHandlers = {},
     globalActive = false,
@@ -113,7 +119,7 @@ end
 -- 64槽环形覆盖是 O(1)，不持有原生 payload；跨停用保留本代现场，普通伤害不能写入此环。
 local noticeEvidence={rows={},next=1,count=0,evicted=0}
 local function RecordNoticeEvidence(fact,reason)
-    local row={at=fact.receivedAt,sequence=fact.sequence,kind=fact.kind,reason=reason,
+    local row={at=fact.receivedAt,sequence=fact.sequence,kind=fact.kind,reason=reason,transport=fact.transport,
         rawEventType=fact.rawEventType,killer=DiagnosticScalar(fact.sourceName),
         victim=DiagnosticScalar(fact.targetName or fact.subjectName),rawNotice2=DiagnosticScalar(fact.rawNotice2),
         rawNotice3=DiagnosticScalar(fact.rawNotice3),rawNotice4=DiagnosticScalar(fact.rawNotice4),rawNotice5=DiagnosticScalar(fact.rawNotice5)}
@@ -322,6 +328,45 @@ function C:_StartPrivateHost()
     return true
 end
 
+-- 私有 Window 与 UIParent 的原生通知投递面可能不同，尚待 RU 实机对照。
+-- 只补同名的低频明确归属入口，不启用全场 COMBAT_MSG；同一击杀仍由既有指标合并。
+function C:_StartKillGlobal()
+    if self.killGlobalStarted == true then return true end
+    self.killGlobalStarted = true
+    self.killGlobalEpoch = self.killGlobalEpoch + 1
+    local epoch, generation, owner = self.killGlobalEpoch, S.Generation, self.killGlobalOwner
+    local events = S.Events
+    for _, eventName in ipairs({ "INSTANT_GAME_KILL", "UNIT_KILL_STREAK" }) do
+        local nativeEvent = eventName
+        local ok, subscribed = false, false
+        if events and type(events.SubscribeGlobalOptional) == "function" and type(events.UnsubscribeGlobalOwner) == "function" then
+            ok, subscribed = pcall(events.SubscribeGlobalOptional, events, nativeEvent, owner, function(_, payload)
+                if C:_IsCurrentGeneration(generation) ~= true or C.running ~= true
+                    or C.killGlobalStarted ~= true or C.killGlobalEpoch ~= epoch then return end
+                C:_OnKillNotice(nativeEvent, payload, "private:kill_global")
+            end)
+        end
+        self.killGlobalEvents[nativeEvent] = ok and subscribed == true and "registered" or "unavailable"
+        if ok and subscribed == true then self.killGlobalActive = true end
+    end
+    return true
+end
+
+function C:_ReleaseKillGlobal()
+    -- Epoch 先撤权，保证同代 Stop/Start 后保存的旧业务闭包也不能复活。
+    self.killGlobalEpoch = self.killGlobalEpoch + 1
+    self.killGlobalStarted, self.killGlobalActive = false, false
+    local events = S.Events
+    if events and type(events.UnsubscribeGlobalOwner) == "function" then
+        pcall(events.UnsubscribeGlobalOwner, events, self.killGlobalOwner)
+    end
+    for name, state in pairs(self.killGlobalEvents) do
+        -- inactive 表示 Owner 已撤权，不把 Core 中可能停放的 Native 回调谎报为已释放。
+        if state == "registered" then self.killGlobalEvents[name] = "inactive" end
+    end
+    return true
+end
+
 local function EventCapability(hostLabel, action)
     return tostring(hostLabel) .. ":" .. tostring(action)
 end
@@ -423,7 +468,11 @@ function C:_StartGlobalBridge()
 end
 
 function C:_Start()
-    if self.running == true then return self:_StartPrivateHost() end
+    if self.running == true then
+        local ok, err = self:_StartPrivateHost()
+        if ok ~= true then return false, err end
+        return self:_StartKillGlobal()
+    end
     local ok, err = self:_StartPrivateHost()
     if ok ~= true then self.startFailures = self.startFailures + 1; return false, err end
     self.running = true
@@ -445,16 +494,20 @@ function C:_Start()
         self.startFailures = self.startFailures + 1
         return false, "ENTERED_WORLD subscribe failed"
     end
+    self:_StartKillGlobal() -- 可选入口失败时保留现有私有采集，不添加重试任务。
     return true
 end
 
 function C:_Stop()
+    self:_ReleaseKillGlobal()
     local globalOk, globalErr = self:_ReleaseGlobalBridge()
     if S.Events ~= nil and type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(self) end
     local privateOk, privateErr = self:_ReleasePrivateHost()
     if globalOk ~= true then self.stopFailures = self.stopFailures + 1; return false, globalErr end
     if privateOk ~= true then self.stopFailures = self.stopFailures + 1; return false, privateErr end
     self.running = false
+    -- 维护：全局 Clear 也会经此处归还全部租约，必须同步撤销回调执行权；失败路径仍由 Demand 回滚保留原订阅。
+    self:_RevokeSubscribers()
     return true
 end
 
@@ -462,9 +515,12 @@ end
 -- ForceQuiesce，消费者投影仍被丢弃，因此业务回调必须停止，即使宿主未解绑。原生闭包先检查独立于租约的
 -- running/globalActive 保护条件。
 function C:_MarkInert()
+    self:_ReleaseKillGlobal()
     self.forcedInert = self.forcedInert + 1
     self.running = false
     self.globalActive = false
+    -- 维护：原生解绑失败仍须撤销旧 Owner；后来新消费者重启不能唤醒被强制清空租约的回调。
+    self:_RevokeSubscribers()
     self.globalHostCoverage = { UI = false, UIParent = false }
     self.pairDedup, self.pairOrder, self.pairHead, self.pairPendingCount = {}, {}, 1, 0
     self.journal, self.journalHead = {}, 1
@@ -695,6 +751,8 @@ end
 
 function C:_FlushPreIdentityJournal(now)
     if Identity == nil or type(Identity.IsPlayerIdentityReady) ~= "function" or Identity:IsPlayerIdentityReady() ~= true then return false, "identity_not_ready" end
+    -- 维护：身份就绪后的普通全局行也会经过此处；空 journal 保留已有容器，避免镜像行逐条制造空表垃圾。
+    if #self.journal == 0 then self.journalHead = 1; return true, 0 end
     now = tonumber(now) or NowMs()
     self:_DropExpiredJournal(now)
     local head, last = math.max(1, tonumber(self.journalHead) or 1), #self.journal
@@ -824,10 +882,35 @@ function C:_CompactSubscriberOrder()
     self.subscriberTombstones = 0
 end
 
+function C:_RevokeSubscribers()
+    -- 维护：派发中只标记旧行无效，保留快照下标；当前回调返回后跳过旧尾部，再统一压缩。
+    -- 清空 owner 映射使同一 Owner 重新获取时创建新行，不复用已撤销的执行权。
+    for _, row in pairs(self.subscribers) do
+        row.active = false
+        self.subscriberTombstones = self.subscriberTombstones + 1
+    end
+    self.subscribers, self.subscriberCount = {}, 0
+    self:_CompactSubscriberOrder()
+end
+
+-- 维护：每层同步派发独占一个 xpcall 工作帧，保留原有局部事实快照和逐订阅者恢复边界。
+-- 常驻最多八层；更深重入使用临时帧，不能无限扩大常驻空间，也不能复用外层执行中的借用事实。
+local callbackFrames, CALLBACK_FRAME_LIMIT = {}, 8
+local function AcquireCallbackFrame(depth)
+    local frame = callbackFrames[depth]
+    if frame == nil then
+        frame = {}
+        frame.invoke = function() frame.callback(frame.owner, frame.fact) end
+        if depth <= CALLBACK_FRAME_LIMIT then callbackFrames[depth] = frame end
+    end
+    return frame
+end
+
 function C:_DispatchFact(fact)
     self.received = self.received + 1
     local delivered = 0
     self.dispatchDepth = self.dispatchDepth + 1
+    local callbackFrame = AcquireCallbackFrame(self.dispatchDepth)
     local limit = #self.subscriberOrder
     for index = 1, limit do
         local row = self.subscriberOrder[index]
@@ -851,7 +934,10 @@ function C:_DispatchFact(fact)
             local rawNotice2, rawNotice3, rawNotice4, rawNotice5 = fact.rawNotice2, fact.rawNotice3, fact.rawNotice4, fact.rawNotice5
             local auraType, auraId, auraName, auraEvidence = fact.auraType, fact.auraId, fact.auraName, fact.auraEvidence
             local token = S.PerformanceMonitor and S.PerformanceMonitor:Begin(row.performanceLabel or "combat_fact:consumer", row.label or "combat") or nil
-            local ok, err = xpcall(function() row.callback(owner, fact) end, S.SafeTraceback)
+            callbackFrame.callback, callbackFrame.owner, callbackFrame.fact = row.callback, owner, fact
+            local ok, err = xpcall(callbackFrame.invoke, S.SafeTraceback)
+            -- 借用的 callback/owner/fact 无论成功或抛错都立即归还；Stop/退订不能让工作帧延长旧消费者生命周期。
+            callbackFrame.callback, callbackFrame.owner, callbackFrame.fact = nil, nil, nil
             if S.PerformanceMonitor ~= nil then S.PerformanceMonitor:End(token) end
             local mutated = fact.schemaVersion ~= schemaVersion or fact.sequence ~= sequence or fact.receivedAt ~= receivedAt
                 or fact.transport ~= transport or fact.kind ~= kind or fact.category ~= category or fact.amount ~= amount
@@ -914,8 +1000,11 @@ end
 
 -- 原生死亡通知只有姓名；这两个原生战场通知另外给出明确的击杀者。
 -- 不解析聊天译文、不猜最后一击、不扩大全场 COMBAT_MSG 订阅，不保留原生 table。
-function C:_OnKillNotice(eventName, payload)
+function C:_OnKillNotice(eventName, payload, transport)
     if self.running ~= true then return 0 end
+    transport = transport == "private:kill_global" and transport or "private"
+    local route = self.killNoticeSources[transport == "private:kill_global" and "global" or "private"]
+    route.received = route.received + 1
     self.killNoticeRows=self.killNoticeRows+1
     local killer,victim,streak,mode
     if type(payload)=="table" then
@@ -928,12 +1017,13 @@ function C:_OnKillNotice(eventName, payload)
     if type(killer)~="string" or type(victim)~="string" or #killer>512 or #victim>512
         or Trim(killer)=="" or Trim(victim)=="" or Trim(killer)==Trim(victim) then
         -- 非法字段仅留类型/截断标量，不放宽击杀 ABI；未形成 CombatFact 的行没有 sequence。
-        RecordNoticeEvidence({receivedAt=NowMs(),kind="kill_notice",rawEventType=eventName,sourceName=killer,targetName=victim,
+        RecordNoticeEvidence({receivedAt=NowMs(),transport=transport,kind="kill_notice",rawEventType=eventName,sourceName=killer,targetName=victim,
             rawNotice2=streak,rawNotice3=mode},"invalid_payload")
+        route.rejected=route.rejected+1
         self.killNoticeRejected=self.killNoticeRejected+1;return 0
     end
     self.sequence=self.sequence+1
-    local fact={schemaVersion=1,sequence=self.sequence,receivedAt=NowMs(),transport="private",
+    local fact={schemaVersion=1,sequence=self.sequence,receivedAt=NowMs(),transport=transport,
         kind="kill_notice",category="death",rawEventType=eventName,sourceName=Trim(killer),targetName=Trim(victim),
         -- 这些是原生 BattleField 玩家击杀通知；常规 COMBAT_MSG 的类型仍由单位事实确认。
         sourceKind="PLAYER",targetKind="PLAYER",rawNotice2=DiagnosticScalar(streak),rawNotice3=DiagnosticScalar(mode)}
@@ -950,8 +1040,14 @@ function C:GetDiagnosticDetail()
         rows[#rows+1]=copy
     end
     local events={};for key,value in pairs(self.optionalKillEvents) do events[key]=value end
+    local globalEvents={};for key,value in pairs(self.killGlobalEvents) do globalEvents[key]=value end
+    local privateSource,globalSource=self.killNoticeSources.private,self.killNoticeSources.global
     -- received/rejected 仍只统计原生归属；events 同时含姓名死亡通知，显式给出覆盖淘汰数。
     return {health=self:GetHealth(),killNotifications={registrations=events,running=self.running,received=self.killNoticeRows,rejected=self.killNoticeRejected,
+        sources={private={transport="private",running=self.running and self.privateHandlerAttached==true,registrations=events,
+                received=privateSource.received,rejected=privateSource.rejected},
+            global={transport="private:kill_global",running=self.killGlobalActive==true,registrations=globalEvents,
+                received=globalSource.received,rejected=globalSource.rejected}},
         events=CopyNoticeEvidence(),evicted=noticeEvidence.evicted,limit=64},unknownEvents=rows,unknownTypeDropped=self.unknownTypeDropped,unknownTypeLimit=32,
         coverage="未知类型仅保留本次加载每种类型的首次标量样本；不改变类型解释或击杀归属。"}
 end
@@ -1018,15 +1114,20 @@ function C:Subscribe(owner, callback, options)
 end
 
 function C:Unsubscribe(owner)
-    local row = owner ~= nil and self.subscribers[owner] or nil
-    if row == nil then return false, "consumer not subscribed" end
+    if owner == nil then return false, "owner required" end
+    local row = self.subscribers[owner]
+    -- 维护：总线全局清理已撤销回调时，上层可幂等确认释放；有记录的失败仍保留并返回真实错误。
+    if row == nil then return true end
     local ok, err = self.demand:Release(row.token, "combat_unsubscribe")
     if ok ~= true then return false, err end
-    self.subscribers[owner] = nil
-    row.active = false
-    self.subscriberTombstones = self.subscriberTombstones + 1
-    self.subscriberCount = math.max(0, self.subscriberCount - 1)
-    self:_CompactSubscriberOrder()
+    -- 维护：最后消费者成功 Stop 已撤销整组订阅，不能重复扣计数或误删后来替换的行。
+    if self.subscribers[owner] == row then
+        self.subscribers[owner] = nil
+        row.active = false
+        self.subscriberTombstones = self.subscriberTombstones + 1
+        self.subscriberCount = math.max(0, self.subscriberCount - 1)
+        self:_CompactSubscriberOrder()
+    end
     return true
 end
 

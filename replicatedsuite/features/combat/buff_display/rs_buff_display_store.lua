@@ -2862,7 +2862,10 @@ function F:MarkStoreDirty(delayMs, reason)
     -- 历史调用若仍把它理解成 v3.buff_display 全量保存，会重新把 HUD/追踪带回同一故障域。
     if type(F.InvalidateSettingsCache) == "function" then F:InvalidateSettingsCache() end
     -- 窗口位置/折叠当场保存到 settings 小 Store；禁止触碰 HUD/追踪旧大表。
-    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" then
+    -- 维护：状态窗锁定/解锁同步保存既有 settings 小 Store；旧 lock 原因也保留，不触及追踪/HUD 分片。
+    -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" or reason == "widget_locked" or reason == "widget_lock"
+        or reason == "widget_overall_opacity" or reason == "widget_background_opacity" or reason == "widget_text_opacity" or reason == "widget_font_scale" then
         return P:SaveStore(SETTINGS_STORE_ID, { durable=true, consumeDirty=true, reason=reason })
     end
     return P:MarkDirty(SETTINGS_STORE_ID, tonumber(delayMs) or 300, reason or "buff_display_settings_changed")

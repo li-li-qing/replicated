@@ -189,7 +189,10 @@ end
 
 function F:MarkStoreDirty(delayMs, reason)
     -- 拖动后立即重载不能只留下 dirty；失败交给 Floating 事务回滚。
-    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" then
+    -- 维护：统计窗小锁与位置同属此 Store 的低频提交；锁定/解锁不再等待 debounce 或退出 Flush。
+    -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" or reason == "widget_locked" or reason == "widget_lock"
+        or reason == "widget_overall_opacity" or reason == "widget_background_opacity" or reason == "widget_text_opacity" or reason == "widget_font_scale" then
         return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason })
     end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 300, reason or "dps_changed")

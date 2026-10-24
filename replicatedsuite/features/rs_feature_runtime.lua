@@ -389,7 +389,9 @@ function F:RegisterImplementation(featureId, impl)
         if type(impl[method]) ~= "function" then return false, "feature requires " .. method .. "(): " .. id end
     end
     self.implementations[id] = impl
-    self.state[id] = { initialized = false, enabled = false, faulted = false, lastError = nil, generation = 0 }
+    -- 维护：cleanupPending 独立于两个 enabled 标志；Enable/Disable 中途失败可能已清局部标志，
+    -- 仍必须保留实现清理入口，不能把“投影已关闭”当成“下游已释放”。此状态只属本代生命周期。
+    self.state[id] = { initialized = false, enabled = false, faulted = false, lastError = nil, generation = 0, cleanupPending = false }
     self.order[#self.order + 1] = id
     table.sort(self.order)
     return true
@@ -437,11 +439,25 @@ function F:Enable(id, reason)
     if Registry:IsAccessible(id) ~= true then return false, "功能未在手动配置中开放：" .. id end
     local impl, row = self.implementations[id], self.state[id]
     if impl == nil or row == nil then return false, "feature not implemented" end
+    -- 维护：上次启动/关闭的清理未完成时，先重试 Disable；禁止把新的启动叠到未知 Native/服务状态上。
+    if row.cleanupPending == true then
+        local cleaned, cleanupErr = self:Disable(id, "startup_failure")
+        if cleaned ~= true then return false, cleanupErr end
+    end
     if row.enabled == true then return true end
     local initialized, initErr = self:Initialize(id)
     if initialized ~= true then return false, initErr end
     local ok, err = Invoke(id, impl, "Enable", reason or "user")
-    if ok ~= true then row.faulted = true; row.lastError = tostring(err); return false, err end
+    if ok ~= true then
+        -- 维护：Invoke 只隔离异常，无法撤销 Enable 已启动的服务；失败必须经过同一实现的 Disable。
+        -- 使用既有 startup_failure 原因，避免今日账本等把失败清理误当用户禁用并修改持久意图。
+        row.cleanupPending = true
+        local cleaned, cleanupErr = self:Disable(id, "startup_failure")
+        local failure = tostring(err or "feature enable failed")
+        if cleaned ~= true then failure = failure .. "; cleanup failed: " .. tostring(cleanupErr or "unknown") end
+        row.faulted, row.lastError = true, failure
+        return false, failure
+    end
     row.enabled, row.faulted, row.lastError = true, false, nil
     row.lifecycleReason = tostring(reason or "user")
     PublishLifecycle(id, "enabled", reason or "user")
@@ -453,9 +469,23 @@ function F:Disable(id, reason)
     local impl, row = self.implementations[id], self.state[id]
     if impl == nil or row == nil then return false, "feature not implemented" end
     -- 公共投影行与实现局部 enabled 可能因故障不一致；关闭仍必须执行实现清理，不能只看投影跳过。
-    if row.enabled ~= true and impl.enabled ~= true then return true end
+    local demand = S.Demand
+    local lease = demand and type(demand.Get) == "function" and demand:Get("feature:" .. id) or nil
+    if row.enabled ~= true and impl.enabled ~= true and row.cleanupPending ~= true
+        and not (lease and lease.needsQuiesce == true) then return true end
     local ok, err = Invoke(id, impl, "Disable", reason or "user")
-    if ok ~= true then row.faulted = true; row.lastError = tostring(err); return false, err end
+    -- 维护：部分实现启动失败后已自行清 enabled，Disable 会提前成功；Core 仍须消费失败回滚凭证。
+    -- 不强清健康租约，正常停止/回滚语义仍归 Feature；只有不确定副作用使用已注册的 quiesce。
+    if ok == true and lease and lease.needsQuiesce == true then
+        if type(lease.ForceQuiesce) == "function" then ok, err = lease:ForceQuiesce(reason or "user", row.lastError)
+        else ok, err = false, "demand quiesce unavailable" end
+    end
+    if ok ~= true then
+        -- 维护：实现可能清标志后才释放失败；保留可重试凭证，DisableAll 与再次启用均能看到它。
+        row.cleanupPending, row.faulted, row.lastError = true, true, tostring(err)
+        return false, err
+    end
+    row.cleanupPending = false
     row.enabled = false
     row.lifecycleReason = tostring(reason or "user")
     PublishLifecycle(id, "disabled", reason or "user")
@@ -466,7 +496,9 @@ local function ForceFeatureDemand(id, reason, cause)
     local demand = S.Demand
     if type(demand) ~= "table" or type(demand.Get) ~= "function" then return true, nil, false end
     local lease = demand:Get("feature:" .. tostring(id))
-    if type(lease) ~= "table" or (tonumber(lease.count) or 0) <= 0 or type(lease.ForceQuiesce) ~= "function" then return true, nil, false end
+    -- 维护：回滚失败后消费者快照可已归零，needsQuiesce 才是下游副作用仍不确定的凭证。
+    if type(lease) ~= "table" or ((tonumber(lease.count) or 0) <= 0 and lease.needsQuiesce ~= true)
+        or type(lease.ForceQuiesce) ~= "function" then return true, nil, false end
     local ok, err = lease:ForceQuiesce(reason or "feature_shutdown", cause)
     if ok == true then
         -- 强制静默是最终关闭保护；普通 Feature:Disable() 在到达状态更新前失败时，也必须让运行投影与实现局部标志一致。
@@ -490,7 +522,8 @@ function F:DisableAll(reason)
         local id = self.order[index]
         local disabled, disableErr = true, nil
         local impl = self.implementations[id]
-        if self:IsEnabled(id) or (type(impl) == "table" and impl.enabled == true) then
+        if self:IsEnabled(id) or (type(impl) == "table" and impl.enabled == true)
+            or (self.state[id] and self.state[id].cleanupPending == true) then
             disabled, disableErr = self:Disable(id, shutdownReason)
             if disabled ~= true then
                 failures[#failures + 1] = tostring(id) .. ":disable:" .. tostring(disableErr or "failed")

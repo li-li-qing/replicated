@@ -89,7 +89,9 @@ local function SetButtonSelected(button, selected)
 end
 
 local function MarkDirty(reason)
-    if type(V3.MarkShellStoreDirty) == "function" then V3:MarkShellStoreDirty(350, reason or "shell_changed") end
+    -- 持久化拒绝必须返回给提交者；会话表现成功不能替代 Store 接受，普通路由调用可继续忽略返回值。
+    if type(V3.MarkShellStoreDirty) == "function" then return V3:MarkShellStoreDirty(350, reason or "shell_changed") end
+    return false, "主窗口存档不可用"
 end
 
 -- 维护（viewport-recovery-1）：读取主窗配置只过滤运行值；不改 v3.shell schema/历史指纹。
@@ -284,7 +286,11 @@ function Shell:ApplyMinimizedState(persist)
             if hidden ~= true then return false, hideErr or "主窗口最小化隐藏失败" end
         end
     end
-    if persist ~= false then MarkDirty("minimized_changed") end
+    if persist ~= false then
+        -- 调用方拥有状态事务；持久提交失败必须上达，不能仅凭 Native 隐藏成功视作保存成功。
+        local saved, saveErr = MarkDirty("minimized_changed")
+        if saved ~= true then return false, saveErr or "主窗口最小化状态保存失败" end
+    end
     return true, minimized
 end
 
@@ -306,21 +312,43 @@ function Shell:ToggleMinimized()
         if previous ~= true and self.window ~= nil then SetWindowVisible(self,true)end
         return false, closeErr or "主窗口最小化关闭失败"
     end
-    MarkDirty("minimized_changed")
+    -- 关闭只改变会话表现，Store 拒写时须把原窗口和原偏好一起恢复，保持用户看到的结果与保存结果一致。
+    local saved, saveErr = MarkDirty("minimized_changed")
+    if saved ~= true then
+        state.minimized = previous
+        local restored, restoreErr = self:ApplyMinimizedState(false)
+        local shown, showErr = SetWindowVisible(self,true)
+        if restored ~= true or shown ~= true then return false, tostring(saveErr) .. "; 最小化回滚失败：" .. tostring(restoreErr or showErr) end
+        return false, saveErr or "主窗口最小化状态保存失败"
+    end
     return true
 end
 
 function Shell:SetLocked(locked, persist)
     local state = V3.ShellState or {}
+    local previous = state.locked -- 保留原始缺省形状；失败不能把缺字段变成新 canonical 字段。
     local nextValue = locked == true
-    if state.locked == nextValue then self:RefreshLockFeedback(); return true, false end
+    -- 上次 Native 回滚可能失败；只有已保存意图与控制器实际状态都一致时才能短路，否则按钮必须允许重试。
+    if state.locked == nextValue and self:IsLocked() == nextValue then self:RefreshLockFeedback(); return true, false end
     if self.windowController ~= nil then
         local accepted, _, detail = self.windowController:SetLocked(nextValue)
         if accepted ~= true then return false, detail or "主窗口锁定状态应用失败" end
     end
     state.locked = nextValue
     self:RefreshLockFeedback() -- 主菜单使用自有 Shell，标题小锁只映射现有 ShellState，不另存位置或锁偏好。
-    if persist ~= false then MarkDirty("window_locked") end
+    if persist ~= false then
+        -- 锁定边沿由 Shell Store 耐久确认；失败恢复 Native 和原偏好，禁止显示已锁定却重登恢复旧值。
+        local saved, saveErr = MarkDirty("window_locked")
+        if saved ~= true then
+            state.locked = previous
+            local restored, restoreErr, rollbackChanged = true, nil, nil
+            if self.windowController ~= nil then restored, rollbackChanged, restoreErr = self.windowController:SetLocked(previous == true) end
+            self:RefreshLockFeedback()
+            -- 原存档意图保持不变，按钮按控制器事实显示；双重失败必须明确报告，下次点击仍能重试解除 Native 锁。
+            if restored ~= true then return false, tostring(saveErr) .. "; 锁定回滚失败：" .. tostring(restoreErr) end
+            return false, saveErr or "主窗口锁定状态保存失败"
+        end
+    end
     return true, true
 end
 
@@ -329,6 +357,8 @@ function Shell:RefreshLockFeedback()
 end
 
 function Shell:IsLocked()
+    -- 控制器是会话交互状态的 Authority；保存失败且 Native 拒绝回滚时不能让图标谎报已经解锁。
+    if self.windowController ~= nil and type(self.windowController.IsLocked) == "function" then return self.windowController:IsLocked() end
     return (V3.ShellState or {}).locked == true
 end
 
@@ -359,8 +389,16 @@ function Shell:CommitWindowGeometry(_, x, y, width, height, reason)
         pcall(function() self:ApplyLayout(false) end)
         return false, layoutErr or "主窗口几何提交失败"
     end
-    -- 几何是低频提交边界，应立即标记到期，避免用户拖动窗口后立刻退出客户端而丢失最终矩形。
-    if type(V3.MarkShellStoreDirty) == "function" then V3:MarkShellStoreDirty(0, "window_" .. tostring(reason or "geometry")) end
+    -- 主窗位置由所属 Store 在此低频边沿写盘回读；拒写后恢复完整旧意图与 Native 布局，不能假报成功。
+    local saved, saveErr = false, "主窗口存档不可用"
+    if type(V3.MarkShellStoreDirty) == "function" then saved, saveErr = V3:MarkShellStoreDirty(0, "window_" .. tostring(reason or "geometry")) end
+    if saved ~= true then
+        for key in pairs(state) do state[key] = nil end
+        for key, value in pairs(previous) do state[key] = value end
+        local restored, restoreErr = self:ApplyLayout(false)
+        if restored ~= true then return false, tostring(saveErr) .. "; 位置回滚失败：" .. tostring(restoreErr) end
+        return false, saveErr or "主窗口位置保存失败"
+    end
     return true
 end
 
@@ -764,9 +802,18 @@ function Shell:Open()
             return false, detail
         end
     end
-    -- Navigate 也会调用 Open；只有本次真正从隐藏变为可见才轮换，显示失败不消费提示。
+    if wasMinimized then
+        -- 从启动器恢复也是持久最小化状态的提交边沿；拒写时退回原隐藏状态，不伪造跨重登恢复成功。
+        local saved, saveErr = MarkDirty("minimized_changed")
+        if saved ~= true then
+            state.minimized = true
+            local restored, restoreErr = self:ApplyMinimizedState(false)
+            if restored ~= true then return false, tostring(saveErr) .. "; 恢复回滚失败：" .. tostring(restoreErr) end
+            return false, saveErr or "主窗口恢复状态保存失败"
+        end
+    end
+    -- Navigate 也会调用 Open；只有本次真正从隐藏变为可见才轮换，显示或持久提交失败不消费提示。
     if not wasVisible then self:AdvanceMenuTip() end
-    if wasMinimized then MarkDirty("minimized_changed") end
     Adapter:Raise(self.window)
     if UI.WindowShell and type(UI.WindowShell.RefreshFloatingLayers)=="function"then UI.WindowShell:RefreshFloatingLayers()end
     return true

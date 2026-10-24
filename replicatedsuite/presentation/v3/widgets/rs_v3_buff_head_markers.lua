@@ -724,6 +724,24 @@ end
 P.ComputePlateLayout = ComputePlateLayout
 P.CastYOffsetContractVersion = 1
 
+-- 维护：四个 Renderer 池各留一份纯几何；图标/倒计时/位置仍每轮读取，Native 提交仍走完整重试。
+-- 只按已版本化的独立 settings、图标数量与装备存在性复用；旧宿主无 revision 时维持原计算路径。
+local plateLayoutCache, plateLayoutRevision = {}, nil
+local function CachedPlateLayout(scope, anchorX, anchorY, settings, buffCount, debuffCount, equip)
+    local revision = tonumber(Feature.settingsRevision)
+    if revision ~= plateLayoutRevision then plateLayoutCache, plateLayoutRevision = {}, revision end
+    if revision == nil then return ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, equip) end
+    local mask = (equip.mainHand == true and 1 or 0) + (equip.offHand == true and 2 or 0)
+        + (equip.ranged == true and 4 or 0) + (equip.wings == true and 8 or 0)
+    local entry = plateLayoutCache[scope]
+    if entry and entry.settings == settings and entry.buffCount == buffCount and entry.debuffCount == debuffCount
+        and entry.mask == mask and entry.anchorX == anchorX and entry.anchorY == anchorY then return entry.layout end
+    local layout = ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, equip)
+    plateLayoutCache[scope] = { settings=settings, buffCount=buffCount, debuffCount=debuffCount, mask=mask,
+        anchorX=anchorX, anchorY=anchorY, layout=layout }
+    return layout
+end
+
 ------------------------------------------------------------------------
 -- 渲染。
 ------------------------------------------------------------------------
@@ -1101,7 +1119,7 @@ local function RenderScope(scope, settings)
     local debuffCount = debuffEnabled and #debuffRows or 0
 
     -- 统一纯布局权威层。
-    local L = ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, equip)
+    local L = CachedPlateLayout(scope, anchorX, anchorY, settings, buffCount, debuffCount, equip)
     local bar = L.bar
     local scale = L.scale
 
@@ -1394,6 +1412,7 @@ function P:Stop(reason)
     end
     self.running = false
     self.contentDirty, self.textureRetryAt = true, nil
+    plateLayoutCache, plateLayoutRevision = {}, nil -- 停用释放旧配置引用；下次启动重新确认几何。
     self:HideAll()
     self.metrics.stops = self.metrics.stops + 1
     -- 释放失败时保持 consumerHeld=true，供诊断/协调保留泄漏租约证据，并让后续 Stop 重试。

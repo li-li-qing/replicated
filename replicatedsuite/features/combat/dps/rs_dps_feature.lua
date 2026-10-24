@@ -33,6 +33,34 @@ local function Analytics() return S.Services and S.Services.CombatAnalyticsV3 or
 local function Relation() return S.Services and S.Services.CombatRelationV3 or nil end
 local function Domain() return F.Domain end
 
+-- 维护：held 只是 DPS 的重试凭证；下游 Demand 才拥有消费者意图。只有本 token 明确不存在且
+-- 下游没有待静默故障且事务已结算，才能承认 Core 已代为撤销；查询缺失、nil、异常均不构成释放证据。
+local function DependencyCleanupState(service, token)
+    if type(service) ~= "table" then return nil end
+    local lease = service.Demand or service.demand
+    if type(lease) == "table" and lease.needsQuiesce == true then return "pending" end
+    -- 维护：提交前已临时投影 Has=false，回滚仍可恢复 token；静默回调也尚未确认资源释放，忙中不能提前清 held。
+    if type(lease) == "table" and (lease.transitioning == true or lease.quiescing == true) then return "busy" end
+    local queryOwner, query = service, service.HasConsumer
+    if type(query) ~= "function" and type(lease) == "table" then queryOwner, query = lease, lease.Has end
+    if type(query) ~= "function" then return nil end
+    local ok, held = pcall(query, queryOwner, token)
+    return ok == true and held == false and "absent" or nil
+end
+
+-- 维护：只释放传入的 DPS token，绝不清空共享服务。失败后再读一次 Authority，兼容已撤销
+-- 意图才返回失败的幂等边界；仍待 quiesce 的空租约不能被 ReleaseConsumer 的空 token 成功掩盖。
+local function ReleaseDependency(service, token, reason, label)
+    local state = DependencyCleanupState(service, token)
+    if state == "pending" then return false, label .. " requires quiesce" end
+    if state == "busy" then return false, label .. " transition in progress" end -- 维护：不让下游空 token 幂等成功吞掉未结算事务。
+    if state == "absent" then return true end
+    if type(service) ~= "table" or type(service.ReleaseConsumer) ~= "function" then return false, label .. " release unavailable" end
+    local ok, err = service:ReleaseConsumer(token, reason)
+    if ok ~= true and DependencyCleanupState(service, token) ~= "absent" then return false, err end
+    return true
+end
+
 local PVP_REFRESH_MS = 50
 local PVE_PROJECTION_REFRESH_MS = 400
 local PVE_PENDING_REPLAY_MS = 160
@@ -108,8 +136,8 @@ end
 function F:_ReleaseAnalytics()
     if self.analyticsHeld ~= true then return true end
     local analytics = Analytics()
-    if type(analytics) ~= "table" or type(analytics.ReleaseConsumer) ~= "function" then return false, "combat analytics release unavailable" end
-    local ok, err = analytics:ReleaseConsumer("dps_core", "dps_disable")
+    -- 维护：释放失败保留本 Owner 凭证，明确已被 Core 撤销时允许下一轮关闭对齐局部标志。
+    local ok, err = ReleaseDependency(analytics, "dps_core", "dps_disable", "combat analytics")
     if ok ~= true then return false, err end
     self.analyticsHeld = false
     return true
@@ -128,8 +156,8 @@ end
 function F:_ReleaseRelation()
     if self.relationHeld ~= true then return true end
     local relation = Relation()
-    if type(relation) ~= "table" or type(relation.ReleaseConsumer) ~= "function" then return false, "combat relation release unavailable" end
-    local ok, err = relation:ReleaseConsumer("dps")
+    -- 维护：关系服务的真实 Demand:Has 与 Analytics 公共查询承担相同的本 token 确认证据。
+    local ok, err = ReleaseDependency(relation, "dps", "dps_disable", "combat relation")
     if ok ~= true then return false, err end
     self.relationHeld = false
     return true
@@ -192,7 +220,8 @@ local lease, leaseErr = S.Demand:Create({
         if F:_ReleaseAnalytics() ~= true then ok = false end
         F:_UnsubscribeRelationEvents()
         if F:_ReleaseRelation() ~= true then ok = false end
-        F.analyticsHeld, F.busSubscribed, F.relationHeld = false, false, false
+        -- 维护：各 _Release 只在确认成功后清 held；强制路径失败也必须保留凭证供 needsQuiesce 重试。
+        F.busSubscribed = false -- DPS 从不直接拥有 Bus，仅清理旧诊断兼容字段。
         F:CancelProjectionPublish()
         F:CancelPendingReplay()
         return ok
@@ -387,7 +416,8 @@ function F:GetActorDetail(request)
     if type(d) ~= "table" or type(d.GetActorDetail) ~= "function" then
         return { actor = nil, abilities = {}, counterparts = {}, revision = 0 }
     end
-    local detail = S.Utils.DeepCopy(d:GetActorDetail(request))
+    -- Domain 已复制 actor 与每一行标量，Feature 只装饰本次快照；重复 DeepCopy 会抵消详情缓存收益。
+    local detail = d:GetActorDetail(request)
     -- 技能元数据仅为详情展示补充，禁止战斗热路径执行；共享服务有界惰性解析 X2Skill，并缓存成功/失败结果，降低重复详情刷新成本。
     local metadata = S.Services and S.Services.SkillMetadataV3 or nil
     for _, row in ipairs(type(detail.abilities) == "table" and detail.abilities or {}) do

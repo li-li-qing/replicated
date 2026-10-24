@@ -189,5 +189,13 @@ function V3:MarkShellStoreDirty(delayMs, reason)
     if P:GetStore(STORE_ID) == nil then return false, "新版主窗口存档不可用" end
     -- 会话兜底仅在内存中生效；导航/几何可继续变化，但不能把受保护的读取失败变成 WRITE_BEFORE_LOAD 噪声或覆盖最后可恢复存档。
     if self.ShellStoreSessionFallback == true then return true, "session_fallback_no_persist" end
+    -- 主窗与 FloatingSurface 使用相同的用户提交边沿：MarkDirty(0) 仅排期，退出游戏前未必还有下一帧。
+    -- 位置/尺寸/锁定/最小化已经结束交互时须在返回前写入并读回；路由切换仍合并保存，不增加周期查询。
+    if reason == "window_drag" or reason == "window_resize" or reason == "window_geometry"
+        or reason == "window_locked" or reason == "minimized_changed" or reason == "shell_layout_reset"
+        -- 直接输入宽高也是完成的几何提交，与居中/恢复尺寸采用同一同步回读边界。
+        or reason == "settings_center" or reason == "settings_default_size" or reason == "settings_width" or reason == "settings_height" then
+        return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason })
+    end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 750, reason or "shell_changed")
 end

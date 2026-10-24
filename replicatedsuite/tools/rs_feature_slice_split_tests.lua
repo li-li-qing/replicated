@@ -846,6 +846,9 @@ end)
 -- life_treasure / life_fishing / life_bonds / life_trade 四个独立源码单元并退役删除 bundle。
 -- 下面每一项的期望值都不是“照着拆分后源码反抄”，而是同一探针在**拆分前**的 bundle 与
 -- **拆分后**的四个文件上分别跑出来再逐项比对的（44 行契约面 0 差异，见 Phase 2 报告）。
+-- 中文维护注释：后续已公开的寻宝罗盘设置/海上点位/保管箱组件，以当前 TOC 装配及独立回归
+-- test_rs_treasure_compass_runtime.py / test_rs_treasure_sea_points.py / test_rs_treasure_inventory.py
+-- 为证据维护精确白名单；不能只加载主 Feature 而漏掉后置组件追加的公开命令与依赖。
 ------------------------------------------------------------------------
 local LifeConfigured = true
 
@@ -870,7 +873,10 @@ do
             print('FAIL split Phase2 factory load: ' .. tostring(factoryErr))
         end
         for _, path in ipairs({
+            'data/rs_treasure_sea_points.lua',
+            'features/life/treasure/rs_treasure_sea_catalog.lua',
             'features/life/treasure/rs_treasure_feature.lua',
+            'features/life/treasure/rs_treasure_inventory.lua',
             'features/life/fishing/rs_fishing_feature.lua',
             'features/life/bonds/rs_bonds_feature.lua',
             'features/life/trade/rs_trade_feature.lua',
@@ -889,9 +895,13 @@ local LifeSlices = {
         storeId = 'v3.life.treasure', topic = 'v3.life.treasure.updated',
         commands = { 'Refresh', 'SetRefreshMs', 'Select', 'ShowSelectedOnMap', 'GetWidgetVisible', 'SetWidgetVisible',
             'SetWidgetWindowState', 'MarkStoreDirty', 'SetViewKind', 'SetRegion', 'TrackNearest',
-            'VisitAndNext', 'UndoVisit', 'ResetRound', 'StopTracking', 'SetShipRespawnMinutes' },
+            'VisitAndNext', 'UndoVisit', 'ResetRound', 'StopTracking', 'SetShipRespawnMinutes',
+            'SetCompassRadius', 'SetRenderDistance', 'RegisterCoffer', 'IdentifyCurrentCoffer', 'ResetCofferRound',
+            'WithdrawCoordinate', 'CancelWithdrawal', 'SetCoordinateContinent', 'SetInventorySort' },
         apiDependencies = { 'X2Bag:GetBagItemInfo', 'X2Bag:Capacity', 'X2Unit:GetUnitWorldPositionByTarget',
-            'X2Unit:GetUnitScreenPosition', 'X2Unit:GetCurrentZoneGroup', 'X2Map:ShowWorldmapLocation' },
+            'X2Unit:GetUnitScreenPosition', 'X2Unit:GetCurrentZoneGroup', 'X2Map:ShowWorldmapLocation',
+            'X2Coffer:GetBagItemInfo', 'X2Coffer:Capacity', 'X2Coffer:MoveToEmptyBagSlot',
+            'ADDON:GetContent', 'ADDON:GetContentMainScriptPosVis' },
         contractVersions = { ObservationContractVersion = 2, MapLocationContractVersion = 2 },
     },
     life_fishing = {
@@ -978,7 +988,7 @@ Test('Phase2：Feature ID / Store ID / preference Store / UpdateTopic / Demand i
     end
 end)
 
-Test('Phase2：公开 Commands 精确集合不变', function()
+Test('Phase2：公开 Commands 精确集合（含已验收寻宝扩展）', function()
     for id, spec in pairs(LifeSlices) do
         local feature = assert(LifeFeature(id), id .. ' not registered')
         local wanted = {}
@@ -995,7 +1005,7 @@ Test('Phase2：公开 Commands 精确集合不变', function()
     end
 end)
 
-Test('Phase2：ApiDependencies 精确集合不变', function()
+Test('Phase2：ApiDependencies 精确集合（含已验收寻宝扩展）', function()
     for id, spec in pairs(LifeSlices) do
         local feature = assert(LifeFeature(id), id .. ' not registered')
         local have = {}

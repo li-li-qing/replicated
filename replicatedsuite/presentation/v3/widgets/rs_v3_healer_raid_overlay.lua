@@ -297,14 +297,16 @@ end
 
 function P:RefreshProjection()
     if self.running ~= true then return false end
-    local projection = type(Feature.GetRaidOverlayProjection) == "function" and Feature:GetRaidOverlayProjection() or nil
+    local projection, roster
+    if type(Feature.GetRaidOverlayProjection) == "function" then projection, roster = Feature:GetRaidOverlayProjection() end
     self.displayRows = type(projection) == "table" and type(projection.rows) == "table" and projection.rows or {}
     self.candidates = {}
     self.activePanels = {}
     self.selfSlot = nil
     for _, panel in pairs(self.panels) do panel.maxMemberIndex = 0 end
     -- 几何跟随原生名单人数，不跟随推荐投影；超距/死亡成员虽可能不在 displayRows 中，仍占原生队伍格，须保持覆盖宽度稳定。
-    local roster = type(Feature.GetRosterProjection) == "function" and Feature:GetRosterProjection() or nil
+    -- Feature 第二返回是本轮颜色投影使用的 detached 名单，不保留到下一轮；混版本首返回 Facade 仍走旧读取。
+    if type(roster) ~= "table" then roster = type(Feature.GetRosterProjection) == "function" and Feature:GetRosterProjection() or nil end
     for _, member in ipairs(type(roster) == "table" and type(roster.members) == "table" and roster.members or {}) do
         local panel = self:GetOverlaySlot(member)
         if panel ~= nil then

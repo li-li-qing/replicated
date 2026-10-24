@@ -158,14 +158,17 @@ function F:ResetState(target, policy, options)
     return true, target
 end
 
+-- 维护：这些原因只来自外观最终 setter；拖动预览由 NumericField.onPreview 直接写 Native，不进入 Store。
+local APPEARANCE_REASONS = { overall_opacity=true, background_opacity=true, text_opacity=true, font_scale=true }
 local function PersistSpec(spec, reason)
     F.metrics.stateWrites = (tonumber(F.metrics.stateWrites) or 0) + 1
     -- 维护（2026-09-16，geometry-edge-durability-1）：拖动/缩放结束属于低频用户事务边沿。
     -- 位置若仍等默认 250ms Dirty 窗口，紧接退出客户端时可能只移动了 Native 却没来得及进入
     -- 持久化调度。geometry 传入 delay=0，但真正耐久由所属 Feature/Aux Store 在 geometry/
     -- layout_reset/minimized 边沿 SaveStore + 回读完成；MarkDirty(0) 本身不会写盘。
-    -- 透明度/字体等连续调整仍保留去抖，避免高频写入。
-    local immediate=reason=="geometry" or reason=="minimized"
+    -- 透明度/字体的连续 Native 预览零 IO；进入本函数的最终提交同样不能依赖后续心跳。
+    -- 维护：锁定/解锁也是已经完成的低频用户事务，必须由原 Owner 当场耐久保存，不能等下次心跳或退出 Flush。
+    local immediate=reason=="geometry" or reason=="minimized" or reason=="locked" or reason=="lock" or APPEARANCE_REASONS[reason]==true
     local delay = immediate and 0 or math.max(0, tonumber(spec.persistDelayMs) or 250)
     local ok, err = SafeCall(spec.persist, tostring(reason or "state"), delay)
     if ok ~= true then
@@ -216,19 +219,26 @@ function F:CreateStateAdapter(spec)
         return Read()
     end
 
+    -- 维护：未创建窗口的设置 Adapter 也可能先 Stage 再 final；回滚基线必须是首个预览前原始字段。
+    local stagedAppearance
     local function Mutate(reason, fn, persist)
         local state = State()
         if state == nil then return false, "floating surface state unavailable" end
-        local before = RawSnapshot()
+        local before = persist ~= false and stagedAppearance or RawSnapshot()
         fn(state)
         local committed, commitErr = Commit(state, reason)
         if committed ~= true then return false, commitErr end
-        if persist == false then return true end
+        if persist == false then
+            if APPEARANCE_REASONS[reason] == true and stagedAppearance == nil then stagedAppearance = before end -- 连续草稿不覆盖已提交基线。
+            return true
+        end
         local saved, saveErr = PersistSpec(spec, reason)
         if saved ~= true then
             RestoreRaw(before, tostring(reason or "state") .. ":rollback")
+            stagedAppearance = nil -- 失败已恢复提交前状态，后续同值重试必须重新走真正保存。
             return false, saveErr
         end
+        stagedAppearance = nil -- 保存整个窗口快照成功后，全部外观草稿已成为原 Store 的已提交值。
         return true
     end
 
@@ -254,15 +264,17 @@ function F:CreateStateAdapter(spec)
         resetLayout = function()
             local state = State()
             if state == nil then return false, "floating surface state unavailable" end
-            local before = RawSnapshot()
+            local before = stagedAppearance or RawSnapshot() -- 默认布局失败也要恢复预览前真实值。
             F:ResetState(state, policy, { preserveLocked = spec.preserveLockedOnReset ~= false })
             local committed, commitErr = Commit(state, "layout_reset")
             if committed ~= true then return false, commitErr end
             local saved, saveErr = PersistSpec(spec, "layout_reset")
             if saved ~= true then
                 RestoreRaw(before, "layout_reset:rollback")
+                stagedAppearance = nil -- 重置失败不可遗留过期草稿基线。
                 return false, saveErr
             end
+            stagedAppearance = nil -- 重置成功消费全部暂存外观。
             return true
         end,
     }
@@ -340,12 +352,16 @@ function F:Create(spec)
         return F:ReadRuntimeState(target, policy)
     end
 
+    -- 维护：公开 persist=false 外观 API 会暂存 Domain；保存首个草稿前的原始字段（含缺失键），
+    -- 同值最终提交仍须保存，失败不能把最后一个预览值冒充为已提交值；任一成功持久提交会消费全部草稿。
+    local stagedAppearance
     local function CommitState(reason, candidate, persist)
         local rawState = type(spec.getState) == "function" and spec.getState() or spec.state
         if type(rawState) ~= "table" then return false, "floating surface state unavailable" end
         -- 维护：失败回滚保留原始字段/缺失键；不能用补默认后的副本覆盖旧 Store。
         local previous = {}
         for _,key in ipairs(STATE_KEYS) do previous[key]=rawState[key] end
+        local rollbackState = persist ~= false and stagedAppearance or previous -- 草稿只覆盖回滚基线，不创建第二份持久化 Authority。
         local nextState = type(candidate) == "table" and F:NormalizeState(candidate, policy) or F:NormalizeState(rawState, policy)
         if type(nextState) ~= "table" then return false, "floating surface state unavailable" end
 
@@ -366,12 +382,18 @@ function F:Create(spec)
             end
             if ok ~= true then
                 if type(spec.setState) == "function" then
-                    pcall(spec.setState, previous, tostring(reason or "state") .. ":rollback")
+                    pcall(spec.setState, rollbackState, tostring(reason or "state") .. ":rollback")
                 else
-                    F:ApplyNormalizedState(rawState, previous)
+                    F:ApplyNormalizedState(rawState, rollbackState)
                 end
+                local hadDraft = stagedAppearance ~= nil
+                stagedAppearance = nil -- 拒绝动作撤销草稿后允许显式重试，不能留下未保存值触发幂等成功。
+                if hadDraft and surface.shell then surface:ApplyLayout(false, "appearance_rollback") end -- 同时撤销其它通道草稿的 Native 表现。
                 return false, err
             end
+            stagedAppearance = nil -- 当前窗口快照已整体保存并回读，不能让旧草稿覆盖下一次真实提交。
+        elseif APPEARANCE_REASONS[reason] == true and stagedAppearance == nil then
+            stagedAppearance = previous -- 只记录第一次成功 Stage；连续预览始终回到真实提交前的字段形状。
         end
         SafeCall(spec.onStateChanged, surface, CurrentState(), tostring(reason or "state"))
         return true
@@ -379,6 +401,14 @@ function F:Create(spec)
 
     local function Save(reason, candidate) return CommitState(reason, candidate, true) end
     local function Stage(reason, candidate) return CommitState(reason, candidate, false) end
+    local function CommitSameAppearance(reason, candidate, value, persist)
+        if persist ~= false and stagedAppearance ~= nil then
+            local ok, err = Save(reason, candidate) -- 草稿值相同仍是一次完成动作；无草稿的重复调用维持零 IO。
+            if ok ~= true then return false, err end
+            return true, value, true
+        end
+        return true, value, false
+    end
 
     local shell, shellErr = UI:CreateWindowShell({
         id = id,
@@ -444,6 +474,9 @@ function F:Create(spec)
             local target = F:NormalizeState(current, policy)
             local reason = tostring(snapshot and snapshot.reason or "state")
             if reason=="minimize" then reason="minimized" end
+            -- 维护：标题按钮与公开 Surface/Adapter API 共用 locked 原因，避免 Owner 只认其中一个入口而漏存小锁。
+            if reason=="lock" then reason="locked" end
+            if reason=="opacity" then reason="overall_opacity" end -- 标题整体透明度与公开 Surface API 共用同一最终提交原因。
             target.minimized = snapshot.minimized == true
             target.locked = snapshot.locked == true
             target.overallOpacity = Clamp(snapshot.overallOpacity, 0, 1, FirstNonNil(target.overallOpacity, policy.defaultOverallOpacity))
@@ -615,7 +648,9 @@ function F:Create(spec)
         local shellOk, shellErr = self.shell:SetLocked(nextValue, false)
         if shellOk ~= true then return false, shellErr end
         local candidate = F:NormalizeState(target, policy); candidate.locked = nextValue
-        local stateOk, stateErr = persist ~= false and Save("locked", candidate) or Stage("locked", candidate)
+        -- 维护：不能用 and/or 模拟分支；Save 拒绝必须保留 false 并回滚 Native，不得转入 Stage 后报成功。
+        local stateOk, stateErr
+        if persist ~= false then stateOk, stateErr = Save("locked", candidate) else stateOk, stateErr = Stage("locked", candidate) end
         if stateOk ~= true then self.shell:SetLocked(previous, false); return false, stateErr end
         F.metrics.lockChanges = (tonumber(F.metrics.lockChanges) or 0) + 1
         return true, true
@@ -646,12 +681,14 @@ function F:Create(spec)
         local target = CurrentState(); if target == nil then return false end
         local previous = tonumber(target.overallOpacity) or policy.defaultOverallOpacity
         local nextValue = Clamp(value, 0, 1, FirstNonNil(target.overallOpacity, policy.defaultOverallOpacity))
-        if math.abs(nextValue - previous) <= 0.0001 then return true, nextValue, false end
+        if math.abs(nextValue - previous) <= 0.0001 then return CommitSameAppearance("overall_opacity", target, nextValue, persist) end
         local shellOk, shellErr = self.shell:SetOverallOpacity(nextValue, false)
         if shellOk ~= true then return false, shellErr end
         local candidate = F:NormalizeState(target, policy); candidate.overallOpacity = nextValue
-        local stateOk, stateErr = persist ~= false and Save("overall_opacity", candidate) or Stage("overall_opacity", candidate)
-        if stateOk ~= true then self.shell:SetOverallOpacity(previous, false); return false, stateErr end
+        -- 维护：持久化失败保持拒绝，预览仅在调用者显式 persist=false 时进入 Stage。
+        local stateOk, stateErr
+        if persist ~= false then stateOk, stateErr = Save("overall_opacity", candidate) else stateOk, stateErr = Stage("overall_opacity", candidate) end
+        if stateOk ~= true then self:ApplyLayout(false, "appearance_rollback"); return false, stateErr end -- 恢复 Authority 快照，不能退回上一帧草稿。
         F.metrics.appearanceChanges = (tonumber(F.metrics.appearanceChanges) or 0) + 1
         return true, nextValue, true
     end
@@ -664,12 +701,14 @@ function F:Create(spec)
         local target = CurrentState(); if target == nil then return false end
         local previous = tonumber(target.backgroundOpacity) or policy.defaultBackgroundOpacity
         local nextValue = Clamp(value, 0, 1, FirstNonNil(target.backgroundOpacity, policy.defaultBackgroundOpacity))
-        if math.abs(nextValue - previous) <= 0.0001 then return true, nextValue, false end
+        if math.abs(nextValue - previous) <= 0.0001 then return CommitSameAppearance("background_opacity", target, nextValue, persist) end
         local shellOk, shellErr = self.shell:SetBackgroundOpacity(nextValue, false)
         if shellOk ~= true then return false, shellErr end
         local candidate = F:NormalizeState(target, policy); candidate.backgroundOpacity = nextValue
-        local stateOk, stateErr = persist ~= false and Save("background_opacity", candidate) or Stage("background_opacity", candidate)
-        if stateOk ~= true then self.shell:SetBackgroundOpacity(previous, false); return false, stateErr end
+        -- 维护：预览不写盘，最终提交由原 Owner 同步耐久；拒绝不能隐式降级为成功预览。
+        local stateOk, stateErr
+        if persist ~= false then stateOk, stateErr = Save("background_opacity", candidate) else stateOk, stateErr = Stage("background_opacity", candidate) end
+        if stateOk ~= true then self:ApplyLayout(false, "appearance_rollback"); return false, stateErr end -- 多通道草稿需一并撤销到真实提交值。
         F.metrics.appearanceChanges = (tonumber(F.metrics.appearanceChanges) or 0) + 1
         return true, nextValue, true
     end
@@ -680,12 +719,14 @@ function F:Create(spec)
         local target = CurrentState(); if target == nil then return false end
         local previous = tonumber(target.textOpacity) or policy.defaultTextOpacity
         local nextValue = Clamp(value, 0, 1, FirstNonNil(target.textOpacity, policy.defaultTextOpacity))
-        if math.abs(nextValue - previous) <= 0.0001 then return true, nextValue, false end
+        if math.abs(nextValue - previous) <= 0.0001 then return CommitSameAppearance("text_opacity", target, nextValue, persist) end
         local shellOk, shellErr = self.shell:SetTextOpacity(nextValue, false)
         if shellOk ~= true then return false, shellErr end
         local candidate = F:NormalizeState(target, policy); candidate.textOpacity = nextValue
-        local stateOk, stateErr = persist ~= false and Save("text_opacity", candidate) or Stage("text_opacity", candidate)
-        if stateOk ~= true then self.shell:SetTextOpacity(previous, false); return false, stateErr end
+        -- 维护：保留 Save 的失败结果，让既有 Native/Store 回滚生效。
+        local stateOk, stateErr
+        if persist ~= false then stateOk, stateErr = Save("text_opacity", candidate) else stateOk, stateErr = Stage("text_opacity", candidate) end
+        if stateOk ~= true then self:ApplyLayout(false, "appearance_rollback"); return false, stateErr end -- Native 与 Domain 使用相同回滚快照。
         F.metrics.appearanceChanges = (tonumber(F.metrics.appearanceChanges) or 0) + 1
         return true, nextValue, true
     end
@@ -696,13 +737,15 @@ function F:Create(spec)
         local target = CurrentState(); if target == nil then return false end
         local previous = tonumber(target.fontScale) or policy.defaultFontScale
         local nextValue = Clamp(value, policy.minFontScale, policy.maxFontScale, FirstNonNil(target.fontScale, policy.defaultFontScale))
-        if math.abs(nextValue - previous) <= 0.0001 then return true, nextValue, false end
+        if math.abs(nextValue - previous) <= 0.0001 then return CommitSameAppearance("font_scale", target, nextValue, persist) end
         if type(self.shell.SetFontScale) ~= "function" then return false, "floating_font_scale_contract_unavailable" end
         local shellOk, shellErr = self.shell:SetFontScale(nextValue, false)
         if shellOk ~= true then return false, shellErr end
         local candidate = F:NormalizeState(target, policy); candidate.fontScale = nextValue
-        local stateOk, stateErr = persist ~= false and Save("font_scale", candidate) or Stage("font_scale", candidate)
-        if stateOk ~= true then self.shell:SetFontScale(previous, false); return false, stateErr end
+        -- 维护：字体提交失败不能被 Stage 覆盖，否则 UI 看似成功但下次冷启动恢复旧值。
+        local stateOk, stateErr
+        if persist ~= false then stateOk, stateErr = Save("font_scale", candidate) else stateOk, stateErr = Stage("font_scale", candidate) end
+        if stateOk ~= true then self:ApplyLayout(false, "appearance_rollback"); return false, stateErr end -- 字号布局按已恢复的 Authority 重新应用。
         F.metrics.appearanceChanges = (tonumber(F.metrics.appearanceChanges) or 0) + 1
         return true, nextValue, true
     end

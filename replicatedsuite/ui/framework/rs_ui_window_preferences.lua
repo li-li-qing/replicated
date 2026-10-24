@@ -124,23 +124,20 @@ function Store:SetTopmost(windowId, value, persist)
     local previous = self.state.topmost[key] == true
     if previous == nextValue then return true, nextValue, false end
 
-    if nextValue then self.state.topmost[key] = true else self.state.topmost[key] = nil end
-    if persist == false then return true, nextValue, true end
+    -- 维护：置顶与小锁共用 Persistence 事务；拒写/静默丢写时须恢复 Domain 和 dirty 元数据，
+    -- MarkDirty(0)+普通 SaveStore 只有原生返回成功，既不能证明读回一致，也会残留拒绝动作的重试。
+    local function Mutate()
+        if nextValue then self.state.topmost[key] = true else self.state.topmost[key] = nil end
+        return true
+    end
+    if persist == false then Mutate(); return true, nextValue, true end
     if self.sessionFallback == true then
         -- 隔离/损坏载荷不能覆盖；可仅会话改变 Native 层级，但应报告持久化不可用，不能宣称重登保留。
-        return true, nextValue, true, "session_fallback_no_persist"
+        Mutate(); return true, nextValue, true, "session_fallback_no_persist"
     end
 
-    local dirtyOk, dirtyErr = P:MarkDirty(STORE_ID, 0, "window_topmost:" .. key)
-    if dirtyOk ~= true then
-        if previous then self.state.topmost[key] = true else self.state.topmost[key] = nil end
-        return false, dirtyErr or "window_preference_dirty_rejected"
-    end
-    local saved, saveErr = P:SaveStore(STORE_ID, { reason = "window_topmost:" .. key })
-    if saved ~= true then
-        if previous then self.state.topmost[key] = true else self.state.topmost[key] = nil end
-        return false, saveErr or "window_preference_save_failed"
-    end
+    local saved, saveErr = P:MutateStore(STORE_ID, Mutate, { durable = true, reason = "window_topmost:" .. key })
+    if saved ~= true then return false, saveErr or "window_preference_save_failed" end
     return true, nextValue, true
 end
 

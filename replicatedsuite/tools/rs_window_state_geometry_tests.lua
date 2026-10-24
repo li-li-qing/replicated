@@ -224,5 +224,17 @@ Test('rejected drag and resize restore Native geometry and leave Store unchanged
         assert(s:Show(false));assert(s:Show(true));local rx,ry=Rect(h,s);Eq(rx,x);Eq(ry,y)
     end
 end)
+-- 维护：公开 API 的 Save 返回 false 不得经 Lua and/or 落入 Stage；标题按钮、公开锁 API 与外观 API 都沿原事务回滚。
+Test('rejected lock and appearance API saves cannot become successful preview commits',function()
+    local cases={{'SetLocked','locked',true},{'SetOverallOpacity','overallOpacity',.5},{'SetBackgroundOpacity','backgroundOpacity',.5},
+        {'SetTextOpacity','textOpacity',.5},{'SetFontScale','fontScale',1.1}}
+    for _,row in ipairs(cases)do
+        local h=Boot();local p={width=620,height=460,locked=false,overallOpacity=.94,backgroundOpacity=1,textOpacity=1,fontScale=1}
+        local s=h:Surface(p,{persist=function()return false,'save rejected'end});assert(s:Show(true));local before=Copy(p)
+        assert(s[row[1]](s,row[3],true)==false,row[1]..' swallowed save rejection');assert(p[row[2]]==before[row[2]])
+        local field=row[2]=='overallOpacity' and 'opacity' or row[2];assert(s.shell[field]==before[row[2]],row[1]..' left Native state changed')
+        assert(s[row[1]](s,row[3],false),'explicit preview was rejected');assert(p[row[2]]==row[3])
+    end
+end)
 print(string.format('STATE GEOMETRY RESULT %d passed / %d failed (%s)',pass,fail,_VERSION))
 assert(fail==0,'state geometry regression failures: '..fail)

@@ -62,6 +62,84 @@ A.Const = {
 local MODES = { "PVP", "PVE" }
 local SIDES = { friendly = "friendly", enemy = "enemy", unknown = "unknown" }
 
+-- 排行只缓存新建 merged 候选的排序前缀（每桶最多 512 行及一个 Self 候选），不引用累计 actor。
+-- 排行和明细共用最多四个请求槽；side/行数/Self 偏好只影响读取，公开行只构造一次且完全 detached。
+-- activeMs/durationMs 只随已接收事件变化，不随墙钟推进；事件/重放推进 revision，停用/清空立即释放。
+local projectionCache, projectionCacheNext = {}, 1
+local cacheRevision, cacheGeneration, cacheSelfKey
+local function ClearProjectionCache()
+    projectionCache, projectionCacheNext = {}, 1
+    cacheRevision, cacheGeneration, cacheSelfKey = A.revision, S.Generation, A.selfKey
+end
+local function ReadProjectionCache(key)
+    if cacheRevision ~= A.revision or cacheGeneration ~= S.Generation or cacheSelfKey ~= A.selfKey then ClearProjectionCache() end
+    for _, entry in ipairs(projectionCache) do if entry.key == key then return entry.value end end
+end
+local function WriteProjectionCache(key, value)
+    projectionCache[projectionCacheNext] = { key = key, value = value }
+    projectionCacheNext = projectionCacheNext % 4 + 1
+end
+local function CopyRankingRows(rows, metric, limit, selfCandidate, alwaysShowSelf)
+    if rows == nil then return nil end
+    local copied = {}
+    local count, forceSelf = math.min(limit, #rows), false
+    if alwaysShowSelf == true and selfCandidate ~= nil then
+        local found = false
+        for index = 1, count do if rows[index].key == A.selfKey then found = true; break end end
+        if found ~= true then forceSelf = true; count = math.min(#rows, limit - 1) end
+    end
+    for index = forceSelf and 0 or 1, count do
+        local row = index == 0 and selfCandidate or rows[index]
+        -- 每个候选（包括零金额 Self）均经 TouchMerged 和金额/时间归一化；此处只派生展示字段。
+        local damageActiveMs, healActiveMs = row.damageActiveMs, row.healActiveMs
+        copied[#copied + 1] = {
+            rank = tonumber(row.rank) or 0, key = row.key, name = row.name,
+            damage = row.damage, heal = row.heal, taken = row.taken, hits = row.hits, events = row.events,
+            dps = math.floor((row.damage / (damageActiveMs / 1000)) + 0.5),
+            hps = math.floor((row.heal / (healActiveMs / 1000)) + 0.5),
+            self = row.key ~= nil and row.key == A.selfKey or false,
+            activeMs = metric == "heal" and healActiveMs or damageActiveMs, metric = metric,
+            metricValue = row[metric],
+        }
+    end
+    return copied
+end
+local function CopyBucketProjection(bucket, limit, alwaysShowSelf)
+    local totals = bucket.totals
+    return {
+        rows = CopyRankingRows(bucket.rows, bucket.metric, limit, bucket.selfCandidate, alwaysShowSelf),
+        totals = { damage = totals.damage, heal = totals.heal, taken = totals.taken, events = totals.events, actorCount = totals.actorCount },
+        metric = bucket.metric, truncated = bucket.totalRows > limit, totalRows = bucket.totalRows,
+    }
+end
+local function CopyRankingProjection(value, sideName, limit, alwaysShowSelf)
+    local friendly, enemy, unknown = CopyBucketProjection(value.sides.friendly, limit, alwaysShowSelf), CopyBucketProjection(value.sides.enemy, limit, false), CopyBucketProjection(value.sides.unknown, limit, false)
+    local selected = sideName == "enemy" and enemy or (sideName == "unknown" and unknown or friendly)
+    return {
+        revision = value.revision, mode = value.mode, side = sideName, metric = value.metric,
+        displayRows = limit, maxRankingRows = value.maxRankingRows,
+        rows = selected.rows, totals = selected.totals, truncated = selected.truncated, totalRows = selected.totalRows,
+        durationMs = value.durationMs, sides = { friendly = friendly, enemy = enemy, unknown = unknown },
+        unresolved = CopyBucketProjection(value.unresolved, limit, false), modeEvents = value.modeEvents,
+    }
+end
+local function CopyDetailRows(rows)
+    local copied = {}
+    for index, row in ipairs(rows) do
+        copied[index] = { key = row.key, name = row.name, abilityId = row.abilityId, amount = row.amount, events = row.events, rank = row.rank }
+    end
+    return copied
+end
+local function CopyActorDetail(value)
+    local actor = value.actor
+    return {
+        actor = actor and { key = actor.key, name = actor.name, damage = actor.damage, heal = actor.heal, taken = actor.taken, hits = actor.hits } or nil,
+        abilities = CopyDetailRows(value.abilities), abilityTotal = value.abilityTotal,
+        counterparts = CopyDetailRows(value.counterparts), counterpartTotal = value.counterpartTotal,
+        metric = value.metric, revision = value.revision, mode = value.mode, side = value.side,
+    }
+end
+
 local function NewBucket()
     return { damage = 0, heal = 0, taken = 0, hits = 0, actors = {}, actorCount = 0, events = 0 }
 end
@@ -686,6 +764,7 @@ function A:ClearStats(reason)
     self.droppedNoIdentity, self.unknownRelations, self.lastEventAt = 0, 0, 0
     self.proxySourceHeals, self.proxySourceHealAmount = 0, 0
     self.revision = self.revision + 1
+    ClearProjectionCache()
     return true
 end
 
@@ -695,6 +774,7 @@ function A:ResetTransient(reason)
     self.pendingOrder, self.pendingHead, self.pendingCount = {}, 1, 0
     self:CloseSegment(self.lastEventAt > 0 and self.lastEventAt or NowMs(), reason or "transient_reset")
     self.revision = self.revision + 1
+    ClearProjectionCache()
     return true
 end
 
@@ -704,7 +784,7 @@ local function NormalizeMetric(value)
     return value
 end
 
-local function ProjectBucket(bucket, sharedHealBucket, limit, alwaysShowSelf, metric, includeZero, summaryOnly)
+local function ProjectBucket(bucket, sharedHealBucket, metric, includeZero, summaryOnly)
     metric = NormalizeMetric(metric)
     bucket = type(bucket) == "table" and bucket or NewBucket()
     sharedHealBucket = type(sharedHealBucket) == "table" and sharedHealBucket or nil
@@ -771,44 +851,14 @@ local function ProjectBucket(bucket, sharedHealBucket, limit, alwaysShowSelf, me
     end)
     for index, row in ipairs(rows) do row.rank = index end
     local totalRows = #rows
-    while #rows > limit do table.remove(rows) end
-
-    if alwaysShowSelf == true and A.selfKey ~= nil and merged[A.selfKey] ~= nil then
-        local found = false
-        for _, row in ipairs(rows) do if row.key == A.selfKey then found = true; break end end
-        if found ~= true then
-            table.insert(rows, 1, merged[A.selfKey])
-            while #rows > limit do table.remove(rows) end
-        end
-    end
-
-    local projected = {}
-    for _, row in ipairs(rows) do
-        local damageActiveMs = math.max(1000, tonumber(row.damageActiveMs) or 1000)
-        local healActiveMs = math.max(1000, tonumber(row.healActiveMs) or 1000)
-        projected[#projected + 1] = {
-            rank = tonumber(row.rank) or 0,
-            key = row.key,
-            name = tostring(row.name or row.key),
-            damage = math.max(0, tonumber(row.damage) or 0),
-            heal = math.max(0, tonumber(row.heal) or 0),
-            taken = math.max(0, tonumber(row.taken) or 0),
-            hits = math.max(0, tonumber(row.hits) or 0),
-            events = math.max(0, tonumber(row.events) or 0),
-            dps = math.floor(((tonumber(row.damage) or 0) / (damageActiveMs / 1000)) + 0.5),
-            hps = math.floor(((tonumber(row.heal) or 0) / (healActiveMs / 1000)) + 0.5),
-            self = row.key ~= nil and row.key == A.selfKey or false,
-            activeMs = metric == "heal" and healActiveMs or damageActiveMs,
-            metric = metric,
-            metricValue = math.max(0, tonumber(row[metric]) or 0),
-        }
-    end
+    -- 累计人数/总量不截断；只保留最大公开前缀，Self 在前缀外或零金额未入选时仍单独保留。
+    while #rows > 512 do table.remove(rows) end
 
     return {
-        rows = projected,
+        rows = rows,
+        selfCandidate = A.selfKey ~= nil and merged[A.selfKey] or nil,
         totals = totals,
         metric = metric,
-        truncated = totalRows > limit,
         totalRows = totalRows,
     }
 end
@@ -842,6 +892,9 @@ function A:GetActorDetail(request)
     local actorKey = tostring(request.actorKey or "")
     local limit = math.max(1, math.min(100, math.floor(tonumber(request.limit) or 24)))
     if actorKey == "" then return { actor = nil, abilities = {}, counterparts = {}, metric = metric, revision = self.revision } end
+    local cacheKey = "detail:" .. modeName .. ":" .. sideName .. ":" .. metric .. ":" .. tostring(limit) .. ":" .. actorKey
+    local cached = ReadProjectionCache(cacheKey)
+    if cached ~= nil then return CopyActorDetail(cached) end
     local bucket = EnsureMode(modeName)[sideName]
     local primary = bucket.actors[actorKey]
     local healBucket = self.healing and self.healing[sideName] or nil
@@ -852,7 +905,7 @@ function A:GetActorDetail(request)
     local detailSource = metric == "heal" and healing or primary
     local abilities, abilityTotal = DetailRows(detailSource and detailSource.abilityDetails or nil, metric, limit)
     local counterparts, counterpartTotal = DetailRows(detailSource and detailSource.counterpartDetails or nil, metric, limit)
-    return {
+    local detail = {
         actor = {
             key = actorKey,
             name = tostring((primary and primary.name) or (healing and healing.name) or actorKey),
@@ -865,6 +918,8 @@ function A:GetActorDetail(request)
         counterparts = counterparts, counterpartTotal = counterpartTotal,
         metric = metric, revision = self.revision, mode = modeName, side = sideName,
     }
+    WriteProjectionCache(cacheKey, detail)
+    return CopyActorDetail(detail)
 end
 
 function A:GetProjection(request)
@@ -879,17 +934,21 @@ function A:GetProjection(request)
     local sideName = tostring(request.side or settings.side or "friendly")
     if sideName ~= "friendly" and sideName ~= "enemy" and sideName ~= "unknown" then sideName = "friendly" end
     local metric = NormalizeMetric(request.metric or settings.metric)
+    -- 候选与阵营选择、显示行数及 Self 偏好无关；同一模式/指标的不同表面共用排序。
+    local cacheKey = "ranking:" .. modeName .. ":" .. metric .. ":" .. tostring(request.includeZero == true)
+    local cached = request.summaryOnly ~= true and ReadProjectionCache(cacheKey) or nil
+    if cached ~= nil then return CopyRankingProjection(cached, sideName, limit, settings.alwaysShowSelf == true) end
 
     local m = EnsureMode(modeName)
     -- 只有显式汇总请求省略名单；悬浮窗、待确认详情和全模式总览保持原有完整投影。
-    local friendly = ProjectBucket(m.friendly, self.healing.friendly, limit, settings.alwaysShowSelf == true, metric, request.includeZero, request.summaryOnly)
-    local enemy = ProjectBucket(m.enemy, self.healing.enemy, limit, false, metric, request.includeZero, request.summaryOnly)
-    local unknown = ProjectBucket(m.unknown, self.healing.unknown, limit, false, metric, request.includeZero, request.summaryOnly)
-    local unresolved = ProjectBucket(self.unclassified, nil, limit, false, metric, nil, request.summaryOnly)
+    local friendly = ProjectBucket(m.friendly, self.healing.friendly, metric, request.includeZero, request.summaryOnly)
+    local enemy = ProjectBucket(m.enemy, self.healing.enemy, metric, request.includeZero, request.summaryOnly)
+    local unknown = ProjectBucket(m.unknown, self.healing.unknown, metric, request.includeZero, request.summaryOnly)
+    local unresolved = ProjectBucket(self.unclassified, nil, metric, nil, request.summaryOnly)
     local selected = sideName == "enemy" and enemy or (sideName == "unknown" and unknown or friendly)
     local durationMs = m.startedAt > 0 and math.max(0, (tonumber(m.lastEventAt) or 0) - (tonumber(m.startedAt) or 0)) or 0
 
-    return {
+    local projection = {
         revision = self.revision,
         mode = modeName,
         side = sideName,
@@ -905,6 +964,9 @@ function A:GetProjection(request)
         unresolved = unresolved,
         modeEvents = tonumber(m.events) or 0,
     }
+    if request.summaryOnly == true then return projection end
+    WriteProjectionCache(cacheKey, projection)
+    return CopyRankingProjection(projection, sideName, limit, settings.alwaysShowSelf == true)
 end
 
 function A:GetHealth()

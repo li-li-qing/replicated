@@ -227,6 +227,27 @@ Test('rejected appearance save rolls visual preview and committed values back',f
  h.failSave=false;h.rejectAlpha=0.4;local writes=h.writes
  assert(shell:SetAppearance({overallOpacity=0.4},true)==false);assert(h.writes==writes and shell.window.alpha==1)
 end)
+Test('silent appearance loss restores main preview and same settings remain retryable',function()
+ local shell,S,h,n=Boot({actualWorkspaceHost=true,mainAppearance=true})
+ assert(n.v3_shell_appearance_button.root.events.OnClick(n.v3_shell_appearance_button.root,'LeftButton'))
+ local field=S.UIV3.PageHost.pages['system.workspace'].mainAppearanceFields.overallOpacity
+ assert(field.slider:Preview(40,'test'));local save=ADDON.SaveData;ADDON.SaveData=function()return true end
+ assert(field.slider:CommitValue(40,'slider')==false,'main appearance accepted silently lost save')
+ assert(shell.window.alpha==1 and S.UIV3.MainAppearance:GetSettings().overallOpacity==1)
+ ADDON.SaveData=save;assert(field.slider:CommitValue(40,'slider'))
+ local _,coldS=Boot({actualWorkspaceHost=true,mainAppearance=true,disk=h.disk});assert(coldS.UIV3.MainAppearance:GetSettings().overallOpacity==.4)
+end)
+Test('main title pin rejects Native refusal and silent preference loss before cold reload',function()
+ for _,mode in ipairs({'reject','stale'})do
+  local shell,S,h=Boot({mainAppearance=true});dofile('ui/framework/rs_ui_window_preferences.lua')
+  S.UIV3NativeAdapter.SetRootLayer=function(_,window,topmost)window.layer=topmost and 'system' or 'normal';return true end
+  assert(shell:SetTopmost(true,true));assert(shell.window.layer=='system')
+  if mode=='reject' then h.failSave=true else ADDON.SaveData=function()return true end end
+  assert(shell:SetTopmost(false,true)==false,'main title accepted '..mode..' unpin')
+  assert(shell:GetTopmost() and shell.window.layer=='system' and S.RSUI.WindowPreferences:GetTopmost('main_shell'))
+  local _,coldS=Boot({mainAppearance=true,disk=h.disk});dofile('ui/framework/rs_ui_window_preferences.lua');assert(coldS.RSUI.WindowPreferences:GetTopmost('main_shell'))
+ end
+end)
 Test('closing or leaving appearance cancels uncommitted preview and reset keeps geometry',function()
  local shell,S,h,n=Boot({actualWorkspaceHost=true,mainAppearance=true})
  assert(n.v3_shell_appearance_button.root.events.OnClick(n.v3_shell_appearance_button.root,'LeftButton'))
@@ -277,8 +298,10 @@ Test('main appearance diagnostics are owned by workspace and never load or save 
  assert(h.reads==reads and h.writes==writes)
 end)
 Test('main title lock exposes the saved state and changes through the existing Shell command',function()
- local shell,S,h,n=Boot();local button=assert(n.v3_shell_lock_button,'main title lock missing')
+ -- 锁定现在要求所属 Shell Store 耐久提交；使用已有真实存档宿主，不能靠缺失 Store 的空壳假报成功。
+ local shell,S,h,n=Boot({mainAppearance=true});local button=assert(n.v3_shell_lock_button,'main title lock missing');local writes=h.writes
  assert(button.root.events.OnClick(button.root,'LeftButton'));assert(shell:IsLocked() and button.state.selected)
+ assert(h.writes==writes+1,'title lock did not persist before returning')
  assert(button.text=='锁');assert(button.root.events.OnClick(button.root,'LeftButton'));assert(not shell:IsLocked() and not button.state.selected)
 end)
 Test('main native Escape performs full cleanup and reopens without saving previews',function()

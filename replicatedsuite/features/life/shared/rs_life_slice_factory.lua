@@ -80,8 +80,11 @@ local function InstallLifeWidgetContract(feature, policy)
     end
     function feature:MarkStoreDirty(delayMs, reason)
         -- 跑商/钓鱼/债券/藏宝共享的位置事务必须在返回前落盘回读。
-        -- 精确限定用户窗口边沿，业务快照和连续外观调整继续走既有 debounce。
-        if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" then
+        -- 精确限定用户窗口边沿，业务快照继续走既有 debounce，外观仅最终提交进入此入口。
+        -- 维护：共享生活窗的小锁完成操作立即耐久，兼容旧按钮 lock；仍由各 feature.storeId 独立持有状态。
+        -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+        if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" or reason == "widget_locked" or reason == "widget_lock"
+            or reason == "widget_overall_opacity" or reason == "widget_background_opacity" or reason == "widget_text_opacity" or reason == "widget_font_scale" then
             return P:SaveStore(self.storeId, { durable=true, consumeDirty=true, reason=reason })
         end
         if P and type(P.MarkDirty) == "function" then return P:MarkDirty(self.storeId, tonumber(delayMs) or 250, reason or "life_widget_state") end

@@ -396,7 +396,21 @@ end
 function D:_ReleaseQuest()
     if not self.questHeld then return true end
     local quest = S.Services and S.Services.QuestProgressV3 or nil
-    if type(quest) == "table" and type(quest.ReleaseConsumer) == "function" then quest:ReleaseConsumer(self.questConsumerToken) end
+    -- 中文维护注释：held 是本层仍须偿还的依赖租约；服务丢失、事务忙或下游清理失败都不能提前清掉它，
+    -- 否则本层会以零需求报成功，而 Quest 的事件与 15s 安全刷新仍继续运行且失去重试入口。
+    if type(quest) ~= "table" or type(quest.ReleaseConsumer) ~= "function" then
+        return false, "QuestProgressV3 release unavailable"
+    end
+    local demand = quest.Demand
+    -- 中文维护注释：全局关闭可能已在下一层独立清空 token；只有子 Demand 明确无此租约、无未完成事务
+    -- 且无静默故障时，才能把后续 consumer-not-held 当幂等释放。未知失败仍须保留 held 给下一次清理。
+    local alreadyReleased = type(demand) == "table" and type(demand.Has) == "function"
+        and demand.transitioning ~= true and demand.quiescing ~= true and demand.needsQuiesce ~= true
+        and demand:Has(self.questConsumerToken) == false
+    if alreadyReleased ~= true then
+        local released, releaseErr = quest:ReleaseConsumer(self.questConsumerToken)
+        if released ~= true then return false, releaseErr or "QuestProgressV3 release failed" end
+    end
     self.questHeld = false; return true
 end
 
@@ -409,10 +423,12 @@ local lease, leaseErr = S.Demand:Create({
             local ok, err = D:_AcquireQuest(); if ok ~= true then return false, err end
             local sub, subErr = D:_Subscribe(); if sub ~= true then D:_ReleaseQuest(); return false, subErr end
             local refreshed, refreshErr = D:Refresh("first_consumer"); if refreshed ~= true then D:_Unsubscribe(); D:_ReleaseQuest(); return false, refreshErr end
-        elseif b > 0 and a <= 0 then D:_Unsubscribe(); D:_ReleaseQuest() end
+        -- 中文维护注释：释放失败须返回 Demand，让正常事务回滚或关闭进入可重试 quiesce，不能吞掉下游 false。
+        elseif b > 0 and a <= 0 then D:_Unsubscribe(); return D:_ReleaseQuest() end
         return true
     end,
-    quiesce = function() D:_Unsubscribe(); D:_ReleaseQuest(); return true end,
+    -- 中文维护注释：逻辑消费者可被强制清空，但物理依赖失败必须保留 needsQuiesce，直到下次确实释放。
+    quiesce = function() D:_Unsubscribe(); return D:_ReleaseQuest() end,
 })
 if lease == nil then error(leaseErr) end
 D.Demand = lease

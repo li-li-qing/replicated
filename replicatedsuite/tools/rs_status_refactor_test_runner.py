@@ -58,6 +58,18 @@ CORE_FEATURE_DECOUPLING_TESTS = [
     "tools/rs_live_contract_state_tests.lua",
 ]
 
+# 维护：事件快照、需求回滚/重入、失败启动清理和关闭失败传播共用真实生产生命周期边界。
+# 各套件须隔离进程，避免宿主替身互相污染；本地通过不等同 RU 退出/重登录验收。
+FOUNDATION_LIFECYCLE_TESTS = [
+    "tools/rs_foundation_lifecycle_tests.lua",
+    "tools/rs_demand_lifecycle_tests.lua",
+    "tools/rs_feature_failure_cleanup_tests.lua",
+    "tools/rs_runtime_shutdown_tests.lua",
+    "tools/rs_service_dependency_cleanup_tests.lua",
+    "tools/rs_dps_dependency_cleanup_tests.lua",
+    "tools/rs_combat_bus_lifecycle_tests.lua",
+]
+
 
 # 视口不变时的重载恢复、实际缩放和视口迁移，
 # 以及独立预设按钮都必须进入默认门禁，不能仅作为可选检查。
@@ -65,6 +77,7 @@ WINDOW_POSITION_TESTS = [
     "tools/rs_window_viewport_tests.lua",
     "tools/rs_window_reload_position_tests.lua",
     "tools/rs_feature_profiles_quick_geometry_tests.lua",
+    "tools/rs_floating_relog_tests.lua",  # 维护：真实 Store 的锁定/折叠冷启和拒写回滚必须覆盖，不能靠退出 Flush 掩盖延迟保存。
 ]
 
 
@@ -161,6 +174,9 @@ RELEASE_READINESS_TESTS = [
     "tools/rs_batch_import_authority_tests.lua",
     "tools/rs_draft_session_v2_tests.lua", # 无焦点getter/无OnClick的Native缓冲交接，普通标签/外owner保留严格门禁。
     "tools/rs_signed_readback_tests.lua",
+    "tools/rs_persistence_scope_replacement_tests.lua", # 中文维护：角色/owner/未来契约拒写，同归属内容损坏才允许显式耐久替换。
+    "tools/rs_persistence_character_scope_tests.lua", # 中文维护：真实Core+内存Native验证有损姓名隔离、可信旧键只读迁移和身份未就绪；绝不访问/写入实机UDF。
+    "tools/rs_character_feature_binding_tests.lua", # 维护：角色消费者不得沿用旧loaded、目录选择及余额回执基线。
     "tools/rs_transport4_dual_loss_recovery_tests.lua",
     "tools/rs_cooldown_auto_discovery_tests.lua",
     "tools/rs_cooldown_hud_pipeline_tests.lua",
@@ -170,6 +186,20 @@ RELEASE_READINESS_TESTS = [
     "tools/rs_combat_history_integrity_tests.lua",
     "tools/rs_combat_history_transfer_tests.lua",  # 历史导出首段回读、无损重分页及失败进入模块TXT，不能只验Store完整性。
     "tools/rs_combat_kill_diagnostics_tests.lua",
+    # 维护：只用明确原生归属验证私有/全局低频回退、来源留证、去重和关闭释放；不将缺通知猜成击杀。
+    "tools/rs_combat_kill_ingress_tests.lua",
+    # 维护：用真实热路核对有界缓存、借用事实隔离和名单复用；CPU 数字只作离线基准，门禁不承诺 RU FPS。
+    "tools/rs_combat_dispatch_performance_tests.lua",
+    "tools/rs_dps_projection_performance_tests.lua",
+    "tools/rs_healer_roster_performance_tests.lua",
+    # 维护：Aura 临时闭包、四池纯布局及逐行点样式优化保留事实时效、Native 拒写重试和旧公开方法。
+    "tools/rs_aura_hotpath_performance_tests.lua",
+    "tools/rs_buff_layout_performance_tests.lua",
+    "tools/rs_visual_guides_performance_tests.lua",
+    # 维护：轻量团队人数、总线借用帧与治疗规则热路须保持实时事实、重入和快照隔离。
+    "tools/rs_combat_health_performance_tests.lua",
+    "tools/rs_combat_bus_performance_tests.lua",
+    "tools/rs_healer_rule_performance_tests.lua",
     "tools/rs_combat_statistics_layout_tests.lua",
     "tools/rs_hud_all_preview_tests.lua",
     "tools/rs_buff_hud_colors_tests.lua",  # 任意RGB、双HUD独立、交换、校准取消与失败回滚。
@@ -356,9 +386,15 @@ def main() -> int:
     elif "--foundation-lifecycle" in sys.argv:
         # 维护（foundation-lifecycle-1）：真实事件/调度/刷新链路，独立 Native/时钟故障模型。
         # 不依赖缺失历史 UI host，不改变默认全量的 BLOCKED 判据，不把兼容 Lua 运行算作 RU 验收。
-        required = ["tools/rs_foundation_lifecycle_tests.lua"]
-        if not require_test_files(required): return 2
-        source = prelude + lua_dofiles(required)
+        if not require_test_files(FOUNDATION_LIFECYCLE_TESTS): return 2
+        if not require_transitive_test_dependencies(FOUNDATION_LIFECYCLE_TESTS): return 2
+        try:
+            run_lua_files_isolated(FOUNDATION_LIFECYCLE_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"FOUNDATION_LIFECYCLE PASS: {len(FOUNDATION_LIFECYCLE_TESTS)} suite(s)")
+        return 0
     elif "--fixed-hud" in sys.argv:
         source = prelude + 'dofile("tools/rs_fixed_status_hud_tests.lua"); dofile("tools/rs_component_placement_tests.lua"); dofile("tools/rs_component_placement_page_tests.lua"); dofile("tools/rs_component_placement_renderer_tests.lua")'
     elif "--hud-defaults" in sys.argv:
@@ -554,11 +590,11 @@ def main() -> int:
             "tools/rs_daily_income_source_tests.lua", "tools/rs_home_overview_tests.lua", "tools/rs_overview_v2_tests.lua", "tools/rs_quest_journal_detail_tests.lua",
             "tools/rs_ledger_projection_v2_tests.lua",
         ]
-        required = legacy + UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS + WINDOW_POSITION_TESTS + AUCTION_USER_PRIORITY_TESTS + BONDS_CROSS_CONTINENT_TESTS + DAILY_AUCTION_TESTS + TRADE_COPY_EVIDENCE_TESTS + FEATURE_PROFILE_FAILURE_TESTS + RANGE_CONTINUITY_TESTS + TRADE_GEAR_RELIABILITY_TESTS + TRADE_REQUOTE_TESTS + RELEASE_READINESS_TESTS
+        required = legacy + UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS + FOUNDATION_LIFECYCLE_TESTS + WINDOW_POSITION_TESTS + AUCTION_USER_PRIORITY_TESTS + BONDS_CROSS_CONTINENT_TESTS + DAILY_AUCTION_TESTS + TRADE_COPY_EVIDENCE_TESTS + FEATURE_PROFILE_FAILURE_TESTS + RANGE_CONTINUITY_TESTS + TRADE_GEAR_RELIABILITY_TESTS + TRADE_REQUOTE_TESTS + RELEASE_READINESS_TESTS
         if not require_test_files(required): return 2
         if not require_transitive_test_dependencies(required): return 2
         source = prelude + lua_dofiles(legacy)
-        isolated_after = UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS + WINDOW_POSITION_TESTS + AUCTION_USER_PRIORITY_TESTS + BONDS_CROSS_CONTINENT_TESTS + DAILY_AUCTION_TESTS + TRADE_COPY_EVIDENCE_TESTS + FEATURE_PROFILE_FAILURE_TESTS + RANGE_CONTINUITY_TESTS + TRADE_GEAR_RELIABILITY_TESTS + TRADE_REQUOTE_TESTS + RELEASE_READINESS_TESTS
+        isolated_after = UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS + FOUNDATION_LIFECYCLE_TESTS + WINDOW_POSITION_TESTS + AUCTION_USER_PRIORITY_TESTS + BONDS_CROSS_CONTINENT_TESTS + DAILY_AUCTION_TESTS + TRADE_COPY_EVIDENCE_TESTS + FEATURE_PROFILE_FAILURE_TESTS + RANGE_CONTINUITY_TESTS + TRADE_GEAR_RELIABILITY_TESTS + TRADE_REQUOTE_TESTS + RELEASE_READINESS_TESTS
     try:
         run_lua(source)
         if isolated_after:
