@@ -32,7 +32,7 @@ G:RegisterSequenceCase("v3_combat_statistics_personal_history_contract",function
     local history=F.PersonalHistory
     local store=history and S.Persistence and S.Persistence:GetStore(history.StoreId) or nil
     -- schema3 的来源账本与合计原子保存；无同步字段的 schema1/2 原档仍按原 canonical 验证后迁移。
-    if store==nil or store.owner~="v3.combat_personal_history" or tonumber(store.schemaVersion)~=3
+    if store==nil or store.owner~="v3.combat_personal_history" or tonumber(store.schemaVersion)~=5
         or store.scope~=S.Persistence.Scope.Character or store.lifetime~=S.Persistence.Lifetime.Permanent then return Fail("personal_history_store") end
     if type(A.AcquireStatisticsConsumer)~="function" or type(A.GetCollectionScope)~="function" or type(F.Commands.SetCollectionScope)~="function"
         or type(F.GetPersonalHistoryProjection)~="function" then return Fail("unified_statistics_commands") end
@@ -56,7 +56,7 @@ G:RegisterSequenceCase("v3_m16_combat_analytics_contract",function()
     if meta==nil or tostring(meta.status)~="migrated_m16_foundation" or tostring(meta.authority)~="v3.combat_analytics" then return Fail("metadata") end
     if S.FeatureRuntime==nil or S.FeatureRuntime:IsImplemented("combat_analytics")~=true then return Fail("feature_implementation") end
     local store=S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.combat_analytics") or nil
-    if store==nil or tonumber(store.schemaVersion)~=2 or tostring(store.owner)~="v3.combat_analytics" then return Fail("store") end
+    if store==nil or tonumber(store.schemaVersion)~=4 or tostring(store.owner)~="v3.combat_analytics" then return Fail("store") end
     if (tonumber(A.version) or 0)<3 or type(A.RegisterMetric)~="function" or type(A.AcquireConsumer)~="function" or type(A.GetMetricProjection)~="function" or type(A.GetMetricActorDetail)~="function" or type(A.ResetMetrics)~="function" or type(A.HasConsumer)~="function" or type(A.NotifyMetricChanged)~="function" then return Fail("authority") end
     local required={"encounter","kills","casts","performance","control","songcraft","utility","aura","mechanics"}
     for _,id in ipairs(required) do

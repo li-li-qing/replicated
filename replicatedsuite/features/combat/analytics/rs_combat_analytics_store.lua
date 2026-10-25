@@ -16,7 +16,23 @@ local F = S.Features.CombatAnalytics
 local U = S.Utils
 
 local STORE_ID = "v3.combat_analytics"
-local SCHEMA = 2
+local SCHEMA = 4
+-- 用户确认的首次/重复击杀奖励，配合明确归属去重；助攻3/12必须先排除。
+-- 魔法之地实测战争击杀60、纷争击杀15，区域状态变化不能漏掉小额击杀。
+local DEFAULT_HONOR_KILL_AMOUNTS={15,19,21,60,68,76,84,86}
+local function HonorAmount(value)
+    local n=tonumber(value)
+    return n and n==n and n>=1 and n<=1000000 and n==math.floor(n) and n or nil
+end
+local function HonorAmounts(values)
+    local out,seen={},{}
+    for _,value in pairs(values) do
+        local n=HonorAmount(value)
+        if n and not seen[n] then seen[n]=true;out[#out+1]=n end
+    end
+    table.sort(out);while #out>16 do table.remove(out) end
+    return out
+end
 local PUBLIC_METRICS = { "encounter", "kills", "casts", "performance", "control", "songcraft", "utility", "aura", "mechanics" }
 local METRIC_SET = {}; for _, id in ipairs(PUBLIC_METRICS) do METRIC_SET[id] = true end
 local DEFAULT_VALUES = {
@@ -25,8 +41,8 @@ local DEFAULT_VALUES = {
 }
 local VALID_VALUES = {
     encounter={durationMs=true,damage=true,healing=true,deaths=true},
-    -- 已删除的NPC/助攻选项只参与旧档规范化，保持原指纹；运行期由 IsAnalyticsValueKey 拒绝。
-    kills={kills=true,npcKills=true,assists=true,deaths=true},
+    -- 退休的NPC/助攻/荣誉估算选项仍参与旧档验章；运行期由 IsAnalyticsValueKey 拒绝。
+    kills={kills=true,npcKills=true,assists=true,deaths=true,honorParticipations=true,honorKills=true},
     casts={skillActivities=true,exactCasts=true},
     performance={peak5sDps=true,peak5sDamage=true,highestHit=true,damage=true,deaths=true},
     control={controlHits=true,controlActivities=true,controlMs=true,controlled=true,controlledMs=true},
@@ -55,12 +71,15 @@ local function NormalizeState(value)
         enabled[id] = sourceEnabled[id] ~= false
         selectedValues[id] = ValueKey(id, sourceValues[id])
     end
-    return {
+    local out={
         collectionScope = value.collectionScope == "all" and "all" or "self",
         selectedMetric = MetricId(value.selectedMetric),
         metricEnabled = enabled,
         selectedValues = selectedValues,
     }
+    -- 旧档缺少规则时保持原canonical；只有用户实际编辑才保存独立金额列表。
+    if type(value.honorKillAmounts)=="table" then out.honorKillAmounts=HonorAmounts(value.honorKillAmounts) end
+    return out
 end
 
 F.StoreId=STORE_ID
@@ -78,7 +97,8 @@ local function RebuildSchema1Canonical(value,_,_,raw)
     if type(meta)~="table" or meta.store~=STORE_ID or meta.owner~=STORE_ID or tonumber(meta.schema)~=1
         or type(value)~="table" or value.collectionScope~=nil then return nil end
     local historical=NormalizeState(value);historical.collectionScope=nil
-    return historical,NormalizeState(value)
+    historical.honorKillAmounts=nil
+    return historical,NormalizeState(historical)
 end
 
 if P:GetStore(STORE_ID)==nil then
@@ -114,12 +134,27 @@ function F:GetAnalyticsSettings()
         out={};for key,value in pairs(self.State) do out[key]=value end
         out.selectedValues={};for key,value in pairs(self.State.selectedValues) do out.selectedValues[key]=value end
     end
+    if self.State.honorKillAmounts~=nil then out.honorKillAmounts=self:GetHonorKillAmounts() end
     out.selectedValues.kills=self:GetSelectedValueKey("kills")
     return out
 end
 function F:GetCollectionScope() return self.State.collectionScope == "all" and "all" or "self" end
 function F:IsMetricPreferenceEnabled(id) return id=="kills" and self.State.metricEnabled.kills~=false end
 function F:GetSelectedMetric() return "kills" end
+function F:GetStatisticsCountKey()
+    -- 只展示同一个击杀数。旧选择只保留原canonical验章，不能再切成荣誉收益次数。
+    return "kills"
+end
+function F:GetStatisticsCountTitle()
+    return "击杀玩家"
+end
+function F:GetHonorKillAmounts() return HonorAmounts(self.State.honorKillAmounts or DEFAULT_HONOR_KILL_AMOUNTS) end
+function F:IsHonorKillAmount(value)
+    local n=HonorAmount(value);if not n or n==3 or n==12 then return false end
+    for _,amount in ipairs(self.State.honorKillAmounts or DEFAULT_HONOR_KILL_AMOUNTS) do if amount==n then return true end end
+    return false
+end
+function F:NormalizeHonorKillAmount(value) return HonorAmount(value) end
 function F:IsAnalyticsValueKey(id,value)
     return id=="kills" and (value=="kills" or value=="deaths")
 end

@@ -35,7 +35,19 @@ local function Build(parent)
         if subtitle then Note(box,id.."_hint",subtitle) end
         return box
     end
-    local collection=Section("v3_statistics_config_collection","采集项目","仅计算伤害、治疗、承伤、击杀玩家、死亡，与战斗总览共用一次采集。总开关关闭时停止采集。")
+    local collection=Section("v3_statistics_config_collection","采集项目","PVP 只记战绩：关闭伤害、治疗追踪，保留击杀玩家 / 死亡。关闭的项目停止实时统计和历史累加，已有记录保留。总开关关闭时全部停止。")
+    Note(collection,"v3_statistics_config_count_source_note","同一个击杀数：明确归属直接记录，普通区域没有荣誉也照常计数；仅用战争/纷争荣誉作备用补记，前后通知配对避免重复。已知助攻3、12点不计；只匹配确认的奖励，其他金额不猜测。多个聊天框的重复显示不参与计数。")
+    local tracking=UI:UniformGrid({id="v3_statistics_config_tracking",parent=collection,minCellWidth=205,minCellHeight=82,maxColumns=2,preferredColumns=2,columnGap=6,rowGap=6,slot={size="auto",hAlign="fill"}})
+    for _,row in ipairs({{"damage","追踪伤害 / 承伤","trackDamage","输出或副本按需开启；关闭后不累计伤害、承伤及其技能明细。"},
+        {"healing","追踪治疗","trackHealing","奶妈按需开启；关闭后不累计治疗量及其技能明细。"}}) do
+        local category,title,key,description=row[1],row[2],row[3],row[4]
+        local card=UI:VerticalBox({id="v3_statistics_config_tracking_card_"..category,parent=tracking,gap=3,slot={hAlign="fill",vAlign="fill"}})
+        local toggle=UI:Toggle({id="v3_statistics_config_track_"..category,parent=card,onText=title.."：开启",offText=title.."：关闭",
+            get=function() return F:GetSettingsProjection()[key]==true end,
+            set=function(value) return F.Commands:SetTrackingEnabled(category,value) end,slot={size="fixed",height=28,hAlign="fill"}})
+        toggles[#toggles+1]=toggle
+        Note(card,"v3_statistics_config_tracking_note_"..category,description)
+    end
     for groupIndex,group in ipairs(GROUPS) do
         UI:Text({id="v3_statistics_config_group_"..groupIndex,parent=collection,text=group.title,fontSize=10,tone="strong",slot={size="fixed",height=20}})
         local grid=UI:UniformGrid({id="v3_statistics_config_grid_"..groupIndex,parent=collection,minCellWidth=205,minCellHeight=74,maxColumns=3,preferredColumns=3,columnGap=6,rowGap=6,slot={size="auto",hAlign="fill"}})

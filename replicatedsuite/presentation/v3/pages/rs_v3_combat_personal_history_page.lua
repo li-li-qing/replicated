@@ -8,8 +8,9 @@
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local F=S.Features and S.Features.CombatAnalytics
+local DPS=S.Features and S.Features.DPS
 local D,UI,H=S.UIV3Design,S.RSUI,S.UIV3 and S.UIV3.PageHost
-if not F or not D or not UI or not H then return end
+if not F or not DPS or not D or not UI or not H then return end
 -- 交换面板只持有冻结的导出文本和输入草稿；来源去重、角色校验和耐久合并均经 Feature Commands。
 -- 文本只在点击操作时写入，战斗刷新不能重写多行框、抢焦点或清掉用户正在选择/粘贴的内容。
 local function BuildTransfer(parent,onChanged)
@@ -225,21 +226,45 @@ local function Build(parent)
     local period=UI:Text({id="v3_personal_history_period",parent=content,text="记录期间：--",fontSize=10,tone="strong",overflow="wrap",slot={size="auto",minHeight=26}})
     local totals=UI:Text({id="v3_personal_history_totals",parent=content,text="--",fontSize=12,tone="strong",overflow="wrap",slot={size="auto",minHeight=44}})
     local dailySummary=UI:Text({id="v3_personal_history_daily_summary",parent=content,text="每日记录",fontSize=10,tone="strong",overflow="wrap",slot={size="auto",minHeight=22}})
-    local tableView=UI:TableView({id="v3_personal_history_table",parent=content,items={},rowHeight=24,headerHeight=25,desiredRows=14,scrollbar=true,columnResize=true,
-        columns={
-            {id="date",title="日期",field="dateDisplay",size="fixed",width=100,minWidth=92},
-            {id="kills",title="击杀玩家",field="kills",size="fixed",width=76,minWidth=56},
-            {id="deaths",title="死亡",field="deaths",size="fixed",width=44,minWidth=28},
-            {id="damage",title="伤害",field="damage",size="fixed",width=70,minWidth=38},
-            {id="healing",title="治疗",field="healing",size="fixed",width=70,minWidth=38},
-            {id="taken",title="承伤",field="taken",size="fixed",width=70,minWidth=38},
-            {id="period",title="采集起止",field="period",size="fill",fill=1,minWidth=70},
-        },slot={size="fixed",height=410,hAlign="fill"}})
+    local tableHost=UI:VerticalBox({id="v3_personal_history_table_host",parent=content,gap=0,slot={size="fixed",height=410,hAlign="fill"}})
+    local tableView,trackingToken,pendingScroll=nil,nil,nil
+    local tables={}
+    local function SyncTracking()
+        local settings=DPS:GetSettingsProjection()
+        local damage,healing=settings.trackDamage~=false,settings.trackHealing~=false
+        local token=(damage and "1" or "0")..(healing and "1" or "0")
+        if token==trackingToken then return damage,healing end
+        local first=tableView and tableView:GetVisibleRange() or 0
+        pendingScroll=tableView and math.max(0,(tonumber(first) or 0)-1) or nil
+        if tableView then tableView:SetVisible(false) end
+        -- TableView 的列在创建时固定；四种偏好按需创建并复用，切换设置不能不断重建 Native 控件。
+        local nextTable=tables[token]
+        if not nextTable then
+            local id=next(tables)==nil and "v3_personal_history_table" or ("v3_personal_history_table_"..token)
+            nextTable=UI:TableView({id=id,parent=tableHost,items={},rowHeight=24,headerHeight=25,desiredRows=14,scrollbar=true,columnResize=true,
+                columns={
+                    {id="date",title="日期",field="dateDisplay",size="fixed",width=100,minWidth=92},
+                    {id="kills",title="击杀",field="kills",size="fixed",width=76,minWidth=56,getText=function(row)
+                        local key=type(F.GetStatisticsCountKey)=="function" and F:GetStatisticsCountKey() or "kills"
+                        return row[key]~=nil and tostring(row[key]) or "—"
+                    end},
+                    {id="deaths",title="死亡",field="deaths",size="fixed",width=44,minWidth=28},
+                    {id="damage",title="伤害",field="damage",visible=damage,size="fixed",width=70,minWidth=38},
+                    {id="healing",title="治疗",field="healing",visible=healing,size="fixed",width=70,minWidth=38},
+                    {id="taken",title="承伤",field="taken",visible=damage,size="fixed",width=70,minWidth=38},
+                    {id="period",title="采集起止",field="period",size="fill",fill=1,minWidth=70},
+                },slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
+            tables[token]=nextTable
+        end
+        tableView=nextTable;trackingToken=token;tableView:SetVisible(true)
+        return damage,healing
+    end
     local details=UI:Text({id="v3_personal_history_evidence",parent=content,text="--",fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=48}})
     -- 先呈现每日击杀/死亡，再放交换和长说明，避免常见窗口高度下先看到导出操作却找不到记录。
     local transfer=BuildTransfer(content,function()return root:RefreshData()end)
     function root:RefreshData()
         scope:Render()
+        local showDamage,showHealing=SyncTracking()
         local p=F:GetPersonalHistoryProjection({fromDate=selectedFrom,toDate=selectedTo})
         if p.available~=true then period:SetText(tostring(p.error or "历史不可用"));totals:SetText("--");details:SetText("");dailySummary:SetText("每日记录不可用");tableView:SetItems({},"history_error");return true end
         -- 日账满额归档、导入或角色切换后，原边界可能不再有日明细；保留筛选并明确标注，不能显示“请选择”却继续暗中筛选。
@@ -261,15 +286,20 @@ local function Build(parent)
         end
         from:Render();to:Render()
         local t=p.totals or {}
+        local countKey=type(F.GetStatisticsCountKey)=="function" and F:GetStatisticsCountKey() or "kills"
+        local countTitle=type(F.GetStatisticsCountTitle)=="function" and F:GetStatisticsCountTitle() or "击杀玩家"
         period:SetText("全期记录："..tostring(p.firstAt or "尚无已知时间样本").." → "..tostring(p.lastAt or "--"))
-        totals:SetText("所选期间 · 击杀玩家 "..tostring(t.kills or 0).." · 死亡 "..tostring(t.deaths or 0)
-            .."\n伤害 "..tostring(t.damage or 0).." · 承伤 "..tostring(t.taken or 0).." · 治疗 "..tostring(t.healing or 0))
+        local amounts={}
+        if showDamage then amounts[#amounts+1]="伤害 "..tostring(t.damage or 0);amounts[#amounts+1]="承伤 "..tostring(t.taken or 0) end
+        if showHealing then amounts[#amounts+1]="治疗 "..tostring(t.healing or 0) end
+        totals:SetText("所选期间 · "..countTitle.." "..(t[countKey]~=nil and tostring(t[countKey]) or "—").." · 死亡 "..tostring(t.deaths or 0)
+            ..(#amounts>0 and ("\n"..table.concat(amounts," · ")) or ""))
         details:SetText(tostring(p.coverage or "").."\n旧版推断记录（不计入上述击杀）：玩家 "..tostring(t.inferredKills or 0)
             ..(p.complete==false and " · 此日期筛选不完整：存在早期归档或未定日期记录" or "")
             ..(p.archiveTo and (" · 早期归档截至 "..tostring(p.archiveTo).."（计入全期累计）") or "")
             ..(p.error and (" · 保存异常："..tostring(p.error)) or ""))
         local count=#(p.rows or {})
-        local dailyText=count==0 and "所选日期暂无每日记录" or ("每日击杀 / 死亡 · "..tostring(math.min(count,120)).." 个记录日"
+        local dailyText=count==0 and "所选日期暂无每日记录" or ("每日"..countTitle.." / 死亡 · "..tostring(math.min(count,120)).." 个记录日"
             ..(count>120 and ("（共 "..count.." 日，显示最近120日；累计包含完整范围）") or ""))
         dailySummary:SetText(dailyText..(p.complete==false and " · 筛选不完整：存在归档或未定日期记录" or ""))
         local rows={}
@@ -279,14 +309,19 @@ local function Build(parent)
             row.period=(row.firstAt and row.firstAt:sub(12) or "--").." → "..(row.lastAt and row.lastAt:sub(12) or "--")
             rows[#rows+1]=row
         end
-        tableView:SetItems(rows,"personal_history:"..tostring(p.revision)..":"..selectedFrom..":"..selectedTo)
+        tableView:SetItems(rows,"personal_history:"..tostring(p.revision)..":"..selectedFrom..":"..selectedTo..":"..countKey)
+        if pendingScroll~=nil then tableView:SetScrollOffset(pendingScroll);pendingScroll=nil end
         return true
     end
     function root:OnActivated()
+        local loaded,loadErr=DPS:EnsureStoreLoaded();if loaded~=true then return false,loadErr end
         self.combatStatisticsActive=true -- 历史查询同样只在可见期间合并战斗通知，不领取采集 Consumer。
         if S.Events and S.Events.SubscribeInternal then
             S.Events:SubscribeInternal("v3.combat_analytics.updated",self,function() return D:RequestCombatStatisticsRefresh(root,root.RefreshData) end)
             S.Events:SubscribeInternal("v3.combat_analytics.feature_updated",self,function() root:RefreshData() end)
+            S.Events:SubscribeInternal("v3.dps.settings",self,function(_,key)
+                if key=="trackDamage" or key=="trackHealing" then root:RefreshData() end
+            end)
         end
         return self:RefreshData()
     end

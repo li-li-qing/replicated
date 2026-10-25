@@ -32,6 +32,7 @@ local function Bus() return S.Services and S.Services.CombatEventBusV3 or nil en
 local function Analytics() return S.Services and S.Services.CombatAnalyticsV3 or nil end
 local function Relation() return S.Services and S.Services.CombatRelationV3 or nil end
 local function Domain() return F.Domain end
+local trackingPolicyChanging = false
 
 -- 维护：held 只是 DPS 的重试凭证；下游 Demand 才拥有消费者意图。只有本 token 明确不存在且
 -- 下游没有待静默故障且事务已结算，才能承认 Core 已代为撤销；查询缺失、nil、异常均不构成释放证据。
@@ -95,7 +96,9 @@ function F:_EnsureAnalyticsMetric()
             end
             return consumed == true
         end,
-        Reset = function(_, reason)
+        Reset = function(_, reason, resetKind)
+            -- 采集开关的租约先试切换、存档后接受；此时清理会让保存失败后的回滚永久丢失 pending。
+            if trackingPolicyChanging and resetKind == "inactive" then return true end
             -- 新范围必须从空实时排行开始，不能把全员旧行带进自身模式。
             -- 暂停 / 释放指标仍只结束战斗段；永久个人历史由独立 Store 保留。
             if reason == "collection_scope_changed" then return F:ClearStats(reason) end
@@ -276,6 +279,38 @@ function F:SetMetric(value) return self:SetSettingValue("metric", value) end
 function F:SetDisplayRows(value) return self:SetSettingValue("displayRows", value) end
 function F:SetAlwaysShowSelf(value) return self:SetSettingValue("alwaysShowSelf", value == true) end
 
+-- 采集偏好与共享指标租约一起切换；保存或租约失败时恢复旧策略，不留下界面关闭而后台仍采集的状态。
+function F:SetTrackingEnabled(category, enabled)
+    local key = category == "damage" and "trackDamage" or (category == "healing" and "trackHealing" or nil)
+    if key == nil then return false, "unknown tracking category" end
+    local loaded, loadErr = self:EnsureStoreLoaded()
+    if loaded ~= true then return false, loadErr end
+    if self:GetSettings()[key] == (enabled == true) then return true end
+    local analytics = Analytics()
+    trackingPolicyChanging = true
+    local ok, err = self:MutateStore(function()
+        self:GetSettings()[key] = enabled == true
+        return analytics:RefreshStatisticsConsumers("tracking:" .. category)
+    end, 300, "dps_tracking_" .. category)
+    if ok ~= true then
+        local restored, restoreErr = analytics:RefreshStatisticsConsumers("tracking_rollback:" .. category)
+        trackingPolicyChanging = false
+        if restored ~= true then return false, tostring(err) .. "; tracking rollback: " .. tostring(restoreErr) end
+        return false, err
+    end
+    trackingPolicyChanging = false
+    -- 只截断已关闭类别，另一项仍可用后续证据纠正分类；已累计的排行和永久历史保留。
+    local d = Domain()
+    if d and not self:IsTrackingCategoryEnabled("damage") and not self:IsTrackingCategoryEnabled("heal") then
+        d:ResetTransient("tracking_disabled")
+    elseif enabled ~= true and d then
+        d:DiscardPendingCategory(category == "healing" and "heal" or "damage")
+    end
+    if d and d.pendingCount <= 0 then self:CancelPendingReplay() end
+    PublishSettingChanged(key)
+    return true
+end
+
 function F:AddBossName(name)
     local ok, err = self:SetBossName(name)
     if ok == true and S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.dps.settings", "bossNames") end
@@ -326,6 +361,7 @@ function F:CancelProjectionPublish()
 end
 
 function F:SchedulePendingReplay(reason)
+    if not self:IsTrackingCategoryEnabled("damage") and not self:IsTrackingCategoryEnabled("heal") then return true end
     if self.pendingReplayScheduled == true then return true end
     local d = Domain()
     if type(d) ~= "table" or type(d.ReplayPending) ~= "function" then return false end
@@ -403,6 +439,7 @@ function F.Commands:SetSide(side) return F:SetSide(side) end
 function F.Commands:SetMetric(metric) return F:SetMetric(metric) end
 function F.Commands:SetDisplayRows(rows) return F:SetDisplayRows(rows) end
 function F.Commands:SetAlwaysShowSelf(value) return F:SetAlwaysShowSelf(value) end
+function F.Commands:SetTrackingEnabled(category, value) return F:SetTrackingEnabled(category, value) end
 function F.Commands:AddBossName(name) return F:AddBossName(name) end
 function F.Commands:RemoveBossName(name) return F:RemoveBossName(name) end
 function F.Commands:GetActorDetail(request) return F:GetActorDetail(request) end
@@ -441,6 +478,7 @@ function F:GetActorDetail(request)
     local scores=analytics and analytics:GetMetricProjection("kills",{actorKey=request.actorKey,
         actorName=(detail.actor and detail.actor.name) or request.actorName}) or {}
     detail.killSkills=scores.skills or {};detail.killRevision=scores.dataRevision or 0
+    detail.honorAssistedKills=tonumber(scores.honorAssistedKills) or 0
     detail.skillKillsAvailable=scores.statsAvailable==true
     if not detail.actor and scores.actor then
         detail.actor={key=request.actorKey,name=scores.actor.name,damage=0,heal=0,taken=0,hits=0}
@@ -499,12 +537,13 @@ function F:GetCombatOverview()
     -- 先读现有指标版本和开关标量，缓存命中前不得构建/排序击杀列表；缺轻量契约的宿主仍走原投影路径。
     local metric=type(a.GetMetric)=="function" and a:GetMetric("kills") or nil
     local analyticsFeature=S.Features and S.Features.CombatAnalytics
+    local countKey=analyticsFeature and type(analyticsFeature.GetStatisticsCountKey)=="function" and analyticsFeature:GetStatisticsCountKey() or "kills"
     if metric and metric.state and analyticsFeature and type(analyticsFeature.IsMetricPreferenceEnabled)=="function" then
-        local quickToken=tostring(S.Generation)..":"..tostring(d.revision)..":"..tostring(tonumber(metric.state.revision) or 0)..":"..a:GetCollectionScope()..":"..tostring(analyticsFeature:IsMetricPreferenceEnabled("kills"))
+        local quickToken=tostring(S.Generation)..":"..tostring(d.revision)..":"..tostring(tonumber(metric.state.revision) or 0)..":"..a:GetCollectionScope()..":"..tostring(analyticsFeature:IsMetricPreferenceEnabled("kills"))..":"..countKey
         if self.combatOverviewToken==quickToken then return self.combatOverview end
     end
     local scores=a:GetMetricProjection("kills",{valueKey="kills",includeZero=true,limit=512}) or {}
-    local token=tostring(S.Generation)..":"..tostring(d.revision)..":"..tostring(scores.dataRevision)..":"..a:GetCollectionScope()..":"..tostring(scores.statsAvailable)
+    local token=tostring(S.Generation)..":"..tostring(d.revision)..":"..tostring(scores.dataRevision)..":"..a:GetCollectionScope()..":"..tostring(scores.statsAvailable)..":"..countKey
     if self.combatOverviewToken==token then return self.combatOverview end
     local byKey,rows={},{}
     local function Touch(key,name,side)
@@ -514,6 +553,7 @@ function F:GetCombatOverview()
             row={key=key,name=tostring(name or key),damage=0,heal=0,taken=0,kills=0,deaths=0,
                 assistsAvailable=false,statsAvailable=scores.statsAvailable==true,side=side or "unknown",modeSides={},modeValues={}}
             row.self=a:IsSelfActor(row.name);byKey[key]=row;rows[#rows+1]=row
+            row.countAvailable=countKey=="kills"
         elseif side and row.side~=side then row.side="unknown" end
         return row
     end
@@ -537,7 +577,12 @@ function F:GetCombatOverview()
             side=(rel=="SELF" or rel=="FRIENDLY" or rel=="TEAM") and "friendly" or (rel=="OPPONENT" and "enemy" or "unknown")
         end
         local row=Touch(source.key,source.name,side)
-        if row then row.kills=tonumber(source.kills) or 0;row.deaths=tonumber(source.deaths) or 0 end
+        if row then
+            row.honorAssistedKills=tonumber(source.honorAssistedKills) or 0
+            row.confirmedKills=math.max(0,(tonumber(source.kills) or 0)-row.honorAssistedKills);row.honorParticipations=source.honorParticipations
+            row.kills=tonumber(source[countKey]) or 0;row.deaths=tonumber(source.deaths) or 0
+            row.countAvailable=countKey=="kills" or (row.self and source[countKey]~=nil)
+        end
     end
     self.combatOverviewToken=token
     self.combatOverview={rows=rows,revision=token,statsAvailable=scores.statsAvailable==true,assistsAvailable=false}

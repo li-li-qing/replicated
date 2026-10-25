@@ -49,7 +49,7 @@ for _,sample in ipairs({{5,2,3},{7,5,1},{9,3,2}}) do
     S.Utils.GetServerTime=function() return {year=2026,month=10,day=sample[1],hour=12,minute=30} end
     h.ms=h.ms+1500;assert(history:Record({kills=sample[2],deaths=sample[3]}))
 end
-local statsPage
+local statsPage,historyPage
 for _,route in ipairs({'combat.stats','combat.statistics_settings','combat.personal_history','combat.analytics'}) do
     local page=assert(S.UIV3.PageHost.factories[route](h.page.spec.parent))
     assert(page:OnActivated())
@@ -71,8 +71,21 @@ for _,route in ipairs({'combat.stats','combat.statistics_settings','combat.perso
         for _,item in ipairs(nav.items) do assert(item.value~='analysis','paused advanced page must not remain in navigation') end
     elseif route=='combat.statistics_settings' then
         assert(tree.v3_statistics_config_metric_kills,'kill/death preference remains usable')
+        assert(not tree.v3_statistics_config_count_source,'two independent counting modes remain visible')
+        assert(tree.v3_statistics_config_count_source_note.text:find('同一个击杀数',1,true))
+        assert(not tree.v3_statistics_config_honor_add,'inert amount-matching configuration remains visible')
+        local damage,healing=assert(tree.v3_statistics_config_track_damage),assert(tree.v3_statistics_config_track_healing)
+        assert(damage:SetValue(false));assert(healing:SetValue(false))
+        local preferences=S.Features.DPS:GetSettingsProjection()
+        assert(preferences.trackDamage==false and preferences.trackHealing==false,'collection toggles must update saved feature settings')
+        assert(damage:SetValue(true));assert(healing:SetValue(true))
+        for _,width in ipairs({820,620,480}) do
+            h.page.spec.parent.width=width;page:Layout(0,0,width,680)
+            assert(h:VisibleRect(damage));assert(h:VisibleRect(healing))
+        end
         for _,id in ipairs({'encounter','casts','performance','control','songcraft','utility','aura','mechanics'}) do assert(not tree['v3_statistics_config_metric_'..id],'paused toggle remains visible '..id) end
     elseif route=='combat.personal_history' then
+        historyPage=page
         local daily=assert(tree.v3_personal_history_table)
         local fields=Fields(daily)
         for _,id in ipairs({'damage','healing','taken','kills','deaths'}) do assert(fields[id],'missing history column '..id) end
@@ -82,6 +95,43 @@ for _,route in ipairs({'combat.stats','combat.statistics_settings','combat.perso
         assert(#from.items==4 and from.items[2].value=='2026-10-09' and from.items[4].value=='2026-10-05','dropdown must list all recorded dates, latest first')
         assert(daily:GetColumns()[2].id=='kills' and daily:GetColumns()[3].id=='deaths','daily kill/death counts must follow their date')
         assert(daily:GetItem(1).date=='2026-10-09' and daily:GetItem(1).kills==3 and daily:GetItem(1).deaths==2)
+        -- 追踪偏好同时决定历史展示；不能把未采集的项目呈现成零，也不能清除以前的数据。
+        h.ms=h.ms+1500;assert(history:Record({damage=120,taken=60,healing=80}));assert(page:RefreshData())
+        local savedRevision=history.revision
+        local function VisibleHistoryTable(node)
+            if node.kind=='TableView' and node.visible~=false and node.id:find('v3_personal_history_table',1,true) then return node end
+            for _,child in ipairs(node.children or {}) do local found=VisibleHistoryTable(child);if found then return found end end
+        end
+        local summary=tree.v3_personal_history_totals
+        local dps=S.Features.DPS
+        assert(dps.Commands:SetTrackingEnabled('damage',false));assert(dps.Commands:SetTrackingEnabled('healing',false))
+        local compact=assert(VisibleHistoryTable(page));local compactFields=Fields(compact)
+        assert(not compactFields.damage and not compactFields.taken and not compactFields.healing and compactFields.kills and compactFields.deaths,'disabled amounts must disappear from history columns: '..tostring(S.LastInternalEventError and S.LastInternalEventError.error))
+        assert(not summary.text:find('伤害',1,true) and not summary.text:find('承伤',1,true) and not summary.text:find('治疗',1,true),'disabled amounts must disappear from history totals')
+        assert(dps.Commands:SetTrackingEnabled('healing',true))
+        local healingFields=Fields(assert(VisibleHistoryTable(page)))
+        assert(healingFields.healing and not healingFields.damage and not healingFields.taken,'healing visibility must be independent')
+        assert(summary.text:find('治疗 80',1,true) and not summary.text:find('伤害',1,true),'re-enabled healing must show its preserved history')
+        assert(dps.Commands:SetTrackingEnabled('damage',true));assert(dps.Commands:SetTrackingEnabled('healing',false))
+        local damageFields=Fields(assert(VisibleHistoryTable(page)))
+        assert(damageFields.damage and damageFields.taken and not damageFields.healing,'damage preference controls damage and taken together')
+        assert(summary.text:find('伤害 120',1,true) and summary.text:find('承伤 60',1,true) and not summary.text:find('治疗',1,true))
+        assert(dps.Commands:SetTrackingEnabled('healing',true))
+        assert(history.revision==savedRevision and history.state.totals.damage==120 and history.state.totals.healing==80,'display switches must preserve history')
+        local refreshed={};Index(page,refreshed)
+        local tableHost=assert(refreshed.v3_personal_history_table_host)
+        for i=1,6 do
+            assert(dps.Commands:SetTrackingEnabled('damage',false));assert(dps.Commands:SetTrackingEnabled('healing',false))
+            local compactView=assert(VisibleHistoryTable(page))
+            for _,width in ipairs({820,480}) do
+                h.page.spec.parent.width=width;page:Layout(0,0,width,680)
+                assert(h:VisibleRect(compactView))
+                for _,cell in ipairs(compactView.header.cells) do assert(h:VisibleRect(cell)) end
+            end
+            assert(dps.Commands:SetTrackingEnabled('damage',true));assert(dps.Commands:SetTrackingEnabled('healing',true))
+        end
+        assert(#tableHost.children==4,'repeated setting changes must reuse the four bounded column layouts')
+        daily=assert(VisibleHistoryTable(page))
         local beforeReads,beforeWrites,beforeRevision=h.reads,h.writes,history.revision
         assert(from:SetValue('2026-10-07'));assert(to:SetValue('2026-10-07'))
         assert(daily:GetItem(1).date=='2026-10-07' and daily:GetItem(1).kills==5 and daily:GetItem(1).deaths==1 and not daily:GetItem(2),'selection must immediately show the chosen day')
@@ -181,4 +231,78 @@ for _,width in ipairs({940,620,480}) do
     assert(h:VisibleRect(tree.v3_dps_skill_kill_targets_table))
 end
 assert(page:OnDeactivated())
+-- 同额同帧的野外荣誉分别记次；切换展示不改写已确认击杀，也不伪造击杀名单。
+local analytics=S.Services.CombatAnalyticsV3
+assert(S.Features.DPS:Enable('honor_ui_test'))
+assert(S.Features.DPS.Commands:SetTrackingEnabled('damage',false))
+assert(S.Features.DPS.Commands:SetTrackingEnabled('healing',false))
+assert(analytics.activeMetrics.kills and not analytics.activeMetrics.dps_core and not analytics.activeMetrics.personal_history,
+    'kill-only honor counting restarted amount consumers')
+local nativeListeners=0
+for _,listener in ipairs(S.Events.listeners.PLAYER_HONOR_POINT_CHANGED_IN_HPW or {})do
+    if listener.owner==analytics then nativeListeners=nativeListeners+1 end
+end
+assert(nativeListeners==1,'two feature consumers registered duplicate honor callbacks')
+local chatA,chatB={shown=0},{shown=0}
+for _,chat in ipairs({chatA,chatB})do
+    assert(S.Events:SubscribeOptional('PLAYER_HONOR_POINT_CHANGED_IN_HPW',chat,function(owner)owner.shown=owner.shown+1 end))
+end
+for i=1,14 do
+    S.Events:Dispatch('PLAYER_HONOR_POINT_CHANGED_IN_HPW',21)
+    S.Events:Dispatch('CHAT_MESSAGE','system','+21','A')
+    S.Events:Dispatch('CHAT_MESSAGE','system','+21','B')
+end
+assert(chatA.shown==14 and chatB.shown==14,'chat display fixture did not render both windows')
+S.Events:Unsubscribe('PLAYER_HONOR_POINT_CHANGED_IN_HPW',chatA);S.Events:Unsubscribe('PLAYER_HONOR_POINT_CHANGED_IN_HPW',chatB)
+assert(f:GetPersonalHistoryProjection().totals.honorKills==nil,'same-value assist-like reward established kills')
+assert(f.Commands:SetSelectedValue('kills','honorParticipations')==false)
+f.State.selectedValues.kills='honorParticipations'
+assert(page:OnActivated());assert(page:RefreshStats())
+local overview=assert(S.Features.DPS:GetCombatOverview());local own
+for _,row in ipairs(overview.rows) do if row.self then own=row end end
+assert(own and own.kills==1 and own.honorParticipations==14 and own.confirmedKills==1,'raw honor evidence replaced unified kills')
+assert(tree.v3_dps_health.text:find('击杀玩家',1,true),'unified kill label is not visible')
+assert(f.Commands:SetSelectedValue('kills','honorKills')==false)
+f.State.selectedValues.kills='honorKills' -- 已保存旧偏好只回退展示，不改写认证原值。
+assert(page:RefreshStats())
+assert(S.Features.DPS:GetCombatOverview().rows[1].kills==1)
+assert(tree.v3_dps_health.text:find('击杀玩家',1,true),'unsafe old preference did not fall back to unified kills')
+assert(f.Commands:SetSelectedValue('kills','kills'))
+assert(S.Features.DPS:GetCombatOverview().rows[1].kills==1,'returning to confirmed kills kept the honor count')
+assert(page:OnDeactivated())
+assert(historyPage)
+local historyTree={};Index(historyPage,historyTree)
+assert(f.Commands:SetSelectedValue('kills','honorParticipations')==false)
+f.State.selectedValues.kills='honorParticipations'
+assert(historyPage:OnActivated())
+assert(historyTree.v3_personal_history_totals.text:find('击杀玩家',1,true),'history still displays independent honor counts')
+local historyTable=assert(historyTree.v3_personal_history_table)
+local scoreColumn=historyTable:GetColumns()[2]
+assert(scoreColumn.getText({kills=3})=='3')
+assert(scoreColumn.getText({kills=3,honorParticipations=14})=='3','unmatched honor changed the kill total')
+assert(f.Commands:SetSelectedValue('kills','honorKills')==false)
+f.State.selectedValues.kills='honorKills';assert(historyPage:RefreshData())
+assert(historyTree.v3_personal_history_totals.text:find('击杀玩家',1,true))
+assert(scoreColumn.getText({kills=3,honorParticipations=14,honorKills=14})=='3','old estimates were shown as kills')
+assert(f.Commands:SetSelectedValue('kills','kills'))
+assert(historyTree.v3_personal_history_totals.text:find('击杀玩家',1,true),'history did not retain unified count')
+assert(scoreColumn.getText({kills=3,honorParticipations=14})=='3')
+assert(historyPage:OnDeactivated())
+-- 真实共享事件 -> Scheduler补记 -> 总览/历史，同一人头后到明确通知仍只计一次。
+assert(analytics:ResetMetric('kills','unified_honor_ui'))
+local beforeSupplement=f:GetPersonalHistoryProjection().totals.kills
+S.Events:Dispatch('PLAYER_HONOR_POINT_CHANGED_IN_HPW',84)
+h.ms=h.ms+1600;assert(S.Scheduler:RunTask('v3_combat_kills_honor'));S.Scheduler:RemoveTask('v3_combat_kills_honor')
+assert(page:OnActivated());assert(page:RefreshStats())
+local unified=S.Features.DPS:GetCombatOverview().rows[1]
+assert(unified.kills==1 and unified.honorAssistedKills==1,'honor supplement did not enter the same overview kill count')
+assert(f:GetPersonalHistoryProjection().totals.kills==beforeSupplement+1)
+assert(analytics:_DispatchFact({category='death',kind='kill_notice',sourceName='GearTest',targetName='HonorVictim',targetKind='PLAYER',
+    receivedAt=h.ms,rawEventType='UNIT_KILL_STREAK',rawNotice2=1,rawNotice3=5}))
+unified=S.Features.DPS:GetCombatOverview().rows[1]
+assert(unified.kills==1 and unified.honorAssistedKills==0,'late native attribution doubled the kill or left false unknown-target metadata')
+assert(f:GetPersonalHistoryProjection().totals.kills==beforeSupplement+1)
+assert(historyPage:OnActivated());assert(historyPage:RefreshData())
+assert(historyTree.v3_personal_history_totals.text:find('击杀玩家 '..tostring(beforeSupplement+1),1,true),'history UI failed to show the unified increment')
+assert(page:OnDeactivated());assert(historyPage:OnDeactivated())
 print('PASS basic statistics + personal history runtime contract / read-only checks / kill-only skill row / exact victim drill-down / narrow layout / quiet lifecycle')

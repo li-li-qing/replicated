@@ -195,6 +195,35 @@ class HistoryFileTests(unittest.TestCase):
             self.assertTrue(prepared.is_file())
             self.consume(prepared)
 
+    def test_honor_v3_txt_prepares_and_imports_through_python_and_portable_tool(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            native = root / 'honor-native.bin'
+            run = subprocess.run([self.lua, 'tools/rs_combat_history_transfer_tests.lua', '--emit-file', str(native), 'honor'],
+                                 cwd=ROOT, capture_output=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            records = {}
+            with native.open('rb') as stream:
+                while key := stream.readline().rstrip(b'\n'):
+                    records[key] = (1, 1, stream.read(int(stream.readline())))
+            with patch.object(exporter, 'history_folder', return_value=root / 'history'):
+                target = exporter.save_report(root, kind='history', _records=records)
+            self.assertIn(b'RS-HISTORY-3|', target.read_bytes())
+            tools = root / 'Addon/replicatedsuite/tools'
+            tools.mkdir(parents=True)
+            with patch.object(exporter, 'addon_root', return_value=tools.parent.parent):
+                prepared = exporter.prepare_history_import(target)
+            for portable in (False, True):
+                if portable:
+                    exe = tools / 'RS-Diagnostic-Exporter.exe'
+                    shutil.copy2(ROOT / 'tools' / exe.name, exe)
+                    run = subprocess.run([str(exe), '--import-history', str(target)], cwd=root,
+                                         capture_output=True, timeout=25)
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                run = subprocess.run([self.lua, 'tools/rs_combat_history_transfer_tests.lua', '--consume-file', str(prepared), 'honor'],
+                                     cwd=ROOT, capture_output=True)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

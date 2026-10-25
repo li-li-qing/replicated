@@ -17,7 +17,9 @@ local function Boot()
     ReplicatedSuite={Generation=31,SafeTraceback=debug.traceback,NowMs=function()return h.now end,Services={},Features={},Data={},Utils={DeepCopy=Copy}}
     local S=ReplicatedSuite; h.S=S
     S.Utils.GetServerTime=function()return {year=2026,month=10,day=6,hour=3,minute=49}end
-    S.Events={Publish=function()end,SubscribeInternal=function()return true end,SubscribeOptional=function()error('extra native subscription')end,UnsubscribeInternal=function()end}
+    S.Events={Publish=function()end,SubscribeInternal=function()return true end,SubscribeOptional=function(_,name)
+        assert(name=='PLAYER_HONOR_POINT_CHANGED_IN_HPW','extra native subscription');return true
+    end,UnsubscribeInternal=function()end,Unsubscribe=function()return true end}
     S.Scheduler={AddOneShot=function(_,id,ms,fn)h.tasks[id]={due=h.now+ms,fn=fn};return true end,RemoveTask=function(_,id)h.tasks[id]=nil;return true end,SetTaskModule=function()end}
     function h:Advance(ms)
         self.now=self.now+ms;local pending=self.tasks;self.tasks={}
@@ -369,6 +371,26 @@ end)
 local function WarKill(h,name,count,mode)
     h.bus:_OnKillNotice('UNIT_KILL_STREAK',{killerName='Self',victimName=name,killerKillStreak=count,gameType=mode or 5})
 end
+Test('wild kill notices preserve the two native auxiliary parameters as evidence only',function()
+    local h=Boot();local seen={}
+    assert(h.bus:Subscribe(seen,function(_,fact)
+        if fact.kind=='kill_notice' then seen.param1,seen.param2=fact.rawNotice4,fact.rawNotice5 end
+    end,{scope='self'}))
+    local payload={killerName='Self',victimName='WildVictim',killerKillStreak=3,gameType=5,param1=0,param2=false}
+    h.bus:_OnKillNotice('UNIT_KILL_STREAK',payload)
+    payload.param1,payload.param2=999,999
+    local d=h.F:DescribeDiagnosticDetail();local row=assert(d.bus.killNotifications.events[1])
+    assert(row.rawNotice4==0 and row.rawNotice5==false and seen.param1==0 and seen.param2==false,
+        'native auxiliary fields were dropped or borrowed')
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==1,'auxiliary parameters fabricated additional kills')
+    local before=h.writes;local text=ExportReport(h)
+    assert(text:find('rawNotice4',1,true) and text:find('rawNotice5',1,true) and h.writes==before,
+        'export lost the auxiliary evidence or wrote history')
+    h.bus:_OnKillNotice('UNIT_KILL_STREAK',{killerName={},victimName='Bad',param1={},param2=string.rep('x',600)})
+    row=h.bus:GetDiagnosticDetail().killNotifications.events[2]
+    assert(row.reason=='invalid_payload' and row.rawNotice4=='<table>' and #row.rawNotice5<530,
+        'invalid payload retained a native object or unbounded text')
+end)
 -- 取证运行真实身份服务，只替换 Native API 返回；任意字段名都保留，不能把测试造出的字段名当正式 ABI。
 Test('system kill evidence captures allowed native fields without changing statistics',function()
     local h=Boot();local calls=0
@@ -428,6 +450,217 @@ Test('native gap evidence resets across inactive collection without backfilling'
     assert(h.F:Disable());assert(h.F:Enable('resume'));h:Advance(2000);WarKill(h,'AfterPause',12)
     assert(h.F:DescribeDiagnosticDetail().kills.counters.native_counter_gap==nil)
     assert(h.F:GetPersonalHistoryProjection().totals.kills==2,'evidence collection changed permanent history')
+end)
+Test('fourteen positive war honor receipts are fourteen participations independently of five named kills',function()
+    local h=Boot()
+    for i,amount in ipairs({68,21,21,21,84,76,19,19,19,21,21,19,19,19})do
+        h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',amount)
+    end
+    for i,count in ipairs({1,3,2,5,3})do WarKill(h,'Named'..i,count) end
+    h:Advance(1600)
+    local t=h.F:GetPersonalHistoryProjection().totals
+    assert(t.honorParticipations==14 and t.honorKills==nil and t.kills==14,'five explicit and fourteen honor receipts did not reconcile to fourteen kills')
+    assert(h.F.Commands:SetSelectedValue('kills','honorParticipations')==false,'separate honor counting remains selectable')
+    h.F.State.selectedValues.kills='honorParticipations'
+    assert(h.F:GetStatisticsCountKey()=='kills','old honor preference replaced unified kills')
+    local rows=h.A:GetMetricProjection('kills',{valueKey='honorParticipations',includeZero=true}).rows
+    assert(rows[1].honorParticipations==14 and rows[1].kills==14)
+    assert(h.F.Commands:SetSelectedValue('kills','kills'))
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==14,'old display preference changed the unified total')
+end)
+Test('explicit first and honor first share one kill including a late confirmation',function()
+    for _,order in ipairs({'explicit_first','honor_first','honor_settled_first'})do
+        local h=Boot()
+        if order=='explicit_first' then WarKill(h,'Victim',1) end
+        h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',86)
+        if order=='honor_settled_first' then h:Advance(1600) end
+        if order~='explicit_first' then WarKill(h,'Victim',1) end
+        h:Advance(1600)
+        h.bus:_OnKillNotice('UNIT_KILL_STREAK',{killerName='Self',victimName='Victim',killerKillStreak=1,gameType=5},'private:kill_global')
+        assert(h.F:GetPersonalHistoryProjection().totals.kills==1,'same kill counted twice: '..order)
+        local row=h.A:GetMetricProjection('kills',{includeZero=true}).rows[1]
+        assert(row.kills==1)
+        local detail=h.A:GetMetricProjection('kills',{actorKey=row.key})
+        assert(detail.skills[1].kills==1 and detail.skills[1].targets[1].key=='Victim','native confirmation lost its real victim')
+    end
+end)
+Test('explicit kills without honor count immediately and generic honor never substitutes for HPW',function()
+    local h=Boot()
+    -- 普通区域没有战争荣誉：不能等荣誉出现才接纳明确归属，也不能拿任务等通用奖励补人头。
+    WarKill(h,'NormalAreaVictim',1)
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==1,'no-honor kill did not count immediately')
+    assert(h.tasks.v3_combat_kills_honor==nil,'explicit kill waited for an honor confirmation')
+    h.A:_OnNativeEvent('PLAYER_HONOR_POINT',84,'84',false)
+    h.A:_OnNativeEvent('SHOW_ACCUMULATE_HONOR_POINT_DURING_HPW','Zone',84,1)
+    h:Advance(9000)
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==1,'generic or cumulative reward became a kill')
+    WarKill(h,'SecondNormalAreaVictim',2)
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==2,'ordinary kills became dependent on war honor')
+end)
+Test('assists and unknown amounts never supplement kills while repeated equal kill rewards do',function()
+    local h=Boot()
+    for _,amount in ipairs({3,12,4,13,168,152,84,84,19,21})do h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',amount) end
+    h:Advance(1600)
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==4,'assist/unknown amount counted or equal genuine rewards merged')
+    local p=h.A:GetMetricProjection('kills',{includeZero=true});assert(p.rows[1].kills==4 and p.rows[1].honorAssistedKills==4)
+    local detail=h.A:GetMetricProjection('kills',{actorKey=p.rows[1].key});assert(#detail.skills==0,'honor supplement fabricated victims or skills')
+end)
+Test('confirmed sixty honor rewards supplement unified kills and pair with late explicit notices',function()
+    local h=Boot();h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',60)
+    h:Advance(1600)
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==1,'confirmed 60 honor reward did not supplement the kill')
+    WarKill(h,'SixtyVictim',1)
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==1,'late explicit notice doubled the 60 honor kill')
+    h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',60);h:Advance(1600)
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==2,'two genuine 60 honor rewards were merged')
+end)
+-- 21:19诊断的27笔原生荣誉：战争60/12，转纷争后15/3；保留真实间隔与一笔明确归属。
+Test('exported war to conflict sequence reconciles sixty and fifteen without assists or duplicates',function()
+    local h=Boot();local start=h.now
+    local events={
+        {2800490,4140},{2964550,12},{2986140,60},{2987270,60},{2989230,60},
+        {2994990,12},{3003790,12},{3091640,12},{3119630,12},{3143490,12},
+        {3205310,12},{3294920,60},{3306880,-10},{3619050,3},{3668350,6210},
+        {3736310,15},{3808060,15},{3808280,15},{3815490,3},{3823730,3},
+        {3877420,15},{3897740,3},{3901720,15},{3930780,15},{3931340,'Mismo'},
+        {3933560,3},{3935500,3},{3953510,-10},
+    }
+    for _,event in ipairs(events)do
+        h:Advance(start+event[1]-2800490-h.now)
+        if type(event[2])=='number' then
+            h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',event[2])
+        else
+            WarKill(h,event[2],1)
+            h.bus:_OnKillNotice('UNIT_KILL_STREAK',{killerName='Self',victimName=event[2],killerKillStreak=1,gameType=5},'private:kill_global')
+        end
+    end
+    h:Advance(1600)
+    local t=h.F:GetPersonalHistoryProjection().totals
+    assert(t.kills==10,'four 60 and six 15 rewards did not reconcile to ten unique kills: '..tostring(t.kills))
+    assert(t.honorParticipations==25 and t.honorKills==nil,'raw receipt evidence changed or split kill counter returned')
+    local row=h.A:GetMetricProjection('kills',{includeZero=true}).rows[1]
+    assert(row.kills==10 and row.honorAssistedKills==9,'explicit Mismo kill doubled or source evidence was lost')
+    local counters=h.F:DescribeDiagnosticDetail().kills.counters
+    assert(counters.honor_assist_excluded==13,'3/12 assists entered kill matching')
+    assert(counters.honor_amount_unmatched==2,'large unknown 4140/6210 rewards were treated as kills')
+    assert(h.A.metricErrors==0 and h.A.metricMutations==0)
+end)
+Test('stopping collection revokes pending honor work and saved callbacks',function()
+    local h=Boot();h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',84)
+    local task=assert(h.tasks.v3_combat_kills_honor);assert(h.F:Disable());h:Advance(2000);task.fn()
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==0,'stopped generation settled pending honor')
+end)
+Test('honor pairing ledgers are bounded and explicit overflow never creates extra kills',function()
+    local h=Boot()
+    for i=1,300 do WarKill(h,'Victim'..i,i) end
+    for i=1,300 do h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',84) end
+    h:Advance(1600)
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==300,'overflow lost deduplication and added honor twice')
+    local state=h.A:GetMetric('kills').state
+    assert(#state.honorReceipts<=256 and #state.explicitReceipts<=256)
+end)
+Test('a starved scheduler does not lose a pending reward when a new reward arrives',function()
+    local h=Boot();h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',84)
+    h.now=h.now+9000;h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',84)
+    h:Advance(0);assert(h.F:GetPersonalHistoryProjection().totals.kills==1,'expired pending reward was pruned before settlement')
+    h:Advance(1600);assert(h.F:GetPersonalHistoryProjection().totals.kills==2)
+end)
+Test('paired honor repairs failed history persistence without adding a second live kill',function()
+    local h=Boot();local p=h.S.Persistence;local mark=p.MarkDirty
+    p.MarkDirty=function()return false,'reject first write'end
+    WarKill(h,'Victim',1);assert(h.F:GetPersonalHistoryProjection().totals.kills==0)
+    p.MarkDirty=mark;h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',86);h:Advance(1600)
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==1,'paired evidence failed to repair the missing history increment')
+    assert(h.A:GetMetricProjection('kills',{includeZero=true}).rows[1].kills==1,'repair doubled the live count')
+end)
+Test('honor pairing across midnight keeps original day and monotonic history bounds',function()
+    for _,withNative in ipairs({false,true})do
+        local h=Boot();h.S.Utils.GetServerTime=function()return {year=2026,month=10,day=25,hour=23,minute=59}end
+        h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',86)
+        h.now=h.now+1100;h.S.Utils.GetServerTime=function()return {year=2026,month=10,day=26,hour=0,minute=0}end
+        assert(h.F.PersonalHistory:Record({deaths=1}))
+        if withNative then WarKill(h,'Victim',1) end
+        h:Advance(600)
+        local state=h.F.PersonalHistory.state
+        assert(state.days['2026-10-25'].kills==1 and state.days['2026-10-26'].kills==0,'cross-day pair moved the kill to the confirmation day')
+        assert(state.firstAt=='2026-10-25 23:59' and state.lastAt=='2026-10-26 00:00','late supplement regressed history timestamps')
+    end
+end)
+Test('honor native argument evidence is bounded detached and never interprets unknown fields',function()
+    local h=Boot();local a=h.A
+    for i=1,40 do a:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',37,'unknown'..i,false,{},0/0) end
+    local d=a:GetHonorIngressDiagnostics()
+    assert(d.limit==32 and d.evicted==8 and #d.events==32)
+    local row=d.events[32]
+    assert(row.argCount==5 and row.arg1==37 and row.arg2=='unknown40' and row.arg3==false and row.arg4=='<table>' and row.arg5=='<non_finite>')
+    row.arg2='changed';assert(a:GetHonorIngressDiagnostics().events[32].arg2=='unknown40')
+    h:Advance(1600);assert(h.F:GetPersonalHistoryProjection().totals.kills==0,'unknown native honor fields were guessed as attribution')
+    assert(h.F:DescribeDiagnosticDetail().honorIngress.events[32].arg1==37)
+    local count=#a:GetHonorIngressDiagnostics().events;assert(h.F:Disable())
+    a:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',86)
+    assert(#a:GetHonorIngressDiagnostics().events==count,'stopped collection captured extra honor')
+end)
+Test('honor counts positive deltas only and keeps repeated equal receipts in one frame',function()
+    local h=Boot()
+    h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',21)
+    h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',21)
+    for _,amount in ipairs({-10,0,0/0,math.huge,1.5,'21',{}})do h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',amount) end
+    h.A:_OnNativeEvent('PLAYER_HONOR_POINT',1000,'1000',true)
+    h.A:_OnNativeEvent('SHOW_ACCUMULATE_HONOR_POINT_DURING_HPW','Zone',120,1)
+    assert(h.F:GetPersonalHistoryProjection().totals.honorParticipations==2,'negative, generic, cumulative or malformed honor was counted')
+    assert(h.A.metricErrors==0 and h.A.metricMutations==0,'invalid amount polluted the shared native fact boundary')
+    assert(h.F:Disable());h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',21)
+    assert(h.F:GetPersonalHistoryProjection().totals.honorParticipations==2,'inactive statistics counted honor')
+end)
+Test('honor supplements wait for pairing and never create independent kill counters',function()
+    local h=Boot()
+    for _,amount in ipairs({84,76,21,19,68,168,152,1})do h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',amount) end
+    local t=h.F:GetPersonalHistoryProjection().totals
+    assert(t.honorKills==nil and t.honorParticipations==8 and t.kills==0,'honor-only evidence became a kill estimate')
+    h.A:_OnNativeEvent('PLAYER_HONOR_POINT',84,'84',true)
+    h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',-84)
+    assert(h.F:GetPersonalHistoryProjection().totals.honorKills==nil,'generic reward or deduction became a kill')
+    assert(h.F.Commands:AddHonorKillAmount(100))
+    h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',100)
+    assert(h.F:GetPersonalHistoryProjection().totals.honorKills==nil,'editing legacy rules reenabled unsafe counting')
+    assert(h.F.Commands:RemoveHonorKillAmount(84))
+    h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',84)
+    assert(h.F:GetPersonalHistoryProjection().totals.honorKills==nil)
+    assert(h.F.Commands:SetSelectedValue('kills','honorKills')==false,'unverified kills remain selectable')
+    h.F.State.selectedValues.kills='honorKills'
+    assert(h.F:GetStatisticsCountKey()=='kills','old unsafe preference did not fall back to confirmed kills')
+    assert(h.F.Commands:SetSelectedValue('kills','kills'))
+    assert(h.F:GetPersonalHistoryProjection().totals.kills==0,'switching views promoted matched counts to confirmed kills')
+    h:Advance(1600);assert(h.F:GetPersonalHistoryProjection().totals.kills==6,'accepted unmatched rewards did not enter the unified kill count')
+end)
+Test('multiple chat windows do not duplicate one raw honor reward or one named kill',function()
+    local h=Boot();local a=h.A
+    a:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',86)
+    for _,window in ipairs({'A','B'})do
+        a:_OnNativeEvent('CHAT_MESSAGE','system','获得86点荣誉点数',window)
+        a:_OnNativeEvent('PLAYER_HONOR_POINT',86,'86',true)
+        a:_OnNativeEvent('SHOW_ACCUMULATE_HONOR_POINT_DURING_HPW','zone',86,window)
+    end
+    local t=h.F:GetPersonalHistoryProjection().totals
+    assert(t.honorParticipations==1 and t.kills==0 and t.honorKills==nil,'chat echoes added kill/receipt counts')
+    WarKill(h,'Victim',1)
+    h.bus:_OnKillNotice('UNIT_KILL_STREAK',{killerName='Self',victimName='Victim',killerKillStreak=1,gameType=5},'private:kill_global')
+    t=h.F:GetPersonalHistoryProjection().totals
+    assert(t.kills==1 and t.honorParticipations==1,'native kill mirror doubled the result')
+    a:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',86)
+    assert(h.F:GetPersonalHistoryProjection().totals.honorParticipations==2,'two real equal rewards were incorrectly merged')
+end)
+Test('honor rules are bounded and empty remains an explicit saved choice',function()
+    local h=Boot();local f=h.F
+    for _,value in ipairs({0,-1,1.5,math.huge,0/0,'bad',{}})do assert(f.Commands:AddHonorKillAmount(value)==false) end
+    for _,value in ipairs(f:GetHonorKillAmounts())do assert(f.Commands:RemoveHonorKillAmount(value)) end
+    local store=h.S.Persistence:GetStore(f.StoreId);local saved=store.get();store.apply(saved)
+    assert(#f:GetHonorKillAmounts()==0,'empty configured list reverted to defaults')
+    h.A:_OnNativeEvent('PLAYER_HONOR_POINT_CHANGED_IN_HPW',84)
+    assert(h.F:GetPersonalHistoryProjection().totals.honorKills==nil)
+    for i=1,16 do assert(f.Commands:AddHonorKillAmount(i)) end
+    assert(f.Commands:AddHonorKillAmount(17)==false and #f:GetHonorKillAmounts()==16)
+    local copy=f:GetHonorKillAmounts();copy[1]=999;assert(f:GetHonorKillAmounts()[1]==1,'public list mutated authority')
 end)
 print(string.format('KILL DIAGNOSTICS RESULT %d passed / %d failed (%s)',passed,failed,_VERSION))
 assert(failed==0,'kill diagnostic regression failures: '..failed)

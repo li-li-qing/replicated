@@ -1006,19 +1006,21 @@ function C:_OnKillNotice(eventName, payload, transport)
     local route = self.killNoticeSources[transport == "private:kill_global" and "global" or "private"]
     route.received = route.received + 1
     self.killNoticeRows=self.killNoticeRows+1
-    local killer,victim,streak,mode
+    local killer,victim,streak,mode,param1,param2
     if type(payload)=="table" then
         if eventName=="INSTANT_GAME_KILL" then
             killer,victim,streak,mode=payload.killer,payload.victim,payload.killerKillstreak,payload.ruleMode
         elseif eventName=="UNIT_KILL_STREAK" then
             killer,victim,streak,mode=payload.killerName,payload.victimName,payload.killerKillStreak,payload.gameType
+            -- 原生提示也读取这两项；野外模式的数值语义尚未确认，只留标量供漏记核对。
+            param1,param2=payload.param1,payload.param2
         end
     end
     if type(killer)~="string" or type(victim)~="string" or #killer>512 or #victim>512
         or Trim(killer)=="" or Trim(victim)=="" or Trim(killer)==Trim(victim) then
         -- 非法字段仅留类型/截断标量，不放宽击杀 ABI；未形成 CombatFact 的行没有 sequence。
         RecordNoticeEvidence({receivedAt=NowMs(),transport=transport,kind="kill_notice",rawEventType=eventName,sourceName=killer,targetName=victim,
-            rawNotice2=streak,rawNotice3=mode},"invalid_payload")
+            rawNotice2=streak,rawNotice3=mode,rawNotice4=param1,rawNotice5=param2},"invalid_payload")
         route.rejected=route.rejected+1
         self.killNoticeRejected=self.killNoticeRejected+1;return 0
     end
@@ -1026,8 +1028,9 @@ function C:_OnKillNotice(eventName, payload, transport)
     local fact={schemaVersion=1,sequence=self.sequence,receivedAt=NowMs(),transport=transport,
         kind="kill_notice",category="death",rawEventType=eventName,sourceName=Trim(killer),targetName=Trim(victim),
         -- 这些是原生 BattleField 玩家击杀通知；常规 COMBAT_MSG 的类型仍由单位事实确认。
-        sourceKind="PLAYER",targetKind="PLAYER",rawNotice2=DiagnosticScalar(streak),rawNotice3=DiagnosticScalar(mode)}
-    RecordNoticeEvidence(fact,"normalized") -- sequence 连接入口、Analytics 过滤与最终计数，不能借日志补算。
+        sourceKind="PLAYER",targetKind="PLAYER",rawNotice2=DiagnosticScalar(streak),rawNotice3=DiagnosticScalar(mode),
+        rawNotice4=DiagnosticScalar(param1),rawNotice5=DiagnosticScalar(param2)}
+    RecordNoticeEvidence(fact,"normalized") -- sequence 只关联入口、过滤和计数证据，不能据此补算击杀。
     return self:_DispatchFact(fact)
 end
 

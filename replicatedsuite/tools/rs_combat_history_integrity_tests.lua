@@ -39,12 +39,23 @@ Test('genuine schema1 migrates without losing any old counts',function()
     assert(h.H:Record({inferredKills=1,inferredNpcKills=1})==false and h.H.revision==revision,'new inference still changes history')
     assert(h.H:Record({npcKills=2})==false and h.H.revision==revision,'retired NPC counter dirtied history')
     assert(h.H:Record({kills=1}));assert(h.P:SaveStore(h.H.StoreId,{reason='offline_roundtrip',durable=true}))
-    assert(h.disk[h.key].__rsmeta.schema==3) -- schema1 原章验证后写入支持来源账本的 schema3；冻结旧 fixture 本身不改。
+    assert(h.disk[h.key].__rsmeta.schema==5) -- 原章验证后写入当前版本；冻结旧 fixture 本身不改。
     h.store.loaded=false;h.H.loaded=false;assert(h.H:EnsureLoaded())
     local p=h.H:GetProjection({fromDate='2026-10-07',toDate='2026-10-07'})
     assert(p.totals.kills==3 and p.totals.assists==9)
     assert(p.rows[1].kills==3 and h.H.state.totals.kills==4,'daily projection or original aggregate changed')
     NoNpc(p.totals);NoNpc(p.rows[1]);assert(h.clears==clears,'migration cleared old history')
+end)
+Test('retired honor kill preference authenticates unchanged and only exposes confirmed kills',function()
+    local h=Boot();local f,p=h.F,h.P;assert(f:EnsureStoreLoaded())
+    local store=p:GetStore(f.StoreId);local key=assert(p:ResolveStoreKey(store))
+    f.State.selectedValues.kills='honorKills';f.State.honorKillAmounts={19,21,86}
+    assert(p:SaveStore(f.StoreId,{durable=true}));local fingerprint=h.disk[key].__rsmeta.encodedFingerprint
+    store.loaded=false;assert(f:EnsureStoreLoaded() and not store.writeFenced)
+    assert(f:GetStatisticsCountKey()=='kills' and f:GetStatisticsCountTitle()=='击杀玩家')
+    assert(f:GetSelectedValueKey('kills')=='kills' and f:GetAnalyticsSettings().selectedValues.kills=='kills')
+    assert(f.State.selectedValues.kills=='honorKills' and f:IsAnalyticsValueKey('kills','honorKills')==false)
+    assert(p:SaveStore(f.StoreId,{durable=true}) and h.disk[key].__rsmeta.encodedFingerprint==fingerprint,'public fallback rewrote old canonical')
 end)
 Test('changed old payload cannot pass the historical integrity hook',function()
     local h=Boot();local raw=dofile('tools/fixtures/combat_history_schema1_20261007.lua')
@@ -55,6 +66,37 @@ Test('changed old payload cannot pass the historical integrity hook',function()
     local ok=h.H:EnsureLoaded();assert(ok~=true and h.store.writeFenced,'corrupt history accepted')
     local writes=h.writes
     assert(h.H:Record({kills=1})~=true and h.writes==writes and h.clears==0,'fenced history overwritten')
+end)
+Test('schema1 recovery cannot import unverified honor counters excluded from its old stamp',function()
+    local h=Boot();local raw=dofile('tools/fixtures/combat_history_schema1_20261007.lua')
+    raw.payload.totals.honorParticipations=777
+    raw.payload.days['2026-10-07'].honorParticipations=777
+    raw.payload.totals.honorKills=777
+    raw.payload.days['2026-10-07'].honorKills=777
+    raw.__rsmeta.envelopeFingerprint=assert(h.P:FingerprintEnvelopeIntegrity(raw))
+    h.disk[h.key]=raw;assert(h.H:EnsureLoaded())
+    assert(h.H.state.totals.honorParticipations==nil and h.H.state.days['2026-10-07'].honorParticipations==nil,
+        'old integrity recovery trusted a field not covered by the old canonical stamp')
+    assert(h.H.state.totals.honorKills==nil and h.H.state.days['2026-10-07'].honorKills==nil)
+    assert(h.H:GetProjection().totals.kills==2 and raw.__rsmeta.encodedFingerprint=='14ACCE46')
+end)
+Test('honor rule edits persist including empty arrays and roll back a rejected commit',function()
+    local h=Boot();h.S.Services.CombatAnalyticsV3.SetStatisticsPolicy=function()return true end
+    dofile('features/combat/analytics/rs_combat_analytics_feature.lua')
+    local f,p=h.F,h.P;assert(f:EnsureStoreLoaded())
+    local store=p:GetStore(f.StoreId)
+    assert(f.Commands:AddHonorKillAmount(100))
+    assert(p:SaveStore(f.StoreId,{durable=true}));store.loaded=false;assert(f:EnsureStoreLoaded())
+    assert(f:IsHonorKillAmount(100) and f:IsHonorKillAmount(19))
+    local mark=p.MarkDirty;p.MarkDirty=function()return false,'reject queue'end
+    assert(f.Commands:RemoveHonorKillAmount(100)==false)
+    p.MarkDirty=mark;assert(f:IsHonorKillAmount(100),'rejected mutation changed match rules')
+    for _,amount in ipairs(f:GetHonorKillAmounts())do assert(f.Commands:RemoveHonorKillAmount(amount)) end
+    assert(p:SaveStore(f.StoreId,{durable=true}));store.loaded=false;assert(f:EnsureStoreLoaded())
+    assert(#f:GetHonorKillAmounts()==0 and not f:IsHonorKillAmount(84),'empty array was lost by persistence')
+    local copier=h.S.Utils.DeepCopy;h.S.Utils.DeepCopy=nil
+    local public=f:GetAnalyticsSettings();public.honorKillAmounts[1]=84;h.S.Utils.DeepCopy=copier
+    assert(#f:GetHonorKillAmounts()==0,'fallback settings projection aliased the match list')
 end)
 Test('genuine schema2 hides NPC fields while preserving storage and player inference rules',function()
     local h=Boot();local raw=dofile('tools/fixtures/combat_history_schema2_npc_retired_20261007.lua')

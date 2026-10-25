@@ -79,19 +79,24 @@ local function Snapshot(value)
     out.serial=NumberText(type(value)=='table' and value.serial or 0)
     return out
 end
-local function CountText(row)
-    local out={};for _,key in ipairs(C.keys)do out[#out+1]=NumberText(row[key])end;return table.concat(out,',')
+local function CountText(row,keys)
+    local out={};for _,key in ipairs(keys or C.keys)do out[#out+1]=NumberText(row[key])end;return table.concat(out,',')
 end
-local function AppendSource(lines,id,source)
+local function AppendSource(lines,id,source,keys)
     lines[#lines+1]=table.concat({'S',id,source.serial,Hex(source.firstAt),Hex(source.lastAt),Hex(source.archiveFrom),Hex(source.archiveTo)},'|')
-    lines[#lines+1]='T|'..CountText(source.totals);lines[#lines+1]='A|'..CountText(source.archive)
+    lines[#lines+1]='T|'..CountText(source.totals,keys);lines[#lines+1]='A|'..CountText(source.archive,keys)
     for _,date in ipairs(Sorted(source.days))do
         local row=source.days[date]
-        lines[#lines+1]=table.concat({'D',date,Hex(row.firstAt),Hex(row.lastAt),CountText(row)},'|')
+        lines[#lines+1]=table.concat({'D',date,Hex(row.firstAt),Hex(row.lastAt),CountText(row,keys)},'|')
     end
     lines[#lines+1]='E'
 end
-local function SourceText(id,source)local lines={};AppendSource(lines,id,source);return table.concat(lines,'\n')end
+local function SourceText(id,source)
+    -- 来源按自身字段选择原11/12/13列；升级不能改变已导出来源的hash或去重基线。
+    local keys=C.counter(source.totals.honorKills)>0 and C.keys or (C.counter(source.totals.honorParticipations)>0 and C.v2Keys or C.legacyKeys)
+    local lines={};AppendSource(lines,id,source,keys)
+    return table.concat(lines,'\n')
+end
 
 -- canonical 是来源账本的确定性投影；顶层合计只是派生缓存，回读时可从精确来源恢复被 float32 舍入的数值。
 -- 旧档没有 sync 时完全使用旧归一化器，因此 schema1/2 的历史指纹和退休 NPC 字段仍受原校验保护。
@@ -204,8 +209,8 @@ function H:RecordTransferDelta(delta,date,stamp)
         if amount>0 then row[key]=NumberText(C.counter(row[key])+amount);source.totals[key]=NumberText(C.counter(source.totals[key])+amount) end
     end
     source.serial=NumberText(C.counter(source.serial)+1)
-    row.firstAt=row.firstAt or stamp;row.lastAt=stamp or row.lastAt
-    source.firstAt=source.firstAt or stamp;source.lastAt=stamp or source.lastAt
+    row.firstAt=Stamp(row.firstAt,stamp);row.lastAt=Stamp(row.lastAt,stamp,true)
+    source.firstAt=Stamp(source.firstAt,stamp);source.lastAt=Stamp(source.lastAt,stamp,true)
     return true
 end
 local function ExportParts(payload,hash,totals,chunkBytes)
@@ -224,8 +229,10 @@ local function ExportTransfer(self)
     self:RecordTransferDiagnostic('enroll')
     local value;value,err=Enroll(self.state);if not value then return nil,err end
     self:RecordTransferDiagnostic('encode')
-    local lines={'RS-HISTORY-1|'..Hex(identity)}
-    for _,id in ipairs(Sorted(value.sync.sources))do AppendSource(lines,id,value.sync.sources[id])end
+    local version=C.counter(value.totals.honorKills)>0 and 3 or (C.counter(value.totals.honorParticipations)>0 and 2 or 1)
+    local keys=version==3 and C.keys or (version==2 and C.v2Keys or C.legacyKeys)
+    local lines={'RS-HISTORY-'..version..'|'..Hex(identity)}
+    for _,id in ipairs(Sorted(value.sync.sources))do AppendSource(lines,id,value.sync.sources[id],keys)end
     lines[#lines+1]='END';local payload=table.concat(lines,'\n')
     if #payload>MAX_BYTES then return nil,'历史超过单次导出容量，未生成不完整备份' end
     local hash;hash,err=Check(payload);if not hash then return nil,err end
@@ -263,14 +270,16 @@ function H:RepageExport(packet,chunkBytes)
     self.transferDiagnostic.repages=self.transferDiagnostic.repages+1 -- 允许冷路径重新显示已冻结的有效包，不要求当前页面之前调用过导出。
     return result
 end
-local function ReadCounts(text)
-    local fields=Split(text,',');if #fields~=#C.keys then return nil end
-    local row={};for index,key in ipairs(C.keys)do if not Whole(fields[index]) then return nil end;row[key]=fields[index]end
+local function ReadCounts(text,keys)
+    local fields=Split(text,',');if #fields~=#keys then return nil end
+    local row={};for index,key in ipairs(keys)do if not Whole(fields[index]) then return nil end;row[key]=fields[index]end
     return row
 end
 local function ParsePayload(payload)
     local lines={};for line in (payload..'\n'):gmatch('([^\n]*)\n')do lines[#lines+1]=line;if #lines>33000 then return nil,'记录过多' end end
-    local encoded=lines[1] and lines[1]:match('^RS%-HISTORY%-1|(%x+)$')
+    local version,encoded
+    if lines[1] then version,encoded=lines[1]:match('^RS%-HISTORY%-([123])|(%x+)$') end
+    local keys=version=='3' and C.keys or (version=='2' and C.v2Keys or C.legacyKeys)
     local identity=encoded and Unhex(encoded,256);if not identity then return nil,'不是受支持的历史导出文本' end
     local sources,index={},2
     while lines[index]~='END' do
@@ -282,14 +291,14 @@ local function ParsePayload(payload)
             local value=Unhex(header[offset+3]);if value==nil then return nil,'日期说明编码无效' end
             source[key]=value~='' and value or nil
         end
-        source.totals=ReadCounts((lines[index+1] or ''):match('^T|(.*)$') or '')
-        source.archive=ReadCounts((lines[index+2] or ''):match('^A|(.*)$') or '')
+        source.totals=ReadCounts((lines[index+1] or ''):match('^T|(.*)$') or '',keys)
+        source.archive=ReadCounts((lines[index+2] or ''):match('^A|(.*)$') or '',keys)
         if not source.totals or not source.archive then return nil,'历史累计字段不完整' end
         index=index+3;local days=0
         while lines[index]~='E' do
             local fields=Split(lines[index] or '','|');days=days+1
             if #fields~=5 or fields[1]~='D' or days>C.maxDays or not (C.validDate(fields[2]) or fields[2]=='unknown') or source.days[fields[2]] then return nil,'每日记录无效、重复或超限' end
-            local row=ReadCounts(fields[5]);local first,last=Unhex(fields[3]),Unhex(fields[4])
+            local row=ReadCounts(fields[5],keys);local first,last=Unhex(fields[3]),Unhex(fields[4])
             if not row or first==nil or last==nil then return nil,'每日记录内容不完整' end
             row.firstAt=first~='' and first or nil;row.lastAt=last~='' and last or nil;source.days[fields[2]]=row
             index=index+1

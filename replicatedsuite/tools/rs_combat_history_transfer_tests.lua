@@ -22,9 +22,13 @@ local function Boot(options)
         day=options.days and (day-1)%28+1 or day,hour=8,minute=30}end
     dofile('core/rs_report_copy_transport.lua')
     dofile('core/rs_diagnostic_export.lua')
+    dofile('features/combat/analytics/rs_combat_analytics_store.lua')
     dofile('features/combat/analytics/rs_combat_personal_history.lua')
     dofile('features/combat/analytics/rs_combat_history_transfer.lua')
     dofile('features/combat/analytics/rs_combat_analytics_feature.lua')
+    -- 交换页面同样读取统计偏好；沿用生产 Store，只替代本用例未加载的 DPS 投影入口。
+    dofile('features/combat/dps/rs_dps_store.lua')
+    S.Features.DPS.GetSettingsProjection=function(self) return S.Utils.DeepCopy(self:GetSettings()) end
     h.F=S.Features.CombatAnalytics;h.H=h.F.PersonalHistory
     assert(h.H:EnsureLoaded())
     if options.seed~=false then
@@ -226,11 +230,46 @@ Test('merged module TXT includes the actual failed export stage and Native error
     assert(text:find('set_text',1,true) and text:find('SetText返回false',1,true),'exported TXT still omitted the visible export failure')
     assert(h.writes==writes,'exporting diagnostic TXT modified personal history')
 end)
+Test('honor counts roundtrip with v2 while old v1 histories remain independently importable',function()
+    local source=Boot({seed=false});assert(source.H:Record({kills=5,honorParticipations=14,deaths=2}))
+    local packet=assert(source.F.Commands:ExportPersonalHistory())
+    assert(packet.payload:match('^RS%-HISTORY%-2|'),'honor history did not use its extended protocol')
+    local target=Boot({seed=false});target.S.CombatHistoryImportFile=ImportFile(source,packet)
+    assert(target.F.Commands:ImportPersonalHistoryFile())
+    local t=target.H:GetProjection().totals
+    assert(t.kills==5 and t.honorParticipations==14 and t.deaths==2,'v2 merged distinct counting rules')
+    local writes=target.writes;assert(target.F.Commands:ImportPersonalHistoryFile())
+    assert(target.writes==writes and target.H:GetProjection().totals.honorParticipations==14,'v2 duplicate added honor twice')
+    local saved=assert(target.S.Persistence:GetStore(target.H.StoreId));saved.loaded=false;target.H.loaded=false
+    assert(target.H:EnsureLoaded() and target.H:GetProjection().totals.honorParticipations==14,'honor did not survive persistence')
+    local legacy=Boot();local old=assert(legacy.F.Commands:ExportPersonalHistory())
+    assert(old.payload:match('^RS%-HISTORY%-1|'),'unchanged history lost its v1 encoding')
+    local empty=Boot({seed=false});empty.S.CombatHistoryImportFile=ImportFile(legacy,old)
+    assert(empty.F.Commands:ImportPersonalHistoryFile())
+    assert(empty.H:GetProjection().totals.kills==36 and empty.H:GetProjection().totals.honorParticipations==nil,'v1 import invented historical honor data')
+end)
+Test('matched honor estimates use v3 and preserve v2 baseline identity across repeated imports',function()
+    local source=Boot({seed=false});assert(source.H:Record({kills=5,honorParticipations=14,deaths=2}))
+    local v2=assert(source.F.Commands:ExportPersonalHistory())
+    local target=Boot({seed=false});target.S.CombatHistoryImportFile=ImportFile(source,v2);assert(target.F.Commands:ImportPersonalHistoryFile())
+    assert(source.H:Record({honorParticipations=2,honorKills=2}))
+    local v3=assert(source.F.Commands:ExportPersonalHistory());assert(v3.payload:match('^RS%-HISTORY%-3|'))
+    target.S.CombatHistoryImportFile=ImportFile(source,v3);assert(target.F.Commands:ImportPersonalHistoryFile())
+    local t=target.H:GetProjection().totals
+    assert(t.kills==5 and t.honorParticipations==16 and t.honorKills==2 and t.deaths==2,'v3 duplicated the v2 baseline or combined counters')
+    local writes=target.writes;assert(target.F.Commands:ImportPersonalHistoryFile());assert(target.writes==writes)
+    target.S.CombatHistoryImportFile=ImportFile(source,v2);assert(target.F.Commands:ImportPersonalHistoryFile())
+    assert(target.H:GetProjection().totals.honorKills==2 and target.writes==writes,'old v2 replay reset or duplicated v3 estimates')
+    local saved=target.S.Persistence:GetStore(target.H.StoreId);saved.loaded=false;target.H.loaded=false
+    assert(target.H:EnsureLoaded() and target.H:GetProjection().totals.honorKills==2)
+end)
 print(string.format('HISTORY TRANSFER RESULT %d passed / %d failed (%s)',passed,failed,_VERSION))
 assert(failed==0,'history transfer failures: '..failed)
 -- Python/便携exe使用真实Lua写出的文件信箱进行跨语言往返，不把两端独立的假数据当成链路证明。
 if arg and arg[1]=='--emit-file' then
-    local h=Boot({reject=true,days=336});assert(h.F.Commands:ExportPersonalHistoryFile())
+    local h=Boot({reject=true,days=336})
+    if arg[3]=='honor' then assert(h.H:Record({honorParticipations=14,honorKills=14})) end
+    assert(h.F.Commands:ExportPersonalHistoryFile())
     local file=assert(io.open(arg[2],'wb'))
     for key,value in pairs(h.disk)do
         if key:match('^replicated_suite_v1_combat_history_export')then
@@ -246,6 +285,7 @@ elseif arg and arg[1]=='--consume-file' then
     assert(h.F.Commands:ImportPersonalHistoryFile())
     local total=336*337/2
     assert(h.H:GetProjection().totals.kills==total and h.H:GetProjection().totals.damage==total*123456)
+    if arg[3]=='honor' then assert(h.H:GetProjection().totals.honorParticipations==14 and h.H:GetProjection().totals.honorKills==14) end
     local writes=h.writes;assert(h.F.Commands:ImportPersonalHistoryFile());assert(h.writes==writes)
     print('HISTORY TXT ROUNDTRIP PASS')
 elseif arg and arg[1]=='--reject-file' then

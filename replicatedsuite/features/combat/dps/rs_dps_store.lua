@@ -17,7 +17,7 @@ local F = S.Features.DPS
 local U = S.Utils
 
 local STORE_ID = "v3.dps"
-local SCHEMA = 4
+local SCHEMA = 5
 local MAX_BOSS_NAMES = 64
 local MAX_DISPLAY_ROWS = 150
 
@@ -74,6 +74,9 @@ local function NormalizeSettings(value)
         metric = NormalizeMetric(value.metric),
         displayRows = ClampInt(value.displayRows, 1, MAX_DISPLAY_ROWS, 12),
         alwaysShowSelf = value.alwaysShowSelf ~= false,
+        -- 旧档缺字段时延续原采集行为；显式 false 必须保留，不能在重载后重新开启。
+        trackDamage = value.trackDamage ~= false,
+        trackHealing = value.trackHealing ~= false,
     }
 end
 
@@ -105,6 +108,18 @@ F.StoreLoaded = F.StoreLoaded == true
 
 local function ApplyState(value) F.State = NormalizeState(value) end
 
+-- schema4 的旧指纹不含追踪开关；必须先复现旧 canonical，再由 Persistence 精确核对原指纹后迁移。
+-- 不能直接用加入新版默认值后的结构验旧章，否则健康旧档也会被判为损坏并阻止页面打开。
+local function RebuildSchema4Canonical(value, _, _, raw)
+    local meta = type(raw) == "table" and raw.__rsmeta or nil
+    local settings = type(value) == "table" and value.settings or nil
+    if type(meta) ~= "table" or meta.store ~= STORE_ID or meta.owner ~= "v3.dps" or tonumber(meta.schema) ~= 4
+        or type(settings) ~= "table" or settings.trackDamage ~= nil or settings.trackHealing ~= nil then return nil end
+    local historical = NormalizeState(value)
+    historical.settings.trackDamage, historical.settings.trackHealing = nil, nil
+    return historical, NormalizeState(value)
+end
+
 if P:GetStore(STORE_ID) == nil then
     local store, err = P:RegisterV3Store({
         id = STORE_ID,
@@ -115,6 +130,7 @@ if P:GetStore(STORE_ID) == nil then
         legacySchemaVersion = 0,
         key = P.V3KeyPrefix and (P.V3KeyPrefix .. "dps") or "v3.dps",
         budget = { maxDepth = 5, maxNodes = 600, maxStringBytes = 6000, maxEntriesPerTable = 64 },
+        rebuildCanonicalForIntegrity = RebuildSchema4Canonical,
         default = function() return NormalizeState(nil) end,
         get = function() return NormalizeState(F.State) end,
         apply = ApplyState,
@@ -126,6 +142,13 @@ if P:GetStore(STORE_ID) == nil then
 end
 
 function F:GetSettings() return self.State.settings end
+
+function F:IsTrackingCategoryEnabled(category)
+    local settings = self:GetSettings()
+    if category == "damage" then return settings.trackDamage ~= false end
+    if category == "heal" then return settings.trackHealing ~= false end
+    return false
+end
 
 function F:ApplySettingRaw(key, value)
     local settings = self.State.settings

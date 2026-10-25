@@ -143,8 +143,108 @@ do
         C:QueuePush(evidence.events,row)
         evidence.counters[reason]=(tonumber(evidence.counters[reason]) or 0)+1
     end
-    local function Init(state) state.targets={};state.targetOrder=C:NewBoundedQueue(512);state.targetCount=0;state.deathOrder=C:NewBoundedQueue(512);state.lastDeath={};state.deathByName={};state.notices={};state.noticeCount=0;state.noticeScheduled=false end
+    local function Init(state)
+        state.targets={};state.targetOrder=C:NewBoundedQueue(512);state.targetCount=0;state.deathOrder=C:NewBoundedQueue(512)
+        state.lastDeath={};state.deathByName={};state.notices={};state.noticeCount=0;state.noticeScheduled=false
+        state.honorReceipts={};state.explicitReceipts={};state.honorScheduled=false;state.honorEpoch=(state.honorEpoch or 0)+1
+        state.honorSuppressedUntil=nil
+    end
     Init(metric.state)
+    -- 与明确归属现有8秒补证窗一致。荣誉先等1.5秒接收正常延迟的击杀通知；已补记的荣誉仍保留配对位，迟到归属只补名单。
+    -- 金额不含目标ID，只能按同一短时间段一对一消耗证据；有界保留，不按同额合并两次真实奖励。
+    local HONOR_WINDOW,HONOR_GRACE,HONOR_LIMIT=8000,1500,256
+    local function PruneReceipts(rows,now)
+        local kept=0
+        for i=1,#rows do
+            local row=rows[i]
+            if not row.matched and (now-row.at<=HONOR_WINDOW or (row.dueAt and not row.settled)) then kept=kept+1;rows[kept]=row end
+        end
+        for i=#rows,kept+1,-1 do rows[i]=nil end
+    end
+    local function FindReceipt(rows,now)
+        PruneReceipts(rows,now)
+        for _,row in ipairs(rows) do if not row.matched and now>=row.at and now-row.at<=HONOR_WINDOW then row.matched=true;return row end end
+    end
+    local function AddExplicitReceipt(state,now,live,history,death)
+        PruneReceipts(state.explicitReceipts,now)
+        if #state.explicitReceipts>=HONOR_LIMIT then
+            state.honorSuppressedUntil=now+HONOR_WINDOW;table.remove(state.explicitReceipts,1)
+        end
+        local h=Feature.PersonalHistory;local date,stamp;if h then date,stamp=h:Timestamp() end
+        state.explicitReceipts[#state.explicitReceipts+1]={at=now,liveKill=live,historyKill=history,death=death,recordTime={date=date,stamp=stamp}}
+    end
+    local function CreditHonor(state,row)
+        if row.matched or row.settled then return false end
+        row.settled=true;local changed=false
+        if not row.liveKill and Feature:IsMetricPreferenceEnabled("kills") then
+            local actor=C:EnsureActor(state,row.name)
+            if actor then
+                C:AddCounter(actor,"kills",1)
+                if not row.confirmed then C:AddCounter(actor,"honorAssistedKills",1) end
+                C:Touch(actor,row.at);actor.lastKillConfidence=row.confirmed and "native_kill_notice" or "honor_reward_match";row.liveKill=true;changed=true
+            end
+        end
+        local history=Feature.PersonalHistory
+        if not row.historyKill then
+            row.historyKill=history and history:Record({kills=1},row.recordTime)==true or false;changed=row.historyKill or changed
+        end
+        Evidence({receivedAt=row.at,kind="war_honor_delta"},"decision","honor_kill_supplemented",nil,row.name,
+            {honorAmount=row.amount,liveKill=row.liveKill==true,historyKill=row.historyKill,confidence="honor_reward_match"})
+        if changed then state.revision=(tonumber(state.revision) or 0)+1;return true end
+        return false
+    end
+    local ScheduleHonor
+    ScheduleHonor=function(self)
+        if self.state.honorScheduled then return true end
+        local due
+        for _,row in ipairs(self.state.honorReceipts) do
+            if not row.matched and not row.settled and (not due or row.dueAt<due) then due=row.dueAt end
+        end
+        if not due then return true end
+        local scheduler=S.Scheduler;if not scheduler then return false end
+        if type(scheduler.SetTaskModule)=="function" then scheduler:SetTaskModule("v3_combat_kills_honor","combat_analytics",true) end
+        local state,generation,epoch=self.state,S.Generation,self.state.honorEpoch
+        state.honorScheduled=true
+        local ok=scheduler:AddOneShot("v3_combat_kills_honor",math.max(50,due-C:NowMs()),function()
+            if S.Generation~=generation or self.state~=state or state.honorEpoch~=epoch or not Analytics.activeMetrics.kills then return true end
+            state.honorScheduled=false;local now=C:NowMs();local changed=false
+            for _,row in ipairs(state.honorReceipts) do if row.dueAt<=now then changed=CreditHonor(state,row) or changed end end
+            PruneReceipts(state.honorReceipts,now)
+            if changed then Analytics:NotifyMetricChanged("honor_assisted_kills") end
+            ScheduleHonor(self);return true
+        end,self,"P3",1)
+        if ok~=true then state.honorScheduled=false end
+        return ok==true
+    end
+    local function QueueHonor(self,fact,name,amount)
+        if not Feature:IsHonorKillAmount(amount) then
+            Evidence(fact,"decision",(amount==3 or amount==12) and "honor_assist_excluded" or "honor_amount_unmatched",nil,name,{honorAmount=amount})
+            return false
+        end
+        local now=At(fact)
+        local explicit=FindReceipt(self.state.explicitReceipts,now)
+        if explicit then
+            -- 归属已确认不代表两路都保存成功；只补上失败的一路，已记的实时/历史绝不再加。
+            local changed=false
+            if not explicit.liveKill or not explicit.historyKill then
+                local repair={at=explicit.at,name=name,amount=amount,confirmed=true,recordTime=explicit.recordTime,
+                    liveKill=explicit.liveKill,historyKill=explicit.historyKill}
+                changed=CreditHonor(self.state,repair)
+                if explicit.death then explicit.death.liveKill=repair.liveKill;explicit.death.historyKill=repair.historyKill end
+            end
+            Evidence(fact,"decision","honor_paired_with_explicit",nil,name,{honorAmount=amount});return changed
+        end
+        if now<(self.state.honorSuppressedUntil or 0) then Evidence(fact,"decision","honor_pairing_overflow",nil,name);return false end
+        -- 溢出时宁可留下诊断，也不能丢掉去重位后再把同一份证据加两遍。
+        PruneReceipts(self.state.honorReceipts,now)
+        if #self.state.honorReceipts>=HONOR_LIMIT then Evidence(fact,"decision","honor_pairing_overflow",nil,name);return false end
+        local history=Feature.PersonalHistory;local date,stamp
+        if history then date,stamp=history:Timestamp() end
+        local row={at=now,dueAt=now+HONOR_GRACE,name=name,amount=amount,recordTime={date=date,stamp=stamp}}
+        self.state.honorReceipts[#self.state.honorReceipts+1]=row
+        if not ScheduleHonor(self) then row.matched=true;Evidence(fact,"decision","honor_scheduler_unavailable",nil,name);return false end
+        Evidence(fact,"decision","honor_awaiting_explicit",nil,name,{honorAmount=amount});return true
+    end
     -- 原生战争序号只用于定位漏通知；字段生命周期尚待系统累计验证，绝不能据此补写永久历史。
     local nativeCounter=nil
     local function EnsureTarget(state,name)
@@ -202,7 +302,7 @@ do
                 targets=C:MapRows(row.targets,128,"kills"),omittedTargets=row.omittedTargets}
         end
         table.sort(rows,function(a,b)if a.kills~=b.kills then return a.kills>b.kills end return a.key<b.key end)
-        return {actor=actor and {key=actor.key,name=actor.name,kills=actor.kills or 0} or nil,skills=rows,
+        return {actor=actor and {key=actor.key,name=actor.name,kills=actor.kills or 0} or nil,skills=rows,honorAssistedKills=actor and actor.honorAssistedKills or 0,
             retainedTargets=actor and actor.skillKillTargetCount or 0,dataRevision=tonumber(state.revision) or 0,
             statsAvailable=Feature:IsMetricPreferenceEnabled("kills"),coverage="CONFIRMED_PLAYER_KILLS_SKILL_FROM_DEATH_FACT_ONLY"}
     end
@@ -245,19 +345,27 @@ do
         local killerId=fact and fact.sourceId or nil
         local playerKiller=Analytics:IsSelfActor(killer,killerId) or KnownPlayer(killer,killerKind)
         if killer==victimName then playerKiller=false end
-        local liveKill,historyKill=false,false
+        local ownKill=playerVictim and Analytics:IsSelfActor(killer,killerId) and killer~=victimName
+        -- 明确归属不依赖地区或荣誉。普通区域杀人没有荣誉，仍须立即计入；下面配对只消除辅助重复。
+        local pairedHonor=ownKill and FindReceipt(state.honorReceipts,now) or nil
+        local liveKill,historyKill=pairedHonor and pairedHonor.liveKill==true or false,pairedHonor and pairedHonor.historyKill==true or false
         if killer~="" and trackLive and playerVictim and playerKiller then
-            local actor=C:EnsureActor(state,killer,killerId);if actor then C:AddCounter(actor,"kills",1);liveKill=true;C:Touch(actor,now);actor.lastKillConfidence=confidence or "direct_death_source";AddDetail(actor,"killTargets",victimName,1);AddDetail(actor,"killAbilities",ability~="" and ability or "未知技能",1);RecordSkillKill(actor,fact,victimName) end
+            local actor=C:EnsureActor(state,killer,killerId);if actor then
+                if not liveKill then C:AddCounter(actor,"kills",1) end
+                if pairedHonor and pairedHonor.liveKill then actor.honorAssistedKills=math.max(0,(tonumber(actor.honorAssistedKills) or 0)-1) end
+                liveKill=true;C:Touch(actor,now);actor.lastKillConfidence=confidence or "direct_death_source";AddDetail(actor,"killTargets",victimName,1);AddDetail(actor,"killAbilities",ability~="" and ability or "未知技能",1);RecordSkillKill(actor,fact,victimName)
+            end
         end
         local h=Feature.PersonalHistory
         if h then
             local delta={}
             if not upgrade and Analytics:IsSelfActor(victimName,victimId) then delta.deaths=1
-            elseif playerVictim and Analytics:IsSelfActor(killer,killerId) then
+            elseif ownKill and not historyKill then
                 delta.kills=1
             end
-            if next(delta)~=nil then historyKill=h:Record(delta)==true and delta.kills==1 end
+            if next(delta)~=nil then historyKill=h:Record(delta,pairedHonor and pairedHonor.recordTime)==true and delta.kills==1 end
         end
+        if ownKill and not pairedHonor then AddExplicitReceipt(state,now,liveKill,historyKill,death) end
         local reason
         if liveKill or historyKill then reason="kill_credited"
         elseif Analytics:IsSelfActor(victimName,victimId) then reason="self_death"
@@ -300,7 +408,34 @@ do
         return ok==true
     end
     Analytics:RegisterMetric({id="kills",title="击杀玩家 / 死亡",category="combat",order=20,factCategories={"damage","death"},state=metric.state,
-        description="玩家击杀仅计明确归属；自身和所有人模式缺少击杀者时均不计击杀，两种模式均不计算助攻。",
+        -- 一个共享原生入口；不再叠加通用荣誉或地区累计提示，也不按金额/时间合并同额收益。
+        -- HPW专用增量只作战争/纷争备用证据；没有此事件不能否定已确认的普通区域击杀。
+        -- RU 客户端 combat_text.lua:634 明确将此参数作为战争荣誉正负增量消费。
+        nativeEvents={"PLAYER_HONOR_POINT_CHANGED_IN_HPW"},
+        OnNativeFact=function(self,fact)
+            if fact.eventName~="PLAYER_HONOR_POINT_CHANGED_IN_HPW" then return false end
+            local amount=C:Finite(fact.amount,nil)
+            if not amount or amount<=0 or amount~=math.floor(amount) then return false end
+            local name=C:Trim(fact.sourceName)
+            if name=="" or not Analytics:IsSelfActor(name) then return false end
+            -- 原始收益只作辅助证据；匹配击杀规则、排除助攻并配对明确通知后才补记统一击杀数。
+            local live=false
+            if Feature:IsMetricPreferenceEnabled("kills") then
+                local actor=C:EnsureActor(self.state,name)
+                if actor then
+                    C:AddCounter(actor,"honorParticipations",1)
+                    C:Touch(actor,At(fact));live=true
+                end
+            end
+            local history=Feature.PersonalHistory
+            local saved=history and history:Record({honorParticipations=1})==true or false
+            Evidence(fact,"decision","war_honor_received",nil,name,
+                {honorAmount=amount,killAttribution="unavailable",liveParticipation=live,historyParticipation=saved})
+            local assisted=QueueHonor(self,fact,name,amount)
+            if live or saved then self.state.revision=(tonumber(self.state.revision) or 0)+1 end
+            return live or saved or assisted
+        end,
+        description="统一击杀：明确归属优先，本人野外荣誉辅助补记；排除已知助攻3/12，匹配已确认金额，一对一配对避免重复。",
         OnFact=function(self,fact)
             -- 首个可见事实建立系统资料证据；伤害热路径只检查一次标记，不为每条伤害安排 Native 采样。
             if not self.state.systemEvidenceStarted then
@@ -348,20 +483,22 @@ do
             C:QueueEach(evidence.events,function(row)local copy={} for key,value in pairs(row) do copy[key]=value end rows[#rows+1]=copy end)
             for key,value in pairs(evidence.counters) do counters[key]=value end
             return {available=true,scope=Analytics:GetCollectionScope(),events=rows,counters=counters,
+                honorRetained=#self.state.honorReceipts,explicitRetained=#self.state.explicitReceipts,pairingWindowMs=HONOR_WINDOW,
                 evicted=evidence.events.evicted,limit=32,pendingNotices=self.state.noticeCount,trackedTargets=self.state.targetCount,
                 nativeCounter=nativeCounter and {high=nativeCounter.high,at=nativeCounter.at} or nil,
-                coverage="本次加载保留的死亡/击杀判定；缺失来源不补算击杀；未收到或已淘汰事件不能恢复。"}
+                coverage="本代明确归属及荣誉辅助判定；已知助攻3/12排除，已确认金额在8秒窗内一对一配对，补记等待1.5秒。未收到、超窗或淘汰事件不能准确还原。"}
         end,
         GetProjection=function(self,opt)
             if opt and opt.actorKey~=nil then return SkillKillProjection(self.state,opt) end
-            local key=tostring(opt and opt.valueKey or "kills");if key~="kills" and key~="deaths" then key="kills" end
+            local key=tostring(opt and opt.valueKey or "kills");if key~="kills" and key~="deaths" and key~="honorParticipations" then key="kills" end
             local limit=math.max(1,math.min(MAX_ACTORS,tonumber(opt and opt.limit) or 100))
-            return {valueKey=key,rows=Rank(self,key,{"kills","deaths","lastKillConfidence"},limit,{includeZero=opt and opt.includeZero==true}),
+            return {valueKey=key,rows=Rank(self,key,{"kills","deaths","honorParticipations","honorAssistedKills","lastKillConfidence"},limit,{includeZero=opt and opt.includeZero==true}),
                 dataRevision=tonumber(self.state.revision) or 0,statsAvailable=Feature:IsMetricPreferenceEnabled("kills"),
-                assistsAvailable=false,coverage="DIRECT_DEATH_ATTRIBUTION_ONLY"}
+                assistsAvailable=false,coverage=key=="honorParticipations" and "SELF_HPW_POSITIVE_RECEIPTS" or "EXPLICIT_WITH_SELF_HPW_SUPPLEMENT"}
         end,
         Reset=function(self,reason,resetKind)
             if S.Scheduler then S.Scheduler:RemoveTask("v3_combat_kills_notices") end
+            if S.Scheduler then S.Scheduler:RemoveTask("v3_combat_kills_honor") end
             if type(Feature.CancelSystemKillEvidence)=="function" then Feature:CancelSystemKillEvidence() end
             nativeCounter=nil;self.state.systemEvidenceStarted=nil -- 停止/清空/换范围均切断取证基线，不补采未观测区间。
             -- 停用仅释放最近一击和通知任务，五项总览的实时战绩保留；显式清空或换范围才归零。

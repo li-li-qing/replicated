@@ -4,7 +4,7 @@
 -- QQ群：1104129461
 --
 -- 个人长期统计。每日摘要 + 全期累计；实时排行的 reset 永不删除此 Store。
--- 仅从共享事实和击杀指标的明确归属接收增量，不监听第二套原生事件。
+-- 从同一个击杀指标接收明确归属/荣誉补记增量，不监听第二套原生事件。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -16,22 +16,35 @@ local H = { StoreId="v3.combat_personal_history", revision=0, lastDirtyAt=-10000
 F.PersonalHistory = H
 local LEGACY_KEYS = {"kills","deaths","assists","damage","taken","healing","inferredKills","unattributedParticipations","unknownTargetKills"}
 local KEYS = {"kills","npcKills","deaths","assists","damage","taken","healing","inferredKills","inferredNpcKills","unattributedParticipations","unknownTargetKills"}
+local TRANSFER_V1_KEYS={};for i,key in ipairs(KEYS) do TRANSFER_V1_KEYS[i]=key end
+KEYS[#KEYS+1]="honorParticipations"
+local TRANSFER_V2_KEYS={};for i,key in ipairs(KEYS) do TRANSFER_V2_KEYS[i]=key end
+KEYS[#KEYS+1]="honorKills"
+local DISPLAY_KEYS={};for i,key in ipairs(LEGACY_KEYS) do DISPLAY_KEYS[i]=key end
+DISPLAY_KEYS[#DISPLAY_KEYS+1]="honorParticipations"
+DISPLAY_KEYS[#DISPLAY_KEYS+1]="honorKills"
 -- 旧推断计数仍参与原指纹规范化/归档，不能删除旧字段或改写原总数。
--- 用户已选择只计明确归属，新记录不再累计推断；只读投影从旧合计中扣除已标记的推断。
+-- 新的荣誉辅助计入同一kills；旧版独立荣誉字段不自动并入。只读投影扣除旧版已标记的猜测计数。
 -- 2026-10-07：NPC击杀已删除；schema2字段仅用于旧档完整性验证，不进入记录或公开投影。
-local LIVE_KEYS = {"kills","deaths","damage","taken","healing"}
+local LIVE_KEYS = {"kills","deaths","damage","taken","healing","honorParticipations","honorKills"}
+local OPTIONAL_KEYS={honorParticipations=true,honorKills=true}
 local MAX_DAYS = 2048
 local function Counter(v) v=tonumber(v);if not v or v~=v or v==math.huge or v<0 then return 0 end;return math.floor(v) end
 local function Counts(v,keys)
-    local out={};for _,key in ipairs(keys or KEYS) do out[key]=Counter(type(v)=="table" and v[key]) end;return out
+    local out={};for _,key in ipairs(keys or KEYS) do
+        -- 新计数缺失时保持缺失：旧档原指纹不变，未采集的旧日期也不能显示为零次。
+        if not OPTIONAL_KEYS[key] or (type(v)=="table" and v[key]~=nil) then out[key]=Counter(type(v)=="table" and v[key]) end
+    end;return out
 end
 local function ConfirmedCounts(v)
-    local out=Counts(v,LEGACY_KEYS)
+    local out=Counts(v,DISPLAY_KEYS)
     out.recordedKills=out.kills
     out.kills=math.max(0,out.kills-out.inferredKills)
     return out
 end
-local function Add(to, delta, keys) for _,key in ipairs(keys or KEYS) do to[key]=(tonumber(to[key]) or 0)+Counter(delta[key]) end end
+local function Add(to, delta, keys) for _,key in ipairs(keys or KEYS) do
+    if not OPTIONAL_KEYS[key] or to[key]~=nil or delta[key]~=nil then to[key]=(tonumber(to[key]) or 0)+Counter(delta[key]) end
+end end
 local function ValidDate(value)
     value=tostring(value or "")
     local y,m,d=value:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
@@ -60,7 +73,7 @@ local function Normalize(v,keys)
 end
 H.state=Normalize(nil)
 -- 同步模块只扩展本 Feature 的历史存档，不另建持久化 Authority；无同步字段的旧档仍保持原 canonical。
-H.TransferHelpers={normalize=Normalize,keys=KEYS,liveKeys=LIVE_KEYS,counter=Counter,counts=Counts,add=Add,validDate=ValidDate,maxDays=MAX_DAYS}
+H.TransferHelpers={normalize=Normalize,keys=KEYS,legacyKeys=TRANSFER_V1_KEYS,v2Keys=TRANSFER_V2_KEYS,liveKeys=LIVE_KEYS,counter=Counter,counts=Counts,add=Add,validDate=ValidDate,maxDays=MAX_DAYS}
 function H:NormalizeState(value)
     if type(self.NormalizeTransferState)=="function" then return self:NormalizeTransferState(value) end
     return Normalize(value)
@@ -70,12 +83,14 @@ end
 local function RebuildSchema1Canonical(value,_,_,raw)
     local meta=type(raw)=="table" and raw.__rsmeta or nil
     if type(meta)~="table" or meta.store~=H.StoreId or meta.owner~=H.StoreId or tonumber(meta.schema)~=1 then return nil end
-    return Normalize(value,LEGACY_KEYS),Normalize(value)
+    local historical=Normalize(value,LEGACY_KEYS)
+    -- 迁移值只能来自通过旧章校验的字段，不能采纳原schema未认证的新计数。
+    return historical,Normalize(historical)
 end
 local store,registerErr=P:RegisterV3Store({
     id=H.StoreId,owner=H.StoreId,scope=P.Scope.Character,lifetime=P.Lifetime.Permanent,
     -- schema3 将来源账本和合计放在同一个 Store，导入只需一次耐久提交，不能出现“金额已加、去重标记未存”。
-    schemaVersion=3,legacySchemaVersion=0,key=(P.V3KeyPrefix or "rs.v3.").."combat_personal_history",
+    schemaVersion=5,legacySchemaVersion=0,key=(P.V3KeyPrefix or "rs.v3.").."combat_personal_history",
     budget={maxDepth=8,maxNodes=120000,maxStringBytes=1000000,maxEntriesPerTable=2048},
     rebuildCanonicalForIntegrity=RebuildSchema1Canonical,
     default=function() return H:NormalizeState(nil) end,get=function() return H:NormalizeState(H.state) end,
@@ -112,7 +127,7 @@ function H:Timestamp()
     self.clockStamp=string.format("%s %02d:%02d",date,hour,minute)
     return self.clockDay,self.clockStamp
 end
-function H:Record(delta)
+function H:Record(delta,recordTime)
     if type(delta)~="table" then return false end
     local hasValue=false
     for _,key in ipairs(LIVE_KEYS) do if Counter(delta[key])>0 then hasValue=true;break end end
@@ -126,6 +141,11 @@ function H:Record(delta)
         self.lastDirtyAt=now
     end
     local date,stamp=self:Timestamp()
+    -- 荣誉补记有短暂配对等待，跨服务器日界线时仍归到奖励发生日；只接受本 Feature 已捕获的完整时间。
+    if type(recordTime)=="table" and (ValidDate(recordTime.date) or recordTime.date=="unknown")
+        and (recordTime.stamp==nil or (Stamp(recordTime.stamp) and recordTime.stamp:sub(1,10)==recordTime.date)) then
+        date,stamp=recordTime.date,recordTime.stamp
+    end
     -- 来源增量仅做固定字段累加；未启用跨电脑交换的旧历史不额外建表，失败不得改变主合计。
     if type(self.RecordTransferDelta)=="function" then
         local accepted,transferErr=self:RecordTransferDelta(delta,date,stamp)
@@ -143,10 +163,16 @@ function H:Record(delta)
     end
     for _,key in ipairs(LIVE_KEYS) do
         local amount=Counter(delta[key])
+        if not OPTIONAL_KEYS[key] or amount>0 or row[key]~=nil then
         row[key]=(tonumber(row[key]) or 0)+amount;self.state.totals[key]=(tonumber(self.state.totals[key]) or 0)+amount
+        end
     end
-    row.firstAt=row.firstAt or stamp;row.lastAt=stamp or row.lastAt
-    self.state.firstAt=self.state.firstAt or stamp;self.state.lastAt=stamp or self.state.lastAt
+    if stamp then
+        if not row.firstAt or stamp<row.firstAt then row.firstAt=stamp end
+        if not row.lastAt or stamp>row.lastAt then row.lastAt=stamp end
+        if not self.state.firstAt or stamp<self.state.firstAt then self.state.firstAt=stamp end
+        if not self.state.lastAt or stamp>self.state.lastAt then self.state.lastAt=stamp end
+    end
     self.revision=self.revision+1;self.lastError=nil
     return true
 end
@@ -158,14 +184,14 @@ function H:GetProjection(options)
     if (from~="" and not ValidDate(from)) or (to~="" and not ValidDate(to)) or (from~="" and to~="" and from>to) then
         return {available=false,error="请输入有效日期 YYYY-MM-DD，开始日期不能晚于结束日期",totals=Counts(nil,LEGACY_KEYS),rows={}}
     end
-    local filtered=from~="" or to~="";local rows,dateOptions={},{};local totals=filtered and Counts(nil,LEGACY_KEYS) or Counts(self.state.totals,LEGACY_KEYS)
+    local filtered=from~="" or to~="";local rows,dateOptions={},{};local totals=filtered and Counts(nil,DISPLAY_KEYS) or Counts(self.state.totals,DISPLAY_KEYS)
     local complete=true
     for date,row in pairs(self.state.days) do
         -- 下拉目录必须来自完整日账，不能随筛选结果缩小；未定日期仍留在全期记录，不伪造日期选项。
         if ValidDate(date) then dateOptions[#dateOptions+1]=date end
         if not filtered or (date~="unknown" and (from=="" or date>=from) and (to=="" or date<=to)) then
             local out=ConfirmedCounts(row);out.date=date;out.firstAt=row.firstAt;out.lastAt=row.lastAt;rows[#rows+1]=out
-            if filtered then Add(totals,row,LEGACY_KEYS) end
+            if filtered then Add(totals,row,DISPLAY_KEYS) end
         elseif date=="unknown" then complete=false end
     end
     table.sort(dateOptions,function(a,b)return a>b end)
@@ -179,10 +205,12 @@ function H:GetProjection(options)
     return {available=true,complete=complete,totals=ConfirmedCounts(totals),rows=rows,dateOptions=dateOptions,firstAt=self.state.firstAt,lastAt=self.state.lastAt,
         archive=ConfirmedCounts(self.state.archive),archiveFrom=self.state.archiveFrom,archiveTo=self.state.archiveTo,
         revision=self.revision,failures=self.failures,error=self.lastError or (store and store.lastError),scope=A:GetCollectionScope(),
-        coverage="仅记录开启期间客户端可见的伤害、治疗、承伤、击杀玩家、死亡；自身与所有人模式都只计明确归属，来源不明时不计击杀。旧版推断记录保留，但不计入击杀合计。日期时间为服务器时间（分钟精度）。"}
+        coverage="同一个击杀数：明确归属直接计入，普通区域没有荣誉也照常记录；战争/纷争荣誉只作备用补记。已知助攻3/12排除，仅匹配确认金额并与前后归属通知配对，其他金额不猜测。荣誉补记不编造死者或技能；旧版独立荣誉次数不并入击杀，已有历史不回补。伤害、治疗仅在对应追踪开启期间记录。日期时间为服务器时间（分钟精度）。"}
 end
 A:RegisterMetric({id="personal_history",title="个人长期统计",hidden=true,order=6,factCategories={"damage","heal"},
     OnFact=function(_,fact)
+        local dps=S.Features and S.Features.DPS
+        if dps and type(dps.IsTrackingCategoryEnabled)=="function" and not dps:IsTrackingCategoryEnabled(fact.category) then return false end
         local ownSource=A:IsSelfActor(fact.sourceName,fact.sourceId)
         local ownTarget=A:IsSelfActor(fact.targetName,fact.targetId)
         local amount=Counter(fact.amount);if amount<=0 then return false end

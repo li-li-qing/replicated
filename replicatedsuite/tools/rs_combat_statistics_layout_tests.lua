@@ -275,6 +275,43 @@ local function PressDuringRefresh(h,button)
     assert(button.root.events.OnClick(button.root,'LeftButton'),'single top button click rejected')
     h.S.RSUI:FlushLayoutQueue(32)
 end
+Test('overview columns totals and sorting follow all four collection preferences',function()
+    local h=Boot(620,680);local F=h.S.Features.DPS
+    local selected=h.stats.selectedActorKey
+    local function CurrentTable()
+        local tree=PageTree(h.stats)
+        for id,node in pairs(tree)do
+            if node.kind=='TableView' and node.visible~=false and id:find('v3_dps_overview_table',1,true)==1 then return node end
+        end
+        error('visible overview table missing')
+    end
+    for iteration=1,3 do
+        for _,case in ipairs({{false,false},{false,true},{true,false},{true,true}})do
+            local damage,healing=case[1],case[2]
+            assert(F.Commands:SetTrackingEnabled('damage',damage));assert(F.Commands:SetTrackingEnabled('healing',healing))
+            local view=CurrentTable();local fields={}
+            for _,column in ipairs(view:GetColumns())do fields[column.id]=true end
+            assert((fields.damage==true)==damage and (fields.taken==true)==damage,'disabled damage/taken columns remain visible: '..view.id..' '..tostring(h.S.LastInternalEventError and h.S.LastInternalEventError.error))
+            assert((fields.heal==true)==healing and fields.kills and fields.deaths,'healing toggle changed kill/death columns or left healing visible')
+            local summary=h.tree.v3_dps_overview_summary.text
+            assert((summary:find(' · 伤 ',1,true)~=nil)==damage and (summary:find(' · 承 ',1,true)~=nil)==damage,'disabled damage totals remain visible')
+            assert((summary:find(' · 治 ',1,true)~=nil)==healing,'disabled healing total remains visible')
+            assert(fields[h.stats.rankingSort.columnId],'sort indicator refers to a hidden column')
+            assert(h.stats.selectedActorKey==selected and view:GetItem(1).key==selected,'changing columns lost selection or rows')
+            for _,column in ipairs({'damage','taken','heal'})do
+                if not fields[column] then assert(h.stats:ApplyRankingSort(column,'desc',view)==false,'hidden column remains sortable')end
+            end
+            for _,width in ipairs({620,480})do
+                h:Arrange(width,680);assert(h:VisibleRect(view))
+                for _,cell in ipairs(view.header.cells)do assert(h:VisibleRect(cell))end
+            end
+        end
+    end
+    local host=assert(PageTree(h.stats).v3_dps_overview_table_host)
+    assert(#host.children==4,'repeated preferences rebuilt native tables without a bound')
+    assert(CurrentTable():GetItem(1).damage==100,'column visibility discarded previously collected damage')
+    assert(not h.S.LastInternalEventError,'settings refresh callback failed')
+end)
 for _,width in ipairs({620,480})do
     for _,view in ipairs(views)do
         Test('top navigation one click from '..view.id..' at '..width,function()
@@ -288,6 +325,11 @@ for _,width in ipairs({620,480})do
                 PressDuringRefresh(h,assert(tree['v3_statistics_'..current.id..'_views_segment_'..target.segment]))
                 assert(h.H.activeRoute==target.route,'one click did not reach target subpage')
                 assert(h.navigationCalls==calls+1,'one click navigated more than once')
+                local targetTree=PageTree(h.H.pages[target.route])
+                local selector=assert(targetTree['v3_statistics_'..target.id..'_views'])
+                for index,button in ipairs(selector.buttons)do
+                    assert(button.state.selected==(index==target.segment),'cached navigation highlight does not match current subpage')
+                end
                 current=target
             end
         end)

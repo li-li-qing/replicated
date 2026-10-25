@@ -35,36 +35,47 @@ local function CompactNumber(value)
     if abs >= 1000000 then return string.format(abs >= 100000000 and "%.0fM" or "%.1fM", n / 1000000) end
     return string.format(abs >= 100000 and "%.0fK" or "%.1fK", n / 1000)
 end
-local function TotalsText(label, projected, shownRows)
+local function TotalsText(label, projected, shownRows, settings)
     projected = type(projected) == "table" and projected or {}
     local totals = type(projected.totals) == "table" and projected.totals or {}
     local shown = math.max(0, tonumber(shownRows) or #(projected.rows or {}))
     local total = math.max(0, tonumber(projected.totalRows) or shown)
     local suffix = total > shown and (" · 显示 " .. tostring(shown) .. "/" .. tostring(total)) or ""
-    return tostring(label) .. " · 伤 " .. CompactNumber(totals.damage)
-        .. " · 承 " .. CompactNumber(totals.taken)
-        .. " · 治 " .. CompactNumber(totals.heal)
-        .. " · 单位 " .. tostring(N(totals.actorCount)) .. suffix
+    local parts={tostring(label)}
+    if settings.trackDamage~=false then
+        parts[#parts+1]="伤 "..CompactNumber(totals.damage);parts[#parts+1]="承 "..CompactNumber(totals.taken)
+    end
+    if settings.trackHealing~=false then parts[#parts+1]="治 "..CompactNumber(totals.heal) end
+    parts[#parts+1]="单位 "..tostring(N(totals.actorCount))
+    return table.concat(parts," · ")..suffix
 end
 
-local function RankingColumns()
+local function RankingColumns(settings)
     local function Score(field)
         return function(row)
-            return row.statsAvailable and tostring(N(row[field])) or "关闭"
+            if not row.statsAvailable then return "关闭" end
+            if field=="kills" and row.countAvailable==false then return "—" end
+            return tostring(N(row[field]))
         end
     end
     return {
         { id = "rank", title = "#", field = "rank", size = "fixed", width = 26, minWidth = 20, sortable = false,
             getTone = function(row) return row.self == true and "accent" or "default" end },
         { id = "name", title = "玩家 / 单位", field = "name", size = "fill", minWidth = 60, fill = 1 },
-        { id = "damage", title = "伤害", field = "damage", size = "fixed", width = 76, minWidth = 42,
+        { id = "damage", title = "伤害", field = "damage", visible=settings.trackDamage~=false, size = "fixed", width = 76, minWidth = 42,
             format = CompactNumber, getTone = function() return "red" end },
-        { id = "kills", title = "击杀玩家", field = "kills", size = "fixed", width = 76, minWidth = 56, getText=Score("kills") },
-        { id = "heal", title = "治疗", field = "heal", size = "fixed", width = 76, minWidth = 42,
+        { id = "kills", title = "击杀", field = "kills", size = "fixed", width = 76, minWidth = 56, getText=Score("kills") },
+        { id = "heal", title = "治疗", field = "heal", visible=settings.trackHealing~=false, size = "fixed", width = 76, minWidth = 42,
             format = CompactNumber, getTone = function() return "green" end },
-        { id = "taken", title = "承伤", field = "taken", size = "fixed", width = 76, minWidth = 42, format = CompactNumber },
+        { id = "taken", title = "承伤", field = "taken", visible=settings.trackDamage~=false, size = "fixed", width = 76, minWidth = 42, format = CompactNumber },
         { id = "deaths", title = "死亡", field = "deaths", size = "fixed", width = 46, minWidth = 28, getText=Score("deaths") },
     }
+end
+
+local function RankingColumnEnabled(columnId,settings)
+    if columnId=="damage" or columnId=="taken" then return settings.trackDamage~=false end
+    if columnId=="heal" then return settings.trackHealing~=false end
+    return true
 end
 
 local function CounterpartColumns(nameTitle)
@@ -164,7 +175,7 @@ local function Build(parent, route)
     -- 三个子页导航必须先于各自会换行的说明，且使用相同边距；切页时按钮不能随标题高度跳动。
     local statisticsScope=D:CombatStatisticsControls(root,"damage")
     D:PageHeader(root, "v3_dps_header", "战斗统计与分析 · 战斗总览",
-        "每人一行显示伤害、治疗、承伤、击杀玩家、死亡；汇总当前统计期，点击行查看技能明细。")
+        "每人一行显示已开启追踪的项目及击杀、死亡；明确归属与荣誉辅助合并计数。技能明细只列已确认的目标和技能。")
 
     local function NowMs() return math.max(0, tonumber(S.NowMs and S.NowMs()) or 0) end
     local clear
@@ -214,20 +225,40 @@ local function Build(parent, route)
         local stack = RSUI:VerticalBox({ id = "v3_dps_overview_stack", parent = panel, gap = 3 })
         local summary = RSUI:Text({ id = "v3_dps_overview_summary", parent = stack, text = "当前统计期 · 尚无数据",
             fontSize = 10, tone = "strong", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
-        local tableView = RSUI:TableView({
-            id = "v3_dps_overview_table", parent = stack, items = {}, rowHeight = 24, headerHeight = 24, desiredRows = 6,
-            columnGap=1,cellPaddingX=2,rowFontSize=10,headerFontSize=9,
-            scrollbar = true, selectable = true, selectionMode = "single", columnResize = true, headerInteractive = true, columns = RankingColumns(),
-            onSortChanged = function(columnId, direction, view)
-                if type(root.ApplyRankingSort) == "function" then return root:ApplyRankingSort(columnId, direction, view) end
-                return false
-            end,
-            onSelectionChanged = function(index)
-                if index ~= nil and type(root.SelectActor) == "function" then root:SelectActor(index) end
-            end,
-            slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
-        })
-        return { panel = panel, summary = summary, table = tableView }
+        local tableHost=RSUI:VerticalBox({id="v3_dps_overview_table_host",parent=stack,gap=0,
+            slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
+        local panelView={panel=panel,summary=summary,tables={},tableHost=tableHost}
+        function panelView:SyncTracking(settings)
+            local token=(settings.trackDamage~=false and "1" or "0")..(settings.trackHealing~=false and "1" or "0")
+            if self.trackingToken==token then return end
+            if self.table then
+                local first=self.table:GetVisibleRange()
+                self.pendingScroll=math.max(0,(tonumber(first) or 1)-1)
+                self.table:SetVisible(false)
+            end
+            -- TableView列在创建时固定，沿用历史页的四种有界布局，反复切换不重建控件。
+            local tableView=self.tables[token]
+            if not tableView then
+                local id=next(self.tables)==nil and "v3_dps_overview_table" or ("v3_dps_overview_table_"..token)
+                tableView = RSUI:TableView({
+                    id = id, parent = tableHost, items = {}, rowHeight = 24, headerHeight = 24, desiredRows = 6,
+                    columnGap=1,cellPaddingX=2,rowFontSize=10,headerFontSize=9,
+                    scrollbar = true, selectable = true, selectionMode = "single", columnResize = true, headerInteractive = true, columns = RankingColumns(settings),
+                    onSortChanged = function(columnId, direction, view)
+                        if type(root.ApplyRankingSort) == "function" then return root:ApplyRankingSort(columnId, direction, view) end
+                        return false
+                    end,
+                    onSelectionChanged = function(index)
+                        if index ~= nil and type(root.SelectActor) == "function" then root:SelectActor(index) end
+                    end,
+                    slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
+                })
+                self.tables[token]=tableView
+            end
+            self.table=tableView;self.trackingToken=token;tableView:SetVisible(true)
+        end
+        panelView:SyncTracking(Settings())
+        return panelView
     end
 
     local overviewPanel=RankingPanel()
@@ -359,6 +390,10 @@ local function Build(parent, route)
         end
         local supported={name=true,damage=true,taken=true,heal=true,kills=true,deaths=true}
         if not supported[columnId] then return false,"统计列不可用" end
+        if not RankingColumnEnabled(columnId,Settings()) then
+            if view then view:SetSortState(self.rankingSort.columnId,self.rankingSort.direction,false) end
+            return false,"当前统计列已关闭追踪"
+        end
         if columnId == "damage" or columnId == "taken" or columnId == "heal" then
             local settingsValue = Settings()
             if tostring(settingsValue.metric or "damage") ~= columnId then
@@ -471,6 +506,7 @@ local function Build(parent, route)
         local summaryText="明细 · " .. tostring(actor.name or actor.key) .. " · " .. ModeText(self.detailMode)
             .. " · " .. (self.selectedSide == "enemy" and "敌方" or "友方") .. " · " .. metricText
             .. " " .. CompactNumber(actor[detail.metric])
+        if (tonumber(detail.honorAssistedKills) or 0)>0 then summaryText=summaryText.." · 荣誉补记 "..tostring(detail.honorAssistedKills).." 次未确认目标/技能" end
         local token = tostring(detail.revision or 0) .. ":" .. tostring(actor.key) .. ":" .. tostring(detail.metric)..":"..self.detailMode..":"..tostring(detail.killRevision)
         local abilityRows = type(detail.abilities) == "table" and detail.abilities or {}
         local metricTotal = math.max(0, tonumber(actor[detail.metric]) or 0)
@@ -508,6 +544,11 @@ local function Build(parent, route)
 
     function root:RefreshStats()
         local settingsValue = Settings()
+        overviewPanel:SyncTracking(settingsValue)
+        if not RankingColumnEnabled(self.rankingSort.columnId,settingsValue) then
+            self.rankingSort={columnId=settingsValue.trackHealing~=false and "heal" or "kills",direction="desc"}
+        end
+        overviewPanel.table:SetSortState(self.rankingSort.columnId,self.rankingSort.direction,false)
         -- 单人一行的汇总先组合/排序，再按显示行数截取。
         -- 总览名单由 GetCombatOverview 唯一组合；此处只需未确认金额和状态，禁止重复构造四套排行。
         local projection = Feature:GetProjection({ mode = settingsValue.mode, metric = settingsValue.metric, summaryOnly = true })
@@ -532,6 +573,9 @@ local function Build(parent, route)
             self.overviewTotals,self.overviewTotalRows,self.overviewRowsToken=totals,#candidates,token
         end
         SetTableItems(overviewPanel.table,self.overviewRows,"dps:overview:"..token)
+        if overviewPanel.pendingScroll~=nil then
+            overviewPanel.table:SetScrollOffset(overviewPanel.pendingScroll);overviewPanel.pendingScroll=nil
+        end
         self:UpdateRankingLayout(selfOnly)
         local found
         if not self.pendingView then
@@ -545,9 +589,11 @@ local function Build(parent, route)
             end
             if not found then self.selectedActorKey,self.selectedSide,self.selectedRow=nil,nil,nil;overviewPanel.table:ClearSelection() end
         end
-        local labels={name="名称",damage="伤害",taken="承伤",heal="治疗",kills="击杀玩家",deaths="死亡"}
+        local analysis=S.Features and S.Features.CombatAnalytics
+        local countTitle=analysis and type(analysis.GetStatisticsCountTitle)=="function" and analysis:GetStatisticsCountTitle() or "击杀玩家"
+        local labels={name="名称",damage="伤害",taken="承伤",heal="治疗",kills=countTitle,deaths="死亡"}
         local label=(labels[self.rankingSort.columnId] or "伤害")..(self.rankingSort.direction=="asc" and "↑" or "↓")
-        overviewPanel.summary:SetText(TotalsText((selfOnly and "我的战斗总览 · " or "战斗总览 · ")..label,{totals=self.overviewTotals,totalRows=self.overviewTotalRows},#self.overviewRows))
+        overviewPanel.summary:SetText(TotalsText((selfOnly and "我的战斗总览 · " or "战斗总览 · ")..label,{totals=self.overviewTotals,totalRows=self.overviewTotalRows},#self.overviewRows,settingsValue))
 
         local unresolvedTotals = type(unresolved.totals) == "table" and unresolved.totals or {}
         local sideUnknownTotals = type(sideUnknown.totals) == "table" and sideUnknown.totals or {}
@@ -560,7 +606,8 @@ local function Build(parent, route)
         local widgetVisible = WidgetHost:IsVisible("combat.dps") == true
         showWidget:SetText(widgetVisible and "隐藏悬浮窗" or "显示悬浮窗")
         showWidget:SetEnabled(projection.enabled == true)
-        healthText:SetText("当前统计期 · 伤害汇总 PVP/PVE · 战绩"..(overview.statsAvailable and "开启" or "已关闭").." · PVP " .. tostring(N(h.classificationPVP))
+        local settings=Settings()
+        healthText:SetText("当前口径："..countTitle.." · 伤害"..(settings.trackDamage==false and "暂停" or "开启").." · 治疗"..(settings.trackHealing==false and "暂停" or "开启").." · 战绩"..(overview.statsAvailable and "开启" or "已关闭").." · PVP " .. tostring(N(h.classificationPVP))
             .. " · PVE " .. tostring(N(h.classificationPVE)) .. " · 治疗 " .. tostring(N(h.classificationHeal))
             .. " · 未知 " .. tostring(N(h.classificationUnknown)) .. " · 事件 " .. tostring(N(h.events)))
         statisticsScope:Render();modeToggle:Render(); metricSelector:Render()

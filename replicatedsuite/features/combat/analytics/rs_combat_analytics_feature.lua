@@ -99,7 +99,28 @@ function F:SetSelectedMetric(id)
 end
 function F:SetSelectedValueKey(id,key)
     if not PUBLIC_SET[id] then return false,"metric suspended" end
-    return PersistTransaction(function() return self:ApplyStoreRaw("selectedValue",id,key) end,"analytics_value:"..id)
+    local ok,err=PersistTransaction(function() return self:ApplyStoreRaw("selectedValue",id,key) end,"analytics_value:"..id)
+    if ok then EmitUpdated("selected_value:"..id) end
+    return ok,err
+end
+function F:SetHonorKillAmount(value,enabled)
+    -- 列表只控制荣誉辅助证据，不改变统一击杀数的展示口径。
+    local loaded,loadErr=self:EnsureStoreLoaded();if not loaded then return false,loadErr end
+    local amount=self:NormalizeHonorKillAmount(value)
+    if not amount then return false,"请输入1至1000000的整数荣誉值" end
+    local amounts=self:GetHonorKillAmounts();local found
+    for i,n in ipairs(amounts) do if n==amount then found=i;break end end
+    if enabled==true then
+        if found then return true end
+        if #amounts>=16 then return false,"最多配置16种击杀荣誉值" end
+        amounts[#amounts+1]=amount;table.sort(amounts)
+    else
+        if not found then return true end
+        table.remove(amounts,found)
+    end
+    local ok,err=PersistTransaction(function()self.State.honorKillAmounts=amounts;return true end,"honor_kill_amounts")
+    if ok then EmitUpdated("honor_kill_amounts") end
+    return ok,err
 end
 function F:SetMetricEnabled(id,enabled)
     if not PUBLIC_SET[id] then return false,"metric suspended" end
@@ -165,6 +186,9 @@ function F:DescribeDiagnosticDetail()
     local totals=history and history.state and history.state.totals or {}
     local hub=S.ModuleDiagnosticsHub
     return {available=true,scope=a and a:GetCollectionScope(),enabled=self.enabled==true,
+        honorKillAssistance={enabled=true,excludedAssistAmounts={3,12},matchAmounts=self:GetHonorKillAmounts()},
+        honorIngress=a and type(a.GetHonorIngressDiagnostics)=="function" and a:GetHonorIngressDiagnostics() or {available=false},
+        legacyHonorKillAmounts=type(self.State.honorKillAmounts)=="table" and self:GetHonorKillAmounts() or nil,
         analytics=a and a:GetHealth(),
         -- 本人资料由身份服务按业务事件有界采样；导出只看缓存，不在诊断 getter 中触发 Native 查询。
         systemKillEvidence=S.Services and S.Services.UnitIdentityV3 and type(S.Services.UnitIdentityV3.GetPlayerKillEvidence)=="function"
@@ -178,7 +202,7 @@ function F:DescribeDiagnosticDetail()
         history={storeId=history and history.StoreId,loaded=history and history.loaded==true,revision=history and history.revision,
             error=history and history.lastError,failures=history and history.failures,
             transfer=history and type(history.GetTransferDiagnostics)=='function' and history:GetTransferDiagnostics() or {available=false}, -- 覆盖历史导出/原生展示失败，纯读缓存。
-            totals={kills=totals.kills,inferredKills=totals.inferredKills,
+            totals={kills=totals.kills,inferredKills=totals.inferredKills,honorParticipations=totals.honorParticipations,honorKills=totals.honorKills,
                 deaths=totals.deaths,damage=totals.damage,taken=totals.taken,healing=totals.healing}}}
 end
 F.Commands=F.Commands or {}
@@ -210,14 +234,25 @@ Analytics():SetStatisticsPolicy(function()
     local ok,err=F:EnsureStoreLoaded();if ok~=true then return nil,err end
     if not F.PersonalHistory then return nil,"personal history unavailable" end
     ok,err=F.PersonalHistory:EnsureLoaded(true);if ok~=true then return nil,err end
-    local ids={"personal_history","kills"}
-    if Analytics():GetMetric("dps_core")~=nil then ids[#ids+1]="dps_core" end
-    -- 固定五项：金额统计与击杀/死亡共用原事实流，不受旧高级指标偏好影响。
+    local ids={"kills"}
+    local dps=S.Features and S.Features.DPS
+    local trackAmounts=true
+    if dps and type(dps.IsTrackingCategoryEnabled)=="function" then
+        ok,err=dps:EnsureStoreLoaded();if ok~=true then return nil,err end
+        trackAmounts=dps:IsTrackingCategoryEnabled("damage") or dps:IsTrackingCategoryEnabled("heal")
+    end
+    -- 击杀/死亡直接写个人历史，不依赖金额指标；只记战绩时真正释放 DPS 和金额历史的事件消费者。
+    if trackAmounts then
+        ids[#ids+1]="personal_history"
+        if Analytics():GetMetric("dps_core")~=nil then ids[#ids+1]="dps_core" end
+    end
     return {metrics=ids,scope=F:GetCollectionScope()}
 end)
 function F.Commands:SetMetricEnabled(id,value) return F:SetMetricEnabled(id,value) end
 function F.Commands:SetSelectedMetric(id) return F:SetSelectedMetric(id) end
 function F.Commands:SetSelectedValue(id,key) return F:SetSelectedValueKey(id,key) end
+function F.Commands:AddHonorKillAmount(value) return F:SetHonorKillAmount(value,true) end
+function F.Commands:RemoveHonorKillAmount(value) return F:SetHonorKillAmount(value,false) end
 function F.Commands:ClearMetric(id) return F:ClearMetric(id) end
 function F.Commands:ClearAll() return F:ClearAll() end
 function F.Commands:GetActorDetail(id,key,options) return F:GetActorDetail(id,key,options) end

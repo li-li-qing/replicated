@@ -227,6 +227,24 @@ local function IngressScalar(value)
     local finish=512;while finish>0 and (value:byte(finish+1) or 0)>=128 and (value:byte(finish+1) or 0)<192 do finish=finish-1 end
     return value:sub(1,finish).."<clipped>"
 end
+-- 原生荣誉目前只确认首参金额；保留本代最近32条原始标量，排查未来BUFF/助攻参数，不据未知字段推断归属。
+local honorIngress={rows={},next=1,count=0,evicted=0}
+local function CaptureHonorIngress(args,count,at)
+    local row={at=at,argCount=count}
+    for i=1,math.min(count,6) do
+        local value=args[i]
+        row["arg"..i]=type(value)=="number" and (value~=value or value==math.huge or value==-math.huge) and "<non_finite>" or IngressScalar(value)
+    end
+    honorIngress.rows[honorIngress.next]=row;honorIngress.next=honorIngress.next%32+1
+    if honorIngress.count<32 then honorIngress.count=honorIngress.count+1 else honorIngress.evicted=honorIngress.evicted+1 end
+end
+function A:GetHonorIngressDiagnostics()
+    local rows={};local first=honorIngress.count==32 and honorIngress.next or 1
+    for offset=0,honorIngress.count-1 do
+        local row={};for key,value in pairs(honorIngress.rows[(first+offset-1)%32+1]) do row[key]=value end;rows[#rows+1]=row
+    end
+    return {events=rows,limit=32,evicted=honorIngress.evicted,coverage="原生荣誉入参证据；未知尾参不作为击杀/助攻判定。"}
+end
 local function RecordDeathIngress(runtime,fact,reason)
     if fact.category~="death" then return end -- 团战伤害热路禁止生成逐事件诊断行。
     deathIngress.counters[reason]=(deathIngress.counters[reason] or 0)+1
@@ -309,29 +327,41 @@ local function PlayerName()
     return ""
 end
 function A:_OnNativeEvent(eventName, ...)
+    if #(self.nativePlans[eventName] or {})==0 then return false end
     local args, count = { ... }, select("#", ...)
-    local caster = DetectCasterToken(eventName, args, count)
+    -- HPW 给的是本人的战争荣誉增量，不含施法者 token；不能套用施法事件的参数布局。
+    local honor=eventName=="PLAYER_HONOR_POINT_CHANGED_IN_HPW"
+    local caster = honor and "player" or DetectCasterToken(eventName, args, count)
     if caster ~= "player" then return false end
     self.nativeFacts = self.nativeFacts + 1
-    local skillId = DetectSkillId(args, count)
+    local skillId = not honor and DetectSkillId(args, count) or nil
     local catalog = S.Data and S.Data.CombatAbilityCatalog or nil
     local skill = type(catalog) == "table" and catalog:GetSkill(skillId) or nil
     local fact = {
         schemaVersion=1, native=true, eventName=tostring(eventName or ""),
         kind=eventName == "SPELLCAST_START" and "cast_start" or (eventName == "SPELLCAST_STOP" and "cast_stop" or (eventName == "SPELLCAST_SUCCEEDED" and "cast_succeeded" or "native_event")),
-        receivedAt=math.max(0, tonumber(S.NowMs and S.NowMs()) or 0), sourceName=PlayerName(), casterToken=caster,
+        receivedAt=math.max(0, tonumber(S.NowMs and S.NowMs()) or 0), sourceName=honor and tostring(S.Services.UnitIdentityV3 and S.Services.UnitIdentityV3.player and S.Services.UnitIdentityV3.player.name or "") or PlayerName(), casterToken=caster,
         abilityId=skillId, abilityName=skill and tostring(skill.name or "") or "", rawArgCount=count,
         confidence=skillId ~= nil and "self_native_catalog_match" or "self_native_event_only",
     }
+    if honor then
+        CaptureHonorIngress(args,count,fact.receivedAt)
+        fact.kind="war_honor_delta"
+        local delta=args[1]
+        fact.amount=type(delta)=="number" and delta==delta and delta~=math.huge and delta~=-math.huge and delta or nil
+        fact.confidence="native_war_honor_delta"
+    end
+    local amount=fact.amount
     local sv,sn,se,sk,sr,ss,sc,si,sa,sg = fact.schemaVersion,fact.native,fact.eventName,fact.kind,fact.receivedAt,fact.sourceName,fact.casterToken,fact.abilityId,fact.abilityName,fact.confidence
     local changed = false
     for _, id in ipairs(self.nativePlans[eventName] or {}) do
         local metric = self.metrics[id]
         if metric and type(metric.OnNativeFact) == "function" then
             local ok, result = xpcall(function() return metric.OnNativeFact(metric, fact, A) end, Trace)
-            if fact.schemaVersion~=sv or fact.native~=sn or fact.eventName~=se or fact.kind~=sk or fact.receivedAt~=sr or fact.sourceName~=ss or fact.casterToken~=sc or fact.abilityId~=si or fact.abilityName~=sa or fact.confidence~=sg then
+            if fact.schemaVersion~=sv or fact.native~=sn or fact.eventName~=se or fact.kind~=sk or fact.receivedAt~=sr or fact.sourceName~=ss or fact.casterToken~=sc or fact.abilityId~=si or fact.abilityName~=sa or fact.confidence~=sg or fact.amount~=amount then
                 self.metricMutations = self.metricMutations + 1
                 fact.schemaVersion,fact.native,fact.eventName,fact.kind,fact.receivedAt,fact.sourceName,fact.casterToken,fact.abilityId,fact.abilityName,fact.confidence=sv,sn,se,sk,sr,ss,sc,si,sa,sg
+                fact.amount=amount
                 Emit("error", "COMBAT_METRIC_MUTATED_NATIVE_FACT", "战斗分析指标修改了共享 NativeFact，已恢复", { metric=id,event=eventName })
             end
             if ok ~= true then self.metricErrors=self.metricErrors+1; Emit("error","COMBAT_METRIC_NATIVE_FAILED","战斗分析指标处理原生增强事件失败",{metric=id,event=eventName,error=tostring(result)})

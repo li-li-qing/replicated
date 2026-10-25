@@ -28,7 +28,7 @@ G:RegisterSequenceCase("v3_m16_dps_shared_analytics_contract", function()
     local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.dps") or nil
     if store == nil or tostring(store.owner or "") ~= "v3.dps"
         or tostring(store.scope or "") ~= tostring(S.Persistence.Scope.Account)
-        or tonumber(store.schemaVersion) ~= 4 then
+        or tonumber(store.schemaVersion) ~= 5 then
         return Fail("store_contract")
     end
     if type(F.State) ~= "table" or type(F.State.widgetWindow) ~= "table" or type(F.State.widgetVisible) ~= "boolean"
@@ -60,7 +60,8 @@ G:RegisterSequenceCase("v3_m16_dps_shared_analytics_contract", function()
     if type(settings) ~= "table" or (tostring(settings.mode) ~= "PVE" and tostring(settings.mode) ~= "PVP")
         or (tostring(settings.side) ~= "friendly" and tostring(settings.side) ~= "enemy")
         or (tostring(settings.metric) ~= "damage" and tostring(settings.metric) ~= "taken" and tostring(settings.metric) ~= "heal")
-        or tonumber(settings.displayRows) == nil or type(settings.alwaysShowSelf) ~= "boolean" then
+        or tonumber(settings.displayRows) == nil or type(settings.alwaysShowSelf) ~= "boolean"
+        or type(settings.trackDamage) ~= "boolean" or type(settings.trackHealing) ~= "boolean" then
         return Fail("settings_contract")
     end
     if tonumber(settings.displayRows) < 1 or tonumber(settings.displayRows) > 150 then return Fail("settings_range") end

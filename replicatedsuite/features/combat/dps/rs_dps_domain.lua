@@ -522,6 +522,24 @@ local function RemovePending(key)
     return true
 end
 
+-- 关闭一类采集不应丢失另一类尚待确认的事件；只放弃关闭类别的重放权，保留已计金额。
+function A:DiscardPendingCategory(category)
+    local removed = 0
+    for key, row in pairs(self.pendingRows) do
+        if row.category == category then
+            row.pending = false
+            self.pendingRows[key] = nil
+            removed = removed + 1
+        end
+    end
+    if removed > 0 then
+        self.pendingCount = math.max(0, self.pendingCount - removed)
+        CompactPendingOrder(true)
+        self.revision = self.revision + 1
+    end
+    return true
+end
+
 local function EvictOldestPending()
     while A.pendingHead <= #A.pendingOrder do
         local key = A.pendingOrder[A.pendingHead]
@@ -642,6 +660,9 @@ function A:OnCombatFact(fact)
     if F.enabled ~= true or type(fact) ~= "table" then return false end
     local category = tostring(fact.category or "")
     if category ~= "damage" and category ~= "heal" then return false end
+    -- 在关系识别、技能明细和重放分配之前截断关闭的采集类别。
+    local settings = F:GetSettings()
+    if (category == "damage" and settings.trackDamage == false) or (category == "heal" and settings.trackHealing == false) then return false end
     local amount = tonumber(fact.amount) or 0
     if amount < A.Const.MIN_EFFECTIVE_AMOUNT then return false end
 

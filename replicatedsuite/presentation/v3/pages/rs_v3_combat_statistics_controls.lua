@@ -49,6 +49,12 @@ function D:CombatStatisticsControls(parent,active)
         set=function(value) return F.Commands:SetCollectionScope(value) end,
         slot={size="fixed",width=202}})
     if not scope then error(scopeErr or "统计范围切换器不可用") end
+    -- 页被缓存后，旧页的点击回调仍会改自己的高亮；再次显示时按所属子页校正。
+    local renderScope=scope.Render
+    function scope:Render(...)
+        navigation:Render(active)
+        return renderScope(self,...)
+    end
     UI:Text({id="v3_statistics_"..active.."_hint",parent=group,text="默认只统计自己，不统计助攻。切换范围重置实时排行，个人历史保留。",
         fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=16}})
     return scope

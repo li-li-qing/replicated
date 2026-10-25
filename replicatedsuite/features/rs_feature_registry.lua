@@ -250,11 +250,12 @@ Add("life_daily_stats", "home.daily_stats", "今日收支", "home", 15, "独立�
     evidence="Client UI dump chat_msg_event.lua defines PLAYER_MONEY/HONOR/LIVING direct deltas; exp_bar_set.lua defines EXP_CHANGED(stringId, expNum, expStr); combat_text.lua consumes player expStr directly as gained EXP; RU diagnostics already match resource-event payload shapes",
 })
 
-Add("combat_stats", "combat.stats", "战斗统计与分析", "combat", 10, "统计伤害、治疗、承伤、玩家击杀与死亡。每人一行，共用一次采集。默认只统计自己，可选所有人，个人历史长期保存在本地。", {
+Add("combat_stats", "combat.stats", "战斗统计与分析", "combat", 10, "统计伤害、治疗、承伤、击杀和死亡。明确归属与本人野外荣誉辅助合并为同一个击杀数，排除已知助攻奖励；个人历史长期保存在本地。", {
     preferenceGroup = { "combat_stats", "combat_analytics" },
     status = "migrated_m16", lifecycle = "independent", authority = "v3.dps + v3.combat_analytics", diagnosticSources = { "dps_v3" },
     widgetCapable = true, settingsCapable = true,
-    currentImplementation = "每人一行显示伤害、治疗、承伤、玩家击杀、死亡，自身/全员均只计明确归属；永久个人历史与旧指纹验证迁移，旧推断保留但不计入明确击杀合计；玩家明确击杀已实机通过（游戏需开启显示战斗信息）；技能击杀次数与玩家名单仅保留当前统计期，技能未确认单列，不猜最后一击；死亡/归属通知合并去重；首屏与短面板明细自适应，可滚动；只读布局/击杀来源诊断",
+    currentImplementation = "统一击杀：明确归属优先，荣誉辅助在短暂等待后补记；前后通知一对一配对，同一人头不重复累加，已知助攻3/12排除，仅匹配已确认奖励；不读取聊天框重复文本；旧荣誉选择回退统一击杀，旧章及独立原值保持；永久个人历史与旧指纹迁移，技能/目标明细不编造；有界来源诊断",
+    remainingCapability = "荣誉事件缺少目标ID，前后配对使用8秒补证窗；已确认击杀金额以外的BUFF奖励不猜测。助攻出现新金额或归属超窗迟到仍需实机核对。",
     evidence = "RU 20261007-090816: 7 confirmed player kills live/history; 20261007 user retired NPC kill statistics and probes; genuine schema1/schema2 history and retired preference integrity regressions; skill-victim bounded drill-down + first-entry layout regressions",
 })
 Add("combat_analytics", "combat.analytics", "战斗分析", "combat", 15, "玩家击杀、死亡与个人历史，和伤害统计共享单一 CombatEventBus；助攻及高级分析暂时停止计算。", {

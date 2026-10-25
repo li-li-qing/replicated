@@ -53,7 +53,9 @@ for _,id in ipairs({'encounter','performance','casts','control','songcraft','uti
     assert(F.Commands:ClearMetric(id)==false,'stale clear command must not clear the basic kill/death session')
 end
 assert(A.activeMetrics.kills and A.activeMetrics.dps_core and A.activeMetrics.personal_history,'only the shared basic counters and history run')
-assert(next(S.Events.native)==nil,'basic statistics must not subscribe to cast/aura events')
+for eventName in pairs(S.Events.native) do
+    assert(eventName=='PLAYER_HONOR_POINT_CHANGED_IN_HPW','basic statistics subscribed to cast/aura events')
+end
 assert(#A:ListMetrics(false)==1 and A:ListMetrics(false)[1].id=='kills','public analytics list excludes suspended metrics')
 assert(F:GetSelectedMetric()=='kills' and F:GetSelectedValueKey('kills')=='kills','old control/assist selection must resolve to supported view')
 assert(F.Commands:SetSelectedValue('kills','assists')==false,'assist option must be rejected')
