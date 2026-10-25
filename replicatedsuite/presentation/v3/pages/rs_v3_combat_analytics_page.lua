@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗分析页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 面向玩家的分析工作台。表现层只消费 Feature 投影与有界角色明细；指标状态和原生战斗 API 均留在 CombatAnalytics Feature/Service 边界内。
--- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
--- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
-------------------------------------------------------------------------
+-- 总开关复用 PageHost 的按钮，刷新时不能改父级或重复绑定 OnClick。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local RSUI,D=S.RSUI,S.UIV3Design
@@ -121,8 +117,7 @@ local function Build(parent)
     if root==nil then error("战斗分析 PageRoot 创建失败："..tostring(rootErr or "unknown")) end
     root.subscribed=false;root.rows={};root.compareA=nil;root.compareB=nil;root.selectedRow=nil
 
-    -- 约束（2026-09-18）：战斗分析拥有自定义工具栏，不能依赖标准 PageHeader。
-    -- 这里仅提供标题行几何并调用共享 ModuleDiagnosticsButton；诊断 Authority/点击逻辑不得复制到业务页。
+    -- 自定义工具栏只提供标题行布局，诊断按钮复用 ModuleDiagnosticsButton。
     local titleRow=RSUI:HorizontalBox({id="v3_analytics_title_row",parent=root,gap=8,slot={size="fixed",height=27,hAlign="fill"}})
     RSUI:Text({id="v3_analytics_title",parent=titleRow,text="战斗统计与分析 · 专项分析",fontSize=16,tone="strong",slot={size="fill",fill=1,height=27}})
     D:ModuleDiagnosticsButton(titleRow,"v3_analytics_diagnostics",76)
@@ -140,9 +135,7 @@ local function Build(parent)
         set=function(id) local ok,err=Feature.Commands:SetSelectedMetric(id);if ok==true then root.compareA,root.compareB,root.selectedRow=nil,nil,nil;root:RefreshData() end;return ok,err end,
         slot={size="fill",fill=1}})
     if metric==nil then error("战斗分析项目下拉框创建失败："..tostring(metricErr or "unknown")) end
-    -- 指标值直接从多个选项中选择，不使用嵌套菜单。
-    -- 不能用看似“击杀”按钮却依赖下拉弹层的双步交互；
-    -- 第二次弹层交互容易被忽略，且在部分 RU 层级中不可靠。每个指标使用有界自适应按钮网格，仅显示当前指标的选择器；所有分段仍通过同一 Feature Command/Store 权威层写入。
+    -- 指标直接用按钮网格选择；嵌套下拉需要第二次点击，且在部分 RU 层级中不可靠。
     local metricToggle=RSUI:Button({id="v3_analytics_metric_toggle",parent=toolbar,text="统计设置",compact=true,slot={hAlign="fill",vAlign="fill"}})
     local clear=RSUI:Button({id="v3_analytics_clear",parent=toolbar,text="清空当前",compact=true,slot={hAlign="fill",vAlign="fill"}})
     local clearAll=RSUI:Button({id="v3_analytics_clear_all",parent=toolbar,text="清空实时战绩",compact=true,slot={hAlign="fill",vAlign="fill"}})

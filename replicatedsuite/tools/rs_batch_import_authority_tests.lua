@@ -1,14 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 批量导入归属测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护：真实 Core/Store/RSUI Diff；Native 仅模拟键入和第189项起缺失，不宣称RU内部硬上限。
-------------------------------------------------------------------------
+-- 真实 Core/Store/RSUI Diff；Native 仅模拟键入和第189项起缺失，不宣称RU内部硬上限。
 local passed,failed=0,0
 local function Test(name,fn)
  local ok,err=xpcall(fn,function(e)return tostring(e)..'\n'..debug.traceback()end)
@@ -39,7 +32,7 @@ local function Boot(options)
  'features/combat/buff_display/rs_buff_display_store.lua','features/combat/buff_display/rs_buff_display_projection.lua','features/combat/buff_display/rs_buff_display_feature.lua','features/combat/buff_display/rs_buff_display_management.lua','features/combat/buff_display/rs_buff_display_transfer_v2.lua'})do dofile(f)end
  local F=S.Features.BuffDisplay;return S,F,S.Persistence,io
 end
--- 中文维护（2026-10-07）：旧 transport 恢复用例直接验证仍注册的 Legacy Store/Core，
+-- 旧 transport 恢复用例直接验证仍注册的 Legacy Store/Core，
 -- 不再把当前 ImportBuiltinPack 的 A/B 提交误当旧 monolith 保存。这里只生成合成故障夹具，
 -- 不替代 schema5 冻结 canonical/hash 金样，也不修改原章或 production Feature mutation。
 local function LegacyLoad(P)
@@ -65,7 +58,7 @@ local function LegacyPackFixture(F,P,key)
   return true
  end)
 end
--- 中文维护（2026-10-07）：此处用真实 SaveStore 生成合成旧 Store 故障，原 fingerprint 不重盖；
+-- 此处用真实 SaveStore 生成合成旧 Store 故障，原 fingerprint 不重盖；
 -- 首次迁移也必须经 Persistence 验真，失败前不得建立 split Authority 或更改原始磁盘证据。
 Test('first migration rejects legacy canonical tamper before writing any split authority',function()
  local _,F,P,io=Boot({loss=false});assert(P:LoadStore('v3.buff_display')=='empty')
@@ -180,7 +173,7 @@ Test('transport5 readback reconstructs observed scoped auto prefix truncation on
   local target=raw.payload.settings.tracked.target.auto
   assert(player and target and player['__rs_t5:a']==1 and target['__rs_t5:a']==1)
   assert(player.count==392 and target.count==392 and type(player.chunks)=='table' and type(target.chunks)=='table')
-  -- 中文维护注释（.18.240 RED fixture）：复刻 .239 实机 RAW_STORE：player.auto 的
+  -- 复刻 .239 实机 RAW_STORE：player.auto 的
   -- marker/count 被 Native 整体省略，chunks 只保留前 19 块，且第 19 块再丢最后一个 token；
   -- target.auto 仍完整。此夹具只验证“严格物理前缀 + twin + stamped 全 Store 指纹”恢复，
   -- 不把任意稀疏/改值/合法 scope 分叉提升成恢复 Authority。
@@ -391,7 +384,7 @@ Test('other stores keep default physical transport3',function()
  local S,F,P,io=Boot();local value={n=1};local st=assert(P:RegisterV3Store({id='v3.test_default',owner='v3.test_default',key=P.V3KeyPrefix..'test_default',scope=P.Scope.Account,lifetime=P.Lifetime.Permanent,schemaVersion=1,budget={maxDepth=4,maxNodes=128,maxStringBytes=2048,maxEntriesPerTable=64},default=function()return value end,get=function()return value end,apply=function(v)value=v end}))
  assert(P:LoadStore(st.id));assert(P:SaveStore(st.id,{force=true,durable=true}));assert(io.disk[st.resolvedKey].__rsmeta.transportVersion==3)
 end)
--- 维护：坏分块必须在业务Normalize前拒绝；这些数据是合成故障，不是额外用户存档。
+-- 坏分块必须在业务Normalize前拒绝；这些数据是合成故障，不是额外用户存档。
 Test('noncanonical escape marker is rejected rather than normalizing forged content',function()
  local _,_,P=Boot();local value,err=P:DecodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=4},payload={name='__rs_t4:snot_reserved'}})
  assert(value==nil and tostring(err):find('transport',1,true),'invalid escaped token was accepted')

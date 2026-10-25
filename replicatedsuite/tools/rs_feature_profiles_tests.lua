@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能预设测试
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 local ROOT = './'
 
 local function deepcopy(v, seen)
@@ -57,7 +55,7 @@ local metas = {
 local byId = {}; for _,m in ipairs(metas) do byId[m.id]=m end
 S.FeatureRegistry = { categories={life={name='生活'},combat={name='战斗'},tools={name='工具'}} }
 function S.FeatureRegistry:Get(id) return byId[id] end
--- 中文维护（5.3 发布自检）：测试目录内的已登记功能均开放；真实 Runtime 仍执行访问检查，未知 ID 必须拒绝。
+-- 测试目录内的已登记功能均开放；真实 Runtime 仍执行访问检查，未知 ID 必须拒绝。
 function S.FeatureRegistry:IsAccessible(id) return byId[id] ~= nil end
 function S.FeatureRegistry:List() return metas end
 -- 当前方案浏览只列开放项；本宿主的目录全为开放项，复用同一目录而非绕过生产筛选调用。
@@ -213,7 +211,7 @@ truth(Runtime:IsEnabled('combat_unit_lines'),'battle opens unit lines')
 truth(Runtime:IsEnabled('tools_feature_profiles'),'profile feature remains enabled after battle')
 
 eq(#Profiles:GetQuickRows(),2,'both user-created profiles default to quick buttons')
--- 维护（2026-09-30，feature-profile-failure-evidence-1）：原子事务遇到坏业务 Store 时，
+-- 原子事务遇到坏业务 Store 时，
 -- 应准确报告失败目标/阶段/回滚结果，不自动删掉方案所选项，也不把未完成回滚写成成功。
 local failures, addedPassed = 0, 0
 local function Case(name, fn)
@@ -307,7 +305,7 @@ print('FEATURE_PROFILES_FAILURE_TESTS: '..addedPassed..' passed / '..failures..'
 assert(failures==0,'feature profile failure regressions')
 print('FEATURE_PROFILES_RUNTIME_TEST PASS')
 
--- 中文维护（2026-10-02）：使用真实 Router/Workspace 验证名单、标签、个人排序/隐藏，
+-- 使用真实 Router/Workspace 验证名单、标签、个人排序/隐藏，
 -- 并检查旧团队开启位的兼容解释与独立关闭的持久表达；不按实现代码硬造期望名单。
 do
     local function Add(meta)

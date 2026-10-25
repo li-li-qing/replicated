@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 死亡回顾页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
--- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
-------------------------------------------------------------------------
+-- 总开关复用 PageHost 的按钮，刷新时不能改父级或重复绑定 OnClick。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -17,12 +13,9 @@ local STORE_ID = "v3.death_review"
 local function Settings() return Feature:GetSettingsProjection() end
 local CLEAR_CONFIRM_TASK = "v3_death_review_clear_confirm_expire"
 
--- 维护（F2 页面隔离，2026-09-12）：持久化 Toggle 在 Build 时即 PrepareRead，不能等到
--- OnActivated 才检查存档。失败分支必须早于所有编辑器/Commands/历史投影，否则一次业务
--- 校验失败会升级为 required_component_build_failed 并隔离整页。
--- Authority：Feature/Core 决定能否读写；此页只呈现故障，不以默认值替换、不调用恢复/清档，
--- 不注册事件、不取记录分片、不启用战斗/Aura消费者。正常控件构造错误仍交给 BuildScope。
--- 保护页在本次 Generation 保持只读；完整覆盖补丁后通过既有“重新加载文件”重新准备。
+-- Build 时先 PrepareRead，再创建 Toggle、命令和历史投影。否则读档拒绝会被当作
+-- required_component_build_failed，导致整页隔离。失败后本代页面只读，不套默认值、
+-- 不清档或获取 Consumer；正常控件异常仍交给 BuildScope。恢复须重新加载文件。
 local function BuildProtectedPage(parent, route, reason)
     local makeRoot = D.ScrollablePageRoot or D.PageRoot
     local root, err = makeRoot(D, parent, "v3_page_death_review")
@@ -33,17 +26,17 @@ local function BuildProtectedPage(parent, route, reason)
     RSUI:Text({id="v3_death_review_protected_reason",parent=root,
         text="读取失败：" .. tostring(reason or "未知错误"),fontSize=10,tone="warn",overflow="wrap",maxLines=6,
         slot={size="auto",minHeight=64,hAlign="fill"}})
-    -- 维护（module-controls-diag-2）：保护页仍有宿主诊断按钮；不依赖错误的UIV3:Navigate，也不启用受保护模块。
+    -- 保护页沿用宿主诊断按钮。
     RSUI:Text({id="v3_death_review_protected_hint",parent=root,fontSize=10,tone="muted",overflow="wrap",maxLines=5,
         text="请保留原存档，不要重置配置。短报告未附原档时，无需重复复制相同 Hash；使用随包 tools/rs_udf_evidence.html 离线采集完整 udf 文件夹。采集前退出游戏，先查看文件清单与隐私提示。",
         slot={size="auto",minHeight=60,hAlign="fill"}})
-    function root:OnActivated() return true end -- 维护：不重读盘、不订阅、不隐藏写保护状态。
-    function root:OnDeactivated() return true end -- 维护：此分支没有消费者/编辑框需要释放。
+    function root:OnActivated() return true end -- 不重读盘、不订阅、不隐藏写保护状态。
+    function root:OnDeactivated() return true end -- 此分支没有消费者/编辑框需要释放。
     return root
 end
 
 local function Build(parent, route)
-    -- 维护：在任何持久化 Binding 创建之前准备；缺失/抛错也不允许编辑未读默认值。
+    -- 在任何持久化 Binding 创建之前准备；缺失/抛错也不允许编辑未读默认值。
     local called, loaded, loadErr = false, false, "死亡回顾读取入口不可用"
     if type(Feature.EnsureStoreLoaded)=="function" then
         called, loaded, loadErr = pcall(Feature.EnsureStoreLoaded,Feature)

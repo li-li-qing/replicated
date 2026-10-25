@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 基础界面原语
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -125,7 +123,6 @@ RSUI.ButtonActionContractVersion = 2
 RSUI.StableButtonHoverContractVersion = 2
 
 -- RU 父 Refresh/Layout 可能在光标未离开时派发虚假 OnLeave -> OnEnter；仅把 NORMAL/HIGHLIGHT 设同外观不足，不能立即清 hover 导致闪烁。
---
 -- 事件驱动离开使用短 one-shot 宽限，重入取消；提交时若提供已验证 IsMouseOver()，仍悬浮则保留高亮。不加 Tick/轮询，Release 已按 owner 移除任务。
 local STABLE_HOVER_LEAVE_GRACE_MS = 120
 
@@ -249,7 +246,7 @@ local function CreateButtonComponent(kind, spec, withIcon)
         self.spec.text = value
         return UI:SetText(self.root, value, self.owner)
     end
-    -- 维护（module-controls-diag-2）：仅增加语义状态色，保持原 Click/ActionRunner/输入生命周期。
+    -- 仅增加语义状态色，保持原 Click/ActionRunner/输入生命周期。
     function c:SetStatusTone(tone)
         if type(UI.SetButtonStatusTone) ~= "function" then return false end
         return UI:SetButtonStatusTone(self.root, tone, self.owner)
@@ -313,13 +310,10 @@ end
 RSUI:RegisterType("Button", function(spec) return CreateButtonComponent("Button", spec, false) end)
 RSUI:RegisterType("IconButton", function(spec) return CreateButtonComponent("IconButton", spec, true) end)
 
-------------------------------------------------------------------------
 -- UMG 风格原语注册显式替换旧工厂，同时保留公开类型名。
-------------------------------------------------------------------------
 
 -- ArcheAge/RU LABEL 是单行原语，虽公开 SetAutoResize 却无换行/行高契约；单标签写带 "\\n" 字符串可能让多行叠在同一基线。
 -- overflow="wrap" 由 EMPTY_WIDGET 下有界单行 LABEL 池渲染。
---
 -- 标签池延迟创建并设上限，长描述不能无限增 Native；仅事件/布局驱动，无 Tick/OnUpdate。
 function RSUI.NormalizeWrappedTextSizing(spec)
     spec = type(spec) == "table" and spec or {}
@@ -382,7 +376,7 @@ local function CreateWrappedText(spec)
         end
         label.rsLocalFontScale = tonumber(self.appearanceFontScale) or tonumber(self.root and self.root.rsLocalFontScale) or 1.0
         self.lineLabels[index] = label
-        -- 约束（2026-10-09）：延迟创建的换行子 Label 继承背景通道及其文字样式，避免首次布局后新行仍看不清。
+        -- 延迟创建的换行子 Label 继承背景通道及其文字样式，避免首次布局后新行仍看不清。
         if self.appearanceBackgroundOpacity ~= nil and S.Theme and type(S.Theme.SetBackgroundOpacity) == "function" then
             S.Theme:SetBackgroundOpacity(label, self.appearanceBackgroundOpacity)
         end

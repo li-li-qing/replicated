@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 装备与称号方案页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 双列配装编辑器：左侧管理栏保持紧凑，右侧把 19 个装备槽与称号分为两个各 10 行的语义组；较大行高优先方便快速配置。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -87,9 +84,7 @@ local function BuildPage(parent, route)
         "装备与效果称号属于同一套方案。右侧按防具/时装与饰品/武器/称号双列展示，点击任意行即可切换参与。",
         "刷新", function() Feature.Commands:RefreshProjection("page_manual"); root:Refresh(); return true end)
 
-    -- 维护（gear-plan-editor-1）：旧失败提示只在左栏最下方，短窗口会被 ScrollBox 隐藏，
-    -- 用户看到“点击无反应”。本行只投影命令结果，不拥有 Store；长详情同时进入原诊断日志。
-    -- 保留原底部状态区兼容，不把状态文字写回配置；高度固定，反馈不挤压输入控件。
+    -- 失败提示不能只在短窗滚不到的底部；此行显示命令回执，长详情另进诊断，固定高度不挤压输入。
     local actionFeedback = RSUI:Text({
         id = "v3_gear_action_feedback", parent = root, text = "先输入方案名称并点击“新建”；不填名称可自动命名。",
         fontSize = 10, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 23, hAlign = "fill" },
@@ -100,18 +95,14 @@ local function BuildPage(parent, route)
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
     })
 
-    ------------------------------------------------------------------------
     -- 左侧放置方案库与全部管理控件，利用短列表下方空间，让右侧几乎全部高度用于装备配置。
-    ------------------------------------------------------------------------
     local left = RSUI:Border({
         id = "v3_gear_left", parent = body, padding = 6, variant = "card", gradient = true,
         slot = { size = "fixed", width = 210, vAlign = "fill" },
     })
     -- 管理栏由带标题 GroupBox 组成可滚动堆栈，使各高度窗口均可操作，避免 14 个控件无分组平铺。
     -- 优先顺序：方案库 -> 当前方案的编辑/提交/应用 -> 参与范围预设 -> 屏幕快捷与吸附 -> 实时反馈。
-    -- 方案顺序与删除属于所选方案的身份管理，应位于方案库附近，不能埋在 ScrollBox 下方，
-    -- 否则短窗口/1024×768 首屏会看起来只有新建、没有删除。已有命令仍由 Gear/v3.gear.index 执行，
-    -- 不复制删除逻辑或改变 Store/schema；删除需二次确认且绑定具体 setId。下方分组通过滚动显示，不能裁切。
+    -- 顺序和删除紧靠方案库，短窗口无需滚动寻找；删除二次确认须绑定具体 setId。
     local leftStack = RSUI:ScrollBox({
         id = "v3_gear_left_scroll", parent = left, orientation = "vertical", gap = 10, padding = 4,
         scrollbar = true, reserveScrollbar = true, scrollbarWidth = 12, scrollbarGap = 3,
@@ -125,11 +116,9 @@ local function BuildPage(parent, route)
         return box, inner
     end
 
-    ------------------------------------------------------------------------
     -- 分组 1：方案库（数据来源与身份管理）。
-    ------------------------------------------------------------------------
     local gLib, gLibInner = GearGroup(leftStack, "v3_gear_group_library", "方案库")
-    -- 维护（gear-plan-editor-1）：Panel 是装饰原语，Base:Layout 只设置自身尺寸，
+    -- Panel 是装饰原语，Base:Layout 只设置自身尺寸，
     -- 不安排子布局。原 createRow 一直留在 1x1，输入/新建实际在其裁剪与命中边界外。
     -- Authority：Border → HorizontalBox 分配几何，TextInput 管理草稿/焦点，Commands 拥有新建。
     -- 仅替换本页错误的宿主，不全局改变 Panel 语义，也不改 Store/ID/保存格式。
@@ -146,7 +135,7 @@ local function BuildPage(parent, route)
         onSelectionChanged = function(_, _, view)
             if root.syncingPlanSelection == true then return end
             local nextId = view and type(view.GetSelectedKey) == "function" and view:GetSelectedKey() or nil
-            -- 维护（gear-selected-delete-1）：删除确认必须绑定发起确认时的 setId。用户在确认窗口
+            -- 删除确认必须绑定发起确认时的 setId。用户在确认窗口
             -- 内切换行时立即撤销确认，禁止“先确认 A、再切到 B、第二击删 B”的跨选择误删。
             -- 这里只重置页面瞬态，不触碰 Gear Authority/Store，也不引入 Timer/Tick。
             if tostring(root.selectedId or "") ~= tostring(nextId or "") and type(root.ResetDeleteConfirmation) == "function" then
@@ -167,25 +156,20 @@ local function BuildPage(parent, route)
         fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18 },
     })
 
-    -- 维护：改名行与新建行存在同一非布局 Panel 缺陷，沿用相同的 Border 布局责任。
+    -- 改名行与新建行存在同一非布局 Panel 缺陷，沿用相同的 Border 布局责任。
     -- 未选择方案时禁止改名输入，不修改已有名称；选择成功后先启用再写入选中方案的草稿。
     local nameHost = RSUI:Border({ id = "v3_gear_name_host", parent = gLibInner, variant = "soft", padding = 4, height = 34, slot = { size = "fixed", height = 34, hAlign = "fill" } })
     local nameRow = RSUI:HorizontalBox({ id = "v3_gear_name_row", parent = nameHost, gap = 4, padding = 0, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     local nameEdit = RSUI:TextInput({ id = "v3_gear_name_edit", parent = nameRow, value = "", placeholder = "选中方案后改名", maxLength = 36, height = 24, slot = { size = "fill", fill = 1, minWidth = 56, hAlign = "fill", vAlign = "center" } })
     local saveName = RSUI:Button({ id = "v3_gear_name_button", parent = nameRow, text = "改名", compact = true, height = 24, slot = { size = "fixed", width = 55, vAlign = "center" } })
 
-    -- 维护（gear-selected-delete-1）：选中方案的排序与删除入口紧跟方案表，保证无需滚动即可发现。
-    -- 权威归属/数据流：按钮 -> Feature.Commands -> Gear Authority -> v3.gear.index；删除成功后
-    -- Authority 再清理 payload 分片并发布 v3.gear.updated，页面本身从不直接改 F.State。
-    -- 兼容边界：沿用既有 DeleteSet/MoveSet 与存档格式，旧配置无需迁移。
+    -- 排序与删除放在方案表旁。按钮经 Feature Commands 执行，成功后由 Gear 清理分片并通知更新。
     local selectedActions = RSUI:HorizontalBox({ id = "v3_gear_selected_actions", parent = gLibInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
     local moveUp = RSUI:Button({ id = "v3_gear_up", parent = selectedActions, text = "上移", compact = true, slot = { size = "fill", fill = 1 } })
     local moveDown = RSUI:Button({ id = "v3_gear_down", parent = selectedActions, text = "下移", compact = true, slot = { size = "fill", fill = 1 } })
     local deleteButton = RSUI:Button({ id = "v3_gear_delete", parent = selectedActions, text = "删除选中", compact = true, slot = { size = "fill", fill = 1 } })
 
-    ------------------------------------------------------------------------
     -- 分组 2：当前方案（读取当前 -> 保存 -> 校验 -> 应用）。
-    ------------------------------------------------------------------------
     local gCur, gCurInner = GearGroup(leftStack, "v3_gear_group_current", "当前方案")
     local action1 = RSUI:HorizontalBox({ id = "v3_gear_actions_1", parent = gCurInner, gap = 4, slot = { size = "fixed", height = 25, hAlign = "fill" } })
     local capture = RSUI:Button({ id = "v3_gear_capture", parent = action1, text = "获取当前", compact = true, slot = { size = "fill", fill = 1 } })
@@ -194,9 +178,7 @@ local function BuildPage(parent, route)
     local validate = RSUI:Button({ id = "v3_gear_validate", parent = action2, text = "检查状态", compact = true, slot = { size = "fill", fill = 1 } })
     local apply = RSUI:Button({ id = "v3_gear_apply", parent = action2, text = "立即换装", compact = true, slot = { size = "fill", fill = 1 } })
 
-    ------------------------------------------------------------------------
     -- 分组 3：参与范围（快速参与预设）。
-    ------------------------------------------------------------------------
     local gPart, gPartInner = GearGroup(leftStack, "v3_gear_group_participation", "参与范围")
     local presets1 = RSUI:HorizontalBox({ id = "v3_gear_presets_1", parent = gPartInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
     local pAll = RSUI:Button({ id = "v3_gear_p_all", parent = presets1, text = "全部", compact = true, slot = { size = "fill", fill = 1 } })
@@ -206,9 +188,7 @@ local function BuildPage(parent, route)
     local pTitle = RSUI:Button({ id = "v3_gear_p_title", parent = presets2, text = "仅称号", compact = true, slot = { size = "fill", fill = 1 } })
     local pNone = RSUI:Button({ id = "v3_gear_p_none", parent = presets2, text = "清空参与", compact = true, slot = { size = "fill", fill = 1 } })
 
-    ------------------------------------------------------------------------
     -- 分组 4：屏幕快捷与吸附。
-    ------------------------------------------------------------------------
     local gSnap, gSnapInner = GearGroup(leftStack, "v3_gear_group_screen", "屏幕快捷与吸附")
     local screenButton = RSUI:Button({ id = "v3_gear_screen_button", parent = gSnapInner, text = "屏幕快捷按钮：--", compact = true, slot = { size = "fixed", height = 24, hAlign = "fill" } })
     local snapActions = RSUI:HorizontalBox({ id = "v3_gear_snap_actions", parent = gSnapInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
@@ -231,9 +211,7 @@ local function BuildPage(parent, route)
         end,
     })
 
-    ------------------------------------------------------------------------
     -- 分组 5：状态与反馈（运行事实与编辑状态）。
-    ------------------------------------------------------------------------
     local gStatus, gStatusInner = GearGroup(leftStack, "v3_gear_group_status", "状态与反馈")
     local runtimeStatus = RSUI:Text({
         id = "v3_gear_runtime_state", parent = gStatusInner, text = "运行：空闲",
@@ -244,9 +222,7 @@ local function BuildPage(parent, route)
         fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18 },
     })
 
-    ------------------------------------------------------------------------
     -- 右侧：几乎全部可用高度用于实际配置。
-    ------------------------------------------------------------------------
     local right = RSUI:Border({
         id = "v3_gear_right", parent = body, padding = 6, variant = "card", gradient = true,
         slot = { size = "fill", fill = 1, vAlign = "fill" },
@@ -341,7 +317,7 @@ local function BuildPage(parent, route)
         actionFeedback:SetText(text or "")
         actionFeedback:SetTone(tone or "muted")
     end
-    -- 维护：命令拒绝不仅显示在可见区域，也进入已有分页报告。只存动作/选中ID/错误，
+    -- 命令拒绝不仅显示在可见区域，也进入已有分页报告。只存动作/选中ID/错误，
     -- 不额外采集装备或记录输入名称；不解除写保护、不重试保存，以免重复创建。
     function root:CommandFailed(action, detail)
         self:SetStatus(tostring(detail or "方案操作失败"), "red")
@@ -356,7 +332,7 @@ local function BuildPage(parent, route)
     end
     function root:FindSelectedMeta() return self.selectedId and Feature:FindSet(self.selectedId) or nil end
 
-    -- 维护（gear-selected-delete-1）：确认状态只属于 Presentation 瞬态，不能进入 Store。
+    -- 确认状态只属于 Presentation 瞬态，不能进入 Store。
     -- Authority 是 selectedId + Gear Authority 当前行；任何选择切换/刷新/删除提交都清除 armedId。
     -- 不使用 Scheduler/OnUpdate 自动改按钮，避免为一次低频确认引入常驻生命周期；超时在下一次点击
     -- 时判定，超过窗口只会重新要求确认，不会执行删除。
@@ -570,7 +546,7 @@ local function BuildPage(parent, route)
     function root:CreateSet()
         local name = Trim(GetNativeText(createEdit))
         if name == "" then
-            -- 维护：count+1 会与删除后留下的“换装2”等重名。只在显式空名新建时扫描
+            -- count+1 会与删除后留下的“换装2”等重名。只在显式空名新建时扫描
             -- 已有投影（最多40项），选首个空缺名称；最终唯一性仍由 Gear Authority 验证。
             local names, rows = {}, Feature:GetRows()
             for _, row in ipairs(rows or {}) do names[tostring(row.name)] = true end
@@ -723,7 +699,7 @@ local function BuildPage(parent, route)
             return false
         end
 
-        -- 维护（gear-selected-delete-1）：删除成功后选择相邻方案，避免清空编辑上下文让用户误以为
+        -- 删除成功后选择相邻方案，避免清空编辑上下文让用户误以为
         -- 列表失效。fallback 只从删除前 Authority 投影取稳定 id，不保存到 Store；真正删除仍由
         -- Feature.Commands:DeleteSet 原子提交 index。若 payload 物理清理失败，Authority 已有诊断并
         -- 保持索引删除结果，页面不得自行回滚或直接操作分片。
@@ -754,7 +730,7 @@ local function BuildPage(parent, route)
     end
 
     -- 按钮仅保留一个 RSUI 持有的原生 OnClick；后绑定的页面操作写入组件 action slot，使 enabled/release/event mux 的边界仍有效。
-    -- 维护：新建/改名沿用其余按钮的 ActionRunner 生命周期，原生 OnClick 仍只归 RSUI。
+    -- 新建/改名沿用其余按钮的 ActionRunner 生命周期，原生 OnClick 仍只归 RSUI。
     -- 不以输入失焦触发业务写入；拒绝与忙碌状态必须回传，而非“点击过就成功”。
     local bindings = {
         { createButton, function() return root:CreateSet() end, "gear.create", "新建中…" },
@@ -782,7 +758,7 @@ local function BuildPage(parent, route)
         button.onClick = handler
     end
 
-    -- 维护：旧页没有总开关，显式补齐；FeatureRuntime拥有保存和启停回滚，页面仅持有page:gear租约。
+    -- 旧页没有总开关，显式补齐；FeatureRuntime拥有保存和启停回滚，页面仅持有page:gear租约。
     local master = D:ModuleToggleButton({ id = "v3_gear_feature_toggle", parent = root, text = "启动", compact = true,
         slot = { size = "fixed", height = 30, width = 92 }, onClick = function()
             local runtime = S.FeatureRuntime
@@ -802,7 +778,7 @@ local function BuildPage(parent, route)
         end })
     if master == nil then return nil, "gear_master_control_failed" end
 
-    -- 维护（module-controls-diag-2）：AcquireTransient原本会自动Enable；新增总开关后，
+    -- AcquireTransient原本会自动Enable；新增总开关后，
     -- 页面激活只在实际enabled时获取原租约，禁止导航改变用户的关闭选择。显式操作/快捷按钮原语义保留。
     function root:OnActivated()
         Feature.Commands:SetDisableWhenIdle(false)
@@ -824,7 +800,7 @@ local function BuildPage(parent, route)
     end
 
     function root:OnDeactivated()
-        -- 维护：PageHost缓存页面并不等同Release。离页必须释放两个输入的键盘租约；
+        -- PageHost缓存页面并不等同Release。离页必须释放两个输入的键盘租约；
         -- EndEditing不调用业务新建/改名，不把未点击确认的草稿写入永久Store。
         createEdit:EndEditing("gear_page_deactivated")
         nameEdit:EndEditing("gear_page_deactivated")

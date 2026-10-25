@@ -1,15 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 完整覆盖活动 Feature、业务数据层、Store、
 -- 鲸歌湾及庇护岛实时区域映射、独立任务进度和浮窗生命周期。
-------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -322,7 +315,8 @@ Test("aegis conflict derives an upcoming timeline occurrence without moving its 
     local event = assert(F.Authority:GetRow("dynamic:zone:102:aegis"), "missing Aegis dynamic occurrence")
     assert(event.presentationSection == "timeline")
     assert(event.timelineState == "upcoming")
-    assert(event.secondsUntilStart == 30 * 60)
+    assert(event.secondsUntilStart == 36 * 60, "Aegis spawn follows war start by six minutes")
+    assert(event.status == "36分钟后出怪")
     assert(event.questKey == "aegis")
 end)
 

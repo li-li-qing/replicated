@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 冷却观察测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- CooldownObservationV3/V4 离线契约测试：Buff/Aura ID 不能作为冷却 ID；常规运行不依赖 CombatEventBus；倒计时仅由原生 X2Skill 冷却 Getter 提供。
 -- 通过测试不代表已静态掌握所有 RU 实际 Skill ID。
-------------------------------------------------------------------------
 unpack=unpack or table.unpack
 ReplicatedSuite={Generation=1,Services={},Data={},NowMs=function() return ReplicatedSuite._now or 0 end,SafeTraceback=function(e)return tostring(e)end}
 local S=ReplicatedSuite
@@ -137,13 +134,8 @@ assert(C:AcquireConsumer("empty",{skillIds={},mateIds={}}))
 assert(C.trackedCount==0 and C.taskActive==false and C.probeTaskActive==false,"empty selection must stay zero-cost")
 assert(C:ReleaseConsumer("empty"))
 
--- 中文维护注释（2026-09-28，native-dependency-ownership-4，FND-016 收口）：
--- 本段新增 X2Skill lazy ownership 覆盖。上面所有断言运行时 S.ApiImports 不存在，服务按 fail-soft
--- 记录 imports_unavailable 并继续工作（这正是“诊断环境不该假造导入能力”的期望行为）。
--- 这里显式提供 Imports 替身，证明：
---   (1) 第一个 consumer 进入时服务自己取得 X2Skill owner；
---   (2) 幂等，不重复 AcquireApi；
---   (3) 导入失败保持 fail-soft，消费需求仍然建立。
+-- 前面的宿主没有 Imports，服务应记录不可用并继续。这里补上导入替身，
+-- 检查首个消费者取得 X2Skill、重复领取幂等，以及导入失败不丢失消费需求。
 local acquireCalls={}
 S.ApiImports={}
 function S.ApiImports:AcquireApi(owner,name)

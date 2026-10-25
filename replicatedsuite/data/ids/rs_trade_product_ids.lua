@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 贸易产物身份注册
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- productItemId 属于物品命名空间，禁止与 craftId 混淆；这里只注册直接核实的 ArcheRage 数据库身份。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 if S.GameDataRegistry == nil then return end

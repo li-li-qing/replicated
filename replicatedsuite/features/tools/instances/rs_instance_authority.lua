@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 副本浏览业务权威
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 基于InstanceCatalogV3的Presentation投影，禁止Native API调用。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}

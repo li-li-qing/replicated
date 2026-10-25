@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · Buff 纯布局复用回归
 -- 真实 Feature / Renderer / 调度宿主；只替换 Native 图形与游戏事实，不读写玩家存档。
 -- 缓存只拥有静态几何，不能缓存位置、图标/时间事实或已接受的 Native 提交结果。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

@@ -1,12 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 首领机制提示功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
--- Authority 边界：本文件不拥有 Combat 事实（事实归 CastingObservationV3 / AuraObservationV3 与
--- AlertsService），只按固定目录/四个 scope 做有界观察，并把“没证据”如实标成未知。
-------------------------------------------------------------------------
+-- CastingObservationV3/AuraObservationV3 和 AlertsService 提供事实；此处按固定目录和四个 scope 有界观察，缺证据保持未知。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory
@@ -466,9 +461,7 @@ do
     BossAlerts.RuleManagementContractVersion = 1
 end
 
--- 把首领机制的诊断投影
--- 注册到 Core 的取值表。原先 core/rs_diagnostics.lua 直接按 id 读取它（属 CORE_FEATURE 债务）；
--- 现在 Core 只按“用途名”取值，业务 Feature id 只出现在本目录。provider 每次实时调用、不缓存。
+-- 向 Core 注册实时诊断 provider，每次现读，不缓存 Feature 状态。
 local providers = S.FeatureHealthProviders
 if type(providers) == "table" then
     providers:Register("boss_alerts_diagnostics", function()

@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 死亡复盘完整性失败测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 维护（2026-09-30，death-index-proof-1）：真实 Store/Core + 内存 Native 边界。
+-- 真实 Store/Core + 内存 Native 边界。
 -- 所有输入均为合成故障注入，不冒充玩家 3205A259 原档；不写入运行时 TOC。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = pcall(fn)

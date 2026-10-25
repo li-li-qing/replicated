@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动详情追踪测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 开发期离线测试，不进入 toc.g。Store 只保存玩家选中的 MAIN 目标，任务完成事实仍由 QuestProgressV3 提供。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Check(name, fn)
     local ok, err = pcall(fn)

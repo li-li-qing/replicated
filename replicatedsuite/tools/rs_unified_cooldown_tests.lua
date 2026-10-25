@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 统一冷却测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 统一本地冷却来源测试，使用真实 Demand、Events、Scheduler 和 Feature，仅原生返回值为模型。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function T(name,fn)local ok,e=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS unified-CD '..name)else failed=failed+1;print('FAIL unified-CD '..name..': '..tostring(e))end end
 local function Boot()

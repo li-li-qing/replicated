@@ -1,21 +1,15 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 人员备注名单观察服务
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 恢复用户实测有效的打开路径：原生好友/远征成员页请求后的有效名单回包带出备注窗；窗口Getter全nil不阻断这条链路。
--- 上线、家族/黑名单成员变化只更新数据；原生团队信息的无参用户请求可带出团队备注，不代表社交可见性；不主动
--- RequestFriendList或远征分页请求。
--- 整个 UIC_COMMUNITY 可见性复用拍卖的只读探测；可读时只按窗口打开边沿启窗、关闭边沿收起，未知时保留有效回包路径。
--- Service拥有名单/可见性事实和响应序号，Presentation拥有独立浮窗与草稿；不上调名单请求频率。
-------------------------------------------------------------------------
+-- 好友/远征的有效名单响应可带出备注窗，窗口 getter 全空时仍保留这条已实测路径；背景成员变化只更新数据。
+-- 团队无参用户请求可带出团队备注，但不代表社交窗口可见；不主动请求好友或远征分页。
+-- UIC_COMMUNITY 可读时按打开/关闭边沿启收窗口；Service 保存名单与响应序号，Presentation 管浮窗和草稿。
 if ReplicatedSuite==nil or ReplicatedSuite.BootError~=nil then return end
 local S=ReplicatedSuite
 S.Services=S.Services or {}
 local V={topic="v3.player_notes_surface.updated",taskId="v3_player_notes_surface",started=false,revision=0,openRevision=0,
     eventName="FRIENDLIST_INFO",eventSubscribed=false,friendListEvents=0,friendListRevision=0,invalidEvents=0,
-    -- 2026-10-13 MD1.1 对照证明带 self 调用可读取拍卖五字段，而社交及四个页签分类均零返回。
-    -- 临时多形式调用审计默认停用，避免每次重载重复无效试读；标准可见性观察和有效名单回包降级路径继续独立运行。
+    -- MD1.1 实机：拍卖五字段可读，社交和四页签均无返回。多形式调用审计默认关闭，标准观察与名单回包独立工作。
     nativeCallAuditEnabled=false,
     snapshot={popupRequested=false,status="idle",source="friend_list_event"}}
 -- 服务仅拥有脱离原始回包的只读名单事实；窗口/草稿/存档仍属于Presentation和Feature。
@@ -197,8 +191,7 @@ function V:ReadFriendList()
     return true,CopyList(self.friendList),self.friendListCount
 end
 function V:ReadFamilyList()
-    -- （2026-10-13）家族名单是共享只读事实，Native lazy所有权收口到名单Service；
-    -- 只有选家族/对应事件刷新才取得FAMILY，不升为备注启动硬依赖，也不在此读取/保存个人备注。
+    -- 仅选择家族或对应刷新事件时惰性导入 FAMILY，不作为备注启动必需依赖。
     local imports,api=S.ApiImports,S.Api
     if not self.started then return false,nil,nil,"名单观察已停止"end
     if not imports or type(imports.AcquireApi)~="function"then return false,nil,nil,"家族名单导入服务不可用"end
@@ -269,8 +262,7 @@ function V:RefreshNativeVisibility()
     if known==true then
         self.visibilityKnownSamples=(self.visibilityKnownSamples or 0)+1;self.visibilityUnknownStreak=0
     else self.visibilityUnknownStreak=(self.visibilityUnknownStreak or 0)+1 end
-    -- MD1.1 实机采样117次后 UIC_COMMUNITY 的 getter 仍全空，且有效回包也未观察到原生打开。
-    -- 连续8次未知后降到2秒，恢复可读立即回到250ms；只改本服务任务，不缓存“已关闭”、不停止对晚创建窗口的检查。
+    -- 社交 getter 连续 8 次未知后降至 2s，恢复可读即回到 250ms。未知不能缓存成关闭，仍须等待晚创建窗口。
     local interval=self.visibilityUnknownStreak>=8 and 2000 or 250
     if self.polling and interval~=self.visibilityIntervalMs and S.Scheduler and type(S.Scheduler.SetTaskInterval)=="function"then
         if S.Scheduler:SetTaskInterval(self.taskId,interval)==true then self.visibilityIntervalMs=interval end
@@ -354,9 +346,8 @@ function V:Start()
     self.eventSubscribed=Subscribe(self.eventName,function(owner,first,list)return owner:OnFriendList(first,list)end)
     self:Publish({popupRequested=false,status=self.eventSubscribed and "awaiting_event"or "unavailable",source="friend_list_event",
         reason=self.eventSubscribed and "waiting_friend_list"or "friend_event_unavailable"},true)
-    -- 复用拍卖侧窗的 250ms 共享 Scheduler；每次最多两次 ADDON 读取，兼容父链最多9层，不读名单/请求服务器/枚
-    -- 举窗口。
-    -- 即便初次返回 unknown 仍保留观察，因为社交可能尚未创建；停止/旧代次回调立即失效，不新增每帧 OnUpdate。
+    -- 共用 Scheduler 每 250ms 观察，最多两次 ADDON 读取和 9 层父链，不请求名单或枚举窗口。
+    -- 初次 unknown 也继续观察；停止或换代后旧回调立即失效。
     local reader=S.Services.AuctionSurfaceV3;local scheduler=S.Scheduler
     if reader and type(reader.ReadNativeVisibility)=="function"and scheduler and type(scheduler.AddTask)=="function"then
         self.polling=scheduler:AddTask(self.taskId,250,function()

@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 远程配置迁移测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 远程武器发行默认值兼容回归，使用真实 BuffDisplay Store 和内存 SaveData 宿主，不伪造原生装备事实。
-------------------------------------------------------------------------
 local H = dofile('tools/rs_udf_numeric_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)

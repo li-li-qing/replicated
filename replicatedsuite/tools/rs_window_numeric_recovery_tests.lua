@@ -1,17 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 窗口数值恢复测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护（2026-09-12）：物理版本按Store注册策略验收；仍比较完整配置，不放宽业务指纹/重载一致性。
--- 维护：F2合成旧档回归，不进入TOC；共用真实Store/Persistence/API，仅Native为内存盘。
--- 数值降精度模型来自已验证跑商样本，但本文件没有两份F2用户原档，不能声称实机修复。
--- 保留老schema5 golden；期望值按Native读出状态只改已匹配的叶子，不伪称全部浮点精度还原。
-------------------------------------------------------------------------
+-- 用真实 Store 和存档层检查合成 F2 旧档，仍要比较完整配置和业务指纹。
+-- 保留 schema5 的固定样本，只修改已证明匹配的数值叶子；没有用户原档的部分不作实机结论。
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=pcall(fn)
@@ -58,7 +49,7 @@ local function Boot(disk,loss)
     dofile('ui/framework/rs_ui_floating_surface.lua')
     dofile('features/combat/buff_display/rs_buff_display_store.lua')
     dofile('features/combat/death_review/rs_death_review_store.lua')
-    -- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役。
+    -- life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役。
     dofile('features/life/shared/rs_life_slice_factory.lua')
     dofile('features/life/trade/rs_trade_feature.lua')
     return S,S.Persistence,io
@@ -87,11 +78,8 @@ local function Legacy(id,schema,x,y)
     if id=='v3.buff_display' and schema==5 then
         canonical=Copy(value)
     elseif id=='v3.buff_display' and schema==6 then
-        -- 中文维护注释（schema7 后的历史 F2 夹具）：st.default()/migrate 已是当前 schema7，
-        -- 不能再拿当前 canonical 冒充 schema6 原章，否则会凭空加入 gearScoreFormat 并让
-        -- historical numeric recovery 测到一个现实中从未存在的存档。先移除 schema7 新字段，
-        -- 再调用生产 historical hook 的冻结 schema6 normalizer 构造旧 canonical；fake stamp
-        -- 只用于取得候选，不会写盘/放宽 Hash，后面仍以该 canonical 的真实 fingerprint 盖章。
+        -- schema6 的原章不能带上 schema7 新增的 gearScoreFormat。先移除新字段，
+        -- 再用冻结的 schema6 归一化器构造历史值，指纹仍由该值真实计算。
         if type(value.settings.info)=='table' then value.settings.info.gearScoreFormat=nil end
         if type(value.settings.targetLayout)=='table' and type(value.settings.targetLayout.info)=='table' then
             value.settings.targetLayout.info.gearScoreFormat=nil

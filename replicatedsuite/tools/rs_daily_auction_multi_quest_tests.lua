@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 每日拍卖多任务测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 每日拍卖多任务与本地化区域回归，自包含加载真实区域静态数据和 DailyAuctionMaterialsV3，不依赖大型工作区 UI 测试宿主。
-------------------------------------------------------------------------
 local ROOT = "./"
 
 local function Copy(value, seen)
@@ -51,7 +48,7 @@ function S.StaticDataV2:Register(catalogId, key, row)
     return stored
 end
 
--- 中文维护注释（2026-10-02）：太初对应 RU 制作 9336/Aubre，西风对应 9340/Ahnimar。
+-- 太初对应 RU 制作 9336/Aubre，西风对应 9340/Ahnimar。
 -- 测试曾要求保留错误“太初→93”别名；以同 CraftId 的官方中英文记录修正期望。
 dofile(ROOT .. "data/ids/rs_zone_ids.lua")
 Assert(type(S.GameIds) == "table" and type(S.GameIds.Zone) == "table", "zone authority did not load")

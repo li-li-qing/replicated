@@ -1,16 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 每日收益账本
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 今日收支：独立角色账本。Authority在本Feature，UI只读投影，变更只经Persistence。
--- 禁止的余额 Getter 仍不调用；金币/荣誉/生活点优先接收
--- PLAYER_* 的直接变化量。不能把聊天正文、跑商预计售价或其它推算值当实际收入。
--- 旧 overview-ledger-5 曾把 PLAYER_* 错当绝对余额并持久化 ch.balance；新 direct-delta
--- source 首次命中时会一次性清空对应旧余额模式的当日污染，然后从真实变化量重新累计。
--- 日界线复用 Core 的 server_date；仅本账本按日换新，不使用全局 ClearData。
--- 经验不接受会升级归零的普通余额条。
-------------------------------------------------------------------------
+-- 独立角色账本，按 server_date 换日，UI 只读，变更经 Persistence。
+-- 收入仅接收经校验的真实变化量，不能用聊天正文、预计售价或升级归零的经验条推算。新 direct-delta 源首次命中会清掉旧余额模式的当日污染。
 if ReplicatedSuite==nil or ReplicatedSuite.BootError~=nil then return end
 local S=ReplicatedSuite
 local P=S.Persistence
@@ -91,8 +83,7 @@ function F:CheckDay()
             self.State=Default();self.State.day=day
             for _,key in ipairs(KEYS)do
                 local old=previous.channels[key]
-                -- 连续观察的绝对余额来源可跨服务器午夜携带最后余额，net/gain/spent 归零，下一权威事件衡量新日首次变化。
-                -- 暂停/用户禁用已作废连续性不能因跨日恢复。仅同一运行持续观察角色时可携带余额；后一天冷启动存在无界离线间隙，昨日存储余额不能当今日前值。同日文件重载没有跨日，仍可保持连续。
+                -- 仅同一运行持续观察时可跨午夜携带最后绝对余额，日累计归零；暂停/禁用已失去连续性，跨日冷启动也不能用昨日余额作前值。
                 if wasLoaded and old.balance~=nil then
                     self.State.channels[key].balance=old.balance
                     self.State.channels[key].coverageGap=old.coverageGap==true
@@ -117,10 +108,8 @@ function F:RegisterSource(key,spec)
     if spec.mode~="balance" and spec.mode~="delta" and spec.mode~="cumulative" then return false,"invalid_mode" end
     if key=="experience" and spec.mode=="balance" then return false,"xp_bar_is_not_total" end
     if self.sources[key] then return false,"source_already_registered" end
-    -- 只保留经过验证的源描述，不复制适配器对象/函数/循环引用，也不接管它的生命周期。
-    -- 来源“代码契约已验证”和“RU 运行时载荷已验证”分开。
-    -- CHAT_MESSAGE 适配器在真正观察到精确 CMF + 显式 delta 字段前只能处于 probing，
-    -- 不允许 UI 把它算作已接入，更不能显示伪造的 0。已有真实样本的同源账本在重载后可继续信任。
+    -- 只保留源描述，不复制适配器对象。代码契约验证与 RU 载荷验证分开；CHAT_MESSAGE 未观察到精确 CMF/显式 delta 前只能 probing，不能显示假 0。
+    -- 同源已有真实样本的账本可在重载后继续信任。
     local channel=self.State.channels[key]
     local historicalVerified=(channel and channel.samples or 0)>0
     if spec.resetLegacyBalanceOnFirstDelta==true and channel and channel.balance~=nil then historicalVerified=false end

@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 贸易制作配方身份注册
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- ID 命名空间：craftId 是 ArcheRage 数据库 Commerce 制作配方身份，productItemId 是产出货包的物品身份，compactId 是 Suite 历史材料兼容索引。
 -- 同一种本地特产可以对应多个 craftId（Plaza 和 Community Center）；ByLegacyName 必须保存列表，调用者不能假设一个货包名称只对应一个配方。
 -- 权威来源：ArcheRage RU 数据库 Commerce 制作目录；核实日期：2026-08-27。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 if S.GameDataRegistry == nil then return end

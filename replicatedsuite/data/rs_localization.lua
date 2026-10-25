@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 静态中文本地化
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 运行时禁止访问 Wiki；新增静态中文本地化条目必须在提交前与 RU-CN Knowledge Database 核对。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}

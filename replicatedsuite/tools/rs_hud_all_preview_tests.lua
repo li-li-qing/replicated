@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · HUD全部预览测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 使用真实 BuffDisplay Store、校准、标记几何和命令；原生绘制由已有测试宿主提供。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Eq(a,b)
     if type(a)~=type(b) then return false end

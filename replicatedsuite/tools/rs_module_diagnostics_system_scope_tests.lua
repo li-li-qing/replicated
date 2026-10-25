@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 模块诊断系统范围测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 系统诊断属于基础维护界面；业务错误应指向各模块诊断入口，避免生成巨大报告。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS module-diag-system-scope '..name)else failed=failed+1;print('FAIL module-diag-system-scope '..name..': '..tostring(err))end end
 local f=assert(io.open('presentation/v3/pages/rs_v3_foundation_pages.lua','rb'));local s=f:read('*a');f:close()

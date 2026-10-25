@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 单位连线契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 验证visual_guides涉及的五项契约版本，保留原有逐项下限；Core不直接点名业务实现，失败为blocker，由sequence_harness报告。
--- 架构审计不跳过注释，说明禁止添加业务表加字段的点号引用。
-------------------------------------------------------------------------
+-- 检查 visual_guides 的五项版本下限，失败由 sequence_harness 报告。
+
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
@@ -14,7 +11,7 @@ local F = S.Features and S.Features.combat_unit_lines or nil
 
 local function Fail(message) return false, tostring(message or "unit_lines_acceptance_failed") end
 
--- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 运行时只做只读诊断；完整序列测试仅离线执行。
 G:RegisterSequenceCase("v3_combat_unit_lines_visual_guide_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.VisualGuideContractVersion) or 0) < 5 then return Fail("visual_guide_contract_version") end

@@ -1,13 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 制作台助手功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
--- 有界提取器上限（CRAFT_MAX_*/CRAFT_GRAPH_*）全部与被搬迁前逐字一致。
--- Authority 边界：制作配方与材料事实来自 X2Craft / X2Bag 只读接口，报价来自共享 PriceQuoteQueueV3；
--- 本文件只做有界解析与投影整形，普通 Refresh 绝不发起逐行询价。
-------------------------------------------------------------------------
+-- 配方/材料来自 X2Craft/X2Bag，只做有界解析与投影；报价共用 PriceQuoteQueueV3，普通刷新不逐材料询价。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory
@@ -208,8 +202,7 @@ end
 
 local function CraftQuote(item)
     if item == nil or item.itemType == nil then return nil, "identity_unknown" end
-    -- GetLowestPrice是有冷却的服务器查询；配方可能材料很多，普通Refresh禁止逐行发请求。
-    -- 报价由显式限频PriceQuoteQueueV3负责，用户逐材料触发QuoteMaterial，队列串行、控节奏并异步回调；结果经共享itemType读模型提供，这里只读，Refresh禁止发服务器请求。
+    -- GetLowestPrice 有服务器冷却，询价仅由用户显式 QuoteMaterial 经共享串行队列执行；普通 Refresh 只读结果。
     local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
     local price
     if type(queue) == "table" and type(queue.GetPriceByItemType) == "function" then
@@ -676,9 +669,7 @@ local function CraftCommands()
 end
 
 local CRAFT_API_DEPENDENCIES = { "X2Craft:GetCraftBaseInfo", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Craft:GetCraftTypeByItemType", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" }
--- 共享 CraftRead/CraftProjection 仍由制作台助手使用，
--- 但不再实例化 life_craft_planner，因此不会注册 v3.business.life_craft_planner Store、Demand 或 Runtime Implementation。
--- 旧磁盘键保持原样不主动清除，避免“删除功能”变成不可逆用户数据写操作；toc 同时停止加载 Planner extension。
+-- tools_craft 继续使用 CraftRead/CraftProjection；不注册已移除的 life_craft_planner Store/Demand/Runtime，旧磁盘键保留。
 local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands(),
     -- 最后一个消费端关闭时释放静态工作缓存；重开由
     -- consumer_acquire 完整采样，不让无需求的 Feature 保留配方副本，也不增加任何任务。

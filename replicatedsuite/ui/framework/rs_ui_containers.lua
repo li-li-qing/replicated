@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 容器表面
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -15,11 +13,8 @@ local function Token(path, fallback)
 end
 
 
-------------------------------------------------------------------------
 -- ContainerSurface 容器表面权威层。
---
 -- Card/Section 属 RSUI 表现表面，替代废弃 UI.ComponentsV2；保留历史 _card/_section 原生身份后缀以安全升级。
-------------------------------------------------------------------------
 local ContainerSurface = RSUI.ContainerSurface or { version = 1 }
 RSUI.ContainerSurface = ContainerSurface
 
@@ -105,7 +100,7 @@ RSUI:RegisterType("Section", function(spec)
     if raw == nil or raw.root == nil then return nil, "section_create_failed" end
     local c = RSUI:NewComponent("Section", spec, raw.root)
     c.raw, c.header, c.title, c.body = raw, raw.header, raw.title, raw.body
-    c.appearanceWidgets = { raw.header, raw.title } -- 约束（2026-10-09）：标题底板与标题必须共同继承透明度，避免亮字落在不透明浅底。
+    c.appearanceWidgets = { raw.header, raw.title } -- 标题底板与标题必须共同继承透明度，避免亮字落在不透明浅底。
     c.padding, c.headerHeight = raw.padding, raw.headerHeight
     c.items = {}
     c.gap = tonumber(spec.gap) or Token("spacing.sm", 8)

@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 装备页面测试宿主
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 开发期宿主：真实 RSUI 布局/表单/事件、Gear Store/Authority；只替换 Native 和应用宿主。
 -- 禁止纳入 toc.g。像素命中以原生父链裁剪模型断言，不冒充 RU 客户端实测。
-------------------------------------------------------------------------
 return function(options)
     options=options or {}
     local h={disk=options.disk or {},writes=0,reads=0,clears=0,widgets={},logs={},ms=1000,failSave=false}

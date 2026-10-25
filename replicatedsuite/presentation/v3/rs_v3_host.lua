@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 应用宿主适配
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local H = S.UIHostManager

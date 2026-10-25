@@ -1,14 +1,11 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗识别目录
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 战斗识别参考目录。只编译静态索引，不扫描单位，
 -- 不调用 Native/Events/Scheduler/Persistence；技能与状态是独立命名空间。
 -- 同一 ID 保留多候选，不擅自判定唯一效果、阵营、职业或状态极性。
 -- GetRecord/GetMatches/GetByName/GetGroup/GetTree/GetSpec 返回 borrowed 只读
 -- 静态对象；消费者不得修改。参考规则统一 reference_unverified_ru。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}

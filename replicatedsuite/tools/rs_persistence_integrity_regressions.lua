@@ -1,16 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 持久化完整性回归
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 中文维护注释：开发期回归，不进 TOC。只在 Native SaveData/LoadData 边界注入合成表形，
+-- 开发期回归，不进 TOC。只在 Native SaveData/LoadData 边界注入合成表形，
 -- 使用生产 Store/codec/Persistence/PageHost/BuildScope；不是用户实档或 RU 像素布局验收。
 -- 损坏样本不重新盖业务指纹，错误校验不得因测试便利被忽略；每个样本结束恢复健康环境。
-------------------------------------------------------------------------
 return function(ctx)
     local S, Test, Copy, Equal = ctx.S, ctx.Test, ctx.Copy, ctx.Equal
     local P, F, store, disk = S.Persistence, ctx.F, ctx.store, ctx.disk
@@ -36,11 +29,8 @@ return function(ctx)
         local restored,_,why=P:LoadStore(store.id,options);assert(restored,why);F:InvalidateSettingsCache()
         assert(ok,err)
     end
-    -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：.18.243 起旧 v3.buff_display 不再参与启动，
-    -- 它损坏只算证据（尚留在上面的 WithBuff 用例里做“证据不得被覆盖”验证）。真正决定“状态显示是否可用”
-    -- 的 Authority 是 tracking manifest（rs_buff_display_store.lua:2863），因此“损坏存档 ⇒ 只读故障页”
-    -- 必须针对 manifest 构造才对应当前契约。这里注入一个 owner/schema 正确但指纹刻意未知的密封 envelope，
-    -- 触发 fail-closed；测完恢复磁盘字节、清除 fence 与 terminal memoization，保证后续用例隔离。
+    -- 破坏 tracking manifest，才能覆盖当前的故障页路径。旧大 Store 损坏只保留为证据。
+    -- 用例结束后恢复磁盘、写保护和终态缓存，避免影响后续测试。
     local function WithManifestCorrupt(run)
         local ms=P:GetStore(F.TrackingManifestStoreId);assert(ms,'tracking manifest store missing')
         local key=assert(P:ResolveStoreKey(ms));local saved=Copy(disk[key])
@@ -176,12 +166,8 @@ return function(ctx)
         WithBuff(raw,function(key)
             local before=Copy(disk[key]);local ok=P:LoadStore(store.id,options)
             assert(not ok and store.writeFenced)
-            -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：本用例原先附带
-            -- `assert(not F:ImportBuiltinPack('all',false))`，前提是“旧 v3.buff_display 被写保护 ⇒ 追踪导入必须失败”。
-            -- .18.243 起旧大 Store 永久降级为 LegacyMigrationSourceOnly：manifest 已建立后它不再参与启动与
-            -- tracking 写入（Authority：rs_buff_display_store.lua:2857 与 README §3.7），因此该附带断言已随架构失效，
-            -- 不能再要求它成立。本用例真正要证明的“内容篡改不得被序列化恢复偷偷通过”仍由上方 not ok + writeFenced
-            -- 覆盖；写保护在真正 Authority 上的强制力改由 rs_status_refactor_tests.lua 的 tracking manifest 用例验证。
+            -- 旧 v3.buff_display 只作迁移来源，不再负责追踪写入。这里检查内容篡改仍被拒绝；
+            -- 追踪写保护另由 manifest 提交用例验证。
             assert(Equal(disk[key],before),'corrupt archive overwritten')
         end)
     end)
@@ -221,7 +207,7 @@ return function(ctx)
             local page,err=host:Build();assert(page,err)
             assert(page.persistenceUnavailable==true,'failed load looked ready')
             assert(host.widgets.v3_buff_display_tabs==nil,'editors over unread archive')
-            -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：旧断言里的控件 id `v3_buff_persistence_report`
+            -- 旧断言里的控件 id `v3_buff_persistence_report`
             -- 在当前页面已不存在（全仓仅本测试引用）。当前只读取证入口是 BuildPersistenceUnavailablePage →
             -- AttachEvidenceReader 创建的 `v3_buff_evidence_export`（“读取故障存档”），它才是本用例要证明的
             -- “故障证据动作仍可用”。仅更正 id，不放松断言强度。
@@ -286,7 +272,7 @@ return function(ctx)
     Test('durable death readback rejects changed summary content',function()
         disk[deathKey]=Copy(healthyDeath);assert(P:LoadStore(ds.id,options))
         local ok=SaveAltered(ds,deathKey,function(raw)
-            -- 中文维护注释：当前死亡索引的传输层会把记录编码为字符串；先用生产 codec 还原再注入损坏。
+            -- 当前死亡索引的传输层会把记录编码为字符串；先用生产 codec 还原再注入损坏。
             -- 编码回物理边界时保留原业务与 envelope 指纹，不因夹具格式升级重新盖章或放宽校验。
             local decoded=assert(P:DecodePhysicalEnvelope(raw))
             decoded.payload.history.entries[1].totalDamage=99999
@@ -331,7 +317,7 @@ return function(ctx)
         end
         assert(found,'failure reason missing')
     end)
-    -- 维护：单条复制是新的用户契约；详细 Build 报告仍保留，默认 Print 不再逐行发送。
+    -- 单条复制是新的用户契约；详细 Build 报告仍保留，默认 Print 不再逐行发送。
     Test('persistence report dispatches exactly one entry and propagates chat output failure',function()
         local D=S.DiagnosticsManager;assert(type(D.PrintPersistenceFailureReport)=='function','print report missing')
         local original=S.SafeChat;local lines={}

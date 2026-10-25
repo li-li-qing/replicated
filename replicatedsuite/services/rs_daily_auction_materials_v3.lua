@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 日常拍卖材料读模型
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 居民贸易包日常任务的按需分离读模型。QuestProgressV3 拥有任务事实，TradeMaterialIdentityV3 拥有配方/材料身
--- 份；此服务只拥有会话 UI 选择（候选配方、隐藏和材料顺序），不持久化、不编造任务需求。
-------------------------------------------------------------------------
+-- 任务状态取 QuestProgressV3，配方身份取 TradeMaterialIdentityV3；这里只保存会话候选选择、隐藏和顺序。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -81,17 +77,14 @@ local function FindZoneIdInText(text)
     for zoneId, zone in pairs(type(byId) == "table" and byId or {}) do
         if type(zone) == "table" then
             Consider(zoneId, zone.nameZh)
-            -- （2026-09-25，daily-trade-zone-alias-1）地区任务标题来自当前 RU 客户端，
-            -- 而稳定 ZoneId 数据可能保留旧汉化名。别名属于 Zone 静态身份的一部分；这里只做 bounded
-            -- 字符串匹配，不在刷新热路径扫描拍卖数据/价格表，也不根据相似文字猜地区。最长精确命中优先，
-            -- 防止“珊瑚海岸”覆盖“珊瑚海岸北部”这类包含关系。
+            -- 共享 Zone 别名兼容旧汉化；最长精确命中优先，避免“珊瑚海岸”覆盖“珊瑚海岸北部”。
+            -- 不按相似文字猜地区或扫描拍卖价格表。
             for _, alias in ipairs(type(zone.nameZhAliases) == "table" and zone.nameZhAliases or {}) do
                 Consider(zoneId, alias)
             end
         end
     end
-    -- （2026-10-02）最长命中只用于消除名称包含关系。两个独立地区同时出现
-    -- 不提供唯一来源证据，禁止按 pairs 顺序/汉字字数选一个地区并展示错误材料。
+    -- 最长命中只解名称包含关系；两个独立地区同时出现时仍有歧义，不能按 pairs 顺序或字数选一个。
     for _, match in ipairs(matches) do
         if match.zoneId ~= bestId and (match.name == bestName or string.find(bestName, match.name, 1, true) == nil) then
             return nil, "zone_ambiguous"
@@ -206,12 +199,8 @@ function D:Refresh(reason)
             tasks[#tasks + 1] = task
         end
     end
-    -- （2026-09-14，RU 区域制作日常发现）历史 DailyTradePackQuestRecipes 只覆盖一组
-    -- 已核交付 QuestId，但实机任务“[特产-西部] 黄金平原的保存特产”属于明确区域+品类的制作日常，
-    -- 其 QuestId 不应靠猜补白名单。这里消费 QuestProgressV3 detached 活动任务标题，以共享 Zone.nameZh
-    -- 识别地区，再交给 TradeMaterialIdentityV3:ResolveStatic(title, zoneId) 证明真实配方；只有能解析出
-    -- 静态材料的任务才显示采购行。2026-09-30：带“特产”证据但无法匹配的任务保留待匹配标题，
-    -- 不生成材料；普通任务仍不纳入做货清单，避免把“暂未匹配”伪装成“没有第二项任务”。
+    -- 历史 QuestId 映射不足以覆盖 RU 区域制作日常；按当前任务标题匹配共享 Zone，再由 ResolveStatic 证明配方。
+    -- 只有材料可解析才生成采购行；有“特产”证据但未匹配的标题保留待匹配，不能当成无任务或猜材料。
     local taskById = {}; for _, task in ipairs(tasks) do taskById[task.questId] = task end
     local activeList = type(quest.GetActiveQuestList) == "function" and (quest:GetActiveQuestList() or {}) or {}
     local titleMatchedCount, unresolvedTradeLike, activeQuestCount = 0, {}, #activeList
@@ -276,9 +265,7 @@ function D:Refresh(reason)
     return true
 end
 
--- （2026-09-14，多候选居民做货）一个 QuestId 可能允许多个地区货物，recipes 是
--- 候选集合而不是同时需求。只有用户显式选中一个合法候选后才解析材料；绝不把多个 recipe 材料累加。
--- 选择仅属于 Session，不写任务 Authority/Store，任务消失后快照自然不再展示。
+-- 多个 recipe 是候选替代项，只解析用户选中的一个，不能把材料相加。选择仅存 Session，任务消失后不再显示。
 function D:SelectRecipe(questId, recipe)
     local entry = RecipeConfig(questId); if entry == nil then return false, "任务不在已核居民做货表" end
     recipe = tostring(recipe or ""); if HasRecipe(entry, recipe) ~= true then return false, "货物候选无效" end
@@ -320,9 +307,8 @@ local function IsCurrentConsumer(self)
 end
 
 function D:RetryPendingTitles(epoch)
-    -- （2026-09-30，daily-auction-title-recovery-1）Quest ID/完成状态不变时
-    -- updated 不发布，但 Native 标题可能已就绪。复用 QuestProgress 的事件/15s safety refreshed
-    -- 纪元，只读 pending ID；未变化不重算配方、不发布 UI。无第二轮询、无拍卖查询、无永久任务。
+    -- ID/状态未变时可能不发 updated，但标题已就绪；用既有 refreshed 纪元补读 pending ID。
+    -- 标题未变就不重算或通知，不另建轮询。
     if not IsCurrentConsumer(self) or #self.pendingTitles == 0 then return true end
     epoch = tonumber(epoch)
     if epoch ~= nil and self.lastQuestRefreshEpoch == epoch then return true end
@@ -376,11 +362,8 @@ function D:_AcquireQuest()
     if self.questHeld then return true end
     local quest = S.Services and S.Services.QuestProgressV3 or nil
     if type(quest) ~= "table" or type(quest.AcquireConsumer) ~= "function" then return false, "QuestProgressV3 Consumer 不可用" end
-    -- （2026-09-30，daily-auction-title-recovery-1）拍卖 Feature 本身只需
-    -- X2Auction，不能假定活动/债券已替“今日任务”导入 X2Quest。仅在本服务首个消费者进入时，
-    -- 通过唯一 NativeImports Authority 取得已核 X2Quest namespace；不在模块加载/诊断时导入。
-    -- Native 注册表无卸载接口，导入身份沿用当前 Generation；任务监听仍随最后 Consumer 释放。
-    -- 无 imports 的离线宿主可继续提供 detached QuestProgress 替身，不能由这里直接 ImportAPI。
+    -- 首个消费者经 NativeImports 取得 X2Quest，不能假定活动/债券已导入。导入身份属于当前 Generation，监听随末消费者释放。
+    -- 离线替身可直接给分离快照，这里不直接 ImportAPI。
     local imports = S.ApiImports
     if self.nativeQuestLease ~= true and type(imports) == "table" and type(imports.AcquireApi) == "function" then
         local imported, importErr = imports:AcquireApi(self.Id, "X2Quest")
@@ -396,14 +379,12 @@ end
 function D:_ReleaseQuest()
     if not self.questHeld then return true end
     local quest = S.Services and S.Services.QuestProgressV3 or nil
-    -- 中文维护注释：held 是本层仍须偿还的依赖租约；服务丢失、事务忙或下游清理失败都不能提前清掉它，
-    -- 否则本层会以零需求报成功，而 Quest 的事件与 15s 安全刷新仍继续运行且失去重试入口。
+    -- held 表示尚未偿还的下游租约；服务缺失、事务忙或清理失败时不能提前清掉，否则会遗留任务且无法重试。
     if type(quest) ~= "table" or type(quest.ReleaseConsumer) ~= "function" then
         return false, "QuestProgressV3 release unavailable"
     end
     local demand = quest.Demand
-    -- 中文维护注释：全局关闭可能已在下一层独立清空 token；只有子 Demand 明确无此租约、无未完成事务
-    -- 且无静默故障时，才能把后续 consumer-not-held 当幂等释放。未知失败仍须保留 held 给下一次清理。
+    -- 仅子 Demand 明确无 token、无忙事务且无静默故障时，consumer-not-held 才算幂等释放。
     local alreadyReleased = type(demand) == "table" and type(demand.Has) == "function"
         and demand.transitioning ~= true and demand.quiescing ~= true and demand.needsQuiesce ~= true
         and demand:Has(self.questConsumerToken) == false
@@ -423,11 +404,11 @@ local lease, leaseErr = S.Demand:Create({
             local ok, err = D:_AcquireQuest(); if ok ~= true then return false, err end
             local sub, subErr = D:_Subscribe(); if sub ~= true then D:_ReleaseQuest(); return false, subErr end
             local refreshed, refreshErr = D:Refresh("first_consumer"); if refreshed ~= true then D:_Unsubscribe(); D:_ReleaseQuest(); return false, refreshErr end
-        -- 中文维护注释：释放失败须返回 Demand，让正常事务回滚或关闭进入可重试 quiesce，不能吞掉下游 false。
+        -- 释放失败返回 Demand，供回滚或关闭时重试 quiesce。
         elseif b > 0 and a <= 0 then D:_Unsubscribe(); return D:_ReleaseQuest() end
         return true
     end,
-    -- 中文维护注释：逻辑消费者可被强制清空，但物理依赖失败必须保留 needsQuiesce，直到下次确实释放。
+    -- 强制清空消费者不等于释放物理依赖，needsQuiesce 留到确实清理成功。
     quiesce = function() D:_Unsubscribe(); return D:_ReleaseQuest() end,
 })
 if lease == nil then error(leaseErr) end

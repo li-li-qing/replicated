@@ -1,16 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 报告选择测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护（report-selection-1）：生产 Page/输入生命周期/Diff/Native handler，
+-- 生产 Page/输入生命周期/Diff/Native handler，
 -- 仅替换 UI 原生对象与外部诊断来源。选区/剪贴板是确定性模型，不宣称 RU 实机通过。
 -- 模拟同尺寸布局时 Native getter 抖动、迟到失焦通知；无自造键盘事件/API。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local forbiddenFocusReads=0
 local function Test(name,run)
@@ -29,7 +22,7 @@ local function Boot(options)
         SafeTraceback=function(e)return tostring(e)end,SafeChat=function()return true end,
         Layout={GetContext=function()return {uiScale=1}end}}
     local S=ReplicatedSuite
-    -- 维护：按bootstrap的真实入口交给错误环；不假定报告模块会反向覆盖日志函数。
+    -- 按bootstrap的真实入口交给错误环；不假定报告模块会反向覆盖日志函数。
     S.RecordLog=function(level,source,message)
         if S.DiagnosticsManager and S.DiagnosticsManager.CaptureSelfCheckIssue then
             S.DiagnosticsManager:CaptureSelfCheckIssue({level=level,source=source,message=message,at=calls.now})

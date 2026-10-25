@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖用户优先级测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 维护（2026-09-30，auction-user-priority-1）：实际加载共享服务，不模拟修复逻辑。
+-- 实际加载共享服务，不模拟修复逻辑。
 -- Native 窗口/网络回包/时钟只作为外部边界替身；同一套用例必须先在旧基线失败。
 -- 不进入 toc.g；离线通过不能证明 RU 服务器已发送请求可以撤回。
-------------------------------------------------------------------------
 unpack = unpack or table.unpack
 local passed, total = 0, 0
 local function Test(name, fn)
@@ -206,7 +203,7 @@ Test("on-demand visibility probe does not publish or start observer", function()
 end)
 Test("long user session freezes deadline then resumes same request", function()
     local h = Boot(); h:open(); assert(h:quote("trade:1", 101)); h:advance(120000)
-    -- 维护（auction-full-lane-safety-1）：旧测试允许开窗期间提前 Ask/Read；现在恢复后须完整节流握手。
+    -- 旧测试允许开窗期间提前 Ask/Read；现在恢复后须完整节流握手。
     Eq(#h.deliveries, 0); Eq(h:count("AskMarketPrice"), 0); Eq(h:count("GetLowestPrice"), 0)
     h.visible = false; h:untilSearch()
     Eq(h:count("SearchAuctionArticle"), 1, "resume once after close")
@@ -242,12 +239,12 @@ Test("shared watcher cancellation does not cancel survivor or cached cost", func
     local h = Boot(); h.queue.pricesByItemType[101] = { price=70, itemGrade=1, completedAt=h.now }
     h:open(); assert(h:quote("trade:1", 101)); assert(h:quote("trade:2", 101)); h:advance(30000)
     h.queue:CancelRequester("trade:1"); Eq(h.queue.pricesByItemType[101].price, 70, "good cost retained")
-    -- 维护（auction-full-lane-safety-1）：保留共享 watcher/缓存断言，同时检查整条协议暂停。
+    -- 保留共享 watcher/缓存断言，同时检查整条协议暂停。
     Eq(h:count("AskMarketPrice"), 0); Eq(h:count("GetLowestPrice"), 0)
     h.visible = false; h:untilSearch(); h:searched({Row(101, 900)}); h:advance(2000)
     Eq(#h.deliveries, 1); Eq(h.deliveries[1].requester, "trade:2"); Eq(h.deliveries[1].price, 90)
 end)
--- 维护（auction-full-lane-safety-1）：稳定 ID 不等于独立原生资源；开窗不发包，关窗仍须得到真实价。
+-- 稳定 ID 不等于独立原生资源；开窗不发包，关窗仍须得到真实价。
 Test("stable-ID quotes pause while native is open and recover without moving native search", function()
     local h = Boot(); h:open(); h.lowest[101] = 77
     assert(h:quote("trade:1", 101)); h:advance(5000)

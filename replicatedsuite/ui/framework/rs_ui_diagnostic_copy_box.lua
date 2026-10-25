@@ -1,20 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 诊断报告复制框
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（diagnostic-copy-box-1）：
--- 原因：通用 EditBox/DraftSession 必须在 LostFocus 时释放键盘，而 RU 的多行只读框会偶发
--- 迟到/伪 OnLostFocus；旧诊断框复用通用 BindDeferredInputActivation 后，用户选中文字等待片刻
--- 再 Ctrl+C 会得到空内容。历史上直接改通用输入生命周期又破坏了 Gear/数值框的删除与输入。
--- Authority：本控制器只拥有“诊断报告临时复制缓冲 + 复制交互”；正文 Authority 仍在 Diagnostics，
--- 普通输入 Authority 仍在 DraftSession/RSUI input lifecycle。两者禁止再次合并。
--- 数据流：Window 显式 SetPageText -> Native EDITBOX_MULTILINE；用户点击 -> Keyboard true + Focus；
--- LostFocus 仅记 telemetry，不改正文/键盘/焦点；模块切换/窗口关闭/Release 才 Deactivate。
--- 兼容边界：仍复用经过 RU 验证的 CreateMultiEditBox 构造和 Native ObjectFactory，但绝不调用
--- BindDeferredInputActivation、DraftSession 或后台 Scheduler。未来若 RU 复制行为变化，只改本文件，
--- 禁止为了诊断复制修改普通 EditBox/MultiEditBox 的生命周期。
-------------------------------------------------------------------------
+-- 诊断复制缓冲独立于普通输入。RU 多行框会迟到或伪派 LostFocus，
+-- 旧框按普通规则撤键盘后，选区仍在却无法 Ctrl+C；修改通用输入又曾破坏数值、换装输入。
+-- 此处点击取得键盘，LostFocus 只计数；切模块、关闭、释放时才撤权。
+-- 正文仍取诊断冻结快照，不用 DraftSession 或后台任务维持选区。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI = S.UI
@@ -69,14 +59,9 @@ function UI:CreateDiagnosticCopyBox(spec)
         math.max(1024, tonumber(spec.maxLength) or 32768))
     if edit == nil then return nil, "diagnostic multiline editor unavailable" end
 
-    -- 约束（2026-09-18，diagnostic-copy-box-2）：
-    -- RU 实机证明多行 EditBox 在 SetReadOnly(true) 后虽然 SetFocus/EnableKeyboard 均返回成功，
-    -- 但 Ctrl+A/C 仍可能没有可复制选区。报告 Authority 本来就不在 Native EditBox，而在
-    -- ModuleDiagnosticsHub 的冻结 snapshot；因此“防止用户改报告”不应靠 Native read-only。
-    -- 这里保持复制缓冲可编辑：用户即使误改，只影响当前 Native 缓冲；翻页/正常分页/重新生成
-    -- 会从 immutable snapshot 重写原文，不会写回诊断记录、Store 或业务配置。
-    -- 兼容边界：SetReadOnly 在部分 RU 构建可能不存在，故只做 best-effort false，绝不能因为
-    -- 该方法缺失再次阻断诊断窗口。普通输入框生命周期仍不复用本 CopyBox。
+    -- RU SetReadOnly(true) 后即使聚焦成功，仍可能无法 Ctrl+A/C，故复制缓冲保持可编辑。
+    -- 误改只影响当前 Native 缓冲，翻页或重生成从冻结快照重写；不写诊断记录或配置。
+    -- SetReadOnly(false) 尽力调用，缺方法不能阻断窗口。
     if type(edit.SetReadOnly) == "function" then pcall(edit.SetReadOnly, edit, false) end
 
     local box = {
@@ -89,7 +74,7 @@ function UI:CreateDiagnosticCopyBox(spec)
 
     function box:SetPageText(text, reason)
         text = tostring(text or "")
-        -- 维护（module-controls-diag-2）：只在显式翻页/生成时写 Native。旧代控件不能触碰；
+        -- 只在显式翻页/生成时写 Native。旧代控件不能触碰；
         -- SetText 返回成功不代表未被 RU 字数上限截短，正文必须完整回读一致后才提交缓存。
         -- 失败不伪报已复制；不绑定普通 EditBox、不轮询 GetText，保证等待复制时选区稳定。
         if Retired(self) then
@@ -139,10 +124,8 @@ function UI:CreateDiagnosticCopyBox(spec)
         local ownFocus, focusKnown = IsOwnFocus(self.edit)
         self.stats.lastFocusBefore = not focusKnown and "unknown" or (ownFocus and "own" or "other_or_none")
         self.stats.lastActivationError = nil
-        -- 修复（2026-09-30，diagnostic-copy-selection-1）：独立 CopyBox 丢失了普通输入已有的
-        -- armed+focused 快路径。生成页已 SetFocus，用户再次点击/选区后重复 OnClick 又重放
-        -- EnableKeyboard(true)+SetFocus；Native 可以因此折叠选区。只有首次键盘提升或实际失焦
-        -- 才重新 SetFocus。不能仅看焦点 ID：RU 可能先发布 ID、后激活键盘，首次提升仍须聚焦。
+        -- 已 armed 且 focused 时不重复 SetFocus，否则点击选区会将它折叠。
+        -- 不能只看 ID：RU 可能先发布 ID 再激活键盘，首次提升仍须聚焦。
         if wasArmed and ownFocus then
             self.active = true
             self.stats.reusedFocus = (tonumber(self.stats.reusedFocus) or 0) + 1
@@ -220,7 +203,7 @@ function UI:CreateDiagnosticCopyBox(spec)
         return true
     end
 
-    -- 维护：容量只在用户显式重新分页且成功回读后更新；不写文本，不触碰选区。
+    -- 容量只在用户显式重新分页且成功回读后更新；不写文本，不触碰选区。
     function box:SetCapacity(capacity)
         self.copyCapacity = math.max(512, math.min(32768, math.floor(tonumber(capacity) or 2048)))
         return true
@@ -253,9 +236,7 @@ function UI:CreateDiagnosticCopyBox(spec)
         return true
     end
 
-    -- 只绑定两个事件。OnClick 是用户显式取得复制键盘 Authority；OnLostFocus
-    -- 故意只计数，不做任何 Native 写操作，也不调度“一帧后复核”。这是与普通输入框最重要的
-    -- 隔离点。窗口关闭/模块切换会显式 Deactivate，所以不会永久持有键盘。
+    -- 仅绑定点击和失焦。失焦只计数，不改 Native 或延迟复核；关闭、切模块时显式撤键盘权。
     if type(self.SafeHandler) ~= "function" then return nil, "diagnostic handler contract unavailable" end
     local clickOk = self:SafeHandler(edit, "OnClick", function() return box:Activate("click") end, id .. ":diagnostic_activate")
     if clickOk ~= true then box:Destroy("click_bind_failed"); return nil, "diagnostic click bind failed" end

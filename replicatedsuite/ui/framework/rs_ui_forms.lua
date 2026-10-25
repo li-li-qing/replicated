@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 表单字段与响应布局
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- RSUI 原语/控件上的平台表单组合；业务声明字段与绑定，此层负责标签/状态布局、校验反馈、响应网格与状态摘要。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -103,9 +100,7 @@ local function NormalizeDropdownItems(items)
     return normalized
 end
 
-------------------------------------------------------------------------
 -- ValidationMessage 校验信息。
-------------------------------------------------------------------------
 RSUI:RegisterType("ValidationMessage", function(spec)
     local width = math.max(1, N(spec.width, Token("component.form.feedbackW", 96)))
     local height = math.max(1, N(spec.height, 18))
@@ -137,9 +132,7 @@ RSUI:RegisterType("ValidationMessage", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- 共享字段外框。
-------------------------------------------------------------------------
 local function CreateFieldFrame(kind, spec)
     local width = math.max(1, N(spec.width, 300))
     local height = math.max(1, N(spec.height, Token("component.form.fieldH", 52)))
@@ -364,9 +357,7 @@ RSUI:RegisterType("Field", function(spec)
     return CreateFieldFrame("Field", spec)
 end)
 
-------------------------------------------------------------------------
 -- ToggleField 开关字段。
-------------------------------------------------------------------------
 RSUI:RegisterType("ToggleField", function(spec)
     local c, err = CreateFieldFrame("ToggleField", spec)
     if c == nil then return nil, err end
@@ -411,9 +402,7 @@ RSUI:RegisterType("ToggleField", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- NumericField：Slider 与精确 NumericInput；+/- 步进按钮需显式启用。
-------------------------------------------------------------------------
 RSUI:RegisterType("NumericField", function(spec)
     local c, err = CreateFieldFrame("NumericField", spec)
     if c == nil then return nil, err end
@@ -436,9 +425,8 @@ RSUI:RegisterType("NumericField", function(spec)
     c.stepOrigin = tonumber(spec.stepOrigin) or c.baseMinimum
     c.integer = spec.integer == true
     c.unit = tostring(spec.unit or spec.suffix or "")
-    -- 数值自适应契约（2026-09-15）：min/max 是推荐初始滑块窗口，不能隐含业务限制；Feature 接受精确值后可扩端点。
-    -- hardMin/hardMax 仅真实安全/业务边界，fixedRange=true 仅透明度等归一化量。先读回被钳制/拒绝请求的 Domain 权威值，再决定扩展，表现元数据与权威分离。
-    -- 绘制间隔可固定滑块窗口而保留独立精确输入上限；不恢复旧动态端点，也不写回范围元数据。
+    -- min/max 是推荐滑块窗口，hardMin/hardMax 才是业务边界，fixedRange 用于透明度等归一化量。
+    -- 精确输入被接受后先读回 Domain 实值，再决定扩展；绘制间隔可单独固定滑块而保留精确输入上限。
     c.adaptiveRange = c.useSlider and spec.adaptiveRange ~= false and spec.fixedRange ~= true and spec.fixedSliderRange ~= true
     c.rangePolicy = c.adaptiveRange == true and "adaptive" or "fixed"
     c.hardMinimum = tonumber(spec.hardMin)
@@ -527,10 +515,7 @@ RSUI:RegisterType("NumericField", function(spec)
     local function Applied(_, source)
         c.transientFeedback, c.transientTone, c.localError = nil, nil, nil
         source = tostring(source or "input")
-        -- 约束（DraftSession V2 / competing Authority）：Slider 是同一 NumericField 的另一条显式
-        -- Authority 写路径。若用户先在精确输入框留下未应用草稿，再拖动 Slider，Slider 的最终值必须明确
-        -- 取代该草稿，否则页面会长期被 stale draft 栅栏且下一次点击又复活旧文本。这里只取消同字段草稿，
-        -- 不影响其它字段的独立 draft session。
+        -- 拖动滑块明确取代同字段未应用的精确输入草稿，否则旧草稿会继续挡刷新或恢复旧文本；不取消其它字段。
         if source == "slider" and c.input ~= nil and type(c.input.HasDraftSession) == "function"
             and c.input:HasDraftSession() == true and type(c.input.CancelEditing) == "function" then
             c.input:CancelEditing("numeric_field_slider_supersede")
@@ -566,7 +551,7 @@ RSUI:RegisterType("NumericField", function(spec)
         suffix = c.unit, maxLength = tonumber(spec.maxLength) or 14,
         binding = c.binding, enabled = spec.enabled ~= false,
         commitOnFinal = spec.commitOnFinal == true,
-        -- 约束（DraftSession V2）：有明确“应用”按钮的 NumericField 不再把 RU LostFocus
+        -- 有明确“应用”按钮的 NumericField 不再把 RU LostFocus
         -- 当成业务提交；输入草稿由 Lua 持有，只有 Apply/Enter 写 Authority。无 Apply 的旧字段保持 blur commit。
         draftCommitMode = c.useApplyButton and "explicit" or "blur",
         format = spec.format,
@@ -636,7 +621,7 @@ RSUI:RegisterType("NumericField", function(spec)
     function c:Apply(value, source)
         if self.enabled == false then return false end
         local actionSource = tostring(source or "numeric_field")
-        -- 约束（DraftSession V2）：+/- 或外部 NumericField API 是明确的 Authority 决策，
+        -- +/- 或外部 NumericField API 是明确的 Authority 决策，
         -- 应取代本字段尚未应用的精确输入草稿，避免同一字段同时存在两个冲突事实。
         if self.input ~= nil and type(self.input.HasDraftSession) == "function" and self.input:HasDraftSession() == true
             and type(self.input.CancelEditing) == "function" then
@@ -830,9 +815,7 @@ end, function(spec)
     return true
 end)
 
-------------------------------------------------------------------------
 -- DropdownField 下拉字段。
-------------------------------------------------------------------------
 RSUI:RegisterType("DropdownField", function(spec)
     local c, err = CreateFieldFrame("DropdownField", spec)
     if c == nil then return nil, err end
@@ -883,9 +866,7 @@ RSUI:RegisterType("DropdownField", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- FieldGroup 响应式字段集合；布局明确且低频，无逐帧树协调。
-------------------------------------------------------------------------
 RSUI:RegisterType("FieldGroup", function(spec)
     local width = math.max(1, N(spec.width, 300))
     local height = math.max(1, N(spec.height, 10))
@@ -1024,9 +1005,7 @@ RSUI:RegisterType("FieldGroup", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- FormSection 表单区域。
-------------------------------------------------------------------------
 RSUI:RegisterType("FormSection", function(spec)
     local width = math.max(1, N(spec.width, 300))
     local height = math.max(1, N(spec.height, 100))
@@ -1039,7 +1018,7 @@ RSUI:RegisterType("FormSection", function(spec)
     if raw == nil or raw.root == nil then return nil, "form_section_create_failed" end
     local c = RSUI:NewComponent("FormSection", spec, raw.root)
     c.raw = raw
-    c.appearanceWidgets = { raw.header, raw.title } -- 约束（2026-10-09）：复合表单原生标题条显式继承组件外观通道。
+    c.appearanceWidgets = { raw.header, raw.title } -- 复合表单原生标题条显式继承组件外观通道。
     c.padding = raw.padding or N(spec.padding, Token("component.card.padding", 10))
     c.headerHeight = raw.headerHeight or N(spec.headerHeight, Token("size.sectionHeaderH", 28))
     c.fields = {}
@@ -1132,9 +1111,7 @@ RSUI:RegisterType("FormSection", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- Form 表单。
-------------------------------------------------------------------------
 RSUI:RegisterType("Form", function(spec)
     local width = math.max(1, N(spec.width, 400))
     local root = UI:CreateEmptyWidget(spec.parent, spec.id, N(spec.x, 0), N(spec.y, 0), width, math.max(1, N(spec.height, 10)), false)

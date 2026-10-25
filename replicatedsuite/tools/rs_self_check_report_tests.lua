@@ -1,17 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 自身检查报告测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护：真实 Diagnostics/Bootstrap/API/Page 工厂；仅替换 Native 和外部快照提供者。
--- 不进 TOC。不能据此声称 RU 聊天/剪贴板/布局实机通过，也不生成用户实档恢复结论。
--- 维护：旧测试以SetClipboardText可用为前提，与参考Available/not allowed矛盾；
--- 现在即使测试Native提供同名函数也必须零调用，正文交付以页面回读为准。
-------------------------------------------------------------------------
+-- 使用真实诊断、引导、API 和页面工厂，只替换原生接口和外部快照。
+-- 剪贴板接口未获允许，即使替身提供同名函数也不能调用；报告内容以页面回读为准。
 local passed, failed = 0, 0
 local function Test(name, run)
     local ok,err=pcall(run)
@@ -174,7 +165,7 @@ end)
 Test('default fault print is complete paged fault report and reads every failed-store sample once',function()
     local S,D,io=Boot();Ready(D);local root,h=Page(S)
     assert(h.widgets.v3_diag_output.onClick());assert(h.edit and h.edit.text==S.ReportCopyTransport:GetTextPage(root.selfCheckDelivery,1) and #io.copies==0)
-    -- 维护：打印故障报告的 Authority 是一次固定的 BuildPaged 快照；所有故障 Store 各读取一次，
+    -- 打印故障报告的 Authority 是一次固定的 BuildPaged 快照；所有故障 Store 各读取一次，
     -- 之后仅由上一页/下一页切换同一文本，不允许先 Focus 裁剪再分页而丢失根因证据。
     local count=0;for _,n in pairs(io.reads)do count=count+n end
     assert(#io.chat==1 and count==3 and root.selfCheckMeta.kind=='paged')
@@ -201,7 +192,7 @@ Test('native editor truncation is explicitly surfaced and not passed off as comp
     local S,D,io=Boot();Ready(D);local root,h=Page(S)
     h.edit.SetText=function(self,text)self.text=text:sub(1,30)end
     h.widgets.v3_diag_output.onClick()
-    -- 维护：不再根据短读猜根因，要求明确失败、真实读回长度，且仍不声称完整交付。
+    -- 不再根据短读猜根因，要求明确失败、真实读回长度，且仍不声称完整交付。
     assert(h.widgets.v3_diag_report_status.text:find('TEXT_READBACK',1,true),'UI failure hidden')
     assert(root.selfCheckMeta.presentation.readback.received==30 and root.selfCheckMeta.delivered==false)
     assert(root.selfCheckText and #root.selfCheckText>30 and #io.copies==0)
@@ -258,7 +249,7 @@ Test('read-only report uses three real Store codecs without applying or saving a
     ADDON.ClearData=function()clearCount=clearCount+1;error('must not clear')end
     dofile('core/rs_demand.lua');dofile('core/rs_persistence_transport.lua');dofile('core/rs_persistence.lua');dofile('ui/framework/rs_ui_floating_surface.lua')
     dofile('features/combat/buff_display/rs_buff_display_store.lua');dofile('features/combat/death_review/rs_death_review_store.lua')
-    -- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役。
+    -- life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役。
     dofile('features/life/shared/rs_life_slice_factory.lua')
     dofile('features/life/trade/rs_trade_feature.lua')
     local P=S.Persistence;local ids={'v3.buff_display','v3.death_review','v3.life.trade'}
@@ -275,9 +266,9 @@ Test('read-only report uses three real Store codecs without applying or saving a
     assert(loadCount-beforeLoads==3 and saveCount==beforeSaves and clearCount==0 and applyCount==0,'report mutated storage or reread raw')
     for _,id in ipairs(ids)do assert(P:GetStore(id).writeFenced) end
     local h=assert(_G.io.open('tools/.self_check_real_evidence.txt','wb'));h:write(text);h:close()
-    -- 维护（9215实机容量回归）：上面的真实Store/Native门继续用于整页分段流程，不能
+    -- 上面的真实Store/Native门继续用于整页分段流程，不能
     -- 只验证纯编码器或假BuildReport。故障读入只在第一段发生，后续所有打印都零Save/Apply/Clear。
-    -- 维护：默认公开流程即完整失败证据+显式翻页；使用真实BuildPaged，不替换报告生成器。
+    -- 默认公开流程即完整失败证据+显式翻页；使用真实BuildPaged，不替换报告生成器。
     local root,host=Page(S)
     function host.edit:MaxTextLength()return 9215 end
     function host.edit:SetText(value)self.text=value:sub(1,9215)end

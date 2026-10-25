@@ -1,15 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · PVP信息面板测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护：回归必须经过实际任务与事件队列；连续事件不是测试中直接调用 EquipmentTick。
+-- 回归必须经过实际任务与事件队列；连续事件不是测试中直接调用 EquipmentTick。
 -- 显示位置用父链计算；Native纹理拒写是明确模型，不代替 RU 的渲染/网络时延测量。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,e=pcall(fn);if ok then passed=passed+1;print('PASS pvp-hud '..name)else failed=failed+1;print('FAIL pvp-hud '..name..': '..tostring(e))end end
 -- 本套件实际验证事件/Scheduler/Renderer，显式选择完整宿主，领域测试默认不变。
@@ -76,7 +69,7 @@ end)
 Test('class icon geometry consumes existing scope x y size alpha independently of text',function()
     local h,S,F,P=Boot();F.laneData.player.class={name='Role',icon='role.dds'}
     P:VisualTick();local info=P.pools.player.info;local textX,textY=h:World(info.root);local x,y=h:World(info.iconRoot)
-    -- 维护（hud-default-template-2）：验证绝对赋值带来的相对位移，不把旧默认0当作初始坐标；
+    -- 验证绝对赋值带来的相对位移，不把旧默认0当作初始坐标；
     -- 保留真实Renderer/位置/纹理链，尺寸和文字不移动断言不变。
     local c=F.State.settings.components.class;local oldX,oldY=c.x,c.y
     c.x=17;c.y=-9;c.size=24;c.alpha=.6;F:InvalidateSettingsCache();P:VisualTick()

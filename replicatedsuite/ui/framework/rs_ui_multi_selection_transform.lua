@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 多选矩形变换
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 两个以上选择矩形的纯分组变换模型。
--- SelectionModel 负责选择身份，SelectionGeometryModel 负责分组边界/把手，RectTransformTransaction 负责分组移动/缩放数学，MultiSelectionTransformModel 映射分组 rect 到各子 rect，Feature/Store 负责成功提交后持久化。
--- 不持 Native、指针捕获、Tick、Snap 发现、Anchor/Pivot 或 Feature 持久化；
--- 编辑协调器可把 Gesture 最终/吸附 rect 送 ProjectionSession，一次原子提交全部子 rect。
-------------------------------------------------------------------------
+-- 把分组变换映射回各子 rect，最终或吸附矩形经 ProjectionSession 一次提交。
+-- 选择身份、分组边界和数学由各自模型提供，成功后的保存由 Feature/Store 负责。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

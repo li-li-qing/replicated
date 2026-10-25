@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 死亡复盘业务权威
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅拥有低成本死亡复盘 Domain：SELF 受伤环形缓冲、可选 Aura 快照、死亡窗口记录和历史投影。Native 战斗处理器由 CombatEventBusV3 独占。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local F = S.Features and S.Features.DeathReview or nil

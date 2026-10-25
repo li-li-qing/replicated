@@ -1,12 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享窗口外框
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- V3 对话框/工具通用顶层组合，使用共享 RSUI Windowing，替代废弃 ManagedWindow 路径
--- （S.State 属已删除旧架构）；功能/应用代码可提供持久化回调，
--- Shell 不持领域状态或私人 Tick。
-------------------------------------------------------------------------
+-- 顶层窗口共用 RSUI Windowing，功能或应用提供保存回调；Shell 只管外框。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -81,7 +76,7 @@ end
 local function EnsureWindowVisible(shell, visible, reason)
     if shell == nil or shell.window == nil then return false, "window_unavailable" end
     if type(UI.EnsureVisible) ~= "function" then return false, "visibility_transaction_unavailable" end
-    -- 维护：Show/Reset 是显式 Native 可见性事务，不能让旧 logical visible 缓存屏蔽
+    -- Show/Reset 是显式 Native 可见性事务，不能让旧 logical visible 缓存屏蔽
     -- 客户端自行隐藏后的恢复。不改变关闭/最小化语义，不主动启动隐藏模块。
     if visible == true and type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(shell.window,"visible") end
     -- 所有显隐事务（包括最小化/初始化）统一标记来源；原生同步 OnHide 不得把内部隐藏误报为用户关闭。
@@ -135,7 +130,7 @@ function Shell:Create(spec)
     spec = type(spec) == "table" and spec or {}
     local id = tostring(spec.id or "")
     if id == "" then return nil, "window shell identity required" end
-    -- 维护（viewport-recovery-1）：创建边沿采样，不依赖上次主菜单留下的 context；无轮询。
+    -- 创建边沿采样，不依赖上次主菜单留下的 context；无轮询。
     if S.Layout then S.Layout:GetContext(true) end
     if S.NativeObjectFactory == nil or type(S.NativeObjectFactory.CreateWindow) ~= "function" then return nil, "native window factory unavailable" end
     if tonumber(self.consumedById[id]) == tonumber(S.Generation) then
@@ -177,12 +172,8 @@ function Shell:Create(spec)
         initialTopmost = ok == true and value == true
     end
 
-    -- 维护（2026-09-16，native-layer-policy-2）：旧版把所有独立窗口固定放进 system，
-    -- 因此普通插件面板会压住客户端 normal/dialog UI。Native layer 现在由独立 WindowPreferences
-    -- Authority 决定：默认 normal；显式 [顶] 或可见的置顶主菜单下的浮窗进入 system。SetDrawPriority 仍只
-    -- 负责 Replicated Suite 自身同层窗口的顺序，不能再冒充跨原生层级的置顶。兼容边界：旧用户
-    -- 没有新偏好记录时 initialTopmost=false；不改 Feature store，不引入 Tick。Native 拒绝层级时
-    -- 构建/切换 fail-closed，避免逻辑状态与实际层级分叉。
+    -- 默认 normal；显式置顶或可见置顶主菜单下的浮窗用 system，偏好由 WindowPreferences 保存。
+    -- DrawPriority 只排同层 Suite 窗口，不能替代跨层置顶；Native 拒绝时不能更新逻辑层级。
     local appliedNativeLayer
     local function ApplyNativeLayer(topmost)
         local layerName = EffectiveTopmost(topmost,spec.layerRole) and "system" or "normal"
@@ -317,7 +308,7 @@ function Shell:Create(spec)
     function shell:NotifyState(reason, geometryKind, committedRect)
         if type(self.spec.onStateChanged) ~= "function" then return true, nil end
         local x, y, w, h = 0, 0, self.normalWidth, self.normalHeight
-        -- 维护（2026-09-16，committed-geometry-authority-2）：几何事务回调必须直接透传
+        -- 几何事务回调必须直接透传
         -- Windowing 已提交的逻辑矩形。只有非几何状态（锁定/透明度/最小化等）没有事务矩形时
         -- 才允许读取当前 Native。这样 UI Scale 或 Native 更新时序不会让保存坐标漂移。
         if type(committedRect) == "table" then
@@ -370,12 +361,8 @@ function Shell:Create(spec)
 
     local function ApplyMinimizedChrome(self)
         local compact = IsCompactMinimized(self)
-        -- 约束（2026-09-15，compact-drag-surface-1）：compact 最小化后 30x30 的“+”按钮
-        -- 会覆盖整个 titleBar。旧实现仍让子 Button 参与命中，导致 Windowing 的共享 titleBar OnDragStart
-        -- 永远收不到鼠标手势，所以所有悬浮窗最小化后位置固定。Authority 仍是 Windowing：这里仅在
-        -- compact 状态把“+”变成纯视觉子控件，让鼠标命中穿透到 titleBar；恢复普通状态立即恢复 Button
-        -- pickability。位置提交仍走 Windowing -> onGeometryChanged -> FloatingSurface StorePlacement，不复制第二套坐标。
-        -- 风险边界：只作用 minimizeMode=compact；普通窗口/非最小化按钮点击行为保持不变。
+        -- compact 的 30x30“+”曾盖住 titleBar，吞掉 OnDragStart，使最小化后无法移动。
+        -- 此时“+”仅作视觉、点击穿透给 titleBar；恢复后重新可拾取，位置仍经 Windowing 提交。
         if self.minimizeButton ~= nil and self.minimizeButton.root ~= nil then
             if type(UI.EnsurePickable) ~= "function" then return false, compact, "compact_drag_pickable_contract_unavailable" end
             local pickOk, _, pickErr = UI:EnsurePickable(self.minimizeButton.root, compact ~= true, self.owner)
@@ -397,9 +384,7 @@ function Shell:Create(spec)
         return true, compact, nil
     end
 
-    -- 约束（2026-09-15）：compact 状态下恢复点击由 titleBar 自己处理；“+”只负责视觉。
-    -- 这样同一个 30x30 Surface 同时支持“单击恢复”和“按住拖动”，不再让子按钮吞掉 Windowing 手势。
-    -- Border 已拥有单一 OnClick mux，禁止直接 RequireHandler 覆盖 RSUI 的事件治理。
+    -- compact 的 titleBar 同时接单击恢复和按住拖动；点击经 Border mux，不能直接覆盖处理器。
     if shell.titleBar ~= nil and type(shell.titleBar.SetOnClick) == "function" then
         shell.titleBar:SetOnClick(function()
             if IsCompactMinimized(shell) then return shell:SetMinimized(false, true) end
@@ -462,12 +447,11 @@ function Shell:Create(spec)
         local chromeOk, compact, chromeErr = ApplyMinimizedChrome(self)
         if chromeOk ~= true then return false, chromeErr or "window_chrome_visibility_failed" end
         local currentW,currentH = self:GetVisibleSize(width,height)
-        -- 维护：顶层 extent 拒绝必须阻断 Layout/Store，不能只判断 diff changed。
+        -- 顶层 extent 拒绝必须阻断 Layout/Store，不能只判断 diff changed。
         local extentOk,_,extentErr = UI:EnsureExtent(self.window,currentW,currentH,self.owner)
         if extentOk ~= true then return false,extentErr or "window_extent_rejected" end
-        -- 约束（2026-10-04）：首次真正可见的布局核对强制摆放后的原生锚点；隐藏时的
-        -- Native 返回值不能确认显示后的结果。复用现有布局，不另开任务；一次验证后内容刷新
-        -- 不再探测顶层坐标。活动手势/隐藏窗保留 pending，不能抢用户拖动或写 Feature。
+        -- 首次可见布局后核对 Native 锚点，隐藏时的返回不能证明显示结果。
+        -- 仅验证一次，活动手势或隐藏时延后，不能抢拖动。
         local cache=UI.NativeStateCache and UI.NativeStateCache[self.window]
         if self.visible==true and self.anchorReadbackPending==true
             and not (self.windowController and self.windowController:IsInteracting())
@@ -542,7 +526,7 @@ function Shell:Create(spec)
     function shell:InvalidateLayout(reason) return self:_RequestLayout(reason or "layout") end
     if self.root ~= nil and type(self.root.SetLayoutHost) == "function" then self.root:SetLayoutHost(self) end
 
-    -- 维护（viewport-recovery-1）：统一 Shell 注册只管理 Top-Level Geometry，不进入业务。
+    -- 统一 Shell 注册只管理 Top-Level Geometry，不进入业务。
     -- FloatingSurface 的 placementDelegate 拥有持久 intent；普通独立 Shell 仅保留会话 RAM intent。
     -- 拟合后的 normalWidth/Height 是运行值，preferredWidth/Height 与原 normalized center 不被迁移覆盖。
     function shell:ApplyPlacementRect(x,y,w,h,meta,force)
@@ -552,7 +536,7 @@ function Shell:Create(spec)
             return true
         end
         local rw,rh = self:GetVisibleSize(w,h)
-        -- 维护：子布局失败回滚到上次已提交的几何，不把正常内容更新变成 Native 坐标轮询。
+        -- 子布局失败回滚到上次已提交的几何，不把正常内容更新变成 Native 坐标轮询。
         -- 真正需要强制重放的边沿由 Windowing 一次采集实际 Native，Shell 不重复采样。
         local cache=UI.NativeStateCache and UI.NativeStateCache[self.window]
         local bx,by,bw,bh
@@ -568,7 +552,7 @@ function Shell:Create(spec)
         local layoutOk,layoutErr = self:Layout(w,h)
         if layoutOk ~= true then
             self.normalWidth,self.normalHeight = previousW,previousH
-            -- 维护：Native 已接受但内部 chrome 拒绝也是失败；回滚实际矩形，不能只回滚 Lua 字段。
+            -- Native 已接受但内部 chrome 拒绝也是失败；回滚实际矩形，不能只回滚 Lua 字段。
             local rollbackOk=RSUI.Windowing:ApplyGeometry(self.window,self.owner,bx,by,bw,bh,true)
             self.placementError = tostring(layoutErr) .. (rollbackOk~=true and ":rollback_rejected" or "")
             return false,layoutErr
@@ -599,7 +583,7 @@ function Shell:Create(spec)
     end
 
     function shell:GetPlacementDiagnostics()
-        -- 维护：按需读一次 Native；不 Load Store、不构建窗口、不后台采集，也不改变 intent。
+        -- 按需读一次 Native；不 Load Store、不构建窗口、不后台采集，也不改变 intent。
         local result = {}
         for k,v in pairs(self.placementInfo or {}) do result[k]=v end
         result.windowId,result.visibleRequested,result.lastError = self.id,self.visible==true,self.placementError
@@ -618,7 +602,7 @@ function Shell:Create(spec)
         result.fullyVisible = S.Layout:IsRectFullyVisible(x,y,w,h)
         result.recoverable = S.Layout:IsWindowRecoverable(x,y,w,h,titleH)
         result.metricsNotifications = S.Layout.metricsNotifications
-        -- 维护（ui-position-reload-1）：展示保存/期望/实际三者，不能仅用 Native x/y 覆盖诊断的唯一坐标。
+        -- 展示保存/期望/实际三者，不能仅用 Native x/y 覆盖诊断的唯一坐标。
         local windowing = RSUI.Windowing
         if windowing and type(windowing.GetGeometryDiagnostics)=="function" then
             result.geometry = windowing:GetGeometryDiagnostics(self.window)
@@ -711,7 +695,7 @@ function Shell:Create(spec)
         if self.destroyed == true then return 0 end
         self.destroyed = true
         Shell.floatingById[self.id]=nil
-        -- 维护：销毁同时释放统一注册回调；避免注册表强引用旧 Shell 和重载后迟到布局。
+        -- 销毁同时释放统一注册回调；避免注册表强引用旧 Shell 和重载后迟到布局。
         if S.Layout then S.Layout:UnregisterFloating("window_shell:" .. self.id) end
         self.placementDelegate,self.placementIntent,self.resetDelegate = nil,nil,nil
         self.visible = false
@@ -1131,7 +1115,7 @@ function Shell:Create(spec)
     function shell:ResetLayout(persist)
         if self.destroyed == true then return false end
         if type(self.resetDelegate) == "function" then return self.resetDelegate(persist) end
-        -- 维护：硬恢复必须刷新 viewport、取消捕获、先 Native 后通知持久化。普通 Shell 的
+        -- 硬恢复必须刷新 viewport、取消捕获、先 Native 后通知持久化。普通 Shell 的
         -- 默认 intent 只在会话内清除；不借此删除 Feature Store，不与 Popup/主窗口状态合并。
         S.Layout:GetContext(true)
         if self.windowController then self.windowController:CancelInteraction() end
@@ -1193,7 +1177,7 @@ function Shell:Create(spec)
         local minH = math.max(1, tonumber(spec.minHeight) or 1)
         local maxW = tonumber(spec.maxWidth); if maxW ~= nil then maxW = math.max(minW, maxW) end
         local maxH = tonumber(spec.maxHeight); if maxH ~= nil then maxH = math.max(minH, maxH) end
-        -- 维护：外部 placement 已应用运行时 fit，不能再次以持久 min 把窗口撑回屏幕外。
+        -- 外部 placement 已应用运行时 fit，不能再次以持久 min 把窗口撑回屏幕外。
         width = Clamp(spec.initialRect.width, spec.placementManagedExternally and 1 or minW, maxW, width)
         height = Clamp(spec.initialRect.height, spec.placementManagedExternally and 1 or minH, maxH, height)
     end
@@ -1244,7 +1228,7 @@ function Shell:Create(spec)
                 shell:Layout(previousW, previousH)
                 return false, stateErr or "geometry_state_rejected"
             end
-            -- 维护：只有真实用户提交更新 RAM intent；跨 viewport 重排绝不调用此分支。
+            -- 只有真实用户提交更新 RAM intent；跨 viewport 重排绝不调用此分支。
             if spec.placementManagedExternally ~= true then
                 if geometryKind == "resize" then shell.preferredWidth,shell.preferredHeight=w,h end
                 shell.placementIntent = {}
@@ -1275,10 +1259,10 @@ function Shell:Create(spec)
             return nil, "window shell build transaction commit failed: " .. tostring(commitErr or "unknown")
         end
     end
-    -- 维护：注册在构建成功后，避免失败构建留下幽灵回调；与主菜单是否创建/显示无关。
+    -- 注册在构建成功后，避免失败构建留下幽灵回调；与主菜单是否创建/显示无关。
     shell.windowController.onPlacementReady = function() return shell:RevalidatePlacement(true,"resolution_migration") end
     S.Layout:RegisterFloating("window_shell:" .. id,window,{ensureNow=false,
-        -- 维护：冷诊断从已构建实例采样；辅助窗不在 WidgetHost 也可被系统报告找到。
+        -- 冷诊断从已构建实例采样；辅助窗不在 WidgetHost 也可被系统报告找到。
         getPlacementDiagnostics=function()return shell:GetPlacementDiagnostics()end,
         onMetricsChanged=function(changed)
         return shell:RevalidatePlacement(changed,"resolution_migration")

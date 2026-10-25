@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 头顶标记显示测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 头顶标记离线回归，仅模拟 X2Option；验证生命周期和事务语义，不能替代 RU 视觉验收。
--- 2026-09-20 RU 验收证明四个 name_tag_hp_* 变量影响原生血条，而 over_head_marker_width/height/offset 不会改变 X2Unit:SetOverHeadMarker 标记的视觉尺寸。
--- 因此当前契约只写 name_tag_mark_size_ratio，schema1 的 markerWidth/markerHeight 保留为存档兼容的百分比编码。
-------------------------------------------------------------------------
+-- 用 X2Option 替身检查启停和保存；血条、头标的真实尺寸仍需客户端确认。
+-- RU 实测中 name_tag_hp_* 影响血条，over_head_marker_width/height/offset 不影响头标尺寸。
+-- 头标只写 name_tag_mark_size_ratio；旧宽高字段保留作 schema1 兼容编码。
 local function DeepCopy(v)
     if type(v) ~= "table" then return v end
     local out = {}

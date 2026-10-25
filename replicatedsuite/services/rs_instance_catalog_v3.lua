@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 副本目录与次数
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 副本目录是 X2BattleField 入口数据唯一只读权威。runtimeInstanceType 为会话 entry.type，databaseZoneId 为静
--- 态地图 Zone ID，不能自动提升或互换。无 Tick/OnUpdate；首消费者、显式刷新、空目录恢复时发现完整 kind/list
--- ，持续观察时最多每五分钟一次。消费者存在时详情计数每 30s 刷新，并对 visit-count/reset 事件以 200ms
--- debounce 响应。
-------------------------------------------------------------------------
+-- runtimeInstanceType 是会话 entry.type，不能与数据库 Zone ID 互换。
+-- 首需求、显式刷新或空目录恢复时发现 kind/list，持续观察最多每五分钟发现一次；详情每 30s 更新，次数/重置事件去抖 200ms。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}

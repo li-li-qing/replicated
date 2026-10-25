@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 工作台页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 个人工作台编辑器（2026-09-18）。仅管理表示偏好；所有业务写入走 Commands。
--- 导航/首页/外观归 Workspace；关注归 Tasks/Activities；启停归 Runtime；窗口归 Host。
--- 控件池固定，操作与可见期事件刷新，无 Tick/Native 采样/GetHealth；重载时无旧订阅。
--- 搜索批量仅作用于当前结果；故障提示保留，不把保存失败伪装成成功。关闭不丢草稿外配置。
-------------------------------------------------------------------------
+-- 工作台只管理导航、首页和外观偏好；关注、启停和窗口仍交给各自模块。
+-- 控件池固定，只在操作和可见期事件中刷新；保存失败须保留提示。
 if ReplicatedSuite==nil or ReplicatedSuite.BootError~=nil then return end
 local S=ReplicatedSuite
 local V=S.UIV3;local R,D=S.RSUI,S.UIV3Design;local W=V and V.Workspace
@@ -151,9 +146,9 @@ function Page:Build(parent,route,initialTab)
   query:CancelEditing('workspace_tab');self.tab=tab;self.filter=tab=='features' and 'enabled' or 'all';self.query='';self.selectedId=nil
   query:SetValue('',false);tabs:Render()
   local refreshed,refreshErr=self:Refresh();if refreshed~=true then return false,refreshErr end
-  -- 约束（2026-10-09）：已有工作台首次切“界面外观”只刷新数据，四个惰性 NumericField 还停留在默认锚点。
-  -- 此路径不经过 Shell:Navigate 的额外排版；若等共享队列的下一帧，Native 已显示的滑块会暂时堆在同一位置。
-  -- 仅在本页已有有效边界且可见时同步完成布局；冷创建的尺寸仍由 PageHost/Shell 首次布局提供，不猜宽高、不新建定时器。
+  -- 首次切到外观页时，惰性 NumericField 只有数据、尚无正确锚点。
+  -- 此路径不经过 Shell:Navigate，须在页面可见且已有边界时立即布局，避免滑块暂时叠在默认位置；
+  -- 冷创建仍由 PageHost/Shell 给尺寸。
   if tab=='appearance' and not self:IsCollapsed() and (tonumber(self.width) or 0)>1 and (tonumber(self.height) or 0)>1 then
    self:LayoutIfNeeded(self.x,self.y,self.width,self.height,true)
   end

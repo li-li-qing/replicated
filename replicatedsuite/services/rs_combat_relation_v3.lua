@@ -1,14 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗关系事实
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立战斗关系领域只回答 SELF/TEAM/FRIENDLY/OPPONENT/UNKNOWN。身份归 UnitIdentityV3，Aura 归
--- AuraObservationV3，战斗发生归 CombatEventBusV3，DPS/HPS/排名/PVP-PVE 业务结论归 DPS。关系按时间戳解析，因
--- 为团队或阵营可在战斗中变化；UNKNOWN 是正式答案，不猜测。用户手动覆盖高于所有推断；友方攻击友方记录
--- CONFLICT 供决斗、强攻或阵营变化审查，不能静默翻转。软证据可遗忘，硬证据保留时间戳。无 Tick/OnUpdate/后台
--- 扫描，消费者 Demand 拥有生命周期，全部 map 有界。
-------------------------------------------------------------------------
+-- 只判断 SELF/TEAM/FRIENDLY/OPPONENT/UNKNOWN；身份、Aura 和战斗事实分别取共享服务，DPS 自行计算指标。
+-- 关系按事件时间解析，手动覆盖优先；友方互伤记录 CONFLICT，不能静默翻成敌方。
+-- 软证据会衰减，硬证据保留时间戳；UNKNOWN 保持未知，不后台扫描。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -26,7 +21,6 @@ local R = {
     conflictOrder = {},
     conflictHead = 1,
     conflictMax = 64,
-    -- 诊断状态。
     reads = 0,
     binds = 0,
     evidenceApplied = 0,
@@ -56,7 +50,6 @@ local function IsSelfName(value)
     return identity:IsPlayerName(value) == true
 end
 
--- 关系枚举值。
 R.Relation = {
     SELF = "SELF",
     TEAM = "TEAM",
@@ -93,7 +86,6 @@ local function Emit(level, code, message, context)
     end
 end
 
--- 有界单位表。
 local function CompactOrder(self, orderField, headField)
     local order = self[orderField]
     local head = math.max(1, tonumber(self[headField]) or 1)
@@ -147,7 +139,6 @@ local function KeyFor(name)
     return name ~= "" and name or nil
 end
 
--- 公开只读查询。
 function R:GetUnit(key)
     key = KeyFor(key)
     if key == nil then return nil end
@@ -187,7 +178,6 @@ function R:IsOpponentAt(name, at)
     return self:GetRelationAt(name, at) == R.Relation.OPPONENT
 end
 
--- 证据接入。
 local function ApplyEvidence(self, key, relation, source, at, hard, counterpart)
     if not IsRelation(relation) then return false, "invalid relation" end
     key = KeyFor(key)
@@ -285,16 +275,15 @@ function R:ApplyChineseNameHint(name, at)
     return ApplyEvidence(self, key, R.Relation.OPPONENT, "NAME_HINT", at, false)
 end
 
--- 战斗推导证据：单位伤害 SELF 或被 SELF 伤害，可产生最多两条 OPPONENT 硬标记；单位治疗 SELF 或 SELF 治疗单
--- 位产生 FRIENDLY 软标记，因为宠物/NPC 也可能有看似友好治疗，不能高于硬标记。友方攻击友方须记录冲突，不静默
--- 翻转。
+-- 与 SELF 互相伤害产生 OPPONENT 硬证据，互相治疗仅为 FRIENDLY 软证据（宠物/NPC 也可能治疗）。
+-- 友方互伤保留冲突，不静默改关系。
 local MIN_EFFECTIVE_AMOUNT = 1
 
 function R:RecordCombatFact(fact)
     if type(fact) ~= "table" then return false, "fact required" end
     local identity = IdentityService()
     if identity == nil or type(identity.IsPlayerIdentityReady) ~= "function" or identity:IsPlayerIdentityReady() ~= true then
-        -- 没有已验证 SELF 端点就没有关系推断锚点；返回 false 保证调用者计数真实。
+        -- 没有已验证 SELF 端点时，无法建立关系推断。
         return false, "player identity unavailable"
     end
     local category = tostring(fact.category or "")
@@ -359,7 +348,6 @@ function R:RecordConflict(code, sourceName, targetName, at, reason)
     return true
 end
 
--- 生命周期。
 function R:ResetTransient(reason)
     local kept = {}
     for key, row in pairs(self.units) do
@@ -381,7 +369,7 @@ function R:GetHealth()
         if row.manual == true then manual = manual + 1 end
         if row.relation == R.Relation.UNKNOWN then unknown = unknown + 1 end
     end
-    -- 维护：DPS 每次刷新也读取此诊断，只为人数不得深拷贝全部成员。
+    -- DPS 每次刷新也读取此诊断，只为人数不得深拷贝全部成员。
     -- 复用名单服务的实时轻量计数；旧宿主未提供计数时仍兼容完整快照，不跨调用缓存事实。
     local roster, rosterMembers = TeamRoster(), nil
     if roster ~= nil and type(roster.GetHealth) == "function" then

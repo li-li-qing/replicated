@@ -1,15 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 模块诊断
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 模块诊断中心只做可证明归属的有界投影与用户显式点击的冷快照，避免单模块故障要求复制全部证据，也避免页面另
--- 建身份/分页/错误池。FeatureRegistry 是 moduleId/route/name 唯一身份权威，DiagnosticsManager 是结构化错误
--- 权威。数据流：DiagnosticsManager:_Append -> Observe(分离 entry) -> module ring<=32；用户生成 ->
--- BuildReport -> ReportCopyTransport 固定分页。翻页只消费 snapshot，不重调
--- Provider/Persistence/Feature/Native。无法证明归属的共享错误只入 system；Provider 不 Enable
--- Feature/Acquire Consumer，Hub 不 Initialize/Enable。不能升级为业务权威、后台轮询器或无界日志库。
-------------------------------------------------------------------------
+-- 按 FeatureRegistry 身份投影 Diagnostics 的错误，每模块最多 32 条；无法确定归属时留在 system。
+-- 用户生成报告时采集一次，翻页只读冻结快照，不重跑 Provider、Persistence 或 Native。
+-- Hub 和 Provider 不能启用 Feature 或获取消费者。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -18,9 +12,7 @@ local PROVIDER_MAX = 16
 local REPORT_VALUE_DEPTH = 4
 local REPORT_STRING_MAX = 1200
 
--- 重载会保留Suite全局表，错误池/Provider却只属于一次加载。
--- Generation不同时丢弃旧投影，避免旧故障冒充“本次加载”；旧窗口由Bootstrap统一退役。
--- 同Generation重复执行文件仍可复用；早期错误留在新DiagnosticsManager，Capture再按身份归属。
+-- 全局表会跨重载保留，错误池和 Provider 只属于当前 Generation；同代重复加载可复用。
 S.ModuleDiagnosticsHub = type(S.ModuleDiagnosticsHub) == "table"
     and S.ModuleDiagnosticsHub.generation == (tonumber(S.Generation) or 0) and S.ModuleDiagnosticsHub or {
     generation = tonumber(S.Generation) or 0,
@@ -237,11 +229,8 @@ function H:GetRecent(moduleId)
 end
 
 function H:_CollectReportRecent(moduleId)
-    -- （2026-09-18）Hub 的热路径 Observe 可能早于 FeatureRegistry 加载；此时
-    -- 可证明为某 Feature 的 Persistence/UI 错误会先安全落入 system ring。用户点击生成诊断时
-    -- 才允许在全局 Diagnostics 最近 80 条的有界缓存上重新归属一次。Authority 仍是
-    -- DiagnosticsManager.recent；这里只构造临时报表列表，不搬迁/删除历史、不产生新日志。
-    -- 这样既补回启动早期业务错误，又不会在每条错误热路径上等待 Registry 或做全表扫描。
+    -- Registry 加载前的错误先归 system；生成报告时再从全局最近 80 条缓存重新归属。
+    -- 只构造临时列表，不搬迁历史或在错误热路径扫描全表。
     moduleId = Normalize(moduleId)
     if moduleId == "system_diagnostics" then moduleId = "system" end
     local out, seen = {}, {}
@@ -462,8 +451,7 @@ function H:BuildReport(moduleId, options)
         end
     end
 
-    -- 2026-09-30：通用复制缓冲证据只读现有窗口，不创建输入，不修改正文/选区。
-    -- beforeCapture 由窗口在 Generate 撤权前冻结；不能把 SetText/GetText 成功当作系统复制成功。
+    -- 只读已有复制窗口；beforeCapture 在撤权前冻结，SetText/GetText 成功不代表系统复制成功。
     lines[#lines + 1] = "[DIAGNOSTIC_COPY]"
     local copyWindow = S.UIV3 and S.UIV3.ModuleDiagnosticsWindowV3
     if type(copyWindow) == "table" and copyWindow.moduleId == moduleId and type(copyWindow.Describe) == "function" then
@@ -580,9 +568,8 @@ function H:BuildReport(moduleId, options)
     providerFailures=providerFailures+inputFailures
     lines[#lines+1]=Render(inputContext,'ui.sharedInput')
 
-    -- （2026-09-20，module-toggle-native-trampoline-1）模块“启动无反应”过去只能看到
-    -- initialized=false，无法区分按钮没收到 Native Click、页面动作未安装、统一 v3.features 写保护，
-    -- 还是 Feature 自身初始化失败。这里仅观察现有薄状态，不 Load/Save/Initialize，不改变任何模块生命周期。
+    -- 模块启动诊断须区分未收到 Native Click、动作未安装、开关 Store 写保护和初始化失败。
+    -- 这里只读现有状态，不 Load/Save/Initialize。
     local controlBar = type(host) == "table" and type(host.moduleControls) == "table" and host.moduleControls[route] or nil
     if type(controlBar) == "table" and controlBar.toggle ~= nil then
         local metrics = type(controlBar.actionMetrics) == "table" and controlBar.actionMetrics or {}

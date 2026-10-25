@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 伤害与治疗统计功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 消费共享 self/all 战斗统计流；Native COMBAT_MSG 处理归 bus，不持久化运行中总量。逐事件 PVP/PVE 分类和累加归 rs_dps_domain.lua，关系事实归 CombatRelationV3；本文件仅拥有生命周期、设置、命令与投影边界。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Runtime = S.FeatureRuntime
@@ -34,13 +31,13 @@ local function Relation() return S.Services and S.Services.CombatRelationV3 or n
 local function Domain() return F.Domain end
 local trackingPolicyChanging = false
 
--- 维护：held 只是 DPS 的重试凭证；下游 Demand 才拥有消费者意图。只有本 token 明确不存在且
+-- held 只是 DPS 的重试凭证；下游 Demand 才拥有消费者意图。只有本 token 明确不存在且
 -- 下游没有待静默故障且事务已结算，才能承认 Core 已代为撤销；查询缺失、nil、异常均不构成释放证据。
 local function DependencyCleanupState(service, token)
     if type(service) ~= "table" then return nil end
     local lease = service.Demand or service.demand
     if type(lease) == "table" and lease.needsQuiesce == true then return "pending" end
-    -- 维护：提交前已临时投影 Has=false，回滚仍可恢复 token；静默回调也尚未确认资源释放，忙中不能提前清 held。
+    -- 提交前已临时投影 Has=false，回滚仍可恢复 token；静默回调也尚未确认资源释放，忙中不能提前清 held。
     if type(lease) == "table" and (lease.transitioning == true or lease.quiescing == true) then return "busy" end
     local queryOwner, query = service, service.HasConsumer
     if type(query) ~= "function" and type(lease) == "table" then queryOwner, query = lease, lease.Has end
@@ -49,12 +46,12 @@ local function DependencyCleanupState(service, token)
     return ok == true and held == false and "absent" or nil
 end
 
--- 维护：只释放传入的 DPS token，绝不清空共享服务。失败后再读一次 Authority，兼容已撤销
+-- 只释放传入的 DPS token，绝不清空共享服务。失败后再读一次 Authority，兼容已撤销
 -- 意图才返回失败的幂等边界；仍待 quiesce 的空租约不能被 ReleaseConsumer 的空 token 成功掩盖。
 local function ReleaseDependency(service, token, reason, label)
     local state = DependencyCleanupState(service, token)
     if state == "pending" then return false, label .. " requires quiesce" end
-    if state == "busy" then return false, label .. " transition in progress" end -- 维护：不让下游空 token 幂等成功吞掉未结算事务。
+    if state == "busy" then return false, label .. " transition in progress" end -- 不让下游空 token 幂等成功吞掉未结算事务。
     if state == "absent" then return true end
     if type(service) ~= "table" or type(service.ReleaseConsumer) ~= "function" then return false, label .. " release unavailable" end
     local ok, err = service:ReleaseConsumer(token, reason)
@@ -139,7 +136,7 @@ end
 function F:_ReleaseAnalytics()
     if self.analyticsHeld ~= true then return true end
     local analytics = Analytics()
-    -- 维护：释放失败保留本 Owner 凭证，明确已被 Core 撤销时允许下一轮关闭对齐局部标志。
+    -- 释放失败保留本 Owner 凭证，明确已被 Core 撤销时允许下一轮关闭对齐局部标志。
     local ok, err = ReleaseDependency(analytics, "dps_core", "dps_disable", "combat analytics")
     if ok ~= true then return false, err end
     self.analyticsHeld = false
@@ -159,7 +156,7 @@ end
 function F:_ReleaseRelation()
     if self.relationHeld ~= true then return true end
     local relation = Relation()
-    -- 维护：关系服务的真实 Demand:Has 与 Analytics 公共查询承担相同的本 token 确认证据。
+    -- 关系服务的真实 Demand:Has 与 Analytics 公共查询承担相同的本 token 确认证据。
     local ok, err = ReleaseDependency(relation, "dps", "dps_disable", "combat relation")
     if ok ~= true then return false, err end
     self.relationHeld = false
@@ -223,7 +220,7 @@ local lease, leaseErr = S.Demand:Create({
         if F:_ReleaseAnalytics() ~= true then ok = false end
         F:_UnsubscribeRelationEvents()
         if F:_ReleaseRelation() ~= true then ok = false end
-        -- 维护：各 _Release 只在确认成功后清 held；强制路径失败也必须保留凭证供 needsQuiesce 重试。
+        -- 各 _Release 只在确认成功后清 held；强制路径失败也必须保留凭证供 needsQuiesce 重试。
         F.busSubscribed = false -- DPS 从不直接拥有 Bus，仅清理旧诊断兼容字段。
         F:CancelProjectionPublish()
         F:CancelPendingReplay()
@@ -649,11 +646,7 @@ end
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
 
--- 把本 Feature 的健康投影与
--- 运行期状态投影注册到 Core 的取值表。原先 core/rs_foundation_gate.lua 直接按 id 读取本 Feature 的
--- 实现表（health、enabled、busSubscribed、Domain 版本），既用于契约 detail 也用于运行期生命周期判定；
--- 现在 Core 只读投影 —— **契约本身已归位到 rs_dps_acceptance.lua，诊断可观察性不降级**。
--- provider 每次实时调用、不缓存，与旧取值时机和新鲜度一致。
+-- Core 通过实时 provider 读取健康与运行状态；契约验收在 rs_dps_acceptance.lua，不缓存 Feature 快照。
 local providers = S.FeatureHealthProviders
 if type(providers) == "table" then
     providers:Register("dps_health", function()

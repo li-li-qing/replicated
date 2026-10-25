@@ -1,9 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · Aura热路径回归（开发期，不进入TOC）
--- 中文维护：复用PVP宿主和真实Aura/Metadata/Demand/Feature，Native仅给确定事实。
+-- 复用PVP宿主和真实Aura/Metadata/Demand/Feature，Native仅给确定事实。
 -- 分配门禁检查一次192行观察的helper函数实例有界，避免逐行临时闭包重新进入热路径。
 -- Lua5.1离线行为/分配证据不等同于RU实机性能。
-------------------------------------------------------------------------
 local Host = dofile('tools/rs_pvp_hud_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)

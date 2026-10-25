@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队名单
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 战斗功能共享轻量只读团队名单权威。TEAM_MEMBERS_CHANGED 仅作失效信号，原生 raid UI 稳定后由统一 Scheduler
--- 扫描 UnitName。没有 Tick/OnUpdate 循环，不调用 X2Team 写接口。
-------------------------------------------------------------------------
+-- TEAM_MEMBERS_CHANGED 只标失效，待原生 raid UI 稳定后由 Scheduler 读 UnitName；不调用 X2Team 写接口。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -54,9 +50,8 @@ local function AddName(map, ordered, name, unitToken, teamIndex, memberIndex)
     local full, base = SplitName(name)
     if full == "" then return false end
 
-    -- 有序快照和查找 map 必须共用一个 canonical 行。先用最安全 player token 建种子，后在真实团队槽发现同身
-    -- 份时原地补充，不能另建表替换 map[full]。否则 GetMember(name) 与 GetSnapshot().members 的
-    -- teamIndex/memberIndex 不一致，破坏角色和就绪消费者，虽关系成员看似正确。
+    -- 有序快照与查找 map 共用同一行。player 先作种子，发现真实团队槽后原地补齐，
+    -- 否则 GetMember 与快照会给出不同 teamIndex/memberIndex。
     local incomingToken = tostring(unitToken or "")
     local incomingTeam = tonumber(teamIndex) or 0
     local incomingMember = tonumber(memberIndex) or 0
@@ -154,9 +149,8 @@ function T:ScheduleRetry(delayMs, reason)
     end, self, "P1", 1)
 end
 
--- 名单稳定时 TEAM_MEMBERS_CHANGED 也常触发（战斗、切区、角色脉冲）；只有身份集合变化才递增 revision 并发布
--- v3.team_roster.updated。空刷新也发布会令 Healer OnRosterUpdated->ResetTransient 清空推荐/健康色，导致团队
--- 颜色先消失再缓慢恢复。
+-- TEAM_MEMBERS_CHANGED 也会因战斗/切区触发；只在身份集合变化时发布 updated，
+-- 否则 Healer 会反复 ResetTransient，健康色先消失再恢复。
 local function SameRosterSnapshot(a, b)
     if type(a) ~= "table" or type(b) ~= "table" or #a ~= #b then return false end
     for index = 1, #a do
@@ -240,15 +234,8 @@ function T:ScheduleSettleRefresh(delayMs, reason, pass)
     if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false, "team roster settle scheduler unavailable" end
     pass = math.max(1, math.floor(tonumber(pass) or 1))
     if pass > math.max(1, tonumber(self.settleMaxPasses) or 2) then return true end
-    -- （2026-09-16，团队边沿稳定化）RU 的 TEAM_MEMBERS_CHANGED 可能先于 teamN/native slot 真正就绪。
-    -- TeamRosterV3 是团队身份 Authority，因此“晚到槽位”的补扫也必须留在 Service 内，而不是让
-    -- AutoRole/Healer 各自扫描 X2Unit。
-    -- 每个原生边沿只允许最多两次 one-shot 尾随扫描：第1次约700ms、第2次再约900ms；没有 Tick/周期常驻，且新
-    -- 边沿会替换旧链。
-    -- Refresh 仍通过 SameRosterSnapshot 只在身份/槽位真的变化时发布 v3.team_roster.updated，所以正常稳定团
-    -- 队不会引发额外 Consumer 重算。
-    -- 兼容风险：若未来客户端槽位稳定时间超过该有界窗口，只增加此 Authority 的 pass/delay，不要在业务
-    -- Feature 新建第二套名单缓存。
+    -- RU 事件可能早于 teamN 槽位就绪，补扫统一留在本服务：每边沿最多两次 one-shot，约 700ms 后一次、再 900ms 一次。
+    -- 新边沿替换旧链，只在身份/槽位变化时发布。若以后需扩大稳定窗口也在此调整，Feature 不另建名单缓存。
     if pass == 1 and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.settleTask) end
     local taskReason = tostring(reason or "team_edge") .. ":settle:" .. tostring(pass)
     local scheduled = S.Scheduler:AddOneShot(self.settleTask, math.max(250, tonumber(delayMs) or 700), function()

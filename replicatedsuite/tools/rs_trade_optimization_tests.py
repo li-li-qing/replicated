@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-# ---------------------------------------------------------------------
 # Replicated Suite · 交易优化测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 """交易优化的静态和几何回归。
 
 不模拟 ArcheRage 原生调用，只保护客户端外可验证的架构契约：历史 Store 兼容、
@@ -16,7 +14,7 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-# 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已搬到独立源码单元，
+# life_trade 已搬到独立源码单元，
 # rs_life_m16_bundle.lua 已退役；探针改读 features/life/trade/rs_trade_feature.lua。
 BUNDLE = (ROOT / "features/life/trade/rs_trade_feature.lua").read_text(encoding="utf-8")
 STATIC = (ROOT / "data/rs_trade_static_v2.lua").read_text(encoding="utf-8")
@@ -34,7 +32,7 @@ TOC = (ROOT / "toc.g").read_text(encoding="utf-8")
 AUCTION_QUERY = (ROOT / "services/rs_auction_query_v3.lua").read_text(encoding="utf-8")
 REGISTRY = (ROOT / "features/rs_feature_registry.lua").read_text(encoding="utf-8")
 FOUNDATION = (ROOT / "presentation/v3/pages/rs_v3_foundation_pages.lua").read_text(encoding="utf-8")
-# 维护（2026-09-30）：仅将已迁移的 Feature 条件改查真实 owner；Service/UIV3 条件仍在 Core。
+# 仅将已迁移的 Feature 条件改查真实 owner；Service/UIV3 条件仍在 Core。
 FEATURE_ACCEPTANCE = (ROOT / "features/life/trade/rs_trade_acceptance.lua").read_text(encoding="utf-8")
 CORE_GATE = (ROOT / "core/rs_foundation_gate.lua").read_text(encoding="utf-8")
 ACCEPTANCE = (ROOT / "presentation/v3/rs_v3_acceptance.lua").read_text(encoding="utf-8")
@@ -98,8 +96,6 @@ def main() -> int:
     require('runtime = true' in FEATURE_ACCEPTANCE and 'self:RunRuntimeContracts(report)' in CORE_GATE,
             "migrated Trade contracts remain in live diagnostics, not only skipped offline sequences")
     # 核对构建标识和历史 Store 边界。
-    # 中文维护注释（2026-09-28，Phase 2 Step 4）：本条按 §30 分类 B（旧硬编码 version）更新。
-    # Authority：BuildTag 已按 Phase 0（.330）、Phase 1（.331）、Phase 2 首轮（.332）连续合法推进。
     require("v3-m1.16.0.18.332-phase2-life-bundle-slice-complete" in BOOT,
             "build tag must carry the current cumulative baseline")
     # 覆盖旧 18.310 回归：字面量反斜杠 n 被追加到 Lua 的 -- 注释，
@@ -243,10 +239,7 @@ def main() -> int:
     require('RegisterProduct(31863, "Halcyona Preserved Specialty")' in PRODUCT_IDS
             and re.search(r'\{\s*22,\s*"HALCYONA",\s*"Halcyona",\s*"Preserved"', ZONE_IDS) is not None,
             "reported Golden Plains preserved specialty resolves to verified product/origin identity")
-    # 中文维护注释（2026-09-28，Phase 2 Step 4）：原探针用 section(BUNDLE, "-- Trade", "-- Bonds")
-    # 切出 Trade 段；life_bonds 在 Step 3 拆走后 bundle 里已没有 "-- Bonds" 标记，这条探针从那时起
-    # 就以 ValueError 失败（属 §30 分类 B 的旧源码探针漂移）。现在 features/life/trade/rs_trade_feature.lua
-    # 本身就是 Trade 源码单元，直接用整个文件即可 —— 范围比旧切片更完整，断言强度不降。
+    # Trade 已有独立源码文件，直接检查整个文件，避免依赖旧 bundle 的章节标记。
     trade_slice = BUNDLE
     require("OnUpdate" not in trade_slice and "OnTick" not in trade_slice, "trade slice introduces no Tick/OnUpdate polling")
 
@@ -299,7 +292,8 @@ def main() -> int:
             "trade live identity cache remains bounded even when every cached entry is ready")
 
     # 显式询价必须支持有 itemType 但没有静态英文键的实时制作材料。
-    quote_slice = section(BUNDLE, "local function ResolveTradeQuoteIdentity", "-- Diagnostics reads describe helpers")
+    # 以实际方法划定询价范围，诊断注释的改写不应中断后续回归检查。
+    quote_slice = section(BUNDLE, "local function ResolveTradeQuoteIdentity", "function Trade:DescribeQuoteState()")
     require('itemType,itemGrade=tonumber(material.itemType),tonumber(material.itemGrade)' in quote_slice,
             "material quote identity prefers projected itemType/itemGrade authority")
     require('selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade,' in quote_slice
@@ -445,7 +439,7 @@ def main() -> int:
             "persistent material-price age uses server wall clock rather than reload-local NowMs")
     require('sessionObservedAtMs' in MATERIAL_PRICE and 'material-price-session-freshness-1' in MATERIAL_PRICE,
             "fresh quotes remain session-fresh while server calendar is temporarily unavailable after reload")
-    # 维护（2026-09-30）：已有 2026-09-28 SWR 行为测试固定 559→1499 的候选/确认/回归；
+    # 已有 2026-09-28 SWR 行为测试固定 559→1499 的候选/确认/回归；
     # 该保护已收紧至 2.5，本静态脚本不能继续强迫恢复旧 8 倍阈值。未修改价格算法。
     require('anomalyRatio = 2.5' in MATERIAL_PRICE and 'anomaly_candidate_held' in MATERIAL_PRICE
             and 'anomalyConfirmTolerance = 0.15' in MATERIAL_PRICE,
@@ -459,7 +453,7 @@ def main() -> int:
             and 'Trade.EconomicsRevisionContractVersion = 1' in BUNDLE
             and 'function TA:QueueBackgroundMaterialRevalidation(reason)' in BUNDLE,
             "Trade declares durable cache, background SWR and economics revision contracts")
-    material_projection = section(BUNDLE, 'local function ApplyTradeMaterialProjectionToRow(row)', '-- Actionable quote backlog')
+    material_projection = section(BUNDLE, 'local function ApplyTradeMaterialProjectionToRow(row)', 'local function IsCompatibleTradeMaterialSnapshot(')
     require('materialPriceService:GetRevision()' in material_projection
             and 'row.profitCopper = profit' in material_projection
             and 'row.profitRate = profit ~= nil and cost ~= nil and cost > 0' in material_projection

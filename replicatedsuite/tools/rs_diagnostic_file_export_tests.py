@@ -1,8 +1,6 @@
-# ---------------------------------------------------------------------
 # Replicated Suite · 诊断文件导出测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 """文件出口须保留完整中文与换行，拒绝缺块/校验错误和不支持的磁盘格式。"""
 import importlib.util
 from pathlib import Path
@@ -79,7 +77,7 @@ class ExportTests(unittest.TestCase):
             self.assertGreater(len(actual), 16383)
             self.assertEqual(actual, expected)
             self.assertEqual(identity, 'test.3')
-            # 中文维护：只复制发行 exe 到有中文/空格的新玩家目录；禁用开发环境 PATH，
+            # 只复制发行 exe 到有中文/空格的新玩家目录；禁用开发环境 PATH，
             # 用真实 Lua 分页原文构造活动 WAL，验证默认账号定位、输出位置及删除后的恢复。
             from rs_diagnostic_file_export import masked_crc
             game = Path(directory) / '其他玩家 游戏目录'
@@ -157,7 +155,7 @@ class ExportTests(unittest.TestCase):
             records[page_key] = (1, 1, page[2].replace(b'str_report_checksum str_', b'str_report_checksum str_DEAD'))
             with self.assertRaisesRegex(ValueError, 'still being saved'):
                 decode_mailbox(manifest, records, key)
-            # 中文维护：旧单 key 实机截断不能被恢复成“完整报告”，继续拒绝伪成功。
+            # 旧单 key 实机截断不能被恢复成“完整报告”，继续拒绝伪成功。
             with self.assertRaises(ValueError):
                 decode_mailbox(manifest[:80], records, key)
 
@@ -181,7 +179,7 @@ class ExportTests(unittest.TestCase):
         value = (f'isTable true\nstr_protocol str_RS-DIAGNOSTIC-FILE-1\nstr_report_id str_test.1\nstr_byte_count str_{len(raw)}\nstr_chunk_count str_1\nstr_checksum str_{zlib.adler32(raw):08X}\nstr_chunks\n    isTable true\n    str_g0001\n        isTable true\n        str_c0001 str_{raw.hex().upper()}\n').encode()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            # 中文维护：活动 SST 中旧值由更高 sequence 的完整 WAL 覆盖；已删除 SST 不得扫描。
+            # 活动 SST 中旧值由更高 sequence 的完整 WAL 覆盖；已删除 SST 不得扫描。
             payload = entry(key + struct.pack('<Q', (3 << 8) | 1), b'old')
             index_offset = len(block(payload))
             index = entry(b'z', var(0) + var(len(payload)))
@@ -202,7 +200,7 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(output.read_bytes(), raw)
             with self.assertRaises(FileExistsError):
                 save_report(root, output)
-            # 中文维护：使用真实 WAL 验证首次无目录、去重、删除 txt / 删除整个输出目录后重建。
+            # 使用真实 WAL 验证首次无目录、去重、删除 txt / 删除整个输出目录后重建。
             import rs_diagnostic_file_export as exporter
             reports = root / '诊断报告'
             with patch.object(exporter, 'report_folder', return_value=reports):
@@ -217,7 +215,7 @@ class ExportTests(unittest.TestCase):
                 self.assertEqual(third.read_bytes(), raw)
                 (reports / '.last-export.json').write_text('damaged', encoding='utf-8')
                 self.assertEqual(save_report(root).read_bytes(), raw)
-                # 中文维护：接收器运行中清空目录且数据库未变，仍恢复完整 txt；仅时间由测试推动。
+                # 接收器运行中清空目录且数据库未变，仍恢复完整 txt；仅时间由测试推动。
                 cycles = []
                 def next_cycle(_):
                     cycles.append(1)
@@ -230,7 +228,7 @@ class ExportTests(unittest.TestCase):
                 with patch.object(exporter.time, 'sleep', side_effect=next_cycle):
                     exporter.watch(root, root)
                 self.assertEqual(len(cycles), 2)
-            # 中文维护：最新删除记录优先，旧 SST 的导出快照不能复活。
+            # 最新删除记录优先，旧 SST 的导出快照不能复活。
             deletion = struct.pack('<QI', 8, 1) + b'\x00' + field(key)
             (root/'000001.log').write_bytes(log(wal) + log(deletion))
             self.assertNotIn(key, read_database(root))

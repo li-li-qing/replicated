@@ -1,10 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 启用失败清理回归
 -- 作者：Replicated
 -- QQ群：1104129461
--- 维护：生产 FeatureRuntime / Gear / Demand 承担被测事务，依赖仅注入可控失败。
+-- 生产 FeatureRuntime / Gear / Demand 承担被测事务，依赖仅注入可控失败。
 -- 此文件不进 TOC、不读真实存档；验证失败后的释放和重试，不代表 RU 实机验收。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

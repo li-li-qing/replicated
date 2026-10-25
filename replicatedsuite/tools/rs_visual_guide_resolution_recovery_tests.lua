@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 视觉引导分辨率恢复测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 视觉引导分辨率和样式恢复测试使用生产 rs_theme.lua、rs_v3_combat_visual_guides.lua，仅提供必要的最小 UI 和运行时宿主，因为旧工作区主题及单位连线宿主在发行包中不具备自包含条件。
--- 原生 UI 环境因分辨率、画质或缩放重置时，可能在功能设置不变的情况下重置 LABEL TextStyle 字号；距离辅助和单位连线的点形字符必须自动恢复配置直径，Theme 排版刷新不能把它们限制回普通文字尺寸。
-------------------------------------------------------------------------
+-- 分辨率、画质或缩放重置可能让 LABEL 丢失字号。距离圈和单位连线要恢复原来的点径，
+-- 不能被 Theme 当成普通文字缩小；测试加载真实主题与视觉引导实现。
 local SCRIPT = debug.getinfo(1, "S").source
 local SCRIPT_PATH = SCRIPT:sub(1, 1) == "@" and SCRIPT:sub(2) or SCRIPT
 local ROOT = SCRIPT_PATH:match("^(.*)/tools/[^/]+$") or (SCRIPT_PATH:match("^tools/[^/]+$") and ".")

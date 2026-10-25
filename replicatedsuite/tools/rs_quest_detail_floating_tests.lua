@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 任务详情浮窗测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 开发期离线测试；不进入 toc.g。验证 Presentation Consumer/事件边界，不冒充 RU Native 实机验收。
-------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

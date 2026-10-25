@@ -1,14 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 行情分析功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
--- 共享读模型归属：当前挂单查询/投影整形与 tools_auction 共用同一份实现，
--- Authority 是 features/tools/auction/rs_auction_read_model.lua（不拥有事实，
--- 事实仍归 AuctionQueryV3 / PriceQuoteQueueV3 / AuctionSearchBridgeV3）。
--- 本文件不认识 tools_auction 的私有 State，也不建立第二个查询 Authority。
-------------------------------------------------------------------------
+-- 与拍卖助手共用 AuctionReadModel，查询/报价/原生同步仍归共享服务；不读 tools_auction 私有 State 或另建查询模型。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory

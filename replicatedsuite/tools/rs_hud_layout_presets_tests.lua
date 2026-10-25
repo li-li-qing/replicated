@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · HUD 布局预设与横纵排列回归
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

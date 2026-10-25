@@ -1,15 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 报告交付测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护：取证报告交付回归；真实 Backend/Page/Codec，Native 仅替换为可控接收端。
+-- 取证报告交付回归；真实 Backend/Page/Codec，Native 仅替换为可控接收端。
 -- 不进入 TOC。验证失效交付的复现，不把模拟结果当作 RU 画面/剪贴板实测。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn,function(err)return tostring(err).."\n"..debug.traceback()end)
@@ -30,7 +23,7 @@ local function Boot(options)
         local text=options.text or 'RS-SELF-CHECK-1\nID=1.9\n测试：完整诊断正文\nRS-SELF-CHECK-END ID=1.9'
         return text,{id='1.9',bytes=#text,check={status='BLOCKED',blockers=2,warnings=2,checks={}},fenced=3,issueCount=6}
     end
-    -- 维护：本宿主只替换报告内容，实际Page/文本分页/回读代码保持真实；独立用例使用真实采集器。
+    -- 本宿主只替换报告内容，实际Page/文本分页/回读代码保持真实；独立用例使用真实采集器。
     D.BuildPagedSelfCheckReport=function(self) local t,m=self:BuildSelfCheckReport();m.kind='paged';return t,m end
     if options.clipboard then ADDON.SetClipboardText=function(_,text)calls.copied[#calls.copied+1]=text;return nil end end
     return S,D,calls
@@ -162,7 +155,7 @@ Test('encode roundtrip fixtures cover real report, unicode, binary, overlapping 
         if i==11 then print('COPY METRIC raw='..#text..' encoded='..#encoded);assert(#encoded<=32768,'real-codec repeated report exceeds one-copy budget') end
     end
 end)
--- 维护：真实 RSUI Component + Panel + DesignSystem 布局；只替换 Native setters 和字体测量。
+-- 真实 RSUI Component + Panel + DesignSystem 布局；只替换 Native setters 和字体测量。
 -- 不能冒称像素实测，但能捕获“整块ScrollBox隐藏正文”、宿主fill和输入框尺寸不同步。
 local function LayoutPage(S,calls)
     local byId={}
@@ -254,7 +247,7 @@ Test('visible page records layout transaction rejection before emitting receipt'
     assert(calls.chat[1]:find('code=GEOMETRY_FAILED',1,true))
 end)
 
--- 维护（2026-09-12容量回归）：本次RU截图明确返回native_cap=9215，不能用32KiB mock
+-- 本次RU截图明确返回native_cap=9215，不能用32KiB mock
 -- 或高度重复的合成串证明可交付。替代Native固定9215，正文含不可压缩部分；验证保全整份
 -- 快照并借用原“打印”按钮逐段交付。分段不是完整交付，缺任何一段必须由解码器拒绝。
 local function VariedReport()
@@ -353,7 +346,7 @@ Test('capacity inputs and part indices are strictly bounded',function()
 end)
 
 
--- 维护（2026-09-12 TEXT_READBACK）：报告的MaxTextLength是声明上限，不是Set/Get往返保证。
+-- 报告的MaxTextLength是声明上限，不是Set/Get往返保证。
 -- 以下接收端差异是合成故障注入，不冒称RU真实转换机制；源报告来自同一个快照。
 Test('declared 9215 but actual 4096 bytes negotiates exact first part instead of an empty box',function()
     local text=VariedReport();local S,D,calls=Boot({text=text});local root,h=Page(S,calls,{cap=9215})

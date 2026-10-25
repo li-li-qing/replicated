@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 副手装备重新采集测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 旧配装方案中的空槽位在重新采集后必须纳入管理，
 -- "获取当前" sees equipment there. A consciously unchecked occupied slot stays unchecked.
-------------------------------------------------------------------------
 ReplicatedSuite = {
     BootError = nil,
     Services = {},

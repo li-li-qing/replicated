@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-# ---------------------------------------------------------------------
 # Replicated Suite · 债券原大陆回归测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 """债券和原大陆 ResidentBoard 分片的静态回归保护。
 
 补充 rs_bonds_tests.lua，在未打包旧 Lua UI 测试宿主的普通构建工作区也可运行。
@@ -21,7 +19,7 @@ def require(cond, name):
     print("PASS", name)
 
 boot = read("replicatedsuite.lua")
-# 中文维护注释（2026-09-28，Phase 2 Step 3/4）：life_bonds 已搬到独立源码单元，
+# life_bonds 已搬到独立源码单元，
 # rs_life_m16_bundle.lua 已退役；探针改读真正拥有这些契约的文件。
 bonds = read("features/life/bonds/rs_bonds_feature.lua")
 items = read("data/ids/rs_item_ids.lua")
@@ -33,9 +31,6 @@ v3_acceptance = read("presentation/v3/rs_v3_acceptance.lua")
 gate = read("core/rs_foundation_gate.lua")
 diagnostics = read("core/rs_diagnostics.lua")
 
-# 中文维护注释（2026-09-28，Phase 2 Step 4）：本条按 §30 分类 B（旧硬编码 version）更新。
-# Authority：BuildTag 已按 Phase 0 闭合（.330）、Phase 1 闭合（.331）、Phase 2 首轮闭合（.332）
-# 连续合法推进，三份 Phase 报告都有门禁证据；继续 pin 已被取代的 .329 只会产生误报。
 require("v3-m1.16.0.18.332-phase2-life-bundle-slice-complete" in boot, "build tag must carry the current cumulative baseline")
 for key, value in {
     "prince_purse": 35461, "prince_crate": 42076, "queen_purse": 40928,
@@ -98,12 +93,10 @@ require('id = "v3_bonds_order"' in page and 'id = "v3_bonds_scope"' in page and 
         "main Bonds page uses three dropdowns")
 require('v3_bonds_q20' not in page and 'v3_bonds_priority' not in page,
         "legacy Bonds option buttons removed from main page")
-require("bondSettingsDropdown" in widget and 'placeholder = "设置"' in widget,
-        "floating Bonds widget uses the single compact settings dropdown")
-require("bondOrderDropdown" not in widget and "bondScopeDropdown" not in widget and "bondDuplicateDropdown" not in widget,
-        "floating Bonds widget no longer keeps three persistent dropdowns")
-require('text = "排序"' in widget and 'text = "显示范围"' in widget and 'text = "重复材料"' in widget and 'kind = "header"' in widget,
-        "floating Bonds settings menu groups sort/scope/duplicate actions")
+require("bondOrderDropdown" in widget and "bondScopeDropdown" in widget and "bondDuplicateDropdown" in widget,
+        "floating Bonds widget exposes scope, order and duplicate choices")
+require('placeholder = "排序"' in widget and 'placeholder = "显示范围"' in widget and 'placeholder = "重复材料"' in widget,
+        "floating Bonds dropdowns identify all three configuration domains")
 require('"settings_row"' in widget and 'height = 26' in widget and 'spec.featureName == "Bonds" then desiredRows = 9' in widget,
         "floating Bonds single-row controls restore vertical table budget")
 require("bondsDropdownControlsContractVersion = 3" in widget and "bondsFloatingSettingsMenuContractVersion = 1" in widget
@@ -113,7 +106,7 @@ require("ResidentBoardFamilyContractVersion" in acceptance and "SetFilterMask" i
         "Bonds acceptance requires material-sort contracts")
 require("bondsDropdownControlsContractVersion" in v3_acceptance and "bondsResidentBoardFamilyContractVersion" in v3_acceptance,
         "V3 acceptance requires Bonds dropdown/family contracts")
-# 维护（2026-09-30）：Phase 3 的 Feature 判定归 acceptance；Core 仍验 UIV3，且必须执行只读通道。
+# Phase 3 的 Feature 判定归 acceptance；Core 仍验 UIV3，且必须执行只读通道。
 require("F.ResidentBoardFamilyContractVersion" in acceptance and "runtime = true" in acceptance
         and "bondsDropdownControlsContractVersion" in gate and "self:RunRuntimeContracts(report)" in gate,
         "feature-owned live gate and Core presentation gate reject mixed old/new Bonds files")

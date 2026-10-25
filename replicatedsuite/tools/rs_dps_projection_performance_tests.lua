@@ -1,7 +1,5 @@
-------------------------------------------------------------------------
 -- Replicated Suite · DPS 投影缓存回归
 -- 真实 Domain/复用拷贝；仅替代关系和设置输入，不读玩家 UDF，不进入 TOC。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

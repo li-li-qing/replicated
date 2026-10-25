@@ -66,7 +66,7 @@ function P.EmptyUntil(row, now) -- 中文维护：只有完整成功扫描且尚
 end -- 中文维护：纯标量判断不读取Native，也不授予Ready。
 function P.RowState(r, now) -- 中文维护：每种药独立区分未知、缺货、CD与就绪；关联规则只增加限制，不代替实际读数。
     if not r or not r.itemId or not r.skillId or r.verified ~= true then return "unknown" end -- 中文维护：身份未确认仍不能借用任何休眠状态；所有期限只归属当前映射。
-    if r.inventoryUncertain then return "unknown" end -- 中文维护：共享用药方向未确认且曾见过正CD时，单方零值不能授予Ready或放行备用药，须等同轮双零解除否决。
+    if r.inventoryUncertain or r.healthIdleRecovery then return "unknown" end -- 中文维护：共享方向未确认或高血量后恢复核对未完成时，单方零、缺货及首次读取失败都不能授予Ready或放行备用药。
     if P.Number(r.blockedUntil) and now < r.blockedUntil then return "cooldown" end -- 中文维护：已确认用药/共享限制本身足以证明不可用，休眠期间无需伪造新库存、CD或读取时点；该分支永远不授予Ready。
     if not r.slot and r.emptyConfirmed and P.EmptyUntil(r, now) then return "empty" end -- 中文维护：确认缺药时无需继续查询CD或刷新at；过期后必须重新扫描，未知不放行备用药。
     if r.at and now >= r.at and P.Number(r.remaining) and r.remaining > 0 and P.Number(r.cooldownRetryAt) and now < r.cooldownRetryAt then return "cooldown" end -- 中文维护：单位未核实时只将真实正CD保守保留最多250ms，期限一到必须重读，不能延长缓存或把它倒数成零。

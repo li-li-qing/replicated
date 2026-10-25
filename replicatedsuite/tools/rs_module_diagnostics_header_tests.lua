@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 模块诊断页头测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 模块诊断入口由 PageHost/DesignSystem 集中生成，不能复制到每个功能页；入口不能初始化或启用功能。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS module-diag-header '..name)else failed=failed+1;print('FAIL module-diag-header '..name..': '..tostring(err))end end
 local function Boot()
@@ -30,7 +27,7 @@ local function Boot()
     ['system.diagnostics']={id='system_diagnostics',route='system.diagnostics',name='系统诊断',initialized=true,enabled=true},
   }
   function S.FeatureRegistry:GetByRoute(route)return features[route]end
-  -- 中文维护（5.3 发布自检）：补齐 PageHost 在创建页面前使用的访问接口；仅开放本测试登记的功能。
+  -- 补齐 PageHost 在创建页面前使用的访问接口；仅开放本测试登记的功能。
   function S.FeatureRegistry:IsAccessible(id)
     for _,feature in pairs(features)do if feature.id==id then return true end end
     return id=='combat_fail' -- 故障页面用于验证构建事务清理，须先通过访问检查。

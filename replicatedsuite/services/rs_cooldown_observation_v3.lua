@@ -1,17 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 技能冷却观察
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 冷却权威独立于 Aura/Buff；效果 ID 只能证明状态存在，X2Skill 冷却需要真实 Skill ID。仅消费手动跟踪 Skill
--- ID 和已验证自身施法成功 Skill ID，COMBAT_MSG Aura/Effect ID 不能变成 CD ID。手动跟踪不需
--- CombatEventBus/AuraObservation；可选自动发现只租 SELF cast-success，发现 ID 短暂保存，两条路径均只用
--- Native 冷却。普通/滑翔翼/翅膀用 GetCooldown，坐骑/战宠用 GetMateCooldown，仅正值原生观察后缓存 mateType。
--- READY ID 用有界 250ms 轮转，ACTIVE 才用 100ms 高精度通道；暂时读取失败只让最后已证明快照随时间老化，不用
--- 静态 expectedSec 伪造计时。最后消费者释放后移除两任务和瞬态缓存，保留用户 trackedCooldowns。
--- ValidateSkillId() 显式检查已知状态 ID，在 UI/命令持久化前拒绝混淆。LocalNative 仅为本客户端 X2Skill 事实
--- ；未来远端/P2P 冷却须独立 Proxy 投影，不能覆盖本地行。
-------------------------------------------------------------------------
+-- 只追踪真实 Skill ID，不能把 Aura/Effect ID 当冷却 ID。手动追踪不需战斗总线，自动发现仅订阅 SELF 施放成功。
+-- 普通/翼类读 GetCooldown，坐骑/战宠读 GetMateCooldown；正读数确认 mateType，未知不猜来源。
+-- READY 每 250ms 有限轮转，ACTIVE 每 100ms 更新；读失败仅老化已知快照，不用静态 expectedSec 造计时。
+-- 最后消费者释放时停任务并清瞬态缓存，保留用户选择。事实只代表本机，远端冷却需独立投影。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -57,9 +50,7 @@ local C = {
     probeHits = 0,
     nativeReads = 0,
     nativeFailures = 0,
-    -- （2026-09-28，native-dependency-ownership-4）X2Skill 是 lazy 子能力。
-    -- 没有 consumer 时本服务不 Import 该 namespace；第一个 consumer 进入时由服务自己取得 owner，
-    -- 失败保持 fail-soft（冷却读数降级为 unavailable），绝不因为能力缺失让无关 HUD 初始化失败。
+    -- X2Skill 随首个消费者惰性导入，服务自己持有 owner；失败只使冷却不可用，不阻断其它 HUD。
     nativeOwnerId = "service.cooldown_observation_v3",
     nativeSkillLease = false,
     nativeSkillLeaseState = "idle",
@@ -222,9 +213,8 @@ function C:_QueryMate(skillId)
     return nil, nil, "mate", cached, firstError or "mate_cooldown_unavailable"
 end
 
--- 界面只选技能 ID，不要求玩家猜自身/坐骑来源。
--- 未确认时只在既有 Native 预算内查两个已验证 Getter；正读数才确认来源，Ready/未知绝不启动计时。
--- 只缓存本次 Runtime 的来源，不迁移保存桶、不读目标 CD；确认后 active lane 只读该来源。
+-- 玩家只选 Skill ID；未确认来源时在原预算内查两个 getter，正读数才确认。
+-- 来源仅存本次 Runtime，不读目标冷却，确认后 active lane 只读该来源。
 function C:_QueryLocal(skillId)
     local known=self.localSourceById[skillId]
     if known=="skill" then return self:_QuerySkill(skillId) end
@@ -519,10 +509,8 @@ function C:_ApplyTracked(skillSet, mateSet)
     if changed then self:_PublishUpdate("tracked_set") end
 end
 
--- （2026-10-07，self-cooldown-discovery-1）空手动列表开启 CD 过去永远无数据。
--- 自身施放成功事件只证明 Skill ID，不提供倒计时；实际 CD 仍由既有 Native probe/active lane 确认。
--- 不扫描技能库/他人、不在事件回调查询 Native、不把发现集合写回用户 Store。最多64个本会话技能，
--- 新技能只淘汰最久未使用且非活动项；已知活动项保持到原生结束。手动选择不受自动集合回收影响。
+-- 自身施放成功只证明 Skill ID，实际冷却仍由 Native lane 确认，不在事件回调读 API。
+-- 自动发现最多 64 个会话技能，只淘汰最久未用且非活动项；不扫描技能库或写用户选择。
 function C:_MergedTracked()
     local skills,mates={},{}
     for id in pairs(self.manualTracked.skill) do skills[id]=true end
@@ -650,11 +638,8 @@ function C:_Reconcile(before, after)
     return true
 end
 
--- （2026-09-28，native-dependency-ownership-4，FND-016 收口）
--- X2Skill 的 ADDON:ImportAPI numeric id 已由客户端 API_TYPE 枚举副本确认为 35（native/rs_native_contract.lua
--- 的 SKILL 行记录了完整证据链）。该 namespace 只在“用户真的启用冷却追踪”时才需要，因此这里提供 lazy
--- 取得入口，由本服务自己持有 owner，而不是要求 BuffDisplay/DPS 等消费者代为 Import。
--- 语义约定：成功返回 true；不可用/失败返回 false 且只记录诊断，不抛错——冷却读数本来就允许不可用。
+-- X2Skill 的 namespace ID=35，来源见 native/rs_native_contract.lua。
+-- 服务在实际需要冷却时领取 owner；失败返回 false 并留诊断，不抛错。
 function C:EnsureNativeSkillLease()
     if self.nativeSkillLease == true then return true end
     local imports = S.ApiImports
@@ -676,8 +661,7 @@ end
 
 function C:AcquireConsumer(token, options)
     if self.Demand == nil then return false, "cooldown demand unavailable" end
-    -- 在这里（而不是模块加载期）取得 Native 子能力 owner，符合“消费需求才导入”的
-    -- dependency ownership；失败不回滚消费需求，因为冷却不可用只是功能降级，不是 Feature 故障。
+    -- 首个消费者才导入；失败保留需求并按冷却不可用降级。
     self:EnsureNativeSkillLease()
     local ok,err=self.Demand:Acquire(token, options, "cooldown_consumer")
     if ok and self.automaticEnabled and not self.autoSubscribed then self:_SetAutomaticDiscovery(true) end
@@ -790,8 +774,7 @@ function C:GetHealth()
         probeCycles=self.probeCycles,probeQueries=self.probeQueries,probeHits=self.probeHits,
         metadataCache=CountSet(self.metadata),mateTypeCache=CountSet(self.mateTypeById),
         nativeReads=self.nativeReads,nativeFailures=self.nativeFailures,parseFailures=self.parseFailures,
-        -- 暴露 lazy Native ownership 事实（未取得/已取得/失败原因），供模块诊断区分
-        -- “没有消费者所以没导入”与“导入失败”，不触发任何新的 Native 读取。
+        -- 只读导入状态，区分尚无需求和导入失败。
         nativeSkillLease=self.nativeSkillLease==true,nativeSkillLeaseState=self.nativeSkillLeaseState,
         nativeSkillLeaseError=self.nativeSkillLeaseError,nativeSkillOwner=self.nativeOwnerId,
         activations=self.activations,completions=self.completions,mateRideResolved=self.mateRideResolved,mateBattleResolved=self.mateBattleResolved,

@@ -1,16 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动时间线与实时区域列表
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- ActivityLists：时间线与可独立滚动的实时区域。
--- 约束（activity-time-audit）：时间线与实时区域使用独立视口，避免小窗口实时区域被长表挤出；
--- 仅负责视口分工，不将未知阶段伪造为 0 秒参加时间排序。数据/排序事实仍归
--- Activity Authority，个人顺序归 Workspace；本组件只稳定分区和分配几何空间。
--- 无 Native 读取、Tick、持久化或 Consumer。父页面/Widget 仍独占生命周期。
--- 两个有界 TableView 共用列定义的副本，独立滚动；关闭空分区不预留空白。
--- 兼容外部原 SetItems/Selection 调用，保持稳定 key 和原行引用，不改旧存档。
-------------------------------------------------------------------------
+-- 时间线与实时区域独立滚动，空分区不占位；两个有界表格共用列定义副本。
+-- 数据和排序取 Activity 投影，个人顺序取 Workspace；父页面或组件管理 Consumer。
+-- 未知阶段不按 0 秒排序，SetItems/Selection 保留稳定 key 和原行引用。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local R=S.RSUI
@@ -22,10 +15,8 @@ local Interaction=type(previousDiagnostics)=='table' and tonumber(previousDiagno
     generation=generation,attempts=0,successes=0,failures=0,lastKey=nil,lastSection=nil,lastReason=nil,lastResult=nil,lastError=nil,lastAtMs=nil,
 }
 S.UIV3.ActivityDetailInteractionDiagnostics=Interaction
--- 维护（2026-09-21，activity-click-observability-1）：TableView ActivateItem 只消费回调第一个返回值；
--- detail:Open 的第二返回值此前会被静默丢弃，模块诊断只见 Feature 健康，用户只能反馈“点击没反应”。
--- 这里仅在点击发生时记录有界 primitive 证据，不保存、不轮询、不读 Native；attempts=0 说明点击未进入
--- activation，failures>0 则保留浮窗/Consumer 的真实失败原因。
+-- ActivateItem 只消费回调首个返回值，曾丢掉 detail:Open 的错误原因。
+-- 点击时记录有界证据：attempts=0 表示未进入回调，failures>0 保留真实打开失败原因。
 local hub=S.ModuleDiagnosticsHub
 if type(hub)=='table' and type(hub.RegisterProvider)=='function' then
     hub:RegisterProvider('life_activities','activity_detail_click',function()
@@ -44,14 +35,9 @@ local Lists={version=4,ActivationDiagnosticsContractVersion=1,RowQuantizedSplitC
 local function Live(row)return row and (row.presentationSection=='live' or row.zoneState==true)end
 local function Copy(value)local out={};for k,v in pairs(value or {})do out[k]=v end;return out end
 
--- 维护（2026-09-22，activity-adaptive-tail-fill-1）：VirtualList 的容量是整行语义，固定 rowHeight
--- 下任意窗口高度都会产生 0..rowHeight-1 的尾部余数。18.288 只把 timeline 量化后把余数交给
--- 最后的 live 区域，因此中间空带消失了，但截图中的 5 条实时区域全部可见时，live list 仍会在
--- footer 前留下 10~19px 尾带。这里不再把余数从一个分区搬到另一个分区，而是在 Presentation
--- 范围内为“实际分配到的 list viewport”选择最接近基准值的可见行数/运行时行高：有更多数据时
--- 可以略微压缩一行让下一条提前进入；数据已全部显示时可以略微拉伸现有行吃掉尾部。软边界只影响
--- 可读性评分，Native 硬下限仍是 12px；行高过大则保持上限并允许真正的“内容不足”空白。
--- Authority/兼容：数据、排序、scrollOffset、Store 均不变；仅 TableView Presentation 几何变化。
+-- 虚拟列表只画整行，固定行高会留下不足一行的尾带。
+-- 按实际视口选择接近基准值的行数和行高：有更多数据时略压缩，已显示完整时略拉伸。
+-- Native 下限 12px；内容太少时仍限制行高，保留合理空白，不改数据、排序或滚动位置。
 local function ResolveAdaptiveRowHeight(viewportHeight,headerHeight,itemCount,baseRowHeight,softMin,softMax)
     local listHeight=math.max(0,(tonumber(viewportHeight) or 0)-(tonumber(headerHeight) or 0))
     local count=math.max(0,math.floor(tonumber(itemCount) or 0))
@@ -122,7 +108,7 @@ function Lists:Create(spec)
         cfg.overlayScrollbar=true
         for i,column in ipairs(spec.columns or {})do cfg.columns[i]=Copy(column)end
         if cfg.columns[1] then cfg.columns[1].title=section=='live' and '实时区域' or '活动时间' end
-        -- 维护：显式建立双列表 activation trampoline，不依赖浅拷贝偶然携带回调。Native Row -> TableView ->
+        -- 显式建立双列表 activation trampoline，不依赖浅拷贝偶然携带回调。Native Row -> TableView ->
         -- 本桥 -> 页面/Widget -> QuestDetailFloatingV3；同时保留 Open 的第二返回值供模块诊断。
         cfg.onItemActivated=type(spec.onItemActivated)=='function' and function(item,index,key,_,reason)
             local combined=tonumber(index) or 0;if combined>0 and section=='live' then combined=combined+#c.timelineItems end
@@ -211,18 +197,19 @@ function Lists:Create(spec)
         local liveCount=#self.liveItems
         local showLive=liveCount>0
         local showTime=timeCount>0 or not showLive
-        -- 两个分区之间不保留装饰性空隙：用户在临界高度下需要最后一条活动与“实时区域”
-        -- 表头视觉连续。分隔由实时区域自己的表头/边框承担，避免把合法 4px gap 误认为残余空白。
+        -- 两分区之间不留装饰间隙。列表容量为 floor(viewport / rowHeight)，不画半行，
+        -- 因此前置 timeline 必须量化为“表头 + 完整行”；余数交给最后的 live 视口，避免中间空带。
+
         local gap=0
-        -- 维护（2026-09-22，activity-row-quantized-split-1）：TableView/ListView 的可见容量按
-        -- floor(viewport / rowHeight) 计算，不能把任意剩余像素交给前一个分区。旧 18.286 只在
-        -- “时间线已能完整显示所有行”时封顶，因此截图这种 4 行可见、还差少量高度才容纳第 5 行的
-        -- 情况仍会留下一个不足整行的 list viewport；Native 不绘制半行，于是这段余数就表现为
-        -- 最后一条活动和“实时区域”表头之间的整条空白。数据 Authority/排序/Store 都没有问题。
-        -- 本层只负责 Presentation 几何：前置 timeline 高度必须量化为“表头 + N 个完整行”，所有
-        -- 不能组成完整行的余数都交给最后一个 live 视口。这样拖动窗口时只会在跨过一个完整行
-        -- 阈值后多显示一行，不会在两个分区之间出现空白带；最后一个分区允许吸收余数，因为其下方
-        -- 已没有第二个表头，余数不会破坏视觉连续性。
+
+
+
+
+
+
+
+
+
         local timeRowHeight=math.max(1,tonumber(self.timelineBaseRowHeight) or self.rowHeight)
         local liveRowHeight=math.max(1,tonumber(self.liveBaseRowHeight) or math.min(self.rowHeight,20))
         local timeHeaderHeight=math.max(0,tonumber(self.timeline and self.timeline.headerHeight) or self.headerHeight)
@@ -263,9 +250,7 @@ function Lists:Create(spec)
             -- 单分区沿用完整父视口；没有后续分区，因此尾部余数不会形成“中间空白带”。
             th=h
         end
-        -- 最后一步只在已确定 section viewport 内自适应行高。timeline 在双分区模式通常保持
-        -- 24px 基准；live 负责吸收最后 0..19px 尾数。单分区时同一规则也生效，因此以后不会
-        -- 出现“没有实时区域时活动列表底部又留一截”的同类回归。
+        -- 视口确定后再微调行高：双分区 timeline 通常保持 24px，live 吸收尾数；单分区也适用。
         local runtimeTimeRow,timeVisibleRows,timeTail=timeRowHeight,0,0
         local runtimeLiveRow,liveVisibleRows,liveTail=liveRowHeight,0,0
         if showTime then
@@ -281,9 +266,7 @@ function Lists:Create(spec)
             SetRuntimeRowHeight(self.live,liveRowHeight)
         end
 
-        -- 若 live 条目已经全部显示且为了可读性命中 +4px 行高上限，极少量尾数仍可能剩下。
-        -- 双分区时把这部分“不可消费余数”回灌到 timeline 的可见行（同样最多 +4px/行），
-        -- 再重算 live。这样 18.288 的 240px/4+4 之类边界也不会从“中间空白”变成“底部 4px 空白”。
+        -- live 已全显示且达到每行 +4px 上限时，将剩余像素分给 timeline 可见行，再重算 live。
         if showTime and showLive and liveTail>0.001 and timeVisibleRows>0 then
             local timeStretchCapacity=math.max(0,(timeRowHeight+4-runtimeTimeRow)*timeVisibleRows)
             local shift=math.min(liveTail,timeStretchCapacity)

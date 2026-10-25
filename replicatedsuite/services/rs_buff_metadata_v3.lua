@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · Buff 元数据
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 共享惰性 Buff ID->名称/图标解析是效果元数据唯一权威；成功及未命中均缓存并通过能力门禁，战斗回调不得刷调用
--- ，未知 ID 每会话仅有少量原生读取。AuraObservationV3/plates/healer 不私建同一链。原生来源为已获 RU 放行、
--- 成熟 Plates 已验证的 X2Ability:GetBuffTooltip(buffType,itemLevel)；部分 RU 返回 tooltip 字符串而非表，可
--- 接受第一行为 Buff 名。
-------------------------------------------------------------------------
+-- 共用惰性 Buff 名称/图标缓存，成功和未命中都缓存，战斗回调不反复读取。
+-- 来源为已放行且 Plates 验证过的 X2Ability:GetBuffTooltip(buffType,itemLevel)；返回字符串时可取第一行为名称。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -89,9 +84,8 @@ local function NameFromInfo(info)
     return nil
 end
 
--- 旧负缓存不进淘汰队列会无限增长；稀疏表取#也不可靠。
--- 用明确首尾指针的512槽环形FIFO，正/负结果共享上限，替换已有值不重复计数。
--- 每次查找/新增/淘汰O(1)，不会在Aura调用路径搬移512个条目或遍历静态目录。
+-- 正负缓存共用 512 槽 FIFO，显式首尾指针；稀疏表不能依赖 #，负缓存也必须淘汰。
+-- 每次查询/新增/淘汰 O(1)，不在 Aura 路径搬移全表。
 M.orderTail=1
 function M:_EvictIfNeeded()
     if self.cacheCount>=self.cacheMax then

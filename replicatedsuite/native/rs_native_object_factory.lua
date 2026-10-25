@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生对象构造工厂
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 活动 V3 的唯一 Suite 控件构造边界；视觉样式和布局归 RSUI，本层只拥有原始客户端对象创建及构造兼容。
-------------------------------------------------------------------------
+-- 统一创建原生对象并处理构造兼容；样式和布局由 RSUI 管理。
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite
 local Contract = S.NativeContract

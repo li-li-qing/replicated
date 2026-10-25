@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享界面设计组合
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅提供组合辅助函数，创建 RSUI 组件而不持有领域状态；视觉一致性归此处，页面信息架构仍归页面。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -54,7 +51,7 @@ function D:ScrollablePageRoot(parent, idOrSpec)
     return RSUI:ScrollBox(spec)
 end
 
--- 维护（module-controls-diag-2）：页面通过此入口领取宿主已创建的总开关。
+-- 页面通过此入口领取宿主已创建的总开关。
 -- 原回调、ActionRunner引用、失败回滚继续使用同一实例；只迁移位置，不另造状态/Consumer。
 -- 非PageHost直接构建（独立页面宿主）仍按spec创建，兼容现有隔离页面使用方式。
 function D:ModuleToggleButton(spec)
@@ -62,12 +59,8 @@ function D:ModuleToggleButton(spec)
     local context = host and type(host.GetBuildContext) == "function" and host:GetBuildContext() or nil
     local bar = context and context.controlBar
     if bar and bar.toggle then
-        -- 约束（2026-09-20，module-toggle-native-trampoline-1）：模块控制条按钮属于
-        -- PageHost，Native OnClick 在按钮创建时就由控制条安装稳定 trampoline。页面只能把业务动作
-        -- 暂存到 bar.pageAction，禁止再直接替换 toolbar Button 的逻辑回调；部分 RU 客户端在
-        -- 可见按钮创建后再换回调时会出现“诊断按钮能点、启动按钮无响应”的死按钮表现。
-        -- 兼容边界：历史页面若稍后直接写 toggle.onClick/spec.onClick，Finish 仍会识别并接管；
-        -- 这里只收敛通过 DesignSystem 正常传入的 onClick，不改变 FeatureRuntime Authority。
+        -- 控制条按钮由 PageHost 创建时绑定稳定 trampoline，页面动作只放 bar.pageAction。
+        -- 可见后替换 Native 回调曾导致启动按钮无响应；旧页面后赋 onClick/spec.onClick 由 Finish 接管。
         if type(spec.onClick) == "function" then bar.pageAction = spec.onClick end
         return bar.toggle
     end
@@ -75,10 +68,7 @@ function D:ModuleToggleButton(spec)
 end
 
 function D:ModuleDiagnosticsButton(parent, id, width)
-    -- 约束（2026-09-18，module-diagnostics-header-2）：所有业务页的诊断入口都必须
-    -- 经过这个共享 helper。标准 PageHeader 自动调用；少数拥有自定义抬头（首页/战斗分析）的页面
-    -- 只负责放置按钮，不得复制 Window:Open、Feature 归属或错误处理逻辑。这样未来诊断入口协议
-    -- 变化只改 DesignSystem，不会在几十个页面里产生分叉。
+    -- 业务诊断统一经此 helper；标准表头自动放置，自定义表头只安排按钮位置，避免复制打开与错误处理逻辑。
     local pageHost = S.UIV3 and S.UIV3.PageHost or nil
     local buildContext = type(pageHost) == "table" and type(pageHost.GetBuildContext) == "function" and pageHost:GetBuildContext() or nil
     if buildContext and buildContext.controlBar then return buildContext.controlBar.diagnostics end
@@ -89,9 +79,8 @@ function D:ModuleDiagnosticsButton(parent, id, width)
         id = tostring(id or "module_diagnostics"), parent = parent, text = "诊断", compact = true,
         slot = { size = "fixed", width = tonumber(width) or 76 },
         onClick = function()
-            -- Authority/生命周期：诊断只能观察。禁止通过按钮 InitializeFeature、SetEnabled、Acquire
-            -- Consumer 或调用业务刷新；关闭/故障模块必须同样可以打开诊断窗口。窗口按点击时解析，
-            -- 因 DesignSystem 的 TOC 顺序早于 Presentation widget，加载期不能缓存 nil。
+            -- 诊断只观察，不启用或刷新业务；关闭、故障模块也能打开。
+            -- 窗口在点击时解析，DesignSystem 加载早于 widget，不能提前缓存 nil。
             local window = S.UIV3 and S.UIV3.ModuleDiagnosticsWindowV3 or nil
             if type(window) ~= "table" or type(window.Open) ~= "function" then
                 local diagnostics = S.DiagnosticsManager

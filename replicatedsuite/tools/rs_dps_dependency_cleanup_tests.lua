@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · DPS 下游租约清理回归
--- 维护：使用真实 Demand、FeatureRuntime、Analytics 与 DPS；仅替代 Native Bus 和关系服务的失败边界。
+-- 使用真实 Demand、FeatureRuntime、Analytics 与 DPS；仅替代 Native Bus 和关系服务的失败边界。
 -- 本文件不进 TOC，不访问真实 UDF；失败释放不能丢失重试凭证，也不能误清其它 Owner。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -25,7 +23,7 @@ local function Boot()
     S.Services.CombatEventBusV3 = { Subscribe = function() return true end,
         Unsubscribe = function()
             controls.busReleases = controls.busReleases + 1
-            -- 维护：Native 释放栈可能同步回入上游；回归沿真实 Demand 的忙碌窗口触发，不手工伪造标志。
+            -- Native 释放栈可能同步回入上游；回归沿真实 Demand 的忙碌窗口触发，不手工伪造标志。
             if type(controls.busOnRelease) == 'function' then controls.busOnRelease() end
             if controls.busFailure then return false, 'injected native release failure' end
             return true

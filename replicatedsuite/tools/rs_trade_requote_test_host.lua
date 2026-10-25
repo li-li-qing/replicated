@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 交易重新询价测试宿主
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 测试宿主仅替代原生接口、时钟和持久化边界，下方加载真实 Api、NativeImports、AuctionSurface、Query、Queue 和 MaterialPrice。
 -- 复用已审查的未预导入边界模型，不向生产代码加入测试钩子。
-------------------------------------------------------------------------
 unpack = unpack or table.unpack
 local function Eq(a,b,message) assert(a==b,(message or "value")..": expected="..tostring(b)..", actual="..tostring(a)) end
 local function Copy(v)
@@ -168,7 +165,7 @@ local function Boot(existingS)
         error("initial hidden fallback did not search")
     end
     function h:searched(rows, ...)
-        -- 维护：Native 完成边界保留中间 nil 和实际参数数；回调仍按真实 EventBus 的 owner-first 形状分发。
+        -- Native 完成边界保留中间 nil 和实际参数数；回调仍按真实 EventBus 的 owner-first 形状分发。
         self.rows = rows or self.rows; Emit(self.native, "AUCTION_ITEM_SEARCHED", ...)
     end
     function h:open(publish)

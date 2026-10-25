@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗规则临时分配回归
 -- 真实 Lua 5.1 Store/Recommendation/HealthRuntime；Native 只采用明确桩模型。
 -- 计数验证未消费的匹配数组与重复色表，不把离线结果解释为 RU 帧率。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, callback)
     local ok, err = xpcall(callback, debug.traceback)

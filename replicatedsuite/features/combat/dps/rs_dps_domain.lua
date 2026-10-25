@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 伤害与治疗统计业务领域
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 纯战斗统计 Domain：CombatEventBus 拥有 Native COMBAT_MSG，CombatRelationV3 拥有 SELF/TEAM/FRIENDLY/OPPONENT 事实；本 Domain 负责逐事件 PVP/PVE 分类、累加、重放和投影。
 -- 热路径禁止持久化、UI、Native 名单扫描、Tick/OnUpdate 和回调内全 pending 扫描；显示上限不能限制累加。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local F = S.Features and S.Features.DPS or nil
@@ -228,11 +225,11 @@ local function DetailKey(value, fallback)
     return string.lower(text), text
 end
 
-local function TouchDetail(actor, mapField, countField, key, label, maximum, metadata)
+local function TouchDetail(actor, mapField, countField, key, label, maximum, abilityId)
     local map = actor[mapField]
     local row = map[key]
     if row ~= nil then
-        if row.abilityId == nil and type(metadata) == "table" and tonumber(metadata.abilityId) ~= nil then row.abilityId = tonumber(metadata.abilityId) end
+        if row.abilityId == nil and abilityId ~= nil then row.abilityId = abilityId end
         return row, key
     end
     local count = tonumber(actor[countField]) or 0
@@ -244,16 +241,17 @@ local function TouchDetail(actor, mapField, countField, key, label, maximum, met
         actor[countField] = count + 1
     end
     row = { key = key, name = label, damage = 0, heal = 0, taken = 0, events = 0 }
-    if type(metadata) == "table" and tonumber(metadata.abilityId) ~= nil and key ~= "__other__" then row.abilityId = tonumber(metadata.abilityId) end
+    if abilityId ~= nil and key ~= "__other__" then row.abilityId = abilityId end
     map[key] = row
     return row, key
 end
 
-local function AddDetail(actor, mapField, countField, value, fallback, field, amount, maximum)
+local function AddDetail(actor, mapField, countField, value, fallback, field, amount, maximum, retainUndo)
     local key, label = DetailKey(value, fallback)
     local row, resolvedKey = TouchDetail(actor, mapField, countField, key, label, maximum)
     row[field] = (tonumber(row[field]) or 0) + amount
     row.events = (tonumber(row.events) or 0) + 1
+    if retainUndo == false then return nil end
     return {
         actor = actor, mapField = mapField, countField = countField,
         key = resolvedKey, field = field, amount = amount,
@@ -261,7 +259,7 @@ local function AddDetail(actor, mapField, countField, value, fallback, field, am
 end
 
 -- 技能详情优先使用已核实战斗 skill ID；基础近战/环境事实不含真实技能 ID，RU MELEE_DAMAGE 用 rawAbilityId 表示伤害量，故名称仍作回退。
-local function AddAbilityDetail(actor, abilityName, abilityId, field, amount)
+local function AddAbilityDetail(actor, abilityName, abilityId, field, amount, retainUndo)
     local id = tonumber(abilityId)
     if id ~= nil and id > 0 then id = math.floor(id + 0.5) else id = nil end
     local key, label
@@ -272,9 +270,10 @@ local function AddAbilityDetail(actor, abilityName, abilityId, field, amount)
     else
         key, label = DetailKey(abilityName, "普通攻击/未知技能")
     end
-    local row, resolvedKey = TouchDetail(actor, "abilityDetails", "abilityDetailCount", key, label, A.Const.DETAIL_MAX_ABILITIES, { abilityId = id })
+    local row, resolvedKey = TouchDetail(actor, "abilityDetails", "abilityDetailCount", key, label, A.Const.DETAIL_MAX_ABILITIES, id)
     row[field] = (tonumber(row[field]) or 0) + amount
     row.events = (tonumber(row.events) or 0) + 1
+    if retainUndo == false then return nil end
     return { actor = actor, mapField = "abilityDetails", countField = "abilityDetailCount", key = resolvedKey, field = field, amount = amount }
 end
 
@@ -374,7 +373,7 @@ local function ResolveEventMode(fact, sourceRel, targetRel, sourceKind, targetKi
     return "UNKNOWN", "SAME_SIDE_OR_AMBIGUOUS", false
 end
 
-local function AddContribution(bucket, key, name, field, amount, at, abilityName, abilityId, counterpartName, trackActivity)
+local function AddContribution(bucket, key, name, field, amount, at, abilityName, abilityId, counterpartName, trackActivity, retainUndo)
     local actor = TouchBucketActor(bucket, key, name)
     if actor == nil then return nil end
     if trackActivity == true then TrackActorActivity(actor, at) end
@@ -383,10 +382,11 @@ local function AddContribution(bucket, key, name, field, amount, at, abilityName
     if field == "damage" then actor.hits = actor.hits + 1; bucket.hits = bucket.hits + 1 end
     bucket[field] = (tonumber(bucket[field]) or 0) + amount
     bucket.events = bucket.events + 1
-    local detailRefs = {
-        AddAbilityDetail(actor, abilityName, abilityId, field, amount),
-        AddDetail(actor, "counterpartDetails", "counterpartDetailCount", counterpartName, "未知单位", field, amount, A.Const.DETAIL_MAX_COUNTERPARTS),
-    }
+    local abilityRef = AddAbilityDetail(actor, abilityName, abilityId, field, amount, retainUndo)
+    local counterpartRef = AddDetail(actor, "counterpartDetails", "counterpartDetailCount", counterpartName, "未知单位", field, amount, A.Const.DETAIL_MAX_COUNTERPARTS, retainUndo)
+    -- 确定不进入pending的本次事件仍完整累计金额/技能/对手，只省去永远不会使用的撤销引用。
+    if retainUndo == false then return nil end
+    local detailRefs = { abilityRef, counterpartRef }
     return { bucket = bucket, key = key, field = field, amount = amount, hit = field == "damage", detailRefs = detailRefs }
 end
 
@@ -431,8 +431,8 @@ local function ClearApplied(row)
     row.appliedSourceSide, row.appliedTargetSide = nil, nil
 end
 
-local function AddSourceTargetContributions(row, sourceBucket, targetBucket, trackActivity)
-    local out = {}
+local function AddSourceTargetContributions(row, sourceBucket, targetBucket, trackActivity, retainUndo)
+    local out = retainUndo ~= false and {} or nil
     local sourceKey, targetKey = ActorKey(row.sourceName), ActorKey(row.targetName)
     local analytics = S.Services and S.Services.CombatAnalyticsV3
     if analytics and type(analytics.GetCollectionScope) == "function" and analytics:GetCollectionScope() == "self" then
@@ -441,26 +441,29 @@ local function AddSourceTargetContributions(row, sourceBucket, targetBucket, tra
     end
     if row.category == "damage" then
         if sourceKey ~= nil then
-            out[#out + 1] = AddContribution(sourceBucket, sourceKey, row.sourceName, "damage", row.amount, row.at, row.abilityName, row.abilityId, row.targetName, trackActivity)
+            local contribution = AddContribution(sourceBucket, sourceKey, row.sourceName, "damage", row.amount, row.at, row.abilityName, row.abilityId, row.targetName, trackActivity, retainUndo)
+            if out ~= nil then out[#out + 1] = contribution end
         end
         if targetKey ~= nil then
-            out[#out + 1] = AddContribution(targetBucket, targetKey, row.targetName, "taken", row.amount, row.at, row.abilityName, row.abilityId, row.sourceName, trackActivity)
+            local contribution = AddContribution(targetBucket, targetKey, row.targetName, "taken", row.amount, row.at, row.abilityName, row.abilityId, row.sourceName, trackActivity, retainUndo)
+            if out ~= nil then out[#out + 1] = contribution end
         end
     elseif row.category == "heal" then
         if sourceKey ~= nil then
-            out[#out + 1] = AddContribution(sourceBucket, sourceKey, row.sourceName, "heal", row.amount, row.at, row.abilityName, row.abilityId, row.targetName, trackActivity)
+            local contribution = AddContribution(sourceBucket, sourceKey, row.sourceName, "heal", row.amount, row.at, row.abilityName, row.abilityId, row.targetName, trackActivity, retainUndo)
+            if out ~= nil then out[#out + 1] = contribution end
         end
     end
     return out
 end
 
-function A:ApplyResolved(row, mode, modeReason, provisional)
+function A:ApplyResolved(row, mode, modeReason, provisional, retainUndo)
     ClearApplied(row)
     local m = EnsureMode(mode)
     local sourceSide, targetSide = ResolveSides(row.sourceRel, row.targetRel, row.category)
     local activityCommitted = provisional ~= true and sourceSide ~= SIDES.unknown and targetSide ~= SIDES.unknown
     row.appliedSourceSide, row.appliedTargetSide = sourceSide, targetSide
-    row.appliedContributions = AddSourceTargetContributions(row, m[sourceSide], m[targetSide], activityCommitted)
+    row.appliedContributions = AddSourceTargetContributions(row, m[sourceSide], m[targetSide], activityCommitted, retainUndo)
     row.appliedMode = mode
     row.modeReason = modeReason
     row.provisional = provisional == true
@@ -474,12 +477,12 @@ function A:ApplyResolved(row, mode, modeReason, provisional)
     return true
 end
 
-function A:ApplySharedHeal(row, reason)
+function A:ApplySharedHeal(row, reason, retainUndo)
     ClearApplied(row)
     local sourceSide, targetSide = ResolveSides(row.sourceRel, row.targetRel, "heal")
     local activityCommitted = sourceSide ~= SIDES.unknown and targetSide ~= SIDES.unknown
     row.appliedSourceSide, row.appliedTargetSide = sourceSide, targetSide
-    row.appliedContributions = AddSourceTargetContributions(row, self.healing[sourceSide], self.healing[targetSide], activityCommitted)
+    row.appliedContributions = AddSourceTargetContributions(row, self.healing[sourceSide], self.healing[targetSide], activityCommitted, retainUndo)
     row.appliedMode = "HEAL"
     row.activityCommitted = activityCommitted
     row.modeReason = tostring(reason or "HEAL_SHARED")
@@ -755,16 +758,17 @@ function A:OnCombatFact(fact)
     }
 
     if category == "heal" then
-        self:ApplySharedHeal(row, modeReason)
         local sourceSide = ResolveSides(sourceRel, targetRel, category)
+        self:ApplySharedHeal(row, modeReason, sourceSide == SIDES.unknown)
         if sourceSide == SIDES.unknown then QueuePending(row) end
     elseif mode == "UNKNOWN" then
         self:ApplyUnclassified(row, modeReason)
         QueuePending(row)
     else
-        self:ApplyResolved(row, mode, modeReason, provisional)
         local sourceSide, targetSide = ResolveSides(sourceRel, targetRel, category)
         local sidePending = sourceSide == SIDES.unknown or targetSide == SIDES.unknown
+        -- 是否保留撤销账本与原QueuePending条件完全一致；未知/临时分类继续走完整重放语义。
+        self:ApplyResolved(row, mode, modeReason, provisional, provisional == true or sidePending == true)
         if provisional == true then self.provisionalSeen = self.provisionalSeen + 1 end
         if provisional == true or sidePending == true then QueuePending(row) end
     end

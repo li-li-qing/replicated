@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生根窗口策略诊断回归
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实 Adapter/Foundation Gate；Native 仅模拟 Esc 接口接受/拒绝。
 -- 主 Shell 显式启用 Esc 时，不应因没有禁用 Esc 的其它根窗口而误报阻断。
-------------------------------------------------------------------------
 local Boot = dofile('tools/rs_window_viewport_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)

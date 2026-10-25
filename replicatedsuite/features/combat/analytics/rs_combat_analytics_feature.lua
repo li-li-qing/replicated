@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗分析功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 生命周期、设置与投影边界；这里不处理 Native 战斗事件。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local Runtime=S.FeatureRuntime

@@ -1,10 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · Runtime 关闭失败传播回归
 -- 作者：Replicated
 -- QQ群：1104129461
--- 维护：执行真实 Runtime / Demand / Events / Scheduler，Native 和外壳仅作宿主。
+-- 执行真实 Runtime / Demand / Events / Scheduler，Native 和外壳仅作宿主。
 -- 共享服务释放失败仍须完成后续静默，但不能向热重载调用者报告关闭成功；不接触玩家存档。
-------------------------------------------------------------------------
 local function Copy(value)
     if type(value) ~= 'table' then return value end
     local out = {}; for key, item in pairs(value) do out[key] = Copy(item) end; return out

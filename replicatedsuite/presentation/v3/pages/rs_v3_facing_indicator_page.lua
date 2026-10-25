@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 朝向提示页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（2026-10-09）：正背面设置使用既有 PageHost/RSUI/Feature Commands；页面不保活采样。
+-- 正背面设置使用既有 PageHost/RSUI/Feature Commands；页面不保活采样。
 -- 页面编辑和 16ms 世界帧分离，不能每帧重写 NumericField 草稿或抢游戏聊天焦点。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local F=S.Features and S.Features.combat_facing_indicator

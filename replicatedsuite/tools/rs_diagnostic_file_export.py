@@ -1,8 +1,6 @@
-# ---------------------------------------------------------------------
 # Replicated Suite · 诊断文件导出
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 """只读客户端 UDF 的活动 LevelDB 文件，验证导出专用 key 后生成 UTF-8 txt。
 
 不打开数据库写锁、不写原数据库、不执行存档内容、不从废弃 SST 或旧账号兜底取报告。
@@ -291,7 +289,7 @@ def read_database(directory, cache=None):
         stat = path.stat()
         if stat.st_size > 128 * 1024 * 1024:
             raise ValueError('database file exceeds read budget')
-        # 中文维护：后台接收缓存未改变 SST 的 Suite 投影，只解析新 WAL/压缩后的新文件；
+        # 后台接收缓存未改变 SST 的 Suite 投影，只解析新 WAL/压缩后的新文件；
         # 游戏普通设置写入不应反复解压整库。缓存最多持有当前活动文件，文件身份变化即失效。
         identity = (stat.st_size, stat.st_mtime_ns)
         cached = cache.get(str(path)) if cache is not None else None
@@ -327,7 +325,7 @@ def decode_mailbox(text, records=None, key=None, *, expected_protocol='RS-DIAGNO
         return export_scalar(text, name)
     protocol = scalar('protocol')
     if protocol == expected_protocol and protocol in ('RS-DIAGNOSTIC-FILE-2', HISTORY_PROTOCOL):
-        # 中文维护：每个 Native key 低于实机 16383 字节截断边界；清单只在所有页回读后写入。
+        # 每个 Native key 低于实机 16383 字节截断边界；清单只在所有页回读后写入。
         # 严格按本次清单校验页号/长度/局部和全文校验，半写与混合旧页均拒绝生成 txt。
         size, count = int(scalar('byte_count')), int(scalar('page_count'))
         if records is None or key is None or scalar('page_bytes') != '4096':
@@ -387,7 +385,7 @@ def decode_mailbox(text, records=None, key=None, *, expected_protocol='RS-DIAGNO
     if len(data) != size or f'{zlib.adler32(data):08X}' != scalar('checksum'):
         raise ValueError('report length/checksum mismatch; no txt generated')
     data.decode('utf-8', errors='strict')
-    # 中文维护：report_id 可能含小数点；身份只供文件名，原文中的身份仍逐字保留。
+    # report_id 可能含小数点；身份只供文件名，原文中的身份仍逐字保留。
     identity = re.search(r'\bstr_report_id\s+"?str_([^\s"]+)', text)
     return data, identity.group(1).rstrip('.') if identity else 'report'
 
@@ -395,7 +393,7 @@ def find_udf(game):
     candidates = [p for p in game.glob('USER*/udf') if (p / 'CURRENT').is_file()]
     if not candidates:
         raise ValueError('未找到当前游戏的 USER*/udf 存档目录；可用 --udf 指定')
-    # 中文维护：仅选择最近有提交记录的账号库；新账号没有快照时不兜底输出旧账号报告。
+    # 仅选择最近有提交记录的账号库；新账号没有快照时不兜底输出旧账号报告。
     return max(candidates, key=lambda p: max(f.stat().st_mtime_ns for f in p.iterdir() if f.is_file()))
 
 def save_report(udf, output=None, cache=None, *, kind='diagnostic', _records=None):
@@ -415,7 +413,7 @@ def save_report(udf, output=None, cache=None, *, kind='diagnostic', _records=Non
     folder = history_folder() if history else report_folder()
     state_path = folder / '.last-export.json'
     if output is None and state_path.is_file():
-        # 中文维护：接收器索引损坏不应阻止新导出；旧 txt 也须仍与完整正文一致才可复用。
+        # 接收器索引损坏不应阻止新导出；旧 txt 也须仍与完整正文一致才可复用。
         try:
             previous = json.loads(state_path.read_text(encoding='utf-8'))
             existing = Path(previous.get('path', ''))
@@ -427,7 +425,7 @@ def save_report(udf, output=None, cache=None, *, kind='diagnostic', _records=Non
     prefix = 'RS-HISTORY' if history else 'RS'
     target = output or folder / f'{prefix}-{datetime.now():%Y%m%d-%H%M%S-%f}-{safe_id}.txt'
     target.parent.mkdir(parents=True, exist_ok=True)
-    # 中文维护：只创建新文件，禁止覆盖已有报告；UTF-8 原始字节保留正文换行及完整校验。
+    # 只创建新文件，禁止覆盖已有报告；UTF-8 原始字节保留正文换行及完整校验。
     with target.open('xb') as stream:
         stream.write(data)
     if target.read_bytes() != data:
@@ -525,8 +523,8 @@ def watch(game, specified_udf=None):
     """一次启动后自动接收显式导出。只在数据库文件发生变化后重新读，不持续扫描全文。"""
     folder = report_folder()
     folder.mkdir(parents=True, exist_ok=True)
-    # 中文维护：仅锁接收器自己的文件，不碰客户端 LOCK；重复启动不产生第二个接收进程。
-    # 中文维护：锁移到系统临时目录；报告目录是可清空的用户输出，不承担接收器生命周期。
+    # 仅锁接收器自己的文件，不碰客户端 LOCK；重复启动不产生第二个接收进程。
+    # 锁移到系统临时目录；报告目录是可清空的用户输出，不承担接收器生命周期。
     lock_id = hashlib.sha256(str(folder.resolve()).casefold().encode('utf-8')).hexdigest()[:24]
     lock = (Path(tempfile.gettempdir()) / ('RS-diagnostic-receiver-' + lock_id + '.lock')).open('a+b')
     if lock.tell() == 0:
@@ -553,10 +551,10 @@ def watch(game, specified_udf=None):
                 udf = specified_udf or find_udf(game)
                 signature = (str(udf), tuple(sorted((p.name, p.stat().st_size, p.stat().st_mtime_ns)
                              for p in udf.iterdir() if p.is_file() and (p.suffix in ('.sst', '.log') or p.name.startswith('MANIFEST') or p.name == 'CURRENT'))))
-                # 中文维护：报告被清空时即使客户端没有新写入，也可重新提取同一完整快照。
+                # 报告被清空时即使客户端没有新写入，也可重新提取同一完整快照。
                 # 空闲时只检查一个已生成文件；不读全文、不重新解压未改变的库。
                 if signature != last_signature or any(not p.is_file() for p in last_outputs):
-                    # 中文维护：失败也记住已观察文件身份；等待真实写入再重读，避免空闲全库轮询。
+                    # 失败也记住已观察文件身份；等待真实写入再重读，避免空闲全库轮询。
                     last_signature = signature
                     records = read_database(udf, cache)
                     outputs, errors = [], []
@@ -574,7 +572,7 @@ def watch(game, specified_udf=None):
                         raise ValueError('当前账号没有导出快照，请先在游戏中点击导出。')
                     last_signature, last_error = signature, None
             except (OSError, ValueError, UnicodeError) as error:
-                # 中文维护：保存未落盘、并发压缩、暂时缺块只重试，不输出伪成功；同一原因不刷日志。
+                # 保存未落盘、并发压缩、暂时缺块只重试，不输出伪成功；同一原因不刷日志。
                 message = str(error)
                 if message != last_error:
                     print('等待完整导出快照：' + message, flush=True)
@@ -613,7 +611,7 @@ def main():
     return 0
 
 if __name__ == '__main__':
-    # 中文维护：便携 exe/命令行重定向均输出 UTF-8，不依赖玩家系统代码页与 Python 环境变量。
+    # 便携 exe/命令行重定向均输出 UTF-8，不依赖玩家系统代码页与 Python 环境变量。
     for stream in (sys.stdout, sys.stderr):
         if stream is not None and hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8')

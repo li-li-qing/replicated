@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 房屋管理页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
--- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
-------------------------------------------------------------------------
+-- 总开关复用 PageHost 的按钮，刷新时不能改父级或重复绑定 OnClick。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design

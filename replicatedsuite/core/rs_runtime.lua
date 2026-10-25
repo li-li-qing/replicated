@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 运行生命周期
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 活动运行体保持精简，只拥有 Foundation 生命周期：V3 AppState/Persistence、layout、单一 Scheduler、单一事件
--- 总线、FeatureRuntime 和 V3 Presentation Host。不加载、启动、刷新或协调旧 services/modules/HUD manager。
-------------------------------------------------------------------------
+-- 管理基础层、Scheduler、事件总线、FeatureRuntime 和表现宿主的生命周期，不再驱动旧 services/modules/HUD manager。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -59,8 +55,8 @@ function R:Stop()
         pcall(function() S.SetRecoveryCommandBarVisible(false) end)
     end
 
-    -- 耐久屏障必须先于 Feature 销毁。Disable/Stop 可释放缓存、重置瞬态 Domain；之后 Flush 可能把销毁或默认
-    -- 状态序列化并覆盖用户最后健康配置。因此 DisableAll 后也不能再做第二次持久化 Flush。
+    -- 先完成耐久屏障，再销毁 Feature；Disable/Stop 可能清缓存或瞬态数据，之后 Flush 会覆盖健康配置。
+    -- DisableAll 后不能再做第二次 Flush。
     local persistenceOk, persistenceErr = true, nil
     if S.Persistence ~= nil and type(S.Persistence.Flush) == "function" then
         local callOk, flushed, failures = pcall(function() return S.Persistence:Flush() end)
@@ -92,7 +88,7 @@ function R:Stop()
     if S.RefreshCoordinator ~= nil and type(S.RefreshCoordinator.ClearAll) == "function" then
         pcall(function() S.RefreshCoordinator:ClearAll() end)
     end
-    -- 维护：共享 Service 的租约不一定属于 Feature；ClearAll 失败不能被 pcall 的“调用未抛错”吞掉。
+    -- 共享 Service 的租约不一定属于 Feature；ClearAll 失败不能被 pcall 的“调用未抛错”吞掉。
     -- 无论释放是否成功仍继续停 Events/Scheduler/外壳，最后向调用者返回失败，保留正常重试入口。
     local demandOk, demandErr = true, nil
     if S.Demand ~= nil and type(S.Demand.ClearAll) == "function" then
@@ -123,8 +119,7 @@ function R:InstallSchedulerTasks()
     local scheduler = S.Scheduler
     if scheduler == nil or type(scheduler.AddTask) ~= "function" then return false, "scheduler unavailable" end
 
-    -- Foundation 任务安装采用事务；未来 Scheduler 契约变化不能使 Runtime 报启动成功而实际只安装了部分
-    -- Persistence/Layout/Observation 周期任务。
+    -- 基础任务须整批安装；任一失败都回滚，不能仅安装部分 Persistence/Layout/Observation 后报告启动成功。
     local installed = {}
     local function Add(name, intervalMs, callback, runImmediately, owner, priority)
         local ok = scheduler:AddTask(name, intervalMs, callback, runImmediately, owner, priority)
@@ -133,9 +128,7 @@ function R:InstallSchedulerTasks()
         return false
     end
 
-    -- 共享 Scheduler 是 Foundation 唯一周期驱动；Feature 添加有界通道，不自建 OnUpdate。Layout 在事件总线和
-    -- Scheduler 启动后安装自有事件宿主与单次稳定采样，没有永久 metrics 轮询；Persistence/Observation 周期不
-    -- 受影响。
+    -- 共享 Scheduler 驱动周期任务。事件总线和 Scheduler 启动后，Layout 才安装通知与有限稳定采样，不永久轮询 metrics。
 
     if Add("v3_persistence", math.max(200, tonumber(S.Constants.Refresh.storageMs) or 200), function()
         if S.Persistence ~= nil and type(S.Persistence.Tick) == "function" then S.Persistence:Tick() end
@@ -383,8 +376,7 @@ function R:Start()
         EnterStage("feature_defaults")
         if S.FeatureRuntime ~= nil and type(S.FeatureRuntime.EnableDefaults) == "function" then
             local featureOk, featureErr = S.FeatureRuntime:EnableDefaults("runtime_start")
-            -- Feature 是 Foundation 可选消费者；单个偏好/API/Store 故障不能使应用外壳消失。失败 Feature 保
-            -- 持 faulted/disabled 并在 Diagnostics 展示，Core 继续 Ready，让用户能从主菜单检查或禁用。
+            -- Feature 偏好/API/Store 故障只停该功能并显示诊断；主外壳继续 Ready，供用户检查或禁用。
             if featureOk ~= true then RecordStartupDegradation("feature_defaults", featureErr or "default feature enable failed") end
         end
 
@@ -404,8 +396,7 @@ function R:Start()
         S.Ready = false
         S.BootError = "runtime/" .. tostring(S.BootStage or "unknown") .. ": " .. tostring(failure)
         S.SafeChat("初始化失败 [" .. tostring(S.BootStage or "unknown") .. "]：" .. tostring(failure))
-        -- 启动回滚遵循正常 Stop 的耐久顺序：允许 Feature 清理释放 Domain 前，先保存已加载或迁移的 dirty
-        -- Store。失败由 Persistence 记录，但销毁仍须继续，以确保原生状态安全。
+        -- 启动回滚也先保存已加载/迁移的 dirty Store，再允许 Feature 释放 Domain；保存失败留证，销毁仍继续。
         if S.Persistence ~= nil and type(S.Persistence.Flush) == "function" then
             pcall(function() S.Persistence:Flush() end)
         end

@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 展开/缩小、屏幕吸附与分辨率回归（Lua 5.1 离线模型）
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 local Boot=dofile('tools/rs_window_viewport_test_host.lua')
 local pass,fail=0,0
 local function Test(name,fn)
@@ -224,7 +222,7 @@ Test('rejected drag and resize restore Native geometry and leave Store unchanged
         assert(s:Show(false));assert(s:Show(true));local rx,ry=Rect(h,s);Eq(rx,x);Eq(ry,y)
     end
 end)
--- 维护：公开 API 的 Save 返回 false 不得经 Lua and/or 落入 Stage；标题按钮、公开锁 API 与外观 API 都沿原事务回滚。
+-- 公开 API 的 Save 返回 false 不得经 Lua and/or 落入 Stage；标题按钮、公开锁 API 与外观 API 都沿原事务回滚。
 Test('rejected lock and appearance API saves cannot become successful preview commits',function()
     local cases={{'SetLocked','locked',true},{'SetOverallOpacity','overallOpacity',.5},{'SetBackgroundOpacity','backgroundOpacity',.5},
         {'SetTextOpacity','textOpacity',.5},{'SetFontScale','fontScale',1.1}}

@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 虚拟列表与表格
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- UMG 风格 ListView/TableView：大数据集不能每项建 Native。VirtualList 按视口限制行池，仅逻辑条目改变时重绑。
 -- 无永久 Tick，数据/滚动/布局时协调；滚动条/列缩放只在手势期间借共享约 16 ms 交互通道并及时释放。固定行高让下标到视口为 O(1)；
 -- 数据表引用不复制，原地修改需 RefreshVisible/SetItems 显式重绑。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -362,9 +359,7 @@ RSUI.DataViewUtil = {
     CommitColumnResizeWidth = CommitColumnResizeWidth,
 }
 
-------------------------------------------------------------------------
 -- VirtualList/ListView 虚拟列表。
-------------------------------------------------------------------------
 local function NewVirtualList(kind, spec)
     local c, err = Host(kind, spec)
     if c == nil then return nil, err end
@@ -782,7 +777,7 @@ local function NewVirtualList(kind, spec)
     end
 
     function c:SetItems(items, revision, skipUnchanged)
-        -- 约束（performance-cache-1）：显式承诺 revision 描述数据的消费者可省去重复测量失效。
+        -- 显式承诺 revision 描述数据的消费者可省去重复测量失效。
         -- Layout/Arrange 仍执行 Native Diff/失败重试；不能把“同 revision”当成几何/显隐已提交。
         -- 普通 SetItems 仍强制刷新，数量/测量/布局变化同样不走快路径。
         local same = skipUnchanged == true and revision ~= nil and self.getCount == nil and self.getItem == nil
@@ -1084,11 +1079,8 @@ end
 RSUI:RegisterType("VirtualList", function(spec) return NewVirtualList("VirtualList", spec) end)
 RSUI:RegisterType("ListView", function(spec) return NewVirtualList("ListView", spec) end)
 
-------------------------------------------------------------------------
 -- VirtualGrid/TileView 虚拟网格。
---
 -- 固定尺寸虚拟图块，Native 数量限制为视口行×列加少量 overscan，支持大数据集；按逻辑行滚动，不按像素。
-------------------------------------------------------------------------
 local function NewTileView(kind, spec)
     local c, err = Host(kind, spec)
     if c == nil then return nil, err end
@@ -1496,7 +1488,7 @@ local function NewTileView(kind, spec)
     end
 
     function c:SetItems(items, revision, skipUnchanged)
-        -- 约束（performance-cache-1）：Tile 与 List 共享显式 revision 契约；不跳过 Native Diff 重试。
+        -- Tile 与 List 共享显式 revision 契约；不跳过 Native Diff 重试。
         local same = skipUnchanged == true and revision ~= nil and self.getCount == nil and self.getItem == nil
             and type(items) == "table" and type(self.items) == "table" and #items == #self.items
             and self.dataRevision == tostring(revision) and not self.measureDirty and not self.layoutDirty
@@ -1707,9 +1699,7 @@ end
 RSUI:RegisterType("VirtualGrid", function(spec) return NewTileView("VirtualGrid", spec) end)
 RSUI:RegisterType("TileView", function(spec) return NewTileView("TileView", spec) end)
 
-------------------------------------------------------------------------
 -- TableRow 表格行。
-------------------------------------------------------------------------
 local function ColumnValue(column, item, index, row)
     local value = nil
     if type(column.getText) == "function" then
@@ -1831,7 +1821,7 @@ local function NewTableRow(kind, spec)
                 width = columnRef.iconSize, height = columnRef.iconSize, pickable = false,
             })
         elseif not c.header and columnRef.cellType == "button" then
-            -- 约束（2026-10-03）：动作单元格跟随虚拟行复用；点击时读取当前 item，
+            -- 动作单元格跟随虚拟行复用；点击时读取当前 item，
             -- 不捕获创建时的货物，也不触发行选择/双击激活。隐藏池行不能执行动作。
             common.compact = true
             common.onClick = function()
@@ -1978,7 +1968,7 @@ local function NewTableRow(kind, spec)
                     end
                     if type(cell.SetTone) == "function" then cell:SetTone(tone)
                     elseif column.cellType=="button" and type(cell.SetStatusTone)=="function" then
-                        -- 约束（紧凑追踪表）：Button 使用语义状态色门面；没有 Text.SetTone。
+                        -- Button 使用语义状态色门面；没有 Text.SetTone。
                         -- 绑定复用时每列提交当前颜色，Theme 继续拥有悬停/选中/明暗配色与差分写入。
                         cell:SetStatusTone(tone)
                     end
@@ -2065,14 +2055,8 @@ RSUI:RegisterType("TableHeader", function(spec)
     return NewTableRow("TableHeader", spec)
 end)
 
-------------------------------------------------------------------------
--- TableView/Table 表格。
-------------------------------------------------------------------------
--- 维护（2026-09-23，table-adaptive-tail-fit-1）：可伸缩 TableView 在视口高度不是 rowHeight
--- 整数倍时，VirtualList 只能生成完整行，底部会留下明显“空白条”。活动模块此前有一份局部算法，
--- 导致悬浮窗修了而其他 TableView 继续复现。这里下沉为 opt-in 几何能力；数据/选择/滚动 Authority
--- 不变，也不会给所有表格全局开启。候选行数按实际 itemCount 评分：近满列表可在 soft min/max 内轻微
--- 拉伸/压缩吃掉尾部空白；条目少到必须超过 softMax 才能铺满时则保留真实内容不足的空白。
+-- adaptive_tail 可选：按视口和实际条数轻微伸缩行高，吸收不足整行的尾部空白。
+-- 若内容少到必须超过 softMax 才铺满，则保留空白；固定行高表不受影响。
 local function ResolveAdaptiveTailRowHeight(viewportHeight, itemCount, baseRowHeight, rowGap, softMin, softMax)
     local h = math.max(1, tonumber(viewportHeight) or 1)
     local count = math.max(0, math.floor(tonumber(itemCount) or 0))
@@ -2082,11 +2066,8 @@ local function ResolveAdaptiveTailRowHeight(viewportHeight, itemCount, baseRowHe
     local maxH = math.max(minH, tonumber(softMax) or (base + 4))
     if count <= 0 then return base, 0, h end
 
-    -- 维护（2026-09-23，table-adaptive-tail-fit-2）：18.291 下沉时把“数据条数 < 基准可见行数”直接
-    -- 当成真正内容不足，漏掉了活动悬浮窗已验证的一类场景：例如 235px 视口只有 8 条数据，26px 基准
-    -- 会留下约 27px 空白，但把 8 行轻微拉到 29.375px 就能完整填满。跑商主页面正会命中这一分支。
-    -- 因此候选行数必须从实际 itemCount 出发评分，而不是先用 floor(base) 截断；只有条目少到必须超过
-    -- softMax 才保留真实内容不足的尾空白。此能力仍是 adaptive_tail opt-in，不影响 fixed TableView。
+    -- 候选从实际 itemCount 评分，不能先按基准行数截断。
+    -- 例如 235px 放 8 行、基准 26px 会空 27px，稍拉到 29.375px 即可填满，仍在 softMax 内。
     local hardMin = 12
     local maxCandidate = math.min(count, 32, math.max(1, math.floor((h + gap) / (hardMin + gap))))
     local bestH, bestRows, bestScore = nil, nil, nil
@@ -2134,11 +2115,8 @@ local function NewTableView(kind, spec)
     c.padding = Pad(spec.padding)
     c.headerInteractive = spec.headerInteractive == true
     c.onSortChanged = spec.onSortChanged
-    -- 维护（2026-09-23，table-runtime-callback-bridge-1）：TableView 是内部 ListView 的公开外壳。
-    -- 多个页面会在 TableView 创建完成后再绑定 onSelectionChanged/onItemActivated；旧实现只在构造瞬间
-    -- 把 spec 回调复制给 ListView，导致后绑定在实机完全不生效（跑商表现为单击无法选中、双击无响应，
-    -- 进而“货物详情/关注货物”也无法使用）。这里改为运行时读取 TableView 当前回调，不新增 Tick/轮询，
-    -- 不改变 SelectionModel Authority，同时保留构造期传回调的旧用法。
+    -- ListView 回调运行时读取 TableView 当前字段，支持构建后绑定。
+    -- 旧实现只在构造时复制 spec，曾让跑商单击选择和双击失效；构造时传回调仍兼容。
     c.onSelectionChanged = spec.onSelectionChanged
     c.onItemActivated = spec.onItemActivated or spec.onRowActivated
     c.sortColumnId = spec.sortColumnId ~= nil and tostring(spec.sortColumnId) or nil
@@ -2464,7 +2442,7 @@ local function NewTableView(kind, spec)
     end
 
     function c:GetListView() return self.list end
-    -- 维护（table-runtime-callback-bridge-1）：显式 setter 供后续新代码使用；直接赋值旧写法仍保持兼容。
+    -- 显式 setter 供后续新代码使用；直接赋值旧写法仍保持兼容。
     function c:SetOnSelectionChanged(callback) self.onSelectionChanged = callback; return true end
     function c:SetOnItemActivated(callback) self.onItemActivated = callback; return true end
     function c:GetSelectionModel() return self.list:GetSelectionModel() end
@@ -2548,10 +2526,8 @@ local function NewTableView(kind, spec)
         local leftColumn, rightColumn = self.columns[index], self.columns[compensationIndex]
         if leftColumn == nil or rightColumn == nil or index == compensationIndex then return false end
 
-        -- 预览是用户实际所见几何，提交编辑列对前必须用解析快照初始化全部列。
-        -- 否则未编辑 Fill 会从 minWidth 重分配余量，在 DragStop 拉走刚拖动的边界；
-        -- Trade 货物/货率的 Fill + Fixed + 后续 Fill 布局是标准复现情况。
-        -- 保留各列声明模式，仅明确编辑列对走 CommitColumnResizeWidth 语义。
+        -- 提交列宽前用预览快照初始化全部解析列，否则后续 Fill 会从 minWidth 重分配，
+        -- 在 DragStop 拉走刚拖动的边界。各列模式保留，仅编辑列对按提交语义转换。
         local previewWidths = type(self.previewResolvedWidths) == "table" and self.previewResolvedWidths or self.resolvedWidths
         local committedSnapshot = {}
         local snapshotChanged = false
@@ -2624,11 +2600,9 @@ local function NewTableView(kind, spec)
         return false
     end
 
-    -- 维护（2026-09-22，table-runtime-row-height-1）：某些复合视口（例如活动时间/实时区域）
-    -- 需要在已确定的父视口内轻量吸收不足一整行的尾部余数。不能直接修改 TableView.list.rowHeight，
-    -- 否则 TableView 自己的 rowFactory/Measure 仍保留旧值，后续滚动新建 pooled row 时会产生两套行高 Authority。
-    -- 本 API 只更新 Presentation 几何，不改数据、选择、滚动 offset 或持久化；relayout=false 用于父 Layout
-    -- 正在进行时，避免 SetRowHeight -> Layout -> 父失效形成重入。运行时行高仍限制 >=12，与 ListView 契约一致。
+    -- 运行时行高须同时更新 TableView 与内部 ListView，不能只写 list.rowHeight，
+    -- 否则新建池行、rowFactory 和 Measure 会使用两套高度。下限仍为 12px；
+    -- 父布局中用 relayout=false，避免再次触发布局形成重入，不改数据、选择或滚动位置。
     function c:SetRuntimeRowHeight(value, relayout)
         local height = math.max(12, tonumber(value) or self.rowHeight)
         if math.abs(height - (tonumber(self.rowHeight) or height)) <= 0.001

@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 语义导航路由
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Features = S.FeatureRegistry
@@ -10,13 +8,13 @@ if type(Features) ~= "table" then return end
 
 S.UIV3 = S.UIV3 or {}
 S.UIV3.Router = {
-    version = 2, -- v2 仅增加开发态导航排序/标签投影；route identity、PageHost 生命周期和 Feature Authority 完全不变。
+    version = 2, -- v2 增加导航排序和标签投影。
     routes = {},
     order = {},
     current = nil,
 }
 local R = S.UIV3.Router
-R.DevelopmentOrderContractVersion = 1 -- 运行时门禁可验证“完成在上/未完成在下”的 Router 契约仍存在；该版本不代表 Feature 完成度本身。
+R.DevelopmentOrderContractVersion = 1 -- 此版本号用于检查导航排序接口，不表示 Feature 的完成度。
 
 local function Normalize(value)
     local route = tostring(value or ""):lower():gsub("[\r\n]+", "")
@@ -31,9 +29,10 @@ function R:Register(route, spec)
     spec = type(spec) == "table" and spec or {}
     local row = {
         id = route,
-        title = tostring(spec.title or route), -- title 保持页面语义原名，避免“未完成”开发标签污染页面标题、团队子页或其它 Router Consumer。
-        navigationTitle = tostring(spec.navigationTitle or spec.title or route), -- navigationTitle 只供左侧 Shell 展示；开发标签不得改 FeatureRegistry.name 或任何持久化键。
-        navigationIncomplete = spec.navigationIncomplete == true, -- Router 只消费 Registry 已判定的开发态布尔值，不在 Presentation 重复解析 status/readiness，避免双 Authority。
+        title = tostring(spec.title or route), -- title 保留页面原名，navigationTitle 供左侧导航显示开发标签。
+        -- 开发状态直接取 Registry，避免两处判定不一致。
+        navigationTitle = tostring(spec.navigationTitle or spec.title or route),
+        navigationIncomplete = spec.navigationIncomplete == true,
         category = tostring(spec.category or "system"),
         featureId = spec.featureId,
         order = tonumber(spec.order) or 100,
@@ -70,7 +69,7 @@ function R:List(category)
         if row.visible and (not row.featureId or Features:IsAccessible(row.featureId)) and (category == nil or row.category == category) then rows[#rows + 1] = row end
     end
     table.sort(rows, function(a, b)
-        if a.navigationIncomplete ~= b.navigationIncomplete then return a.navigationIncomplete ~= true end -- 同一分类先展示已完成功能，再展示开发中功能；只重排左侧展示，不改变 route 注册顺序或 Feature 生命周期。
+        if a.navigationIncomplete ~= b.navigationIncomplete then return a.navigationIncomplete ~= true end -- 左侧导航先列已完成功能；排序不影响路由注册和页面生命周期。
         if a.groupOrder ~= b.groupOrder then return a.groupOrder < b.groupOrder end
         if a.groupItemOrder ~= b.groupItemOrder then return a.groupItemOrder < b.groupItemOrder end
         if a.order ~= b.order then return a.order < b.order end
@@ -81,9 +80,9 @@ end
 
 for _, feature in ipairs(Features:List()) do
     local row, err = R:Register(feature.route, {
-        title = feature.name, -- 页面语义标题继续使用原 Feature 名称，不附加开发标签。
-        navigationTitle = feature.name .. (feature.navigationIncomplete == true and "（未完成）" or ""), -- 用户要求“未完成”只显示在左侧选项卡名称后；完成 Feature 保持原名，配置/route/id 不变。
-        navigationIncomplete = feature.navigationIncomplete == true, -- 透传 Registry 的唯一开发态结果，Router 排序与 Shell 标签共享同一事实。
+        title = feature.name, -- “未完成”只加在左侧导航名后；页面标题保留原名，开发状态沿用 Registry。
+        navigationTitle = feature.name .. (feature.navigationIncomplete == true and "（未完成）" or ""),
+        navigationIncomplete = feature.navigationIncomplete == true,
         category = feature.category,
         featureId = feature.id,
         order = feature.order,

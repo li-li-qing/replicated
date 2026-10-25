@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 世界观察与短期缓存
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 世界观察服务只共享轻量读取、缓存和订阅，不拥有领域真相。ReadField 使用极短 TTL 的穿透缓存，去除同观察窗口
--- 内已启用模块重复的 Name/ID/Health/Distance 调用，不冻结目标切换，也不把缓存事实升级为业务结论。昂贵
--- Buff/Tooltip 查询仍须由所属模块显式请求，缓存键包含参数。
-------------------------------------------------------------------------
+-- 短 TTL 缓存合并同一观察窗口内重复的 Name/ID/Health/Distance 读取。
+-- 缓存只代表读取结果；Buff/Tooltip 仍由模块显式请求，键中须包含参数。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Observation = { cache = {}, readCache = {}, subscriptions = {}, revision = 0, readHits = 0, readMisses = 0 }

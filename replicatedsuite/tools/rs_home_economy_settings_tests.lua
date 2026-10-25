@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 首页经济设置测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实首页/RSUI 控件及 Command 绑定；仅替换顶层 Surface 与 RU 屏幕定位边界。
 -- 不加载游戏，不将离线布局和点击链验收冒充 RU 实测。
-------------------------------------------------------------------------
 local Host=dofile('tools/rs_workspace_home_test_host.lua')
 local pass,fail=0,0
 local function Test(name,fn)

@@ -1,20 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 制作计划测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 停用 life_craft_planner 后，测试当前制作辅助 tools_craft：
--- 元数据契约和能力门禁；
--- 配方解析与显式 SelectRecipe 选择；
--- 背包持有数量及缺口计算；
--- QuotePendingMaterials 与询价队列集成；
--- CraftSurfaceV3 原生制作界面观察，未知几何时安全拒绝；
--- 基础门禁契约 v3_craft_user_selection_contract 和 v3_craft_sidecar_contract。
-------------------------------------------------------------------------
+-- 检查当前 tools_craft 的配方选择、材料缺口、共享询价和制作窗口观察。
+-- 未知窗口几何必须拒绝定位，旧制作规划功能不应重新加载。
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -116,13 +104,13 @@ S.FeatureRuntime.SetPreferredEnabled = function(_, id, v) return true end
 
 -- 按依赖顺序加载制作服务和功能。
 dofile("services/rs_craft_surface_v3.lua")
--- 中文维护注释（2026-09-28，Phase 1 Batch A）：复现 toc.g 顺序，先加载通用装配骨架。
+-- 复现 toc.g 顺序，先加载通用装配骨架。
 dofile("features/shared/rs_feature_slice_factory.lua")
 dofile("features/shared/rs_shared_bounds.lua")
 dofile("features/tools/auction/rs_auction_read_model.lua")
--- 中文维护注释（2026-09-28，Phase 1 Batch E）：bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
+-- bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
 dofile("features/tools/craft/rs_craft_feature.lua")
--- 中文维护注释（2026-09-28，Phase 1 Batch D）：tools_craft 已从 bridge 拆出；按 toc.g 顺序加载它。
+-- tools_craft 已从 bridge 拆出；按 toc.g 顺序加载它。
 dofile("features/life/craft/rs_craft_assistant_surface_extension_v3.lua")
 dofile("presentation/v3/widgets/rs_v3_craft_sidecar.lua")
 
@@ -131,7 +119,7 @@ local Surface = S.Services and S.Services.CraftSurfaceV3
 local Sidecar = S.UIV3 and S.UIV3.CraftSidecar
 
 Test("C1: Feature metadata and removed planner contract", function()
-    -- 中文维护测试（2026-09-15）：制作规划删除必须是真删除：Registry/Feature 都不存在；
+    -- 制作规划删除必须是真删除：Registry/Feature 都不存在；
     -- 制作台助手保持独立可用，避免删除 life_craft_planner 时误伤共享 CraftRead/CraftProjection。
     assert(S.Features and S.Features.life_craft_planner == nil, "removed life_craft_planner must not be instantiated")
     assert(S.FeatureRegistry:Get("life_craft_planner") == nil, "removed life_craft_planner must not remain in registry")
@@ -192,7 +180,7 @@ Test("C3: Recipe resolution and user selection", function()
     assert(badOk == false, "invalid recipe key should be rejected")
 end)
 
--- 中文维护注释（2026-10-02）：检查玩家实际选择/显示的文本，防止共享地区表改好后 UI 私有副本仍串区。
+-- 检查玩家实际选择/显示的文本，防止共享地区表改好后 UI 私有副本仍串区。
 Test("C4: Shared region labels and selected recipe display agree", function()
     assert(Assist:AcquireConsumer("test_region_labels"))
     local expected = {[6245]="棋盘石林", [6244]="哈里洛废墟", [6243]="草原之脉", [9332]="青铜岩石山", [9336]="太初之地", [9340]="西风脊"}

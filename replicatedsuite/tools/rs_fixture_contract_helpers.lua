@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 测试数据契约辅助函数
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 离线回归数据契约辅助函数，不进入 toc.g。
-------------------------------------------------------------------------
 local H = {}
 function H.Read(path)
     local f = assert(io.open(path, 'rb'), 'missing source: '..tostring(path))

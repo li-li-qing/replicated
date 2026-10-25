@@ -1,9 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态显示配色编辑
 -- 作者：Replicated
 -- QQ群：1104129461
 -- 直接嵌入HUD校准；调色只提交调用方草稿，不持有第二份业务配置。
-------------------------------------------------------------------------
 if not ReplicatedSuite or ReplicatedSuite.BootError then return end
 local S=ReplicatedSuite
 local R,F=S.RSUI,S.Features and S.Features.BuffDisplay

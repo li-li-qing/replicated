@@ -1,12 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗视觉引导
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并约束：先检查冲突标记、toc.g 加载清单完整性与 Lua 语法，再做运行时验收。
--- 权威归属、调用链和存档协议由实现负责，不能通过清配置、跳过加载或恢复 Legacy 绕过错误。
 -- 仅负责当前目标连线与用户范围圆的屏幕表现；Feature 持有采样节拍和分离投影，本文件只对有界点池差异渲染，不持有 Tick/Scheduler。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 if type(S.UI) ~= "table" or type(S.FeatureRuntime) ~= "table" then return end
@@ -39,11 +34,8 @@ P.rangePools = P.rangePools or {}
 P.rangePool = P.rangePool or {} -- 旧首池别名仅保留用于诊断兼容。
 P.eventOwner = P.eventOwner or {}
 P.hostMetrics = P.hostMetrics or {}
--- 生命周期看门诊断：presenter 通过订阅 Feature 生命周期事件获取渲染租约，下方须覆盖全部失败模式：
--- 失败不能永久静默停留在零 Consumer、零告警的“已开启但
--- 无消费者”状态并等待用户重新切换：
--- a）订阅/握手时序导致漏收事件；b）运行 stop/start 的 Demand:ClearAll 清空租约却无生命周期事件，后续 F:Enable 因 row.enabled=true 无操作；
--- c）获取事务失败且无告警。
+-- 生命周期握手须覆盖漏收事件、Demand 被 ClearAll 但 Feature 仍 enabled，以及获取失败。
+-- 这些情况不能静默停在零 Consumer，等用户重新切开关才恢复。
 P.watchdogTask = P.watchdogTask or "v3_visual_guides_lifecycle_watchdog"
 P.lastLifecycle = P.lastLifecycle or nil
 P.acquireAttempts = P.acquireAttempts or { unit = 0, range = 0 }
@@ -51,9 +43,8 @@ P.lastAcquireError = P.lastAcquireError or {}
 P.reconcileRuns = tonumber(P.reconcileRuns) or 0
 P.watchdogTicks = tonumber(P.watchdogTicks) or 0
 
--- 2026-09-06 实机确认 emptywidget + CreateColorDrawable("overlay") 的 4x4 点不可见，且无成功参考。
--- easypull/plates 均以包含 '.' 的 LABEL 绘点；
--- EnsureUnitPairPool/EnsurePool 同样使用 S.UI:CreateLabel，此处保留一个代际的审计标识与外部调用兼容。
+-- 实机 emptywidget + 4x4 ColorDrawable 不可见；参考 easypull/plates 用含“.”的 LABEL 绘点。
+-- 保留一代审计标记及外部调用兼容。
 local function NewColorDrawable(parent)
     if parent == nil or type(parent.CreateColorDrawable) ~= "function" then return nil end
     local ok, drawable = pcall(function() return parent:CreateColorDrawable(0.96, 0.78, 0.18, 0.8, "overlay") end)
@@ -88,14 +79,9 @@ local function UnitLineColor(projection, pairKey)
     return c[1], c[2], c[3]
 end
 
--- 单位连线自适应采样与平滑刷新契约。
---
--- pointCount/pairPoints 保留为用户基线密度，兼容 Store，不再视为最终点数。先裁切可见屏幕线段，再随长度增加额外样本，使远近连线具有一致连续性；
--- 总预算随节拍调整，限制高刷新率的 Native 工作。
--- 维护 2026-09-12：客户端报告端点y=-3345，旧实现整段分配点并把屏外点计为可见。
--- 只在UIParent:GetScreenWidth/Height同源raw坐标范围裁剪线段，再分配屏内密度。
--- 禁止用GetUiMetrics的logical尺寸或addonScale裁raw坐标；拿不到同源尺寸就保留原坐标。
--- 裁剪是Presentation的可见采样，不修改Feature端点，也不以裁剪代替Service的behind否决。
+-- pointCount/pairPoints 是用户基线密度；先裁屏内线段，再按长度补点并限制总预算。
+-- 曾收到端点 y=-3345，旧代码把屏外点也计作可见。裁剪只能用 UIParent 同源 raw 尺寸，
+-- 不能混用 logical 尺寸或 addonScale；无同源尺寸时保留坐标，behind 仍由 Service 拒绝。
 local UNIT_LINE_REFERENCE_LENGTH = 240
 local VISUAL_GUIDE_LIMITS = (S.Constants and S.Constants.VisualGuide) or {}
 local UNIT_LINE_DENSITY_HARD_MIN = math.max(2, math.floor(tonumber(VISUAL_GUIDE_LIMITS.unitLineDensityHardMin) or 2))
@@ -105,9 +91,8 @@ local UNIT_LINE_TOTAL_BUDGET_FAST = 256
 local UNIT_LINE_TOTAL_BUDGET_MEDIUM = 320
 local UNIT_LINE_TOTAL_BUDGET_NORMAL = 384
 local UNIT_LINE_TOTAL_BUDGET_SLOW = 480
--- 高频单位连线不能在拥挤/帧压力下整体延迟为 P3 突发；生产端保持帧节拍资格，表现层限制自适应额外密度并逐步扩点池，用户基线密度始终为硬下限。
--- 约束（dynamic-hud-1）：取旧Critical档保守上限固定额外点预算，后台积压恢复不能
--- 自动将连线加密近一倍。用户基础密度仍为硬下限，Native点池增长仍受当帧压力约束。
+-- 生产端保持帧节拍，表现层只削减自适应额外密度并渐进扩池；用户基线是硬下限。
+-- 额外点预算固定取旧 Critical 保守上限，积压恢复不能突然将连线加密近一倍。
 local UNIT_LINE_EXTRA_BUDGET_FACTOR = 0.55
 local UNIT_LINE_POOL_GROWTH = { Normal=48, Busy=32, Heavy=24, Critical=16 }
 
@@ -144,7 +129,7 @@ local function FinitePointNumber(value)
 end
 
 function P:ReadUnitViewport()
-    -- 维护：视口事实仍由ScreenProjectionV3提供，Presenter只决定可见段如何分配点数。
+    -- 视口事实仍由ScreenProjectionV3提供，Presenter只决定可见段如何分配点数。
     -- 服务缺失/异常时不拿Layout logical大小代替，保留旧版raw坐标回退及unknown诊断。
     local service=S.Services and S.Services.ScreenProjectionV3 or nil
     if type(service)~="table" or type(service.GetUiParentViewport)~="function" then return nil,nil end
@@ -227,7 +212,7 @@ function P:BuildUnitLineSamplePlan(rows, projection, viewportW, viewportH, press
     return plans,budget,stats
 end
 
--- 约束（performance-visual-hotpath-1）：只缓存已读端点的纯几何结果，不跳过Feature采样。
+-- 只缓存已读端点的纯几何结果，不跳过Feature采样。
 -- 逐项比较端点/顺序/密度/视口/压力/间隔，不用revision（每帧都增加），不拼接长签名。
 -- 样式不参与采样，命中后仍绑定本次独立row并执行放置/失败重试/点池渐进增长。
 function P:GetUnitRenderPlan(rows, projection, viewportW, viewportH, pressure)
@@ -269,11 +254,8 @@ P.RangeDiffRenderContractVersion = 1
 P.RangeViewportVisibilityContractVersion = 1
 P.UnitLineProgressivePoolContractVersion = 1
 
--- 维护（2026-09-24，visual-guide-resolution-style-recovery-1）：范围点/连线点虽然使用 LABEL
--- 作为可靠的 RU Native 绘制载体，但它们的 fontSize 语义是“点直径”，不是普通页面字体。
--- CreateLabel 会登记 rsBaseFontSize=15；若继续交给 Theme:RefreshTypography，切分辨率/画质时
--- Theme 会按普通字体 10..24 上限把已配置的 16..82px 点重置成小号。这里明确把 Typography
--- Authority 交给 VisualGuide Presenter；普通 Label 默认仍由 Theme 管理，不扩大 opt-out 范围。
+-- 这些 LABEL 的 fontSize 表示点直径，不是页面字号。Theme 普通字体上限 10..24
+-- 曾把配置的 16..82px 点重置；只有此类标签退出主题字号管理，由 Presenter 设置。
 local function AdoptManualPointTypography(widget)
     if widget == nil then return false end
     widget.rsManualTypography = true
@@ -341,9 +323,8 @@ function P:EnsureUnitPairPool(pairKey, count, growthLimit)
     local target=math.min(count,#pool+growthLimit)
     local created=0
     for index=#pool+1,target do
-        -- 2026-09-06 实机参考确认绘点应使用单 '.' 字符 LABEL：easypull.lua:262-280 为 22px/SetOutline，rp_ui.lua:2341-2354 为 15px 点池。
-        -- 旧 emptywidget + 4x4 drawable 没有成功参考，在 1080p 以上近乎不可见；使用本项目 S.UI:CreateLabel。
-        -- 宿主点 extent 保持 1x1，字形大小由字体决定，较大 extent 只会把字形偏离锚点。
+        -- 参考 easypull.lua:262-280 和 rp_ui.lua:2341-2354，用单“.” LABEL 绘点。
+        -- 宿主 extent 保持 1x1，字体决定大小；大 extent 会使字形偏离锚点。
         local dot,dotErr=S.UI:CreateLabel(host,"v3_visual_unit_"..pairKey.."_dot_"..tostring(index),".",0,0,1,1,15,"strong","CENTER",false)
         if dot==nil then return nil,dotErr end
         AdoptManualPointTypography(dot)
@@ -359,7 +340,7 @@ function P:SetDotVisible(dot, visible)
     local state=type(dot.renderState)=="table" and dot.renderState or {}; dot.renderState=state
     local value=visible==true
     if state.visible==value then return false end
-    -- 维护（2026-09-18，range-diff-render-1）：UnitLines 与 RangeAssist 共用可见性 diff。
+    -- UnitLines 与 RangeAssist 共用可见性 diff。
     -- 提升范围圆刷新节奏后，禁止每帧对未变化的几十/上百个点重复 Show/Hide；只有 RSUI
     -- 确认 accepted 后才提交缓存，拒绝时保留旧状态供下一帧重试。
     local accepted,changed
@@ -494,9 +475,7 @@ local function PlacePreparedUnitDot(self, dot, x, y, size, alpha, pairKey, r, g,
     -- CreateLabel 经 PrimeNativeState 预设 row.fontSize=15，因此 SetFontSize(15) 可合法返回无操作 false。
     -- 不能在显示前据此退出而使所有点永久隐藏在 (0,0)；样式写入按成功参考尽力执行，不妨碍点显现。
     if state.x~=px or state.y~=py then
-        -- 维护：旧代码无条件提交anchor缓存，一次拒绝后相同坐标永不重试、点卡在旧位置。
-        -- Authority=RSUI EnsureAnchor确认结果；失败隐藏当前点，保留未提交cache供下一帧重试。
-        -- 不引入新重试任务、不动用户位置配置；共享range绘制不受此分支影响。
+        -- EnsureAnchor 接受后才更新缓存；失败隐藏并留待下一帧重试，否则同坐标会永久卡在旧位置。
         local accepted,changed
         if type(S.UI.EnsureAnchor)=="function" then accepted,changed=S.UI:EnsureAnchor(dot.root,self.unitHost,px,py,self.owner)
         else accepted=S.UI:SetAnchor(dot.root,self.unitHost,px,py,self.owner);changed=accepted end
@@ -532,7 +511,7 @@ local function PlacePreparedRangeDot(self, dot, x, y, size, alpha, kind, pairKey
     local state=type(dot.renderState)=="table" and dot.renderState or {};dot.renderState=state
     local host=kind=="unit" and self.unitHost or self.rangeHost
 
-    -- 维护（2026-09-18，range-diff-render-1）：RangeAssist 提升镜头跟随节奏后，不能继续每帧对
+    -- RangeAssist 提升镜头跟随节奏后，不能继续每帧对
     -- 每个点无条件 SetAnchor/SetFontSize/SetColor/Show。位置、样式、可见性分别做 diff；Anchor
     -- 只有 RSUI 确认 accepted 后才提交缓存，失败保留旧 cache 以便下一帧重试。用户半径/颜色等
     -- 配置仍由 Feature Authority 提供；这里只减少重复 Native UI 写，不缓存世界或屏幕事实。
@@ -550,7 +529,7 @@ local function PlacePreparedRangeDot(self, dot, x, y, size, alpha, kind, pairKey
         state.r,state.g,state.b,state.a=cr,cg,cb,alpha
     end
     self:SetDotVisible(dot,true)
-    -- 维护（range-continuity-1）：Show 被拒绝时不能把请求点计为已接受的可见点。
+    -- Show 被拒绝时不能把请求点计为已接受的可见点。
     return state.visible==true
 end
 
@@ -565,7 +544,7 @@ end
 
 function P:RenderUnit()
     self:SyncUiEnvironmentRevision()
-    -- 维护：先清本帧telemetry再处理空集/关闭，否则上次“176点”在目标消失后仍被报告为可见。
+    -- 先清本帧telemetry再处理空集/关闭，否则上次“176点”在目标消失后仍被报告为可见。
     -- 无跨帧单位缓存；仅有界Native池复用，禁用时隐藏且Feature释放自己的刷新任务。
     self.lastUnitSampling={inputEdges=0,visibleEdges=0,visibleDots=0,uniquePositions=0,requestedDots=0,clippedEdges=0,outsideEdges=0,invalidEdges=0}
     if self.unitHeld ~= true then self.unitRenderPlanCache=nil;self:HideUnitPools();S.UI:SetVisible(self.unitHost,false,self.owner);return true end
@@ -645,7 +624,7 @@ function P:RenderUnit()
 end
 
 function P:RenderRange()
-    -- 维护（range-continuity-1）：每帧先清证据。空集/异常不能沿用上一帧“可见点”；
+    -- 每帧先清证据。空集/异常不能沿用上一帧“可见点”；
     -- 记录的是本次 Native 已接受的放置数，不是屏幕截图验证，更不是池容量。
     local sample = { points=0, circles=0, requestedPoints=0, placementFailures=0, totalCircles=0, enabledCircles=0,
         offscreenPoints=0, invalidPoints=0, visibilityPatch="range-viewport-visibility-1",
@@ -655,7 +634,7 @@ function P:RenderRange()
     if self.rangeHeld ~= true then
         self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); sample.status="no_consumer"; return true
     end
-    -- 约束（performance-hotpath-1）：范围绘制只消费独立坐标/样式快照，完整页面投影
+    -- 范围绘制只消费独立坐标/样式快照，完整页面投影
     -- 保留给设置与诊断；不用Authority裸引用，旧宿主兼容仍可回退原GetProjection。
     local projection=(type(RangeFeature.GetRenderProjection)=="function" and RangeFeature:GetRenderProjection()
         or RangeFeature:GetProjection()) or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
@@ -689,7 +668,7 @@ function P:RenderRange()
             local preparedAlpha=math.max(0.1,math.min(1,tonumber(row.opacity or projection.opacity) or 0.68))
             for i=1,count do
                 local px,py=FinitePointNumber(points[i].x),FinitePointNumber(points[i].y)
-                -- 维护（2026-10-07，range-viewport-visibility-1）：R22 大圈比近镜头距离更大时，
+                -- R22 大圈比近镜头距离更大时，
                 -- 部分点会跨过镜头平面，附近点虽在前方却会得到7425等屏外坐标。只显示本帧
                 -- 可见范围弧段，不把屏外坐标写入Native、不夹到屏幕边缘、不改世界半径。
                 if px==nil or py==nil then
@@ -735,9 +714,8 @@ function P:ReconcileOne(feature,id,token,heldField,kind)
             self.lastUnitSampling={inputEdges=0,visibleEdges=0,visibleDots=0,uniquePositions=0,requestedDots=0}
         else self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); self.lastRangeSampling={points=0,circles=0,totalCircles=0,enabledCircles=0} end
         if self[heldField]==true then
-            -- 维护：Feature:Disable已先Demand:Clear，旧代码再次Release得到consumer not held，
-            -- 使Presenter的held标记无法收敛。租约Authority在Demand；确认已无此token即可清本地影子。
-            -- 仍持有时必须真实释放并检查结果；无HasConsumer的旧实现保留原保守路径。
+            -- Disable 已清 Demand，确认 token 不在即可清本地标记；仍持有时须释放并检查结果。
+            -- 旧实现无 HasConsumer 时保留保守释放路径。
             local alreadyReleased=type(feature.HasConsumer)=="function" and feature:HasConsumer(token)~=true
             if not alreadyReleased then
                 local ok,err=feature:ReleaseConsumer(token);if ok~=true then return false,err end
@@ -791,7 +769,7 @@ end
 -- 生命周期看门任务为 1 s/P3，正常时每次仅少量表读取；补齐订阅握手漏事件、无事件租约清空、获取失败，并按 1 s 重试。始终注册，但停用且已收敛状态不执行工作。
 function P:ConvergeTick()
     self.watchdogTicks=(tonumber(self.watchdogTicks) or 0)+1
-    -- 约束（2026-10-09）：正背面显示复用现有一秒租约收敛任务；只查开关/租约，不造第二个
+    -- 正背面显示复用现有一秒租约收敛任务；只查开关/租约，不造第二个
     -- watchdog，不读取目标/相机。新 Presenter 在视觉共享文件之后加载，因此运行时再取得引用。
     local facing=S.UIV3 and S.UIV3.FacingIndicatorV3
     if facing and type(facing.ConvergeTick)=="function" then facing:ConvergeTick() end

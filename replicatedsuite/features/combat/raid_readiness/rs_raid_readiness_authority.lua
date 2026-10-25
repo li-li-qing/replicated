@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队准备检查业务权威
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 显式切片团队检查，不使用 Tick 或常驻 Aura 扫描。TeamRoster 拥有名单身份，AuraObservation 拥有 Buff 事实；本权威仅将共享事实与低频只读职责/装备/距离观察组合成有界会话投影。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}
@@ -69,12 +66,8 @@ local function ReadRole(member)
 end
 
 local function ReadGear(member)
-    --
-    -- 第二参数是“是否格式化千分位”，旧代码误传 true；RU 更新后可能得到
-    -- "12,345"，旧 Number/tonumber 直接失败。Authority 仍是 X2Unit，团队战备只读取成员
-    -- unitToken，不允许用名字/角色类型推断装分。
-    -- 数据流：X2Unit -> shared S.Utils.ParseGearScore -> readiness row；与 BuffDisplay 使用同一
-    -- parser，避免两个功能再次出现格式兼容差异。兼容边界：API 失败或非数值返回保持 unknown。
+    -- UnitGearScore 第二参数控制千分位，不是目标标志；用成员 unitToken 读取并交共享 ParseGearScore。
+    -- 失败/非数值保持 unknown，不用名字或角色类型推断。
     local raw, err = ReadCapability("X2Unit:UnitGearScore", X2Unit, "UnitGearScore", tostring(member.unitToken or ""), false)
     local score = nil
     if err == nil and U ~= nil and type(U.ParseGearScore) == "function" then score = select(1, U.ParseGearScore(raw)) end

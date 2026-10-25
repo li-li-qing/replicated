@@ -1,21 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能通用装配
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- rs_business_bridge.lua 已接近 Lua 5.1
--- 单 chunk 的 local 配额上限，继续往同一个 chunk 加 Feature 会让整片业务同时不可编。
--- 因此把“与业务无关的装配骨架”收敛到这里，让每个 Feature 可以在自己的文件里注册。
--- Authority 边界（不得被后续维护破坏）：
--- * 本文件只认识 Core / Persistence / FeatureRuntime / Demand / Events / API boundary；
--- * 不认识 Bag / Auction / Craft / UnitLines / RangeAssist 等任何业务 State；
--- * 不持有任何 Consumer 业务真相，不建立第二个 Registry / Runtime / Demand / Scheduler；
--- * 不改变 Store ID/Schema、Demand所有者、UpdateTopic、task name、Commands、Projection结构。
--- 允许包含（经代码证明通用）：基础 Copy、统一 capability Call/Action 适配、
--- 通用 RegisterStore wrapper、通用 Load feature store、PersistentState 白名单快照、NewFeature 装配骨架。
--- 不允许包含：Bag 扫描/搬运、Craft 配方解析、Auction 搜索/报价、Range 圆数学、
--- Unit line 投影、Boss 规则表、Team 角色逻辑等任何业务判断。
-------------------------------------------------------------------------
+-- 通用装配分离到此，避免单 chunk 触及 Lua 5.1 的 local 上限。
+-- 只包装 Copy、能力调用、Store 加载/事务和 Feature 注册，不持有业务 State、Consumer 或另建调度/生命周期体系。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P, Runtime, Demand = S.Persistence, S.FeatureRuntime, S.Demand
@@ -35,9 +22,7 @@ function F.Copy(value, seen)
     return out
 end
 
--- capability 的真实 host 可能为 nil；旧实现的语义是“用能力名前缀回退到同名全局”，
--- 例如 X2Friend:GetFriendList -> rawget(_G,"X2Friend")。必须保持这一语义，否则 Feature 取消
--- 显式传入宿主时会静默变成 api 不可用。
+-- host 为 nil 时按能力名前缀回退到同名全局，例如 X2Friend；省略显式 host 不能使可用能力变成不可用。
 function F.Call(capability, object, method, ...)
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return false, nil, "API boundary unavailable" end
     local host = object
@@ -58,9 +43,7 @@ function F.Action(capability, object, method, ...)
     return S.Api:ActionCapability(capability, host, method, ...)
 end
 
--- 以下三个是无状态的通用值工具，被 bridge 内
--- 十余处 Feature 与拆分出的 Feature 同时使用（Trim 17 处 / Text 15 处 / Number 13 处）。
--- 放进工厂是为了避免“拆一个 Feature 就复制一份字符串兜底逻辑”，它们不携带任何业务判断。
+-- 无状态的通用值工具，不携带业务规则，供各 Feature 共享。
 function F.Text(value, fallback) return value == nil and (fallback or "") or tostring(value) end
 
 function F.Number(value) local n = tonumber(value); return n and n == n and n or nil end
@@ -69,10 +52,7 @@ function F.Trim(value)
     return (tostring(value or ""):match("^%s*(.-)%s*$")) or ""
 end
 
--- Scalar 是“从常见键名里取出第一个标量值”的
--- 无状态归一工具，被 bridge 内 bag 帮助函数与拆分出的 tools_craft 同时使用（当前搬迁时依赖
--- 分析脚本第一版漏掉了 `local function` 定义，导致 tools_craft 运行期才暴露）。与 Text/Number/Trim
--- 同族，放工厂避免复制；它不做任何业务判断。
+-- 从常见键名取首个标量，供 bag/craft 等共享；不包含业务判断。
 function F.Scalar(value)
     if type(value) ~= "table" then return value end
     for _, key in ipairs({ "value", "id", "type", "itemType", "itemTypeId", "category", "category_id" }) do
@@ -82,7 +62,7 @@ function F.Scalar(value)
     return nil
 end
 
--- 通用 Store 注册：参数/Schema 与拆分前逐字一致。业务 Feature 只声明 id/owner/get/apply。
+-- 通用 Store 注册，业务方提供 id/owner/get/apply。
 function F.RegisterStore(id, owner, default, get, apply, budget)
     if P:GetStore(id) == nil then
         local store, err = P:RegisterV3Store({ id = id, owner = owner, scope = P.Scope.Account, lifetime = P.Lifetime.Permanent,
@@ -95,20 +75,15 @@ end
 
 function F.Load(feature)
     if feature.storeLoaded then return true end
-    -- 2026-10-07：设置页可先 PrepareRead/MutateStore，再由用户启动 Feature。
-    -- 此时 Domain 已加载，但 feature.storeLoaded 仍为 false；重复 LoadStore 会撞上
-    -- dirty/unverified reload fence。复用 Persistence 的只读就绪入口，保留最新内存值
-    -- 和待验证写入；冷存档仍正常加载，损坏/未来版本仍拒绝，不放宽 Core 保护门。
+    -- 设置页可能先读/改 Store 再启用 Feature，此时 storeLoaded 仍为 false。先查 Persistence 只读就绪状态，避免重复加载撞 dirty/unverified fence。
+    -- 保留最新内存和待验证写入，冷档正常加载，损坏/未来版本仍拒绝。
     local status, err = P:PrepareRead(feature.storeId)
     if status ~= true then return false, err or "store read preparation failed" end
     feature.storeLoaded = true
     return true
 end
 
--- 通用持久化事务包装：只负责把 mutator 放进 Persistence 的 MutateStore 事务，
--- 不决定字段白名单、不改变 Store 归属、不绕过 write fence。delayMs/reason 与拆分前逐字一致。
--- 它是“Feature State 快照事务”的唯一写法入口，被拆出的 Feature 必须复用这一份，
--- 不允许各自写一个 SaveData 旁路。
+-- 将 mutator 放入 Persistence 事务，不决定字段/归属或绕过写保护；Feature 不能另建 SaveData 旁路。
 function F.PersistStateMutation(feature, reason, mutator)
     if type(feature) ~= "table" or type(feature.State) ~= "table" or type(mutator) ~= "function" then return false, "持久化事务参数无效" end
     if type(P.MutateStore) ~= "function" then return false, "Persistence mutation transaction unavailable" end
@@ -117,10 +92,7 @@ function F.PersistStateMutation(feature, reason, mutator)
     end, { delayMs = 300, reason = tostring(reason or "feature_mutation") })
 end
 
--- Lua table literal 无法真正声明 `key = nil`，所以仅 pairs(default)
--- 不能作为永久字段完整白名单。制作选择、团队角色、整理背包类别等 nullable 配置
--- 必须通过 explicitKeys 声明；这里仍只复制白名单，Runtime projection/batch/query
--- 状态不会被误写入永久 Store。Authority 仍是 Feature State，Persistence 仅负责快照。
+-- table literal 的 key=nil 不会进入 pairs(default)，nullable 持久字段须列 explicitKeys；只复制白名单，不能把临时 query/batch 状态存入 Store。
 function F.PersistentState(state, defaults, explicitKeys)
     local out, keys = {}, {}
     for key in pairs(type(defaults) == "table" and defaults or {}) do keys[key] = true end

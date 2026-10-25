@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能健康提供器
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 功能健康/诊断投影登记表由 Feature 注册 provider，Core 只按用途名读取，不硬编码业务 Feature ID 或访问实现
--- 表。Get 每次实时调用 provider，不缓存结果，不建立第二事实或诊断权威；provider 在 features/** 注册，同 key
--- 后者覆盖，Generation 变化自然重建。异常隔离为 nil 并计 errors，单模块投影失败不能使整份 Snapshot 崩溃。这
--- 里只取值，健康判定仍归 Feature health，不扩张成 DSL。
-------------------------------------------------------------------------
+-- Feature 按用途名注册 provider，Core 每次实时读取；同 key 后注册者覆盖，重载后重建。
+-- provider 异常时返回 nil 并计 errors，不能拖垮整份快照；健康判定仍由 Feature 负责。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 

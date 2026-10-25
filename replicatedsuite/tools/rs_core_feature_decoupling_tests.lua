@@ -1,23 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 基础层与功能解耦测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- Phase 3 Batch A 契约测试（2026-09-29，core-feature-decoupling-1）
--- 目的：证明「把 RaidReadiness 的契约门禁从 Foundation 搬到 Feature 的 acceptance 文件」是**无损搬迁**，
--- 而且是**严格加强**。对照关系：
--- core/rs_foundation_gate.lua（已删除）
--- raid_readiness_v3_contract 是阻断项。
--- raid_readiness_runtime_scope 是警告项。
--- 契约实现位于 features/combat/raid_readiness/rs_raid_readiness_acceptance.lua。
--- v3_m16_14_raid_readiness_contract（sequence case；失败 → sequence_harness blocker）
--- 本文件用**最小离线替身**直接驱动 acceptance 注册的那个 case，逐个触发搬迁过程中补齐的三个强度点：
--- 1. 实现未注册（F = nil）—— 旧 acceptance 会静默 return，等于“没有检查”；现在必须失败。
--- 2. dormant roster lease    —— Foundation 原判定要求，旧 acceptance 只查了 auraHeld。
--- 3. scan 缺 roster / aura 缺 scan —— Foundation 原判定的依赖顺序，旧 acceptance 完全没有。
--- 另外做一条静态断言：core/*.lua 不得再出现点名 RaidReadiness 的硬编码访问。
--- 这是纯离线契约测试：不读写用户 UDF，不声明任何 RU 实机行为。
-------------------------------------------------------------------------
+-- 验收搬到各功能后，仍要拒绝缺失实现、休眠租约和订阅顺序错误。
+-- 同时检查 Core 没有重新按功能名读取实现表。
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = pcall(fn)
@@ -64,7 +49,7 @@ local function Boot(overrides)
     }
     if overrides.noFeature == true then feature = nil end
     for key, value in pairs(overrides.feature or {}) do feature[key] = value end
-    -- 注意：Lua 里 `{ RunScan = nil }` 是**空表**，根本不会删键 —— 删字段必须走这两个显式开关。
+    -- 注意：Lua 里 `{ RunScan = nil }` 是空表，根本不会删键 —— 删字段必须走这两个显式开关。
     if overrides.dropFeatureFn ~= nil then feature[overrides.dropFeatureFn] = nil end
     if overrides.dropCommand ~= nil then feature.Commands[overrides.dropCommand] = nil end
     if overrides.dropAuthorityFn ~= nil then feature.Authority[overrides.dropAuthorityFn] = nil end
@@ -141,14 +126,7 @@ Test('静态：core/*.lua 不得再点名 RaidReadiness 的硬编码访问', fun
         'Foundation must not hard-code the raid readiness feature id either')
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch B：DeathReview（core/rs_foundation_gate.lua 的
--- death_review_v3_contract + death_review_runtime_scope 已删除）
---
--- 该 Feature 的 acceptance 本来就比 Foundation 更严（多查 store.lifetime、migrate 的**实际归一化结果**、
--- Framework2/schema2 零值省略的真实恢复执行 probe、record/index 预算探针），所以本批的搬迁补齐点主要是
--- “实现缺失不再静默 return”。这里用最小替身证明 case 真的在跑，并覆盖 Foundation 原有的一处判定。
-------------------------------------------------------------------------
+-- 死亡复盘的验收必须能发现缺失实现，并保留存档恢复、归一化和预算检查。
 local DEATH_CASE = 'v3_m15_2h_death_review_contract'
 
 local function BootDeath(overrides)
@@ -193,14 +171,8 @@ Test('DeathReview：静态 —— core/*.lua 不得再点名该 Feature', functi
     assert(text:find('combat_death_review', 1, true) == nil, 'Foundation must not hard-code the death review feature id')
 end)
 
-------------------------------------------------------------------------
--- 覆盖 life_bonds 的基础层解耦。
--- （core/rs_foundation_gate.lua 里 5 条点名 life_bonds 实现的契约版本条件已删除）
---
--- 该 Feature 的 acceptance 不仅覆盖原判定，而且**更严**：DropdownPresentationContractVersion
--- Foundation 只要 >=1，acceptance 要求 >=2。下面专门用“=1”做区分度证据：旧判定放行、新 Authority 拒绝。
--- 搬迁补齐点同样是“实现缺失不再静默 return”。
-------------------------------------------------------------------------
+-- 债券验收要求 DropdownPresentationContractVersion 至少为 2；
+-- 用版本 1 验证它确实比旧检查严格，缺失实现也不能跳过。
 local BONDS_CASE = 'v3_m1_bonds'
 
 local function BootBonds(overrides)
@@ -211,8 +183,7 @@ local function BootBonds(overrides)
     S.FeatureRegistry = { Get = function(_, id)
         if id ~= 'life_bonds' then return nil end
         return { authority = 'v3.life.bonds' } end }
-    -- 本批只覆盖到「静态契约块」为止：acceptance 在 IsEnabled ~= true 时会提前返回 true，
-    -- 其后的 consumer/projection 运行时检查不属于本批搬迁范围，也不在离线宿主里模拟。
+    -- IsEnabled=false 让验收停在静态契约检查；宿主不模拟后面的 consumer/projection。
     S.FeatureRuntime = { IsImplemented = function(_, id) return id == 'life_bonds' end,
         IsEnabled = function() return false end }
     S.Persistence = { GetStore = function() return { owner = 'v3.life.bonds', rebuildCanonicalForIntegrity = function() end } end }
@@ -269,21 +240,13 @@ Test('life_bonds：静态 —— core/*.lua 不得再点名该 Feature', functio
     assert(text:find('S.Features and S.Features.Bonds', 1, true) == nil, 'Foundation must not hard-code life_bonds')
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch D：life_tasks / life_activities / combat_gear 的悬浮窗命令面
--- （core/rs_foundation_gate.lua 的 v3_presentation_feature_api_contract 整块已删除）
---
--- 原先 Foundation 点名三个业务 Feature 的实现表，各查一条 Commands 命令是否存在。
--- 三处判定现在分别由各自 acceptance 覆盖（tasks: presentation_command_contract；
--- activities: 同类命令面检查；gear: quick_button_snap_settings_contract）。
--- 搬迁补齐点一致：实现缺失时旧 acceptance 静默 return = 没有检查。
-------------------------------------------------------------------------
+-- 任务、活动和换装各自检查悬浮窗命令；缺失实现也要报错，不能直接跳过。
 local function BootForMissingFeature(featureKey, acceptancePath)
     local cases = {}
     local S = { Features = {}, FoundationGate = {},
         SafeTraceback = debug and debug.traceback or function(m) return m end }
     function S.FoundationGate:RegisterSequenceCase(id, fn) cases[tostring(id)] = fn; return true end
-    S.Features[featureKey] = nil -- 故意让实现缺失：这是本批要证明的场景
+    S.Features[featureKey] = nil -- 模拟实现未注册。
     ReplicatedSuite = S
     dofile(acceptancePath)
     return cases
@@ -307,26 +270,17 @@ end
 Test('BatchD 静态：core/*.lua 不得再点名这三个 Feature', function()
     local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
     local text = f:read('*a'); f:close()
-    -- 注意：搬迁说明注释里会写出被删掉的 check id，所以这里必须匹配**真正的 AddCheck 调用**，
+    -- 注意：搬迁说明注释里会写出被删掉的 check id，所以这里必须匹配真正的 AddCheck 调用，
     -- 而不是名字出现（否则注释会把自己的说明文字判成违规）。
     assert(text:find('AddCheck(report, "v3_presentation_feature_api_contract"', 1, true) == nil,
         'the removed presentation API contract must not come back')
-    -- 只断言**本批删掉的**内容：那两个 Command 名在 Foundation 里已无任何合法用处。
-    -- Tasks / Activities 的实现表访问在 Batch E 范围里仍合法存在，这里不越界断言。
+    -- 只检查这两个已移走的命令；Tasks/Activities 的实现访问仍有合法用途。
     for _, pattern in ipairs({ 'SetWidgetWindowState', 'ResetQuickSnapSettings' }) do
         assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
     end
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch E：观察契约（combat_target_monitor / combat_buff_cap / Treasure / Fishing）
--- （core/rs_foundation_gate.lua 的 v3_dynamic_observation_contract 整块已删除）
---
--- 这四个 Feature 原先**没有 acceptance**，所以本批是"先建 Authority 再删旧分支"：
--- 为每个新建 rs_*_acceptance.lua 承载观察契约，并让它成为原判定的严格超集。
--- 两个"更严"点：旧判定允许空 topic（消费方无法订阅），也不要求 Demand 存在
--- （没有 Demand 就没有订阅生命周期，topic 形同虚设）。
-------------------------------------------------------------------------
+-- 观察功能必须提供非空事件名和 Demand，否则页面无法订阅或释放观察。
 local ObservationFeatures = {
     { key = 'combat_target_monitor', case = 'v3_combat_target_monitor_observation_contract',
         path = 'features/combat/target_monitor/rs_target_monitor_acceptance.lua' },
@@ -385,20 +339,17 @@ Test('BatchE 静态：core/*.lua 不得再点名这四份观察契约', function
     local text = f:read('*a'); f:close()
     assert(text:find('AddCheck(report, "v3_dynamic_observation_contract"', 1, true) == nil,
         'the removed observation contract must not come back')
-    -- 只断言本批删除的三个（Fishing 的实现表访问在 Batch F 的 truth 契约里仍合法存在）。
+    -- Fishing 的 truth 检查仍使用实现表，因此只排除下面三项。
     for _, pattern in ipairs({ 'S.Features and S.Features.combat_target_monitor',
         'S.Features and S.Features.combat_buff_cap', 'S.Features and S.Features.Treasure' }) do
         assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
     end
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch F：life_fishing 的 Auto-R 事务契约；强化分析已按 2026-10-06 用户要求退役。
+-- life_fishing 的 Auto-R 事务契约；强化分析已按 2026-10-06 用户要求退役。
 -- （core/rs_foundation_gate.lua 的 v3_feature_truth_contract 里那两段点名断言已删除；
 --  该 AddCheck 的 Registry 真值表循环保持原样）
---
 -- Fishing 契约追加在自己的 acceptance 内，Core 仍只消费通用 Registry 真值表。
-------------------------------------------------------------------------
 local FISHING_PATH = 'features/life/fishing/rs_fishing_acceptance.lua'
 local FISHING_AUTO_R = 'v3_life_fishing_auto_r_transaction_contract'
 
@@ -409,7 +360,7 @@ local function BootTruth(key, path, feature, services)
     function S.FoundationGate:RegisterSequenceCase(id, fn) cases[tostring(id)] = fn; return true end
     if feature ~= nil then S.Features[key] = feature end
     ReplicatedSuite = S
-    -- 维护（2026-09-30，live-contract-state-1）：Boss 门禁现在同时验证 provider 接线。
+    -- Boss 门禁现在同时验证 provider 接线。
     -- 此处仍是能力回退单测；真实冷启动/启停状态由 rs_live_contract_state_tests 覆盖，
     -- 不再把手填 _bossDiag 的理想替身当作完整生命周期验收。
     if key == 'combat_boss_alerts' then
@@ -473,7 +424,7 @@ end)
 Test('BatchF 静态：core/*.lua 不得再点名这两处真值契约', function()
     local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
     local text = f:read('*a'); f:close()
-    -- 注意：v3_feature_truth_contract 这个 AddCheck **仍然保留**（它同时承载 Registry 真值表），
+    -- 注意：v3_feature_truth_contract 这个 AddCheck 仍然保留（它同时承载 Registry 真值表），
     -- 所以只能断言“被删掉的那两条失败原因串 / 那个被读走的标志”不再出现。
     assert(text:find('life_fishing:auto_r_transaction', 1, true) == nil,
         'the removed fishing auto-R truth check must not come back')
@@ -485,12 +436,10 @@ Test('BatchF 静态：core/*.lua 不得再点名这两处真值契约', function
         'Foundation must not read the fishing hotkey service any more')
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch G：Core 诊断不再按 id 读业务 Feature
+-- Core 诊断不再按 id 读业务 Feature
 --   新增 core/rs_feature_health_providers.lua（Feature 自注册的“投影取值表”），
 --   core/rs_diagnostics.lua 的 6 处按 id 访问全部改为按用途名取值。
 --   这也是 §25.2 descriptor 里 RuntimeHealthProvider 字段的第一个实际用例。
-------------------------------------------------------------------------
 local FHP_PATH = 'core/rs_feature_health_providers.lua'
 
 local function BootFHP()
@@ -575,13 +524,7 @@ Test('BatchG 静态：取值表已登记进 toc.g 且排在诊断之前', functi
     assert(diagnostics ~= nil and registry < diagnostics, 'the registry must load before diagnostics')
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch H：v3_combat_life_usability_contract 里的四个业务 Feature 判定
---   boss_alerts / unit_lines / range_assist 三个**新建** acceptance；
---   buff_display 是给已存在的 acceptance **追加**一个 observation 契约 case。
---   同一条 AddCheck 里的 Service / UIV3 契约（screenProjection / alerts / visualGuides /
---   lifeWidgets / trade-bonds widget）保持原样不动 —— 它们不是 Feature 债。
-------------------------------------------------------------------------
+-- 各功能自行检查可用性；共享投影、提醒和界面组件仍由 Foundation 检查。
 local ContractCases = {
     { key = 'combat_boss_alerts', path = 'features/combat/boss_alerts/rs_boss_alerts_acceptance.lua',
         case = 'v3_combat_boss_alerts_hud_contract',
@@ -659,7 +602,7 @@ end)
 Test('BatchH 静态：core/*.lua 不得再点名这四个 Feature，且 buff_observation 判定已撤', function()
     local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
     local text = f:read('*a'); f:close()
-    -- 断言用**带点号/带引号的精确形态**，理由是：
+    -- 断言用带点号/带引号的精确形态，理由是：
     --   * 带点号 -> 只匹配“读该 Feature 实现表的字段”，不会误伤 screenProjection 侧的同名字段
     --     （例如 UnitProjectionConsistencyContractVersion 是 Service 的、不是 unit_lines 的）；
     --   * 带引号 -> 不会把搬迁说明注释里的裸词判成违规。
@@ -682,13 +625,7 @@ Test('BatchH 静态：core/*.lua 不得再点名这四个 Feature，且 buff_obs
     end
 end)
 
-------------------------------------------------------------------------
--- 覆盖 tools_auction、tools_market_analysis 和 tools_craft 的基础层解耦。
---   三个 Feature 原先都没有 acceptance；它们的契约散在 Foundation 的三个 AddCheck 里
--- 拍卖契约包括 v3_auction_query_contract、v3_auction_sidecar_contract、v3_auction_workspace_contract，
--- 制作契约包括 v3_craft_user_selection_contract 和 v3_craft_sidecar_contract。
---   **同一条 AddCheck 里的 Service / UIV3 契约留在 Foundation** —— 它们不是 Feature 债。
-------------------------------------------------------------------------
+-- 拍卖、行情和制作各自提供功能验收；它们共用的服务与界面检查仍留在 Foundation。
 local ToolCases = {
     { key = 'tools_auction', path = 'features/tools/auction/rs_auction_acceptance.lua',
         case = 'v3_tools_auction_contract',
@@ -780,11 +717,9 @@ Test('BatchI 静态：core/*.lua 不得再点名这三个 Feature（同时覆盖
     end
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch J：Gear 的快速启动意图契约
+-- Gear 的快速启动意图契约
 --   （core/rs_foundation_gate.lua 的 v3_quick_surface_reload_reconcile_contract 里的 Feature 部分已删除；
 --     FeatureRuntime 侧的启动意图契约版本留在 Foundation —— 那是 Core 自己的框架，不是 Feature 债）
-------------------------------------------------------------------------
 local GEAR_QUICK_PATH = 'features/combat/gear/rs_gear_acceptance.lua'
 local GEAR_QUICK_CASE = 'v3_m4_gear_quick_startup_intent_contract'
 
@@ -829,18 +764,12 @@ Test('BatchJ 静态：core/*.lua 不得再点名 Gear 的快速启动意图（�
         'OnStartupEnableIntentCommitted', 'ShouldShowQuickButtons' }) do
         assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
     end
-    -- FeatureRuntime 侧的契约必须**保留**（它是 Core 框架，不是 Feature 债）
+    -- FeatureRuntime 侧的契约必须保留（它是 Core 框架，不是 Feature 债）
     assert(text:find('StartupEnableIntentContractVersion', 1, true) ~= nil,
         'the FeatureRuntime startup-intent contract must stay in Foundation')
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch K：combat_team_tools 的角色契约 + 视觉/标记契约
---   （core/rs_foundation_gate.lua 的两条判定 v3_team_role_contract /
---     v3_team_visual_marker_contract 里的 Feature 部分已删除）
---   **同一条判定里的 Service / Data / UIV3 契约留在 Foundation**（TeamRosterV3 的团队边沿 settle、
---     静态职责目录及两个已确认职业组合、TeamSacOverlay 的呈现契约）—— 这不是 Feature 债。
-------------------------------------------------------------------------
+-- 团队工具自行检查职责和标记；团队名单、职责目录及叠加层界面仍由 Foundation 检查。
 local TEAM_PATH = 'features/combat/team_tools/rs_team_tools_acceptance.lua'
 local TEAM_ROLE_CASE = 'v3_combat_team_tools_role_contract'
 local TEAM_VISUAL_CASE = 'v3_combat_team_tools_visual_marker_contract'
@@ -921,12 +850,12 @@ Test('BatchK 静态：core/*.lua 不得再点名 team_tools，但 Service/Data/U
         'SetSacHighlightEnabled', 'SaveRaidMarkers', 'RestoreRaidMarkers', 'ClearSavedRaidMarkers' }) do
         assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
     end
-    -- 边界：这三侧的契约**必须留在 Foundation**（主语是 Service/Data/UIV3，不是 Feature）
+    -- 边界：这三侧的契约必须留在 Foundation（主语是 Service/Data/UIV3，不是 Feature）
     for _, pattern in ipairs({ 'TeamRosterV3', 'TeamEdgeSettleContractVersion', 'TeamAutoRoleCatalog',
         'TeamSacOverlay', 'TeamSacPresentationContractVersion' }) do
         assert(text:find(pattern, 1, true) ~= nil, 'the non-Feature counterpart must stay in Foundation: ' .. pattern)
     end
-    -- 只查“字符串还在”不够 —— 还要确认判定**确实仍由 Service 侧推导**：
+    -- 只查“字符串还在”不够 —— 还要确认判定确实仍由 Service 侧推导：
     -- 否则把整行改成 `local teamRoleOk = true`（搬太多）也能骗过上面那条。
     assert(text:find('local teamRoleOk = type(teamRoster) == "table"', 1, true) ~= nil,
         'teamRoleOk must still be derived from the TeamRoster service contract')
@@ -934,13 +863,8 @@ Test('BatchK 静态：core/*.lua 不得再点名 team_tools，但 Service/Data/U
         'teamVisualOk must still be derived from the TeamSacOverlay UI contract')
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch L：Activities / Tasks 的 Persistence 契约组
---   （Foundation 里 v3_activity_persistence_recovery_contract 的 Feature 部分、
---     v3_feature_persistence_mutation_contract、v3_task_persistence_stable_codec_contract 已处置）
---   **Store 侧的 activityStore 契约留在 Foundation** —— 那是 Core 的 Persistence 边界。
---   活动侧还有一个「下限取齐」动作：KnownLegacyCanonicalRecoveryContractVersion 从 1 提到 3。
-------------------------------------------------------------------------
+-- 活动和任务自行检查业务存档恢复，Core 继续检查 Store 的公共能力。
+-- 活动的历史恢复要求至少为 KnownLegacyCanonicalRecoveryContractVersion 3。
 local ACTIVITY_PATH = 'features/life/activities/rs_activity_acceptance.lua'
 local TASK_PATH = 'features/life/tasks/rs_task_acceptance.lua'
 local TASK_PERSIST_CASE = 'v3_life_tasks_persistence_contract'
@@ -984,12 +908,10 @@ local function BootActivity(overrides)
 end
 
 Test('BatchL 活动：KnownLegacyCanonicalRecoveryContractVersion 下限已取齐到 3', function()
-    -- 本批把该契约的下限从 1 提到 3（与原判定取齐）。2 必须被拒绝 —— 这是“取齐”的证据点。
+    -- 版本 2 必须被拒绝，避免迁移时放宽原有的版本 3 要求。
     local okBad, reasonBad = BootActivity({ KnownLegacyCanonicalRecoveryContractVersion = 2 })()
     assert(okBad == false and tostring(reasonBad) == 'store_contract', 'reason=' .. tostring(reasonBad))
-    -- 3 不得因为这个契约被拒。注：本宿主没有模拟 case 后段的 Service/UIV3 依赖，
-    -- 所以这里只断言“失败原因不是 store_contract”，而不是断言整个 case 通过 ——
-    -- 其余依赖链属于运行期，不在本批搬迁范围内。
+    -- 宿主未模拟后续 Service/UIV3；只检查版本 3 不会因 store_contract 失败。
     local _, reasonGood = BootActivity({})()
     assert(tostring(reasonGood) ~= 'store_contract',
         'contract version 3 must not be rejected by the store contract, got ' .. tostring(reasonGood))
@@ -1054,14 +976,7 @@ Test('BatchL 静态：core/*.lua 不得再点名 Activities/Tasks，但 Store �
     end
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch M：BuffDisplay 的 HUD 校准/健康聚合段
---   （core/rs_foundation_gate.lua 的 buff_display_v3_statusmap_contract 里的 Feature 条件已删除，
---     buff_display_v3_runtime_scope 改为读取 Feature 自注册的 health 投影）
---   **Store 侧（两个 Store）、UIV3 侧（HeadMarkers / HudCalibration）、FeatureRegistry 元数据、
---     页面与悬浮窗注册全部保留在 Foundation**
---   搬迁前先做了契约覆盖差集扫描：发现 2 个字段只在 Foundation 存在（已补进 acceptance）。
-------------------------------------------------------------------------
+-- BuffDisplay 自行检查 HUD 校准和健康状态；Store、界面注册和元数据仍由 Foundation 检查。
 local BUFF_PATH = 'features/combat/buff_display/rs_buff_display_feature.lua'
 local BUFF_ACC = 'features/combat/buff_display/rs_buff_display_acceptance.lua'
 
@@ -1136,12 +1051,7 @@ Test('BatchM 静态：acceptance 已补齐两条只存在于 Foundation 的契�
         'acceptance must keep the stricter layout-authority floor (>= 3)')
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch N：tools_bag 的动作契约
---   （core/rs_foundation_gate.lua 的 EvaluateBagActionContract 里 36 条 Feature Require 已删除；
---     InventorySnapshotV3 / BagQuickOverlay / BusinessPagesContract 的 Service/UIV3 侧保留在 Foundation）
---   本批用脚本从 Foundation 机械生成 acceptance（25 个契约版本下限 + 10 条命令），避免手抄 36 条出错。
-------------------------------------------------------------------------
+-- 背包动作由功能验收检查，库存快照、快捷叠加层和页面契约仍由 Foundation 检查。
 local BAG_PATH = 'features/tools/bag/rs_bag_acceptance.lua'
 local BAG_CASE = 'v3_tools_bag_action_contract'
 
@@ -1234,17 +1144,8 @@ Test('BatchN 静态：core 不得再点名 tools_bag，但 Service/UIV3 侧必�
         'the inventory-side judgement chain must remain')
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch O：Healer 家族（Healer / HealerAuraBridge / HealerScreenProjection）
---   （Foundation 里 healer_v3_domain_runtime 的 Feature 条件、healer_v3_presentation 的 Feature 条件、
---     healer_v3_visual_consumers 的 Feature 条件已删除；
---     healer_v3_runtime_scope 与 healer_v3_advanced_editor_commands 两条**整条**删除 ——
---     它们纯由 Feature 派生/纯 Feature，acceptance 已覆盖同语义）
---   **保留**：healerStore（Core Store）、healerMeta（Registry 元数据）、
---     healerHead / healerRaid / 页面与悬浮窗（UIV3）
---   运行期生命周期判定仍需读 Feature 的运行期状态 —— 用投影取值表（healer_health /
---     healer_presentation / healer_screen_capable）而不是直接读实现表。
-------------------------------------------------------------------------
+-- 治疗功能自行检查业务状态，Core 通过 healer_health 等投影取值，不直接读实现表。
+-- Store、注册元数据和界面组件仍由 Foundation 检查。
 local HEALER_PATH = 'features/combat/healer/rs_healer_feature.lua'
 local HEALER_SCREEN_PATH = 'features/combat/healer/rs_healer_screen_projection.lua'
 local HEALER_ACC = 'features/combat/healer/rs_healer_aura_acceptance.lua'
@@ -1312,14 +1213,8 @@ Test('BatchO 静态：acceptance 无条件注册 + 补齐 3 项 + schema 取齐�
         'acceptance must keep the stricter store schema (6), not the old 3')
 end)
 
-------------------------------------------------------------------------
--- Phase 3 Batch P：DPS（三个 AddCheck 共约 47 行）
---   （dps_v3_contract 的 Feature 条件已删；dps_skill_proxy_source_contract 与
---     dps_v3_runtime_scope 的运行期读数改从投影取值表读取）
---   **保留**：dpsStore（Core Store）、dpsMeta（Registry）、dpsPage / dpsWidget（UIV3）、
--- 数据目录为 proxyCatalog、fountainProxy；服务为 CombatRelationV3、CombatAnalyticsV3。
---   差集扫描的结论很干净：命令面**无缺口**、Domain 版本下限两边都是 7 —— 可直接搬迁。
-------------------------------------------------------------------------
+-- DPS 自行检查业务契约和技能代理归属；Core 通过投影读取运行状态。
+-- Store、元数据、界面、技能目录和共享服务仍由 Foundation 检查。
 local DPS_PATH = 'features/combat/dps/rs_dps_feature.lua'
 local DPS_ACC = 'features/combat/dps/rs_dps_acceptance.lua'
 
@@ -1374,14 +1269,7 @@ Test('BatchP 静态：acceptance 的 Domain 版本下限与搬迁前一致（7�
 end)
 
 
-------------------------------------------------------------------------
--- Phase 3 Batch Q：Trade 的详情/收藏契约（最后 1 处 CORE_FEATURE）
---   （v3_trade_detail_favorites_contract 里的 23 条 Feature 条件已删除；
--- 报价相关服务包括 TradePayoutV3、MaterialPriceServiceV3、PriceQuoteQueueV3，
---     TradeDetailFloatingV3 / LifeM16PagesContract 的 Service 与 UIV3 侧契约留在 Foundation）
---   本批是本阶段**最后一处**：至此 CORE_FEATURE 债务清零，
---   剩余 audit 项已全部是 PRESENTATION_STATE 与 GIANT_FILE（别的 Phase 的范围）。
-------------------------------------------------------------------------
+-- 跑商自行检查详情和收藏行为；报价服务及界面组件仍由 Foundation 检查。
 local TRADE_PATH = 'features/life/trade/rs_trade_acceptance.lua'
 local TRADE_CASE = 'v3_life_trade_detail_favorites_contract'
 local function TradeFeature()

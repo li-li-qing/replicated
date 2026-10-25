@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 窗口视口测试宿主
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 独立 Native/RSUI 叶节点模型，运行真实 Api/Layout/Windowing/WindowShell/FloatingSurface。
 -- 不补造缺失历史 gear host，不代表 RU API 权限/回调触发已实测；仅测试同步几何、缓存及拒绝语义。
-------------------------------------------------------------------------
 return function(options)
     options = options or {}
     local h = { w=1920, h=1080, scale=1, sw=1920, sh=1080, effective=1, writes=0, samples=0, tasks={}, events={}, resizeConfigCalls=0 }

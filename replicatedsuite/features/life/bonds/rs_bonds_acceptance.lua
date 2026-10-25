@@ -1,23 +1,12 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 债券与居民委托板契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并前必须清除冲突标记，核对源码与加载清单完整性。
--- Authority、调用数据流与存档协议保持下方实现的原有责任，
--- 禁止通过清配置、跳过加载或恢复Legacy绕过故障；源码与toc.g、UI实现必须成套，
--- 合并后先检查Lua语法，再做运行时验收。
--- 该门禁验证债券 / 居民板（life.bonds）在 V3 架构下的生命周期、
--- Authority 契约、Store 注册、命令完整性、悬浮窗/页面规格以及空板/就绪/不可用状态。
-------------------------------------------------------------------------
+-- 验证债券/居民板的生命周期、Store、命令与空板/就绪/不可用投影，不启用功能。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 本文件是 life_bonds 的
--- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的
--- 硬编码独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败
--- （注意：注释里不要写成带点号的“表名+字段”形式，rs_architecture_audit 是行级正则且不跳过注释）。
+-- 即使实现缺失也注册 case 并明确失败。架构审计按行扫描且不跳注释，避免在注释中拼接业务表字段访问。
 local F = S.Features and S.Features.Bonds or nil
 
 local function Fail(message) return false, tostring(message or "bonds_acceptance_failed") end
@@ -30,9 +19,7 @@ G:RegisterSequenceCase("v3_m1_bonds", function(runtimeOnly)
 
     local store = S.Persistence and S.Persistence:GetStore(F.storeId or "v3.life.bonds") or nil
     if store == nil or tostring(store.owner or "") ~= "v3.life.bonds" then return Fail("store_contract") end
-    -- 债券曾在 schema=1 内新增 canonical 字段。
-    -- Historical bridge 属于 Bonds Store 自己的兼容契约；若未来重构漏注册，旧合法存档会再次被 Core 正确地 fence。
-    -- Acceptance 因此只检查 hook 存在，不在此绕过/模拟 Hash；exact old-stamp 认证仍完全由 Persistence Core 执行。
+    -- 只查历史 canonical hook 已注册；schema1 曾新增字段，恢复仍须由 Core 精确验证旧章，验收不能绕过。
     if type(store.rebuildCanonicalForIntegrity) ~= "function" then return Fail("store_historical_canonical_contract") end
 
     if S.UIV3 == nil or S.UIV3.PageHost == nil or S.UIV3.PageHost.factories["life.bonds"] == nil then return Fail("page_contract") end

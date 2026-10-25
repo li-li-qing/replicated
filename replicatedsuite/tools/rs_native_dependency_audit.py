@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-# ---------------------------------------------------------------------
 # Replicated Suite · 原生依赖审查
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 """原生依赖归属审查。
 
 验证实现中的 ApiDependencies 覆盖不能悄然丢失 FeatureRegistry 已声明的命名空间；
@@ -40,13 +38,12 @@ STANDALONE_REQUIRED_NAMESPACES = {
 # 按已证明的 Feature→共享服务原生调用路径判断依赖；同一服务文件
 # 可能为不同方法使用不同原生命名空间，不能把整个文件的命名空间并集
 # 全部提升为某个功能的强制依赖。
-#
 # required：此功能实际消费的确切服务方法路径所使用的命名空间。
 # optional：属于其它服务方法或允许优雅降级的增强路径。
 # lazy：只有用户启用子能力或实际进入详情路径时才需要，
 # 其导入责任必须留在服务或延迟能力边界。
 SERVICE_EDGE_NATIVE_POLICY = {
-    # 中文维护：人员备注显式刷新经 ReadFriendList 调用 X2Friend Getter，Feature 已声明 FRIEND。
+    # 人员备注显式刷新经 ReadFriendList 调用 X2Friend Getter，Feature 已声明 FRIEND。
     # 选家族时才调用 ReadFamilyList，由名单 Service 取得 Native lease；FAMILY 仍不能升为启动依赖。
     ("tools_player_notes", "PlayerNotesSurfaceV3"): {
         "required": {"X2Friend"},
@@ -68,11 +65,8 @@ SERVICE_EDGE_NATIVE_POLICY = {
         "optional": set(),
         "lazy": {"X2Skill"},
     },
-    # Phase 1 Batch D（2026-09-28）：tools_craft 拆出独立文件后，audit 第一次能按 Feature 归因这条边。
-    # craft 从不直接调用 X2Auction：报价请求由用户显式触发并转发给共享 PriceQuoteQueueV3，
-    # 结果也只从该队列的 read model 读取（features/tools/craft/rs_craft_feature.lua 的 CraftQuote/QuoteMaterial）。
-    # 因此 X2Auction 的 lazy ownership 归 PriceQuoteQueueV3 自己，不得升成 tools_craft 的 hard dependency。
-    # 维护备注：队列侧真正的 lazy lease（AcquireApi）与其它 Service 一样，属于 Phase 3 的 descriptor 收口项。
+    # 制作功能把显式询价交给 PriceQuoteQueueV3，不直接调用 X2Auction。
+    # 拍卖 API 的惰性租约归队列持有，不能变成制作功能的硬依赖。
     ("tools_craft", "PriceQuoteQueueV3"): {
         "required": set(),
         "optional": set(),
@@ -398,7 +392,7 @@ def load_implementation_overrides() -> Tuple[Dict[str, List[str]], Dict[str, str
                 result[feature_id] = deps
                 sources[feature_id] = str(path.relative_to(ROOT))
 
-        # 中文维护：Treasure 等后置组件通过已导出的 Feature 表扩展同一依赖列表。
+        # Treasure 等后置组件通过已导出的 Feature 表扩展同一依赖列表。
         # 必须同时有 TOC 顺序、Feature 身份绑定和真实追加语句；任意能力字符串不算声明。
         bare = _mask_strings(text)
         for at, var, deps in _dependency_appends(text, constants):
@@ -520,7 +514,7 @@ def feature_service_refs(feature_sources: Dict[str, str]) -> Dict[str, Set[str]]
         if len(feature_ids) == 1:
             out[feature_ids[0]].update(refs)
             continue
-        # 中文维护注释（2026-09-28，Phase 2 Step 4）：Phase 1/2 之后已经不存在“一个源码单元注册多个
+        # Phase 1/2 之后已经不存在“一个源码单元注册多个
         # Feature”的情况，原先为 life_bonds→QuestProgressV3 写死的 bundle 特例已成为死代码并删除 ——
         # 那个边现在由 1:1 文件归属机械推出，不再需要人工白名单。若将来又出现共享 chunk，
         # 这里保持“不归属、不猜测”的安全语义，并由 --feature-split 的静态断言直接报出。

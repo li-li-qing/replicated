@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖分页测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实 Auction Feature/Store/分页页面/RSUI pooled rows；仅查询快照和 Native 绘制使用宿主事实。
-------------------------------------------------------------------------
 local Boot=dofile('tools/rs_gear_page_test_host.lua')
 local passed,failed=0,0
 local function T(name,fn)

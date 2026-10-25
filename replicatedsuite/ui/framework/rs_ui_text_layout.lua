@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 文字尺寸与换行
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- RSUI 文本尺寸权威，仅文本/布局变化时使用，绝不能逐帧 Tick 调用。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

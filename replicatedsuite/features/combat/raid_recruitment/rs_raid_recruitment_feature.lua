@@ -1,12 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队招募功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
--- Authority 边界：申请列表只读；创建/接受/拒绝仍因 RU 字段形态未验证而显式安全停用，
--- 本文件不得为了“功能完整”猜测 9 字段或 charIds 形态。
-------------------------------------------------------------------------
+-- 申请列表只读；创建/接受/拒绝的 RU 参数形状尚未核实，保持停用，不能猜九字段或 charIds。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory

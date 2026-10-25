@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-# ---------------------------------------------------------------------
 # Replicated Suite · 功能消费者生命周期测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 """功能或预设切换与表现层消费者生命周期的静态回归。
 
 ArcheAge 客户端采用 Lua 5.1，原生运行行为由客户端负责，本测试不模拟游戏 API。
@@ -122,9 +120,6 @@ def main() -> None:
         "BindFeatureConsumerLifecycle",
     )
 
-    # 中文维护注释（2026-09-28，Phase 2 Step 4）：本条按 §30 分类 B（旧硬编码 version）更新。
-    # Authority：BuildTag 已按 Phase 0 闭合（.330）、Phase 1 闭合（.331）、Phase 2 首轮闭合（.332）
-    # 连续合法推进，继续 pin .329 只会持续误报。
     require(
         "replicatedsuite.lua",
         'v3-m1.16.0.18.332-phase2-life-bundle-slice-complete',

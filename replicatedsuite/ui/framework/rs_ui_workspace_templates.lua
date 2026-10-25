@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 工作台组合模板
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 页级组合仅用现有原语，几何仍归 Horizontal/VerticalBox、UniformGrid、SplitView，不新增权威。
--- 消除重复主从/编辑脚手架；密集页共用对齐/断点数学；保留严格 BuildScope/Diff/生命周期/持久边界；事件/布局驱动，无 Tick/OnUpdate/轮询。
-------------------------------------------------------------------------
+-- 页级组合复用现有布局和构建事务，统一主从、编辑工作台的对齐与断点。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -69,9 +65,7 @@ function T.DensityPolicy:Resolve(width, requested)
 end
 
 -- MasterDetail 主从布局。
---
 -- 返回 root：可拖 SplitView；master：筛选/列表/导航 VerticalBox；detail：实体详情/检查器 VerticalBox。
---
 -- 模板不决定数据显示，仅负责重复表现组合与分栏几何。
 function T:MasterDetail(spec)
     local ok, err = RequireSpec(spec, { "id", "parent" })
@@ -120,9 +114,7 @@ function T:MasterDetail(spec)
 end
 
 -- InspectorWorkbench 检查工作台。
---
 -- 桌面布局：导航/树 | 实时预览/主画布 | 检查器。
---
 -- 两层 SplitView 组合，缩放、Native 几何写和分隔交互均留在既有权威内。
 function T:InspectorWorkbench(spec)
     local ok, err = RequireSpec(spec, { "id", "parent" })
@@ -193,7 +185,6 @@ function T:InspectorWorkbench(spec)
 end
 
 -- ResponsiveInspectorWorkspace 响应式编辑工作台。
---
 -- 内容与 Inspector 整个寿命共用稳定 Native 父，宽布局并排，紧凑布局内容全尺寸且同一 Inspector 作右抽屉；断点不 Release/重建/换父，保留焦点、选择、身份。
 function T:ResponsiveInspector(spec)
     local ok, err = RequireSpec(spec, { "id", "parent" })
@@ -269,10 +260,8 @@ function T:ValidateLayoutEditorEditSessionSpec(editSessionSpec)
 end
 
 -- LayoutEditorWorkspace 布局编辑工作台。
---
 -- 稳定宿主组合：ResponsiveInspector 下 content 为工具条 + Overlay 画布（previewHost 调用方内容、LayoutEditorOverlay 选择/引导/手势）；
 -- inspector 为 ScrollBox 下唯一 TransformInspector。
---
 -- 单/多选共用同一 TransformInspector，切换 rect/anchor 绑定；多选折叠锚字段，SnapSettings 仍共用权威。
 function T:LayoutEditor(spec)
     local ok, err = RequireSpec(spec, { "id", "parent" })
@@ -695,9 +684,7 @@ function T:SettingsWorkbench(spec)
 end
 
 -- CommandCenter 命令中心。
---
 -- 结构：固定 header；自动状态条/KPI；填充态势概览 | 异常/优先队列；可选固定/自动证据时间线。
---
 -- 供 Raid Readiness、活动概览、战斗机制监控使用，使异常优先页面视觉一致。
 function T:CommandCenter(spec)
     local ok, err = RequireSpec(spec, { "id", "parent" })

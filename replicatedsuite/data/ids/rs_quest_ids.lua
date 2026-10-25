@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 任务身份注册
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 共享任务 ID 集中在本表。这里只拥有身份；完成和进度策略归 Quest/Event 服务，关系数据仍保存在 rs_quest_data.lua。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 if S.GameDataRegistry == nil then return end
@@ -157,11 +154,8 @@ Q.ResidentBond.MaterialByQuantity = {
     },
 }
 
--- 当前 ArcheRage 数据库明确
--- 10504/10505 是 Prince's Coinpurses，并非旧代码命名的 golden_bag；10512..10515 是
--- Ancestor/Ancestral，而不是 heir。Quest ID 本身没有变化，所以用户完成状态兼容；这里只修正共享
--- 语义 key，让 ResidentBoard 文本解析、背包 ItemType 和 QuestProgress 三条 Authority 能以同一身份汇合。
--- 兼容边界：旧 key 在下方保留 alias，避免其他尚未迁移的模块/外部扩展因命名纠错直接失效。
+-- 10504/10505 为 Prince's Coinpurses，10512..10515 为 Ancestor/Ancestral；旧 golden_bag/heir 命名有误。
+-- Quest ID 不变，旧 key 保留 alias，供居民板、背包和任务进度共用身份。
 Q.ResidentBond.AuroriaByTokenQuantity = {
     prince_purse = {
         [30] = RegisterId("AURORIA_BOND_PRINCE_PURSE_30", 10504, "原大陆债券：王子的钱袋30", { "DAILY", "AURORIA_RESIDENT_BOND" }),
@@ -195,10 +189,8 @@ Q.ResidentBond.AuroriaByTokenQuantity.queen_box = Q.ResidentBond.AuroriaByTokenQ
 Q.ResidentBond.AuroriaByTokenQuantity.heir_bag = Q.ResidentBond.AuroriaByTokenQuantity.ancestor_purse
 Q.ResidentBond.AuroriaByTokenQuantity.heir_box = Q.ResidentBond.AuroriaByTokenQuantity.ancestor_crate
 
--- 上面的 table alias 只能兼容直接消费
--- AuroriaByTokenQuantity 的旧代码；历史扩展也可能通过 GameDataRegistry 的旧 semantic key 查询。
--- 使用显式 RegisterAlias 继续保留 18.300 以前的 12 个 key，不产生 duplicate-ID warning，也不建立
--- 第二 record Authority。新代码使用修正后的 purse/crate/ancestor key，旧 lookup 仍解析到同一 QuestId。
+-- 表别名只兼容直接访问；旧 Registry semantic key 还须显式 RegisterAlias。
+-- 保留 18.300 前的 12 个旧 key，指向同一记录，不重复注册 ID。
 for _, alias in ipairs({
     { "AURORIA_BOND_GOLDEN_BAG_30", 10504 }, { "AURORIA_BOND_GOLDEN_BAG_90", 10505 },
     { "AURORIA_BOND_PRINCE_BOX_10", 10506 }, { "AURORIA_BOND_PRINCE_BOX_30", 10507 },
@@ -364,11 +356,8 @@ Q.Activity.gardenAnthalon = {
     main = RegisterSet("ACTIVITY_GARDEN_ANTHALON", { 10186 }, nil, { "DAILY", "BOSS", "ACTIVITY" }),
     minion = RegisterSet("ACTIVITY_GARDEN_ANTHALON_MINION", { 10187 }, nil, { "DAILY", "RELATED", "BOSS" }),
 }
--- 10056 是神之庭院区域的每日刷分任务，
--- 数据库明确描述为通过击杀/采集/钓鱼等累计积分提升 Reward Level。它与庭院安塔伦 10186/10187
--- 是不同业务事实：前者绑定普通庭院动态战争/刷分活动，后者继续只绑定固定周常庭院安塔伦。
--- 这里单独注册 Activity set，避免 EventData 反向借用 Dashboard namespace；同一 QuestId 可以属于
--- 多个 Registry set，身份 Authority 仍然只有 quest id 10056。
+-- 10056 是庭院每日累计积分任务，与固定周常安塔伦 10186/10187 分开。
+-- 单独注册 Activity set；同一 Quest ID 可属于多个集合。
 Q.Activity.gardenFairyRequest = RegisterSet(
     "ACTIVITY_GARDEN_FAIRY_REQUEST", { 10056 }, "精灵的委托",
     { "DAILY", "ACTIVITY", "GARDEN", "SCORE" },

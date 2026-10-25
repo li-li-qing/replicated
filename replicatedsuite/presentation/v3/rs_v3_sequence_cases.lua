@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 表现层序列验收用例
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅执行同步、有界探测，不注册 Tick/OnUpdate；必须保留当前 V3 Shell 可见性，因为重建模式的 Diagnostics 本身也是 V3 页面。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G, H = S.FoundationGate, S.UIHostManager

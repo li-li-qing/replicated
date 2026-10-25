@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队职责工具契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 两个case分别验证职责/自动职责及名单租约生命周期，与视觉/标记快照、牺牲之舞和自动职责默认启用。
 -- TeamRosterV3团队边沿settle、静态职责目录与两个已确认组合、TeamSacOverlay表现契约仍归Foundation；按契约主语区分Feature与Core/Service责任。
 -- 保留各项契约下限，缺实现不得静默返回；失败为blocker，由sequence_harness报告。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
@@ -16,7 +13,7 @@ local Visual = S.Features and S.Features.combat_sac_highlight or nil -- 拆分�
 
 local function Fail(message) return false, tostring(message or "team_tools_acceptance_failed") end
 
--- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 运行时只做只读诊断；完整序列测试仅离线执行。
 G:RegisterSequenceCase("v3_combat_team_tools_role_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     -- v3 才包含独立 Event owner/roster lease 与关→开重建观察，

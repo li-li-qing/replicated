@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 伤害与治疗统计设置存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 账号永久存储仅保存 DPS 设置、手工首领名、FloatingSurface 窗口状态和用户 HUD 可见偏好；战斗统计按原有行为仅驻会话内存。
 -- 持久化必须走 S.Persistence，Feature/Domain 禁止直接调用 LoadData/SaveData/ClearData。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence
@@ -21,10 +18,7 @@ local SCHEMA = 5
 local MAX_BOSS_NAMES = 64
 local MAX_DISPLAY_ROWS = 150
 
--- DPS Window policy 必须只有一个 Authority。过去 Feature 使用
--- 470x330/min1，而 Floating Widget 使用 560x410/min430x250，Reload 后同一存档
--- 会被两个 canonicalizer 反复解释，表现为尺寸/位置恢复后再次跳回。Store 暴露
--- 只读 policy 给 Feature/Presentation 共用；这里不持久化 policy 本身。
+-- Feature/Widget 共用同一只读 Window policy，避免重载时用不同默认尺寸和最小尺寸反复归一化；policy 本身不入存档。
 F.WidgetWindowPolicy = {
     defaultWidth = 560, defaultHeight = 410, minWidth = 430, minHeight = 250,
     defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
@@ -211,9 +205,7 @@ function F:EnsureStoreLoaded()
 end
 
 function F:MarkStoreDirty(delayMs, reason)
-    -- 拖动后立即重载不能只留下 dirty；失败交给 Floating 事务回滚。
-    -- 维护：统计窗小锁与位置同属此 Store 的低频提交；锁定/解锁不再等待 debounce 或退出 Flush。
-    -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+    -- 窗口位置、锁定和外观最终提交立即保存/回读，失败由 Floating 事务回滚；连续预览不走此入口。
     if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" or reason == "widget_locked" or reason == "widget_lock"
         or reason == "widget_overall_opacity" or reason == "widget_background_opacity" or reason == "widget_text_opacity" or reason == "widget_font_scale" then
         return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason })

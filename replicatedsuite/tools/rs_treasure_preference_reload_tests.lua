@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 寻宝总开关耐久恢复与取证
 -- 真实 Persistence / FeatureRuntime / Treasure，只有 Native 存储为内存盘。
 -- 不能据此认定已复现用户 RU 重载问题。
-------------------------------------------------------------------------
 local Host=dofile('tools/rs_udf_numeric_test_host.lua')
 local passed,failed=0,0
 local function Test(name,fn)

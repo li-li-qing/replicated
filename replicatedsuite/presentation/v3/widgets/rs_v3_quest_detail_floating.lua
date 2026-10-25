@@ -1,13 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 任务与活动独立详情窗口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- Activity/Task 行激活使用的详情窗口；几何通过仅表现 AuxWindow Store 耐久保存，业务事实归 QuestProgressV3。
 -- 生命周期（2026-09-21）：映射任务详情打开期间独立持有 QuestProgressV3 Consumer，主页面/组件关闭不能冻结它；
 -- 仅监听成功刷新 epoch 更新实时 Journal Objective 文本，不添加 Tick/OnUpdate 或边界外 Native 读取；关闭释放 Consumer 和内部订阅。
 -- 无已验证 questKey 的行仍可打开统一活动详情，但不唤醒 QuestProgress/InstanceCatalog。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -16,12 +13,8 @@ local AuxStore = S.UIV3 and S.UIV3.AuxWindowStoreV3 or nil
 if type(RSUI) ~= "table" or type(Floating) ~= "table" or type(AuxStore) ~= "table" then return end
 
 S.UIV3 = S.UIV3 or {}
--- 约束（2026-09-21，activity-detail-generation-1）：文件重载会保留 ReplicatedSuite
--- Lua 全局，但 Bootstrap 会退役上一 Generation 的 Native Window/RSUI 子树。旧实现无 Generation
--- 边界，created=true 会让 EnsureCreated 继续复用已经退役的 surface，活动点击因此只得到一个被
--- TableView 吞掉的 false，用户看到的就是“点击没反应”。详情业务状态不跨加载代继承；窗口几何仍
--- 由 AuxWindowStore 永久保存。Authority：Generation 只决定 Presentation 实例寿命，QuestProgress
--- 继续独占任务事实。兼容：同 Generation 的重复执行仍复用实例，避免重复 Native ID。
+-- Bootstrap 会退役上一 Generation 的 Native 树；created=true 不能让新一代复用旧 surface，
+-- 否则点击只返回 false，表现为无反应。业务详情不跨代，几何仍从 AuxWindowStore 恢复；同代复用避免重复 ID。
 local generation = tonumber(S.Generation) or 0
 local previous = S.UIV3.QuestDetailFloatingV3
 S.UIV3.QuestDetailFloatingV3 = type(previous) == "table"
@@ -35,16 +28,14 @@ S.UIV3.QuestDetailFloatingV3 = type(previous) == "table"
 local M = S.UIV3.QuestDetailFloatingV3
 M.generation = generation
 M.ConsumerLifecycleContractVersion = 2
-M.ProgressSelectionInteractionContractVersion = 2 -- 2026-09-22 验证：选择事件传输与可见文字状态必须同时保留，避免 .281 激活回归。
+M.ProgressSelectionInteractionContractVersion = 2 -- 选择事件与可见状态须同时保留，避免只高亮而未更新追踪。
 M.consumerToken = tostring(M.consumerToken or "presentation:v3.quest_detail")
 M.consumerHeld = M.consumerHeld == true
 M.subscribed = M.subscribed == true
 M.current = nil
 M.layoutDurable = M.layoutDurable == true
 M.layoutLoadError = nil
--- 约束（2026-09-21，activity-progress-selection-1）：活动“追踪”现改为个人进度选择。
--- Presentation 不再维护“全部/仅追踪”筛选或收藏状态；勾选的 main objective 直接决定 Activities
--- Feature 投影的 x/y。未配置时默认全部主任务计入，related/journal 永远不是独立可选项。
+-- 勾选主目标直接决定个人进度 x/y，未配置时全部计入；related/journal 不可独立选择。
 M.selectedRowKey = nil
 M.selectionChangeInFlight = false
 M.progressToggleAttempts = tonumber(M.progressToggleAttempts) or 0
@@ -70,9 +61,8 @@ local function NotifyUnavailable(detail)
     return false
 end
 
--- 约束（2026-09-21，Presentation 边界）：Activity Authority 的 row 会在下一次投影时整体替换；
--- 详情窗不能长期持有该业务表引用，也不能反向修改它。这里只复制标题/状态等 primitive 显示事实，
--- 任务完成度仍每次从 QuestProgressV3 读取。兼容无 questKey 的活动也依赖这份 detached snapshot。
+-- Activity 每次投影会替换 row，窗口只复制标题、状态等基础值，不能长期持有原表；
+-- 任务完成度每次从 QuestProgressV3 读取，无 questKey 的活动仍可用此快照显示。
 local function SnapshotSourceRow(row)
     if type(row) ~= "table" then return nil end
     return {
@@ -147,10 +137,7 @@ local function CopyRow(row)
     return out
 end
 
--- 约束（2026-09-21，activity-progress-selection-1）：详情行的 selected/selectable 已由
--- Activities Feature 基于 Store + QuestProgress 事实统一投影。Presentation 只把它画成“追踪”勾选列；
--- 不自行计算 x/y，也不允许 related/journal 行混入分母。整行点击即切换该 main objective，避免上一版
--- “先选行再点加入追踪”的双操作和“仅追踪”筛选把未勾任务藏起来。
+-- selected/selectable 由 Feature 投影；点击 main row 切换追踪，不自行计算分母或把 related/journal 算入。
 function M:ProjectDetailRows(detail)
     local rows, byKey = {}, {}
     local eligibleCount = math.max(0, math.floor(tonumber(detail and detail.progressSelectionEligible) or 0))
@@ -160,9 +147,7 @@ function M:ProjectDetailRows(detail)
         row.trackable = row.progressSelectable == true
         row.tracked = row.progressSelected == true
         if row.trackable then
-            -- 约束（2026-09-22，activity-detail-ui-2）：RU 字体并不保证 ✓/□ glyph 可见；
-            -- 业务状态已经正确切换时，空白 glyph 会让用户误判为“没有勾选”。追踪状态因此使用
-            -- 明确中文文本作为主语义，颜色只作辅助。Authority 仍是 Activity Store，不由 Presentation 猜测。
+            -- RU 字体未必支持勾选字形，用中文表示追踪状态、颜色辅助，避免状态已变却看似空白。
             row.trackingText = row.tracked and "已选" or "未选"
         elseif row.journal == true then
             row.trackingText = ""
@@ -185,7 +170,7 @@ end
 function M:UpdateTrackingControls(selectedCount, eligibleCount, detail)
     selectedCount = tonumber(selectedCount) or 0
     eligibleCount = tonumber(eligibleCount) or 0
-    -- 约束（2026-09-22，activity-detail-ui-2）：个人分母属于 Activities(event) 偏好；
+    -- 个人分母属于 Activities(event) 偏好；
     -- Daily/Weekly 可能复用同一 QuestGroup，但绝不能露出可写的活动追踪控件。
     local enabled = type(detail) == "table" and tostring(detail.scope or "") == "event" and detail.progressSelectionEnabled == true
     if self.trackingChip ~= nil then
@@ -205,7 +190,7 @@ function M:ToggleProgressSelection(row)
     if type(session) ~= "table" or session.scope ~= "event" or session.mapped ~= true then return true end
     if type(row) ~= "table" or row.progressSelectable ~= true or tostring(row.trackingKey or "") == "" then return true end
 
-    -- 约束（2026-09-22，activity-detail-toggle-observability-2）：这里只记录有界 primitive
+    -- 这里只记录有界 primitive
     -- 交互证据，帮助区分“Native 行点击未到达 / Store 写入失败 / Presentation 重绘失败”。不持久化、
     -- 不拥有选择业务状态、不进入 Tick。
     self.progressToggleAttempts = (tonumber(self.progressToggleAttempts) or 0) + 1
@@ -255,10 +240,8 @@ function M:ToggleProgressSelection(row)
     return true
 end
 
--- 约束（2026-09-22，activity-detail-selection-transport-2）：RU 实机稳定链路是
--- Native Row -> SelectionModel -> onSelectionChanged。`.281` 在推广多活动选择时把已修好的 Selection
--- transport 覆盖回 onItemActivated，导致“点一下只有蓝色行高亮、追踪不变”。这里恢复 SelectionChanged
--- 为唯一 checkbox-like transport，并立即清空临时 Selection；长期状态只来自 Activity Store。
+-- RU 可靠链路为 Native Row → SelectionModel → onSelectionChanged。曾退回 onItemActivated，
+-- 造成只有蓝色高亮而追踪不变；此处用 SelectionChanged 后立即清临时选择，长期状态仍取 Store。
 function M:HandleProgressSelectionChanged(index, view, reason, key, selected)
     if self.selectionChangeInFlight == true then return true end
     if selected ~= true or key == nil then
@@ -314,10 +297,7 @@ function M:EnsureCreated()
         setState = function(value, reason) return AuxStore:SetWindowState("quest_detail", value, reason) end
         persistState = function(reason, delayMs) return AuxStore:PersistWindow("quest_detail", reason, delayMs) end
     else
-        -- 约束（2026-09-21，aux-layout-degrade-1）：quest_detail 是纯 Presentation 几何。
-        -- 即使其 Store 因完整性保护/旧坏数据暂时不可读，也不能让“查看任务详情”这个业务入口一起失效。
-        -- 降级只在内存保存几何，绝不写回被保护 Store；下一次完整重载仍优先尝试 Durable Store。
-        -- 任务事实/Consumer 不受影响，也不会绕过任何业务 Persistence fence。
+        -- 位置 Store 不可读时只在内存保存几何，不能阻断任务详情，也不能写回受保护存档；重载后再尝试加载。
         self.layoutDurable = false
         self.layoutLoadError = tostring(loadErr or "辅助窗口布局读取失败")
         self.ephemeralState = Floating:NormalizeState(nil, policy)
@@ -331,8 +311,7 @@ function M:EnsureCreated()
         owner = "v3:quest_detail:floating",
         title = "任务详情",
         status = "--",
-        -- 约束（2026-09-22，activity-detail-ui-2）：状态已由顶部 Chip 统一表达；旧 Footer
-        -- 再显示“个人进度 x/y”会与顶部重复并浪费 22px。关闭 Footer 不影响 Windowing 的拖动/缩放。
+        -- 顶部 Chip 已显示进度，关闭重复 footer，节省 22px。
         footer = false,
         movable = true,
         resizable = true,
@@ -347,7 +326,7 @@ function M:EnsureCreated()
         persist = persistState,
         onClosed = function(_, reason)
             M.visible = false
-            -- 约束（2026-09-21，独立生命周期）：X 按钮和程序 Close 必须走同一释放链。
+            -- X 按钮和程序 Close 必须走同一释放链。
             -- 关闭仅释放本详情窗自己的 Consumer/内部事件，不关闭 Activities/Tasks Feature，也不清用户配置。
             local cleaned, cleanupErr = M:DeactivateSession(tostring(reason or "window_closed"))
             if cleaned ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Record) == "function" then
@@ -362,9 +341,7 @@ function M:EnsureCreated()
     local stack = RSUI:VerticalBox({ id = self.id .. "_stack", parent = surface:GetContentRoot(), gap = 5,
         slot = { hAlign = "fill", vAlign = "fill" } })
 
-    -- 约束（2026-09-21，activity-progress-selection-ui-1）：个人进度选择不再需要第二排
-    -- “加入追踪/仅追踪”按钮。顶部只保留紧凑状态条，表格第一列直接显示追踪勾选；点击 main row 即切换。
-    -- 这样详情窗口更接近游戏任务面板，也避免用户误把“收藏/筛选”理解成和 0/N 无关的第二套状态。
+    -- 表格首列直接切换主任务追踪，无需另设加入按钮或隐藏未选任务。
     self.summaryRow = RSUI:HorizontalBox({ id = self.id .. "_summary_row", parent = stack, gap = 6,
         slot = { size = "fixed", height = 24, hAlign = "fill" } })
     self.progressChip = RSUI:StatusChip({ id = self.id .. "_progress_chip", parent = self.summaryRow,
@@ -414,7 +391,7 @@ function M:SubscribeProgress()
     if self.subscribed == true then return true end
     if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "内部事件总线不可用" end
     local subscribed = S.Events:SubscribeInternal("v3.quest_progress.refreshed", self, function()
-        -- 约束（2026-09-21，Journal 实时目标）：只在详情可见且有任务映射时重读当前组。
+        -- 只在详情可见且有任务映射时重读当前组。
         -- QuestProgress 已完成事件合并/15s safety，并在发布前清掉 Journal cache，所以这里不再增加调度器或 Tick。
         if M.visible == true and M.switching ~= true and M.consumerHeld == true
             and type(M.current) == "table" and M.current.mapped == true then
@@ -490,7 +467,7 @@ function M:RenderDetail(detail, source, reason)
     if detail.kind == "unmapped" then
         self.progressChip:SetStatus("unavailable", "暂无任务映射", "muted")
     elseif detail.kind == "scoreQuest" then
-        -- 约束（2026-09-22，Garden score UI）：Activity 层必须和其他单任务活动保持统一的 0/1 -> 1/1。
+        -- Activity 层必须和其他单任务活动保持统一的 0/1 -> 1/1。
         -- 积分/Reward Level 是这一个任务内部的详细目标，不替代完成度；若 Native Journal 提供，则继续在下方原样展示。
         local done = total > 0 and completed >= total
         local status, tone = done and "success" or "pending", done and "green" or "yellow"
@@ -510,9 +487,7 @@ function M:RenderDetail(detail, source, reason)
     -- 主页面关闭后 Activity Authority 可以按设计静默。个人 x/y 由 Activities Feature 同一 read-model 投影，
     -- 因此详情和主列表不会各自维护一份分母算法。
     local summaryText = detail.kind == "unmapped" and JoinSummary(source, detail.summaryText or "--") or tostring(detail.summaryText or "--")
-    -- 约束（2026-09-22，activity-detail-ui-2）：mapped Event 的 x/y、追踪数、关联数已经由
-    -- 三个 Chip 完整表达；再在右侧显示“个人进度 6/6 · 3 项关联任务”属于重复信息，并在 560px 宽度
-    -- 下挤压布局。Daily/Weekly/未映射详情仍保留摘要文本。
+    -- mapped Event 的进度、追踪和关联数已在三个 Chip 显示，不再挤入右侧摘要；其它详情仍保留摘要。
     local showSummaryText = detail.kind == "unmapped" or scope ~= "event"
     self.summary:SetVisible(showSummaryText)
     self.summary:SetText(showSummaryText and summaryText or "")
@@ -628,7 +603,7 @@ function M:Open(scope, key, sourceRow)
         kind = service:GetGroupKind(scope, key)
     end
     local mapped = key ~= "" and kind ~= nil
-    -- 维护：切换条目时 Demand reconcile/显式 Refresh 会同步发布 refreshed；在 current 尚未提交前屏蔽回调，
+    -- 切换条目时 Demand reconcile/显式 Refresh 会同步发布 refreshed；在 current 尚未提交前屏蔽回调，
     -- 避免先把旧活动 Journal 重绘一次再立即切到新活动，减少 Native 目标读取和视觉闪烁。
     self.switching = true
 
@@ -638,7 +613,7 @@ function M:Open(scope, key, sourceRow)
             return FailOpen("新版任务进度服务不可用。")
         end
         local needsInstances = kind == "instanceRaid"
-        -- 约束（2026-09-21，详情独立 Consumer）：普通活动只请求 QuestProgress；只有静态分组明确为
+        -- 普通活动只请求 QuestProgress；只有静态分组明确为
         -- instanceRaid 才把 instances=true 传给 Demand，避免查看征兆/鲸鱼时无意义唤醒 InstanceCatalog。
         local acquired, transitioned = service:AcquireConsumer(self.consumerToken, { instances = needsInstances })
         if acquired ~= true then self.switching = false; return FailOpen(transitioned or "任务详情 Consumer 启动失败") end
@@ -673,7 +648,7 @@ function M:Open(scope, key, sourceRow)
         mapped = mapped == true,
         kind = kind,
     }
-    -- 约束（2026-09-21，activity-progress-selection-1）：个人进度 Store 与 Quest Consumer 是
+    -- 个人进度 Store 与 Quest Consumer 是
     -- 两条独立生命周期。偏好读取失败不能阻断任务详情/Journal；此时按默认全部主任务计算并禁用编辑。
     -- Daily/Weekly 继续使用自己的任务规则，这里只服务 event scope 的 opt-in 活动。
     self.trackingAvailable, self.trackingLoadError = false, nil

@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 装备与称号方案设置存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 角色永久存储将轻量方案索引与装备/称号 payload 分开 SaveData key；每 payload 使用双库 A/B journal。
 -- 先写 inactive 库并读回核实，再提交索引指针；payload 写入或索引提交失败不能破坏最后仍被索引引用的装备方案。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence

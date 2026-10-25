@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗推荐评分
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 从已验证 Professional Healer 公式提炼的纯业务权威，负责规则匹配、救援评分、滞回、稳定排序与原子发布；禁止 Native 读取、调度与 UI。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}

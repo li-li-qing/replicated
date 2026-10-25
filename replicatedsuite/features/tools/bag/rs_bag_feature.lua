@@ -1,15 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 背包整理功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
--- （v3_business_bag_category_batch / v3_business_bag_quick_observe / v3_business_bag_quick_move）、
--- 黑名单/搬运事务/快捷按钮语义全部与被搬迁前逐字一致。
--- Authority 边界：背包/仓储事实来自 InventorySnapshotV3 与 X2Bag/X2Bank/X2Coffer 只读接口；
--- 搬运类 Native 调用仍走能力门 + 冷却契约。背包扫描上界来自 features/shared/rs_shared_bounds.lua，
--- 禁止在本文件另写数字。
-------------------------------------------------------------------------
+-- 背包/仓储事实来自 InventorySnapshotV3 和只读 X2Bag/X2Bank/X2Coffer；搬运经能力门和冷却控制。
+-- 扫描上界取 SharedBounds，不能在此另写数字。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory
@@ -107,9 +100,7 @@ local function ReadBagWindowContext()
         for depth = 0, 8 do
             if node == nil or node == UIParent then break end
             if S.Layout ~= nil and (type(S.Layout.ResolveViewportLogicalRect) == "function" or type(S.Layout.GetLogicalRect) == "function") then
-                -- 外部原生内容坐标最终用于 UIParent 侧栏锚定，
-                -- 必须优先走已校准的 viewport-logical-v1；旧 GetLogicalRect 会在部分 RU UI Scale 语义下
-                -- 重复除缩放。兼容测试/旧引导环境时才退回 legacy helper，不改变 Native ADDON Authority。
+                -- 侧栏原生内容坐标优先用已校准 viewport-logical-v1，旧 GetLogicalRect 在部分 RU UI Scale 下会重复除缩放；旧环境才回退 helper。
                 local ok, x, y, width, height, geometry = pcall(function()
                     if type(S.Layout.ResolveViewportLogicalRect) == "function" then return S.Layout:ResolveViewportLogicalRect(node) end
                     return S.Layout:GetLogicalRect(node)
@@ -1098,8 +1089,8 @@ local function BeginBagQuick(feature, direction)
     local storage = CurrentStorageContext()
     if type(storage) ~= "table" then return false, "请先打开银行或箱子（窗口刚打开时请稍后再试）" end
 
-    -- 动作权威为已开仓库会话与下方物理容器读取，不是 UIC_BAG 表现可见位。RU可同时显示真实背包与箱子，但 UIC_BAG仍报告隐藏代理。
-    -- 必须让有界 InventorySnapshot 证明物理可读；任一容器不可读时 BagIdentitySet 仍在 Native 写前安全拒绝。
+    -- 仓库动作以已开会话和物理容器读取为准；UIC_BAG 可能只报告隐藏代理。
+    -- InventorySnapshot 须证明可读，任一容器失败时 BagIdentitySet 仍在写前拒绝。
     local target = storage.kind
     local planLimit = direction == "deposit_all" and BAG_SCAN_LIMIT or BAG_QUICK_LIMIT
     local bagSet, bagRows, bagErrors, bagErr, bagCounts, bagId = BagIdentitySet("bag")
@@ -1698,20 +1689,7 @@ local PersistentState = FSF.PersistentState
 -- 这里只保留别名，本文件剩余 Feature 的注册路径、Store/Authority/Demand 顺序逐字不变。
 local NewFeature = FSF.NewFeature
 
--- combat_boss_alerts 实现归属 features/combat/boss_alerts/rs_boss_alerts_feature.lua；
--- toc.g 只登记一次，禁止在此重新注册（它的私有 helper 与 task 名都随文件搬走）。
 
--- combat_target_monitor 实现归属 features/combat/target_monitor/rs_target_monitor_feature.lua；
--- toc.g 只登记一次，禁止在此重新注册（它的私有 helper 与 task 名都随文件搬走）。
--- combat_buff_cap 实现归属 features/combat/buff_cap/rs_buff_cap_feature.lua；
--- toc.g 只登记一次，禁止在此重新注册（它的私有 helper 与 task 名都随文件搬走）。
--- combat_team_tools 实现归属 features/combat/team_tools/rs_team_tools_feature.lua；
--- toc.g 只登记一次，禁止在此重新注册。
--- combat_raid_recruitment 实现归属 features/combat/raid_recruitment/rs_raid_recruitment_feature.lua；
--- toc.g 只登记一次，禁止在此重新注册（它的私有 helper 与 task 名都随文件搬走）。
-
--- tools_craft 实现归属 features/tools/craft/rs_craft_feature.lua；
--- toc.g 只登记一次，禁止在此重新注册。
 
 local function EnsureBlacklist(feature)
     if type(feature.State.blacklist) ~= "table" then feature.State.blacklist = BlacklistDefault() end
@@ -1901,18 +1879,3 @@ if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.Regis
             quickActivePerformance = Copy(BagTools._quickPerformance) }
     end, 50, { detailOnly = true })
 end
--- tools_auction 实现归属 features/tools/auction/rs_auction_feature.lua；
--- toc.g 只登记一次，禁止在此重新注册。
--- tools_market_analysis 实现归属
--- features/tools/market_analysis/rs_market_analysis_feature.lua（与 tools_auction 共用上面的
--- AuctionReadModel 读模型；Feature ID / Store ID / UpdateTopic / Commands / Projection 全部不变）。
--- 这里不再注册它，禁止在此重新注册一遍。
--- tools_auction 实现归属 features/tools/auction/rs_auction_feature.lua；
--- toc.g 只登记一次，禁止在此重新注册。
-
-------------------------------------------------------------------------
--- tools_social 实现归属
--- features/tools/social/rs_social_feature.lua（Feature ID / Store ID / UpdateTopic /
--- Demand所有者 / Commands / Projection结构 / ApiDependencies 全部不变）。
--- 这里不再定义它的任何 helper 或实现，禁止在此重新注册一遍。
-------------------------------------------------------------------------

@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 贸易独立详情窗口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 主 Trade 页面与 HUD 共用辅助详情；几何归仅表现 AuxWindow Store，业务事实归 life_trade。presenter 不直接调用 X2Store/X2Auction；
 -- 明确材料报价经 Trade Commands -> PriceQuoteQueueV3。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -158,16 +155,12 @@ function M:EnsureCreated()
     self.summary = RSUI:Text({ id = self.id .. "_summary", parent = stack, text = "--", fontSize = 10, tone = "default",
         overflow = "wrap", maxLines = 2, slot = { size = "fixed", height = 36, hAlign = "fill" } })
 
-    -- 维护（2026-09-23，trade-detail-actions-fit-1）：详情窗最小宽度仍是历史 470px，新增“关注货物”后
-    -- 若继续把 5 个固定宽按钮塞在同一 HorizontalBox，会在旧用户已保存的小窗口宽度下发生越界/互相覆盖。
-    -- 不抬高 minWidth（避免强制改变旧窗口几何），而是拆成两行；只改变 Presentation 排布，所有动作仍走 Feature Commands。
+    -- 最小宽度沿用 470px；五个固定按钮会越界，故拆两行，不强改旧窗口尺寸。
     local actions = RSUI:HorizontalBox({ id = self.id .. "_actions", parent = stack, gap = 6,
         slot = { size = "fixed", height = 30, hAlign = "fill" } })
     self.quoteButton = RSUI:Button({ id = self.id .. "_quote", parent = actions, text = "询价当前材料", compact = true,
         slot = { size = "fixed", width = 116 } })
-    -- 约束（2026-09-14，跑商→拍卖临时清单）：这里不让 Presentation 重算配方，也不把
-    -- 临时材料写进 life_trade Store。点击时只把 Trade Authority 已经解析好的 detached row/materialRows
-    -- 交给 AuctionSessionListV3；该 Service 没有 Persistence Store，ReloadAddon 后自然清空。
+    -- 点击时把 Trade 已解析的材料副本交给 AuctionSessionListV3，不在页面重算或写进贸易档；重载后临时清单清空。
     self.auctionTempButton = RSUI:Button({ id = self.id .. "_auction_temp", parent = actions, text = "加入拍卖临时清单", compact = true,
         slot = { size = "fixed", width = 126 } })
     self.refreshButton = RSUI:Button({ id = self.id .. "_refresh", parent = actions, text = "刷新详情", compact = true,
@@ -213,7 +206,7 @@ function M:EnsureCreated()
         local row = type(feature.GetRow) == "function" and feature:GetRow(M.rowKey) or nil
         local ok, quoteErr
         if type(row) == "table" and row.quoteJobActive == true and type(feature.Commands.CancelQuoteRowMaterials) == "function" then
-            -- 维护（2026-09-25，trade-row-job-cancel-ui-1）：取消只解绑当前 RowJob requester；共享材料若仍被
+            -- 取消只解绑当前 RowJob requester；共享材料若仍被
             -- 其它货物使用，PriceQuoteQueueV3 继续完成该 Native 请求。Presentation 不直接操作 Queue。
             ok, quoteErr = feature.Commands:CancelQuoteRowMaterials(M.rowKey, "trade_detail_user_cancel")
         else
@@ -276,10 +269,8 @@ function M:Subscribe()
             if M.visible then M:Refresh("feature_update") end
         end) ~= true then return false, "跑商详情更新事件订阅失败" end
     end
-    -- 约束（2026-09-25，feature-profile-lifecycle-1）：详情浮窗不经过 WidgetHost，过去因此
-    -- 不知道功能方案已经 Disable。Trade Feature 会先 Demand:Clear；这里收到 disabled 后只同步 lease
-    -- 事实并隐藏这个瞬时详情面板，绝不二次 Release。详情不做“自动重开”：重新启用跑商后由用户再次
-    -- 选择贸易品，避免旧 rowKey/旧路线在新 Authority 投影上被误恢复。无 Tick、无轮询。
+    -- feature-profile-lifecycle-1：Disable 已清 Demand，收到 disabled 后只同步 lease 并隐藏，不二次 Release。
+    -- 再次启用不自动重开，避免恢复已失效的 rowKey 或路线；由用户重新选择贸易品。
     local lifecycleTopic = (S.FeatureRuntime and S.FeatureRuntime.LifecycleTopic) or "v3.feature.lifecycle"
     if S.Events:SubscribeInternal(lifecycleTopic, self, function(_, changedId, state)
         if tostring(changedId or "") ~= tostring(feature.Id or "") or tostring(state or "") ~= "disabled" then return end
@@ -329,7 +320,7 @@ function M:Refresh(reason)
     for index, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
         local statusText, tone = MaterialStatus(material)
         local costStatus = tostring(material.costStatus or "")
-        -- 维护（trade-requote-2）：是否可询价由材料能力决定，不由“是否已经有价”决定。
+        -- 是否可询价由材料能力决定，不由“是否已经有价”决定。
         if material.includeInCost ~= false and material.auctionable ~= false
             and (tonumber(material.itemType) or 0) > 0 then marketCount = marketCount + 1 end
         -- 缺失价格计数与明确刷新操作分开呈现。
@@ -355,7 +346,7 @@ function M:Refresh(reason)
     else
         self.table:SetViewState("ready")
     end
-    -- 维护（2026-09-25，trade-multi-row-detail-progress-1）：详情窗只展示当前 RowJob 进度，不创建第二套任务状态。
+    -- 详情窗只展示当前 RowJob 进度，不创建第二套任务状态。
     -- 活跃时允许取消；终态可再操作，但 Fresh 价格直接复用，其它货物的 RowJob 不影响当前详情按钮。
     local rowJobActive = row.quoteJobActive == true
     self.quoteButton:SetEnabled(rowJobActive or marketCount > 0)
@@ -383,7 +374,7 @@ function M:Refresh(reason)
         statusSummary = statusSummary .. (marketCount > 0 and " · 价格已缓存" or " · 无可询价材料")
     end
     self.surface:SetStatus(statusSummary, (failed > 0 or jobFailed) and "red" or ((pending > 0 or rowJobActive) and "yellow" or "accent"))
-    -- 维护（trade-requote-2）：部分材料失败需要保留明确终态；错误与进度来自同一 RowJob Authority。
+    -- 部分材料失败需要保留明确终态；错误与进度来自同一 RowJob Authority。
     if rowJobActive and activity.paused == true then
         self.hint:SetText(tostring(activity.text or "材料查询已暂停"))
     elseif rowJobActive or jobFailed then

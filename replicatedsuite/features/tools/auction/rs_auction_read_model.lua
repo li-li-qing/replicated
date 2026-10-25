@@ -1,21 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖共享读模型
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 为什么存在：tools_auction 与 tools_market_analysis 共用同一套“当前挂单查询读模型”
--- （Demand 绑定、快照读取、投影形状、设置命令）。拆分源码故障域时，这份共享逻辑必须
--- 有唯一归属，否则只能二选一：让 market_analysis 反向依赖 tools_auction 的私有 helper，
--- 或者把代码复制两份。两者都会制造新的隐式耦合。
--- Authority 边界（不得被后续维护破坏）：
--- * 本文件 **不拥有任何事实**：当前挂单/报价/原生同步事实仍分别归
--- AuctionQueryV3 / PriceQuoteQueueV3 / AuctionSearchBridgeV3（见 Docs/README.md §3.3）；
--- * 本文件不持有 Feature 私有 State 的长期副本，只在调用时读取传入 feature.State；
--- * 本文件不发起 Native 查询，只做参数归一与投影整形；
--- * 不允许把它们重新塞回 tools_auction Feature 私有 State，也不允许在 presentation 里复制一份。
--- 消费方：features/rs_business_bridge.lua（tools_auction）、
--- features/tools/market_analysis/rs_market_analysis_feature.lua。
-------------------------------------------------------------------------
+-- auction 和 market_analysis 共用的参数归一、Demand 绑定与查询投影。
+-- 事实仍归 AuctionQueryV3/PriceQuoteQueueV3/AuctionSearchBridgeV3；不发 Native、不长期复制 Feature 私有 State。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory
@@ -45,10 +32,7 @@ function R.NormalizeAuctionFavorites(value)
     return out
 end
 
--- 收藏列表的**公开只读入口**。
--- 原先 Presentation 层（rs_v3_auction_sidecar 的 FavoriteRows）直接读 feature.State.favorites ——
--- 那是 Feature 的私有状态，Presentation 不该碰。这里返回一个重新归一后的**新表**，
--- 调用方拿不到 State 本体，改它也不会写回持久化事实。
+-- 返回重新归一化的新收藏数组，Presentation 不能直接持有或改写 Feature.State。
 function R.Favorites(feature)
     if type(feature) ~= "table" then return {} end
     return R.NormalizeAuctionFavorites(feature.State and feature.State.favorites)

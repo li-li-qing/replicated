@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 人员备注页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 人员备注专页只发 Commands；选择行填草稿，后台名单刷新不能覆盖正在输入的名字或备注。
 -- 表格有界复用，团队数据沿用共享 roster；页面生命周期由 PageHost 负责，没有自己的 Tick。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local R,D,H=S.RSUI,S.UIV3Design,S.UIV3 and S.UIV3.PageHost

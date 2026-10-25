@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 窗口层级偏好
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 顶层 RSUI 窗口共用仅表现偏好；业务 Store 仍持几何/外观，Native 层级偏好独立保存，避免改大量冻结 Feature 规范形状。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P, RSUI = S.Persistence, S.RSUI
@@ -27,14 +24,9 @@ Store.storeId = STORE_ID
 RSUI.WindowPreferencePersistenceContractVersion = 1
 RSUI.WindowLayerPreferenceContractVersion = 1
 
--- 维护（2026-09-16，window-layer-preference-1）：置顶属于 RSUI Native chrome 属性，
--- 不是钓鱼/DPS/活动等业务状态。若把 topmost 塞回每个 Feature 的 widgetWindow，旧 Store
--- 会因 canonical shape 变化而触发 fingerprint/schema 风险。这里以 Account/Permanent 的独立
--- Presentation Store 作为唯一 Authority，key=逻辑窗口 ID，仅持久化 true，false 由缺省表达。
--- 数据流：TitleBar [顶] -> WindowShell/MainShell -> WindowPreferences -> Persistence；Native
--- SetUILayer 成功后才提交偏好，保存失败由调用方回滚 Native 层。兼容边界：旧用户没有此 Store
--- 时全部默认 false/normal；不会改任何既有 Feature/Shell Store schema。风险：Store 读取被 fenced
--- 时本会话允许默认 normal 使用，但禁止覆盖故障存档，避免以默认值吞掉旧偏好。
+-- 置顶按逻辑窗口 ID 存独立 Account/Permanent 表，只存 true，缺省表示 normal。
+-- 放入各 Feature 的 widgetWindow 会改变冻结 canonical，触发旧档指纹问题。
+-- 先 SetUILayer 再保存，失败由调用方回滚 Native；读档受保护时可用 normal，但不能覆盖故障存档。
 local function NormalizeState(value)
     value = type(value) == "table" and value or {}
     local source = type(value.topmost) == "table" and value.topmost or {}
@@ -124,7 +116,7 @@ function Store:SetTopmost(windowId, value, persist)
     local previous = self.state.topmost[key] == true
     if previous == nextValue then return true, nextValue, false end
 
-    -- 维护：置顶与小锁共用 Persistence 事务；拒写/静默丢写时须恢复 Domain 和 dirty 元数据，
+    -- 置顶与小锁共用 Persistence 事务；拒写/静默丢写时须恢复 Domain 和 dirty 元数据，
     -- MarkDirty(0)+普通 SaveStore 只有原生返回成功，既不能证明读回一致，也会残留拒绝动作的重试。
     local function Mutate()
         if nextValue then self.state.topmost[key] = true else self.state.topmost[key] = nil end

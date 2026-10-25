@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗助手屏幕投影
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- Head Marker 使用的窄 Feature Native 观察桥。Presentation 禁止直接调用 X2Unit；对已提交候选只做一次无副作用 world→screen 查询，不拥有循环、缓存、名单、健康或 Aura 状态。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}
@@ -38,11 +35,7 @@ function B:GetHealth()
     }
 end
 
--- 把“屏幕投影能力是否就绪”
--- 注册到 Core 的取值表。原先 core/rs_foundation_gate.lua 直接按 id 读取本 Feature 的实现表验证
--- ProjectUnit 这个契约函数；契约检查本身已归位到
--- features/combat/healer/rs_healer_aura_acceptance.lua（visual_consumer_contract），
--- 这里只保留**诊断可观察性**：让 Foundation 的 detail 串仍能反映该能力是否就绪，而不认识本 Feature。
+-- 只向 Foundation 提供实时能力诊断；ProjectUnit 契约由 rs_healer_aura_acceptance.lua 的 visual_consumer_contract 检查。
 local providers = S.FeatureHealthProviders
 if type(providers) == "table" then
     providers:Register("healer_screen_capable", function()

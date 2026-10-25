@@ -1,10 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 逻辑布局与分辨率安全
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 响应式布局权威。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local C = S.Constants
@@ -17,25 +13,18 @@ S.Layout = {
 }
 local L = S.Layout
 
--- ArcheAge/CryEngine UI 逻辑坐标约定：原点为视口左上角，X 向右递增，Y 向下递增。功能和布局代码不得猜测“上移
--- 图标”等人类指令的符号。
+-- 视口左上角为原点，X 向右、Y 向下；上移要减 Y。
 L.CoordinateSystemContractVersion = 1
 L.RectTransformTransactionContractVersion = 2
 L.ScreenToWidgetLocalContractVersion = 2
 L.ResponsivePlacementIntentContractVersion = 1
 L.ViewportLogicalRectContractVersion = 1
-L.EffectiveGeometryCalibrationContractVersion = 1 -- 保留 RU Effective Geometry 单位校准契约，供外部原生控件和诊
-                                                  -- 断继续使用。
-L.SuiteOwnedViewportAnchorContractVersion = 1 -- 从 .18.190 起，Suite 自己创建并由 Diff Authority 布局的控件
-                                              -- ，Popup 锚点必须优先使用完整 NativeStateCache 父链，而不能继
-                                              -- 续猜测 GetEffectiveOffset 的单位。
-L.StartupMetricsSettleContractVersion = 1 -- 启动/重登后的 UIParent 与 UI Scale 允许晚于插件加载稳定；只做有
-                                          -- 界 one-shot 复采样，不引入永久 Poll/Tick。
-L.UiEnvironmentRevisionContractVersion = 1 -- （2026-09-24，visual-guide-resolution-style-recovery-1）分辨率
-                                           -- /UI Scale/原生 UI 重载可能在几何签名不变时仍重置 TextStyle。
-                                           -- Layout 只发布“UI 环境已发生边沿”的 session revision，不拥有业
-                                           -- 务样式；高频 Presenter 可据此一次性失效自己的 Native diff
-                                           -- cache，而不是每帧重写字体。
+L.EffectiveGeometryCalibrationContractVersion = 1 -- 外部原生控件使用 Effective Geometry 校准；Suite 控件优先沿 NativeStateCache 完整父链定位。
+-- 登录后尺寸和缩放可能延迟稳定，用有界 one-shot 复采样。
+-- 几何未变时 Native 仍可能重置字号，另发会话 revision，让 Presenter 失效样式缓存。
+L.SuiteOwnedViewportAnchorContractVersion = 1
+L.StartupMetricsSettleContractVersion = 1
+L.UiEnvironmentRevisionContractVersion = 1
 L.uiEnvironmentRevision = tonumber(L.uiEnvironmentRevision) or 0
 L.lastUiEnvironmentReason = L.lastUiEnvironmentReason or "bootstrap"
 L.coordinateSystem = {
@@ -47,8 +36,7 @@ L.coordinateSystem = {
 }
 L.geometryMetrics = { transformBegins = 0, transformPreviews = 0, transformOverrides = 0, transformCommits = 0, transformCancels = 0, transformRejects = 0 }
 
--- 仅在几何入口做有限数过滤；nil/NaN/Infinity 不能
--- 参与 clamp/signature。读取兼容不写存档，也不改变 Feature 的 canonical Normalize/schema。
+-- 几何入口排除 nil/NaN/Infinity，避免 clamp/signature 失效；不改存档归一化规则。
 local function Finite(value, fallback)
     local n = tonumber(value)
     if n == nil or n ~= n or n == math.huge or n == -math.huge then return fallback end
@@ -113,8 +101,7 @@ function L:MoveRect(rect, direction, distance)
     return out, nil
 end
 
--- 供编辑器类 UI 使用的纯 RectTransform 事务，只拥有数学及回滚语义；原生鼠标捕获归 Windowing/Input。delta 始
--- 终相对 Begin() 计算，不逐帧累加。
+-- delta 始终相对 Begin() 计算，不逐帧累加；这里只做矩形计算和回滚，鼠标捕获归 Windowing/Input。
 function L:CreateRectTransformTransaction(spec)
     spec = type(spec) == "table" and spec or {}
     local tx = {
@@ -273,7 +260,7 @@ local function ActiveSettings()
 end
 
 local function ActiveMainPlacement()
-    -- V3 Shell 几何归 v3.shell；Layout 仅为纯 metrics 权威，不回读已删除 S.State 的旧状态树。
+    -- Shell 几何由 v3.shell 保存；这里只计算 metrics。
     return {}
 end
 
@@ -387,11 +374,8 @@ function L:PrimeCurrentSignature()
     return context
 end
 
--- （2026-09-24，visual-guide-resolution-style-recovery-1）这个 revision 只表示 Native/UI
--- 环境出现了可能使“已写入的视觉样式”失真的边沿，不代表 Feature 数据变化。Authority 仍是
--- Layout 对 viewport/scale 的事实；调用者只能把它用于丢弃 Presentation cache，禁止据此改用户配置。
--- 之所以不能只看 MakeSignature：切换画质或 UI_RELOADED 可能保持相同分辨率，却让 Native TextStyle
--- 回到创建时默认字号。revision 是 session-only 标量，不持久化，也不触发任何额外扫描。
+-- 画质切换或 UI_RELOADED 可能保持几何签名，却把 TextStyle 重置。
+-- revision 只供丢弃表现缓存，不代表业务数据变化，也不写配置。
 function L:BumpUiEnvironmentRevision(reason)
     self.uiEnvironmentRevision = (tonumber(self.uiEnvironmentRevision) or 0) + 1
     self.lastUiEnvironmentReason = tostring(reason or "unknown")
@@ -402,11 +386,9 @@ function L:GetUiEnvironmentRevision()
     return tonumber(self.uiEnvironmentRevision) or 0, tostring(self.lastUiEnvironmentReason or "unknown")
 end
 
--- 一次响应式表现事务在 V3 重建模式下由 UIHostManager 拥有，不走旧 UI 工厂。此桥接避免分辨率或 UI 缩放变化落
--- 入依赖已删除 S.State 的旧代码。
+-- 响应式重建由 UIHostManager 执行，避免调用依赖已移除状态树的旧 UI 工厂。
 function L:ApplyResponsivePresentation(fromMetricsChange)
-    -- 顶层窗注册表独立于主窗口生命周期。以前 main host 缺失会提前 return，
-    -- 使存在但离屏的 FloatingSurface 永远不接收新 viewport。这里只处理几何，无业务刷新。
+    -- 浮窗安全刷新独立于主窗；主宿主缺失时也要处理已有离屏浮窗。
     self:RefreshFloatingSafety(fromMetricsChange == true)
     if S.Theme ~= nil and type(S.Theme.RefreshTypography) == "function" then
         S.Theme:RefreshTypography()
@@ -427,8 +409,7 @@ function L:ApplyResponsivePresentation(fromMetricsChange)
     return false, "responsive presentation unavailable"
 end
 
--- 应用 UI 设置使用立即刷新，当前即更新 signature，避免下一次原生或生命周期事件重复不变的 reflow。这里只更新
--- 事件身份，不进行后台 metrics 轮询。
+-- 应用设置后立即更新 signature，避免后续原生事件重复 reflow。
 function L:RefreshNow(fromMetricsChange)
     local fresh = self:GetContext(true)
     self.lastSignature = self:MakeSignature(fresh)
@@ -453,27 +434,13 @@ function L:PollChanges()
     return changed
 end
 
--- （2026-09-22，relog-floating-placement-settle-1）ArcheRage RU 登录/切角色期间，
--- Addon 已经开始恢复悬浮窗时 UIParent:GetExtent()/GetUIScale() 仍可能只是“有效但临时”的值。
--- 旧实现仅在事件边沿即时采样一次，再固定 150ms 采样一次；若最终 viewport 在 150ms 之后
--- 才稳定，同时 OnScale/ENTERED_WORLD 又没有再次投递，所有 FloatingSurface 都会停留在临时
--- viewport 的 normalized projection 上。Store 本身没有被改写，因此下一次重登会按新的加载时序
--- 再投影一次，用户看到的结果就是“悬浮框每次上下线都会移位”。
---
--- Authority / 数据流：Native UIParent -> Api:GetUiMetrics -> Layout context/signature ->
--- RefreshFloatingSafety/WindowShell placementDelegate；Feature-owned widgetWindow 始终只是持久 intent，
--- 本稳定窗口绝不调用 StorePlacement/MarkDirty，也绝不把临时投影反写成用户位置。
---
--- 实现边界：生命周期 Signal 仍立即采样，但随后开启一个严格有界的 one-shot 序列；每次新 Signal
--- 都废弃并重启旧序列，使 ENTERED_WORLD/LEFT_LOADING 成为新的稳定观察起点。序列最多 8 次、约
--- 15.5 秒，足以覆盖慢登录/切角色，同时没有永久 Tick、没有 Feature 扫描循环；签名不变时只读取
--- viewport 与已存在窗口的只读几何；仅发现偏移才重放同一矩形，不触发业务刷新。
--- Generation/epoch/serial 三层隔离保证重载或
--- Stop 后的迟到回调不能继续改布局。风险仅是启动期增加少量低频 UI metrics 读取。
+-- 登录或切角色时 UIParent 的尺寸/缩放可能有效但尚未稳定；只采样一次会让浮窗每次重登移位。
+-- 每个生命周期 Signal 重启有限复采样：最多 8 次、约 15.5 秒，只核对视口与已有窗口几何。
+-- 发现偏移时重放矩形，不刷新业务，也不把临时投影写回 Store。
+-- Generation/epoch/serial 隔离迟到回调，重载或 Stop 后不能继续布局。
 local METRICS_SETTLE_DELAYS_MS = { 150, 350, 700, 1200, 1800, 2600, 3600, 5000 }
 
--- （2026-09-30，ui-position-reload-1）尺寸签名相同不等于 Native 窗口未被重置。
--- 复用 Windowing 现有 owner/cache，在启动有界观察窗口内独立核对几何；不启用业务、不保存位置。
+-- 视口签名相同也可能发生 Native 窗口重置；启动观察期还须独立核对已有窗口几何。
 function L:ReconcileWindowGeometry(reason)
     local windowing = S.RSUI and S.RSUI.Windowing
     if not windowing or type(windowing.ReconcileIdleGeometry) ~= "function" then return true end
@@ -502,8 +469,7 @@ function L:StartMetricsEvents()
         local scheduler = S.Scheduler
         if scheduler == nil or type(scheduler.AddOneShot) ~= "function" then return false end
 
-        -- 新生命周期边沿拥有新的 settle 序列；即使旧任务正 pending，也不能让旧的 150ms 预算
-        -- 吞掉 ENTERED_WORLD 后真正需要的观察窗口。RemoveTask 只处理同一静态任务名，不泄露元数据。
+        -- 新 Signal 必须重启 settle 序列，不能让旧 pending 任务吞掉进入世界后的观察窗口。
         L.metricsSettleSerial = (tonumber(L.metricsSettleSerial) or 0) + 1
         local serial = L.metricsSettleSerial
         L.metricsSettlePending = false
@@ -557,9 +523,7 @@ function L:StartMetricsEvents()
         -- 绑定成功与实际收到回调是两种证据；只保留计数和末次原因，不存事件历史。
         L.metricsNotifications.signals=L.metricsNotifications.signals+1
         if reason=="native_on_scale" then L.metricsNotifications.nativeScaleDeliveryObserved=true end
-        -- PollChanges 在 viewport/signature 真变化时会 bump revision；若签名不变（典型：画质切换
-        -- / UI_RELOADED 只重置 TextStyle），仍必须发布一次 UI 环境 revision，供手工样式 Presenter
-        -- 失效旧 Native cache。禁止在这里直接操作任何 Feature/UI 控件。
+        -- 签名不变的画质切换也须发布 UI revision，供 Presenter 丢弃已失真的样式缓存。
         local changed = L:PollChanges()
         if changed ~= true then
             L:BumpUiEnvironmentRevision("native_signal:" .. tostring(reason or "unknown"))
@@ -594,11 +558,9 @@ function L:StopMetricsEvents()
 end
 
 
--- 独立弹窗/UIParent 坐标归一化不能改造旧 GetLogicalRect() 语义，因为 Windowing/拖动/吸附调用者已依赖它。弹
--- 窗需要更严格契约：实时控件矩形只转换一次到 UIParent 视口逻辑坐标。RU 的
--- GetEffectiveOffset/GetEffectiveExtent 可能返回逻辑或 UI 缩放单位，须由多项有界事实校准，不能无条件除
--- uiScale。Suite 缓存的逻辑 extent 最可靠：raw 接近 logical 时 scale=1，raw 接近 logical*uiScale 时
--- scale=uiScale；UIParent effective extent 和物理/逻辑视口比例仅作兜底证据。
+-- Popup 需要 UIParent 视口逻辑矩形，不能改变旧 GetLogicalRect 的语义。
+-- RU Effective API 可能返回逻辑或缩放单位：raw 接近缓存 logical 时比例为 1，接近 logical*uiScale 时比例为 uiScale。
+-- UIParent extent 和屏幕比例仅作兜底，不能无条件除 uiScale。
 local function ReadEffectivePair(widget, methodName)
     if widget == nil or type(widget[methodName]) ~= "function" then return nil, nil, false end
     local ok, a, b = pcall(function() return widget[methodName](widget) end)
@@ -647,8 +609,7 @@ function L:ResolveEffectiveGeometryScale(widget, rawWidth, rawHeight, context)
         end
     end
 
-    -- 每个候选与同单位事实逐一评分；Suite 缓存 extent 权重最高，它是通过 Diff 权威实际写入的逻辑值。只有控
-    -- 件缺少可用 effective extent 时，根节点或屏幕比例才用于打破平局。
+    -- 优先按 Diff 已写入的逻辑 extent 评分；控件无可用 effective extent 时才用根节点或屏幕比例。
     local best, bestScore = nil, nil
     for _, candidate in ipairs(candidates) do
         local scale = candidate.value
@@ -683,66 +644,49 @@ function L:ResolveEffectiveGeometryScale(widget, rawWidth, rawHeight, context)
     return math.max(0.001, tonumber(best.value) or 1), tostring(best.source or "unknown"), tonumber(bestScore) or 0
 end
 
-local function ResolveCachedViewportRect(widget) -- 沿 UI Diff Authority 已提交的真实 NativeStateCache 父链累加
-                                                 -- 逻辑坐标，得到相对 UIParent 的唯一可证明锚点。
-    local cache = S.UI and S.UI.NativeStateCache or nil -- NativeStateCache 是 UI:SetAnchor/UI:SetExtent 的写入镜像，因
-                                                        -- 此对 Suite-owned 控件比 RU GetEffectiveOffset 的单位猜测更可
-                                                        -- 靠。
-    if type(cache) ~= "table" or widget == nil then return nil end -- 没有缓存表或目标控件时无法证明完整父链，必须 fail-closed。
-    local x, y = 0, 0 -- 从目标控件开始累计每一级 TOPLEFT 逻辑偏移，最终得到 UIParent-local X/Y。
-    local current, guard = widget, 0 -- current 保存当前父链节点，guard 防止异常父链形成死循环。
-    local first = cache[current] -- 目标节点自身的缓存行提供 Popup 需要的宽高。
-    local width = type(first) == "table" and tonumber(first.width) or nil -- 宽度直接使用 Diff Authority 写入的逻辑宽度，不再根据 UI
-                                                                          -- Scale 二次换算。
-    local height = type(first) == "table" and tonumber(first.height) or nil -- 高度同样使用逻辑高度，保证 Dropdown 行高和触发器高度处于同一
-                                                                            -- 坐标空间。
-    while current ~= nil and current ~= UIParent and current ~= "UIParent" and guard < 64 do -- 只有父链最终确实抵达 UIParent 才允许作为 detached Popup 的屏
-                                                                                             -- 幕锚点。
-        guard = guard + 1 -- 每向上追溯一级就增加保护计数，64 层远高于当前 RSUI 树深度。
-        local row = cache[current] -- 读取当前节点最后一次由 Diff Authority 或 Native Primitive Factory 成功
-                                   -- 提交的 Native 几何状态。
-        if type(row) ~= "table" then return nil end -- 当前节点连缓存行都不存在时父链不可证明，必须立即 fail-closed
-                                                    -- 。
-        local parent = row.anchorParent -- 优先读取 DiffRenderer v2 使用的标量父节点字段，这是后续布局写入的
-                                        -- 标准形式。
-        local anchorX = tonumber(row.anchorX) -- 优先读取标量逻辑 X；保持与 UI:SetAnchor 写入单位完全一致。
-        local anchorY = tonumber(row.anchorY) -- 优先读取标量逻辑 Y；保持与 UI:SetAnchor 写入单位完全一致。
-        local legacy = type(row.anchorTopLeft) == "table" and row.anchorTopLeft or nil -- Native Primitive Factory 初次创建控件时可能只 Prime `
-                                                                                       -- anchorTopLeft`，即使后续位置未变化也不会强制迁移成标量字段。
-        if parent == nil and legacy ~= nil then parent = legacy.parent end -- 仅当标准父字段缺失时读取兼容父节点，避免覆盖已经由
-                                                                           -- DiffRenderer 更新的新 Authority。
-        if anchorX == nil and legacy ~= nil then anchorX = tonumber(legacy.x) end -- 仅在标量 X 缺失时读取初始 Prime 的逻辑 X，保证未发生重排的控
-                                                                                  -- 件也能组成完整父链。
-        if anchorY == nil and legacy ~= nil then anchorY = tonumber(legacy.y) end -- 仅在标量 Y 缺失时读取初始 Prime 的逻辑 Y，保证首次打开 Popup
-                                                                                  -- 不依赖先发生一次布局变更。
-        if parent == nil then return nil end -- 标准字段和兼容字段都无法证明父节点时，禁止退回
-                                             -- EffectiveOffset 猜坐标。
-        x = x + (anchorX or 0) -- 累加当前节点相对父节点的逻辑 X；项目统一左上角原点，向右为正。
-        y = y + (anchorY or 0) -- 累加当前节点相对父节点的逻辑 Y；项目统一左上角原点，向下为正。
-        current = parent -- 继续沿已经明确解析出的真实缓存父节点追溯，直到 UIParent。
-    end -- 结束父链追溯循环。
-    if current ~= UIParent and current ~= "UIParent" then return nil end -- 未在保护深度内抵达 UIParent 时视为不可证明坐标，直接拒绝。
-    return x, y, math.max(1, width or 1), math.max(1, height or 1), guard -- 返回 UIParent-local 逻辑矩形和父链深度，父链深度用于诊断，不
-                                                                          -- 参与业务判断。
-end -- 结束缓存父链解析 helper。
+local function ResolveCachedViewportRect(widget) -- 沿 NativeStateCache 父链累加 TOPLEFT 逻辑偏移，必须在 64 层内到达 UIParent；断链时返回不可用。
+-- 宽高直接取缓存逻辑值，不再除 UI Scale。优先读 DiffRenderer 标量字段，缺失时兼容工厂初次 Prime 的 anchorTopLeft。
+-- 父链不完整时不能回退猜测 EffectiveOffset；深度只供诊断。
+    local cache = S.UI and S.UI.NativeStateCache or nil
+    if type(cache) ~= "table" or widget == nil then return nil end
+    local x, y = 0, 0
+    local current, guard = widget, 0
+    local first = cache[current]
+    local width = type(first) == "table" and tonumber(first.width) or nil
+    local height = type(first) == "table" and tonumber(first.height) or nil
+    while current ~= nil and current ~= UIParent and current ~= "UIParent" and guard < 64 do
+        guard = guard + 1
+        local row = cache[current]
+        if type(row) ~= "table" then return nil end
+        local parent = row.anchorParent
+        local anchorX = tonumber(row.anchorX)
+        local anchorY = tonumber(row.anchorY)
+        local legacy = type(row.anchorTopLeft) == "table" and row.anchorTopLeft or nil
+        if parent == nil and legacy ~= nil then parent = legacy.parent end
+        if anchorX == nil and legacy ~= nil then anchorX = tonumber(legacy.x) end
+        if anchorY == nil and legacy ~= nil then anchorY = tonumber(legacy.y) end
+        if parent == nil then return nil end
+        x = x + (anchorX or 0)
+        y = y + (anchorY or 0)
+        current = parent
+    end
+    if current ~= UIParent and current ~= "UIParent" then return nil end
+    return x, y, math.max(1, width or 1), math.max(1, height or 1), guard
+end
 
-function L:ResolveSuiteOwnedViewportLogicalRect(widget) -- 这是 .18.190 新增的 Suite-owned Popup 锚点 Authority，只接受
-                                                        -- 完整 Diff cache 父链。
-    if widget == nil then return nil, nil, nil, nil, { source = "suite_widget_missing", coordinateSpace = "viewport-logical-v1" } end -- 目标为空时明确返回不可用来源，避免上层退回魔法偏移。
-    local x, y, width, height, depth = ResolveCachedViewportRect(widget) -- 直接消费完整缓存父链，不读取 RU EffectiveOffset，因此不会再
-                                                                         -- 被 UI Scale/分辨率语义差异污染。
-    if x == nil then return nil, nil, nil, nil, { source = "suite_anchor_chain_unavailable", coordinateSpace = "viewport-logical-v1" } end -- 父链不完整时 fail-closed，让 PopupPositioning 决定是否允许外
-                                                                                                                                           -- 部原生车道兜底。
-    return x, y, width, height, { -- 返回已经处于 UIParent viewport-logical-v1 的最终锚点，Consumer 禁止再次
-                                  -- 乘除 uiScale。
-        source = "suite_native_state_anchor_chain", -- 明确记录 Authority 来源，实机诊断可直接区分 cache 父链与
-                                                    -- 实际生效的 API。
-        coordinateSpace = "viewport-logical-v1", -- 标记唯一允许 detached Popup 消费的逻辑视口坐标空间。
-        effectiveScale = 1, -- 缓存父链本身已经是 UI:SetAnchor 接收的逻辑单位，因此这里不存在二次 Effective scale。
-        scaleSource = "diff_authority_logical", -- 诊断说明此次没有执行 RU EffectiveGeometry 单位猜测。
-        anchorDepth = tonumber(depth) or 0, -- 记录从 Trigger 到 UIParent 的完整父链层数，方便定位未来断链问题。
-    } -- 结束元数据表。
-end -- Suite 自有视口逻辑矩形权威段结束。
+function L:ResolveSuiteOwnedViewportLogicalRect(widget) -- Suite Popup 只接受完整缓存父链，结果已是 UIParent 的 viewport-logical-v1，不再换算 uiScale。
+-- 断链时由 PopupPositioning 决定是否允许外部原生路径；元数据保留来源和深度。
+    if widget == nil then return nil, nil, nil, nil, { source = "suite_widget_missing", coordinateSpace = "viewport-logical-v1" } end
+    local x, y, width, height, depth = ResolveCachedViewportRect(widget)
+    if x == nil then return nil, nil, nil, nil, { source = "suite_anchor_chain_unavailable", coordinateSpace = "viewport-logical-v1" } end
+    return x, y, width, height, {
+        source = "suite_native_state_anchor_chain",
+        coordinateSpace = "viewport-logical-v1",
+        effectiveScale = 1,
+        scaleSource = "diff_authority_logical",
+        anchorDepth = tonumber(depth) or 0,
+    }
+end
 
 function L:ResolveViewportLogicalRect(widget)
     if widget == nil then return nil, nil, nil, nil, { source = "widget_missing", coordinateSpace = "viewport-logical-v1" } end
@@ -793,10 +737,8 @@ function L:ResolveViewportLogicalRect(widget)
     return nil, nil, nil, nil, { source = "viewport_rect_unavailable", coordinateSpace = "viewport-logical-v1" }
 end
 
--- Windowing 专用 live geometry，区别于 Popup 的缓存锚点。
--- BeginInteraction 根据稳定 extent 校准并冻结 effective 单位；resize 中不能拿变化后的
--- extent 对比旧 Diff cache 再猜比例。最多一次转换，uiScale 不是无条件除数；不写 Store。
--- 未传冻结值时只允许在 create/show/drag-end/按需诊断等低频边沿调用。
+-- Windowing 在 BeginInteraction 按稳定 extent 冻结 effective 单位，resize 中不能拿新尺寸和旧缓存重猜比例。
+-- 未传冻结比例时只允许在 create/show/drag-end 或显式诊断等低频时点读取。
 function L:GetWindowLogicalRect(widget, pinnedScale)
     local scale = Finite(pinnedScale)
     if scale ~= nil and scale > 0 then
@@ -841,9 +783,8 @@ function L:GetLogicalRect(widget)
 end
 
 
--- 屏幕/Overlay 坐标适配复用已校准的视口逻辑权威：先减 UIParent 原始原点，再只转换一次。ScreenProjectionV3
--- 输出 UIParent 本地逻辑坐标；不能先走无条件除 uiScale 的旧 GetLogicalRect() 再除 UIParent 原点，否则
--- effective API 已返回逻辑单位的 RU 客户端在 UI Scale != 1 时会发生双重偏移。
+-- 先减 UIParent 原始原点，再转换一次到逻辑坐标。不能先用旧 GetLogicalRect 除缩放再减原点，
+-- 否则 Effective API 已返回逻辑单位时会产生双重偏移。
 function L:GetUiParentLocalOrigin(widget)
     if widget == nil then return 0, 0, false, "widget_missing" end
     local widgetX, widgetY, _, _, info = self:ResolveViewportLogicalRect(widget)
@@ -851,9 +792,8 @@ function L:GetUiParentLocalOrigin(widget)
     if widgetX == nil or widgetY == nil then
         return 0, 0, false, type(info) == "table" and tostring(info.source or "origin_unavailable") or "origin_unavailable"
     end
-    -- （2026-09-22，screen-origin-authority-2）ResolveViewportLogicalRect 的返回值已经是
-    -- UIParent-local viewport-logical-v1；这里绝不能再减一次 parent origin 或乘除 uiScale。
-    -- parentX/Y 保留为 0 只为兼容 ScreenPointToWidgetLocal 的诊断元数据，不代表丢失 Native 原点。
+    -- ResolveViewportLogicalRect 已返回 UIParent-local 逻辑坐标，不再减原点或换算缩放。
+    -- parentX/Y=0 仅为兼容诊断元数据。
     return widgetX, widgetY, true, nil, 0, 0
 end
 
@@ -871,8 +811,7 @@ function L:ScreenPointToWidgetLocal(widget, screenX, screenY)
     }, nil
 end
 
--- 分辨率安全层只保证实时表现能在当前 UIParent 逻辑画布上操作。Suite 位置、DPS 矩形、Gear 快捷位置、Healer
--- 锚点等持久化仍归各 Domain；分辨率兜底不持久化，除非用户在该分辨率显式拖动或保存。
+-- 分辨率兜底只调整当前表现；用户显式拖动或保存时才更新各模块的位置存档。
 L.floatingRegistry = L.floatingRegistry or {}
 L.screenSnapRegistry = L.screenSnapRegistry or {}
 L.screenSnapMetrics = L.screenSnapMetrics or { resolves = 0, snaps = 0, candidates = 0 }
@@ -910,8 +849,7 @@ function L:GetSafeSpawn(index, width, height, options)
     return Clamp(x, edge, maxX), Clamp(y, edge, maxY)
 end
 
--- 小浮控件的纯同级吸附解算器，不写几何、不夹紧屏幕位置、不持久化，权威归调用者。候选保持调用者设定的横/纵间
--- 隙，只有两轴都在阈值内才吸附，避免跳到远处行列。
+-- 同级吸附只计算矩形，不提交或保存；两轴都在阈值内才吸附，并保留调用方间距。
 function L:ResolveSiblingSnap(x, y, width, height, siblings, options)
     options = type(options) == "table" and options or {}
     x, y = tonumber(x), tonumber(y)
@@ -957,9 +895,7 @@ function L:ResolveSiblingSnap(x, y, width, height, siblings, options)
     return bestX, bestY, bestScore ~= nil, bestIndex
 end
 
--- 顶层窗口完全可见约束须分别使用四条 SafeInset；RU 窗口模式、UI Scale 和系统栏组合下四边未必对称，不能将
--- safeLeft 当统一 edge。Layout context 只影响实时几何，不写 Store。options.edge 保留显式对称覆盖，未传时严
--- 格消费当前四边安全区。
+-- 四边 SafeInset 可能不对称，不能只用 safeLeft。options.edge 可显式覆盖为对称边距；只调整实时几何。
 function L:ClampTopLeft(x, y, width, height, options)
     options = type(options) == "table" and options or {}
     local context = self:GetContext()
@@ -980,8 +916,7 @@ function L:ClampTopLeft(x, y, width, height, options)
     return Clamp(tonumber(x) or left, left, maxX), Clamp(tonumber(y) or top, top, maxY)
 end
 
--- V3 自由放置不要求正常拖动时整窗留在视口，仅在即将无法恢复访问时介入：至少保留少量横向握持区和部分顶部拖动
--- 条可达。允许部分出屏，同时避免当前分辨率下永久不可访问的位置。
+-- 可恢复模式允许部分离屏，但须留下横向握持区和顶部拖动条。
 function L:ClampRecoverableTopLeft(x, y, width, height, options)
     options = type(options) == "table" and options or {}
     local context = self:GetContext()
@@ -1009,14 +944,9 @@ function L:ClampRecoverableTopLeft(x, y, width, height, options)
         Clamp(tonumber(y) or top, minY, math.max(minY, maxY))
 end
 
--- （2026-09-25，screen-buttons-deoverlap-1）独立屏幕按钮（Gear / 功能方案）共享同一
--- screen_buttons 吸附组，但恢复时每个按钮各自 ResolvePlacement；当新 viewport 比保存时更窄
--- （或临时 viewport 与最终 viewport 不一致）时，多个 RIGHT/BOTTOM 锚点会被 ClampTopLeft 压到
--- 完全相同的矩形，用户只能看到最上面的一个。本 solver 只在“已经重叠”时移动矩形：
--- 输入/输出都是纯数据，不读 Native、不写 Store、不注册任何周期任务，调用方保留几何提交权。
--- 顺序保持输入顺序（= 方案顺序），候选位移只取相邻 blocker 的右侧/下方/左侧/上方，
--- 并选择位移最小且完全落在当前 safe viewport 内的解；无解时做有界网格扫描。
--- 没有重叠时结果与输入逐字节相同，因此“同分辨率精确恢复”不受影响。
+-- 视口缩窄后，独立按钮可能被 ClampTopLeft 压到同一矩形。只移动已重叠项，按输入顺序保留方案次序。
+-- 先尝试相邻 blocker 四侧的最小位移，无解再有限网格扫描；未重叠项原样返回。
+-- 这里只计算数据，不读 Native 或保存位置。
 L.ScreenDeoverlapContractVersion = 1
 L.screenDeoverlapMetrics = L.screenDeoverlapMetrics or { solves = 0, adjusted = 0, unresolved = 0 }
 
@@ -1171,8 +1101,7 @@ function L:UnregisterFloating(id)
     self.floatingRegistry[tostring(id or "")] = nil
 end
 
--- 屏幕吸附登记表与 floatingRegistry 分开；后者拥有分辨率安全回调，ScreenSnapRegistry 只负责发现吸附目标。生
--- 命周期独立可避免模块加入屏幕按钮吸附时误替换安全回调。
+-- 吸附登记与 floatingRegistry 分开，避免登记吸附目标时覆盖分辨率安全回调。
 function L:RegisterScreenSnap(id, widget, options)
     id = tostring(id or "")
     if id == "" or widget == nil then return false end
@@ -1186,8 +1115,7 @@ function L:UnregisterScreenSnap(id)
     return true
 end
 
--- 通用屏幕控件吸附解算器只拥有跨模块目标发现和几何；用户设置与持久化归业务模块。排除隐藏控件，因此禁用功能
--- 不增加候选成本。snapGroup 隔离无关表面，必要时 snapKind 再区分按钮和窗口。
+-- 只发现可见吸附目标；snapGroup 隔离不同表面，必要时再用 snapKind 区分按钮和窗口。设置与保存归调用模块。
 function L:ResolveScreenSnap(id, x, y, width, height, overrides)
     id = tostring(id or "")
     overrides = type(overrides) == "table" and overrides or {}
@@ -1290,8 +1218,7 @@ local function EnsureSafeDragProxy()
 end
 
 function L:StepSafeMove()
-    -- 安全拖动时目标锚定原生移动代理，由 CryEngine 按原生帧率跟随，不做 Lua 轮询。此函数保留为兼容查询点，
-    -- 只报告当前逻辑位置。
+    -- 保留兼容查询入口，只返回逻辑位置；移动代理由 CryEngine 跟随，不轮询鼠标。
     local drag = self.safeDrag
     if type(drag) ~= "table" or drag.target == nil then return false end
     local x, y = self:GetLogicalRect(drag.target)
@@ -1300,11 +1227,8 @@ function L:StepSafeMove()
 end
 
 function L:BeginSafeMove(key, target, options)
-    -- 不能把已进行的拖动手势转交另一个不可见窗口：ArcheRage RU 不能可靠地把当前捕获移给未收到 OnDragStart
-    -- 的代理。代理不动却返回成功会使 Suite/Gear/Healer/Plates/HUD 跳过可靠的原生 StartMoving() 兜底，导致无
-    -- 法拖动。分辨率安全集中在 RegisterFloating()/RefreshFloatingSafety()/EnsureWidgetVisible() 和拖动停止
-    -- 夹紧中；除非模块拥有完整代理事务（DPS 排名窗含自身帧驱动），消费者须走原生拖动路径。返回 false 是显式
-    -- 能力结果，不是错误。
+    -- RU 无法可靠地将进行中的拖动转交给未收到 OnDragStart 的隐藏代理。代理不动却返回成功会阻止 StartMoving 兜底。
+    -- 除非模块拥有完整代理事务，否则返回 false 并走原生拖动；分辨率安全在登记、刷新和停止夹紧时处理。
     return false
 end
 
@@ -1340,10 +1264,8 @@ function L:EndSafeMove(key, cancel)
     return true, x, y, width, height
 end
 
--- Windowing 提交拖动/缩放时产生唯一逻辑 x/y/width/height，StorePlacementRect 只消费此矩形，不能再
--- GetLogicalRect(widget) 读取 Native，以免 UI Scale 或更新时序导致实时位置与存档漂移。StorePlacement 仅为无
--- 显式事务矩形的低频兼容入口。权威链：Windowing committed rect -> Layout -> Feature/UI Store；持久字段、
--- coordinateSpace、响应式中心比例不变，不触碰 schema。
+-- 优先保存 Windowing 提交的逻辑矩形，不能提交后再读 Native，否则缩放或时序差异会让存档漂移。
+-- StorePlacement 仅供没有事务矩形的低频旧调用使用。
 function L:StorePlacementRect(target, x, y, width, height, options)
     if type(target) ~= "table" then return end
     options = type(options) == "table" and options or {}
@@ -1371,8 +1293,7 @@ function L:StorePlacementRect(target, x, y, width, height, options)
         target.offsetY = nil
         target.coordinateSpace = "logical-free-v2"
         target.savedUiScale = context.uiScale
-        -- 分辨率无关放置意图保留权威逻辑 x/y，以准确恢复相同视口，同时将窗口中心保存为当前 UIParent 比例。
-        -- 分辨率变化后按比例投影到新视口，不把旧绝对像素当作新画布坐标，也不使用分辨率查询表。
+        -- 保存逻辑 x/y 以精确恢复同视口位置；跨视口按窗口中心比例投影。
         target.savedLogicalWidth = tonumber(context.logicalWidth)
         target.savedLogicalHeight = tonumber(context.logicalHeight)
         if tonumber(context.logicalWidth) ~= nil and tonumber(context.logicalWidth) > 0 then
@@ -1408,7 +1329,7 @@ function L:StorePlacementRect(target, x, y, width, height, options)
     target.x, target.y = nil, nil
     target.coordinateSpace = "logical-edge-v1"
     target.savedUiScale = context.uiScale
-    -- 边缘意图自包含；从旧自由放置切换时删除自由面的 viewport 元数据，避免同一工作表携带两套竞争定位权威。
+    -- 切到边缘定位时删去旧自由定位的视口元数据，避免两套位置意图竞争。
     target.savedLogicalWidth, target.savedLogicalHeight = nil, nil
     target.normalizedCenterX, target.normalizedCenterY = nil, nil
     return x, y, width, height
@@ -1500,9 +1421,8 @@ function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, 
     local sw, sh = p and Finite(p.savedLogicalWidth), p and Finite(p.savedLogicalHeight)
     local ss = p and Finite(p.savedUiScale)
     local known = sw ~= nil and sh ~= nil and sw > 0 and sh > 0
-    -- UIParent 整数 extent 的像素级舍入（如 1280/1279）
-    -- 不能触发“旧展开中心 - 当前 compact 半宽”，否则 1px 度量差会放大为上百像素位移。
-    -- 容差仅吞掉约一个原生像素；真实分辨率迁移仍按中心比例，边界安全夹紧仍照常执行。
+    -- UIParent extent 的约 1px 舍入差不能触发中心重投影，否则展开窗与 compact 窗的半宽差会被放大成明显位移。
+    -- 容差只吸收约一个原生像素，真实分辨率变化仍按中心比例投影。
     local roundingTolerance = math.max(1,1/math.max(.2,c.uiScale),1/math.max(.2,ss or c.uiScale))
     local logicalChanged = known and (math.abs(sw-c.logicalWidth)>roundingTolerance or math.abs(sh-c.logicalHeight)>roundingTolerance) or false
     local scaleChanged = ss ~= nil and ss > 0 and math.abs(ss-c.uiScale)>=0.0005 or false
@@ -1517,9 +1437,8 @@ function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, 
     if intent and hasXY then
         x, y = Finite(p.x), Finite(p.y)
         source = known and "same_viewport_exact" or "legacy_recovery"
-        -- （2026-09-30，ui-position-reload-1）只有逻辑视口变化才重投影中心。
-        -- UI Scale 变化但 logical canvas 相同，x/y 本来就是同一单位；若上次保存时为展开窗、
-        -- 此时已最小化，拿旧中心减新半宽会凭空右移 (旧宽-新宽)/2。反向展开也会左移。
+        -- 只有逻辑视口变化才重投影。UI Scale 变化但画布相同时直接保留 x/y，
+        -- 否则拿展开时的旧中心减 compact 半宽，会凭空横移 (旧宽-新宽)/2。
         if logicalChanged and rx ~= nil and ry ~= nil then
             x, y = rx*c.logicalWidth-w*0.5, ry*c.logicalHeight-h*0.5
             source = "normalized_reproject"
@@ -1546,12 +1465,8 @@ function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, 
     if reason == "explicit_reset" then source = "explicit_reset" end
     local recoverable = self:IsWindowRecoverable(x,y,w,h,options.topReachHeight)
     local fit = w ~= pw or h ~= ph
-    -- （2026-09-22，viewport-contained-floating-1）普通 FloatingSurface 的 boundaryMode=free
-    -- 只表示“用户可自由拖动/缩放”，不再表示“允许把顶层窗口持久停在屏幕外”。过去 same_viewport_exact
-    -- 与缺少 savedLogicalWidth/Height 的 legacy row 只要标题还剩一小条可抓取就不夹紧，因此切分辨率、
-    -- 窗口模式或旧配置升级后会看到窗口大半甚至主体位于屏幕外。现在 top-level free/strict 都要求
-    -- runtime rect 完整位于 safe viewport；recoverable 模式仍显式保留给确实需要部分离屏的特殊控件。
-    -- 这是运行时投影，不回写 Feature-owned placement；只有真实用户 geometry commit 才更新 Store。
+    -- free/strict 顶层窗口的实时矩形都须完整落入安全视口；确需部分离屏的控件显式用 recoverable。
+    -- free 只表示自由拖动缩放，不能沿用旧档仅留标题一小条的放置结果。投影不写回 Store，用户提交几何时才保存。
     local boundaryMode = tostring(options.mode or "free")
     local legacyIntent = intent and not known
     local strict = boundaryMode == "free" or boundaryMode == "strict" or changed or legacyIntent
@@ -1612,8 +1527,7 @@ function L:ResolvePlacement(placement, width, height, defaultX, defaultY, option
         elseif mode == "strict" then
             x, y = self:ClampTopLeft(x, y, width, height, options)
         elseif mode == "free" and (viewportChanged or savedW == nil or savedH == nil) then
-            -- 旧 free-v2 行没有来源视口，不能推算精确跨分辨率位置；只在实时表现中确保控件可恢复访问，避免高
-            -- 分辨率绝对坐标完全出屏。只有用户拖动才更改持久化。
+            -- 旧 free-v2 没有来源视口，不能精确跨分辨率投影；这里只把控件拉回可操作区，用户拖动时才保存。
             x, y = self:ClampRecoverableTopLeft(x, y, width, height, options)
         end
         return x, y, width, height
@@ -1697,7 +1611,6 @@ function L:SnapAndStore(target, widget)
         end
     end
 
-    -- 持久化及实时结果都须在安全区中保留可操作区域。
     x = Clamp(x, left, math.max(left, right))
     y = Clamp(y, top, math.max(top, bottom))
 
@@ -1706,8 +1619,7 @@ function L:SnapAndStore(target, widget)
     self:StorePlacement(target, widget)
 end
 
--- 纯主窗规格解算器独立于 GetMainSpec 暴露，供 M6 Diagnostics 模拟分辨率/UI 缩放矩阵而不改 UIParent 或玩家设
--- 置。运行时复用同一解算器，避免验收矩阵形成第二套布局实现。
+-- 暴露同一个纯解算器供诊断模拟分辨率/缩放，不修改 UIParent 或玩家设置。
 function L:BuildMainSpec(context, placement, fontScale)
     context = type(context) == "table" and context or self:GetContext()
     local scale = math.max(0.01, tonumber(context.addonScale) or 1)
@@ -1726,8 +1638,7 @@ function L:BuildMainSpec(context, placement, fontScale)
     local designWidth = math.max(C.MainWindow.minWidth or 560, tonumber(placement.width) or baseWidth)
     local designHeight = math.max(C.MainWindow.minHeight or 600, tonumber(placement.height) or baseHeight)
 
-    -- 外表面尺寸由用户决定；下方响应式断点只控制内部内容重排，不得悄悄将窗口夹回当前视口或历史 1180x900 默
-    -- 认值。技术缩放下限及限制另归原生 Windowing。
+    -- 断点只重排内部内容，不把用户外窗尺寸改回当前视口或旧默认值；缩放技术下限由 Windowing 处理。
     local width = designWidth * scale
     local height = designHeight * scale
 

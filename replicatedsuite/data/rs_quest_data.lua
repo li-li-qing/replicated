@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 任务分组数据
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 活动任务 ID 按当前 ArcheRage 数据库核验。同一活动在 Event HUD、详情和 Daily 页共用唯一 ActivityQuestGroups 表。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}
@@ -25,11 +22,8 @@ local ActivityQuestGroups = {}
 local function Activity(key, title, objectives, options)
     options = type(options) == "table" and options or {}
     objectives = type(objectives) == "table" and objectives or {}
-    --
-    -- `objectives` 已经由本文件的数据 Authority 区分为真正参与 x/y 的主任务，relatedObjectives
-    -- 只作详情参考，因此“是否允许用户缩小个人分母”应由主任务数量决定，而不是在 Presentation
-    -- 为每个活动硬编码。>=2 个已核验主任务默认开放选择；1 个主任务保持固定 1/1，避免用户
-    -- 取消唯一任务后出现 0/0。显式 false 仍保留给未来必须原子完成的多阶段活动。
+    -- 至少两个已核实主目标时默认允许个人选择；单目标固定 1/1，relatedObjectives 不计分母。
+    -- 显式 false 留给必须整体完成的多阶段活动。
     local progressSelectionEnabled = options.progressSelectionEnabled
     if progressSelectionEnabled == nil then
         progressSelectionEnabled = #objectives >= 2
@@ -89,9 +83,7 @@ Activity("crimson", O.crimson or "征兆之痕", {
     { role = "暗影恶魔阶段", keepsEventAlive = true, quests = Q.Activity.crimson.shadowDemon },
     { role = "Shadow Fang Boss", keepsEventAlive = true, quests = Q.Activity.crimson.shadowFang },
 }, {
-    -- 征兆六阶段是默认个人进度集合。
-    -- 新用户/未配置用户仍显示 0/6；只有用户在详情里主动取消某阶段后，Activities 才把剩余阶段
-    -- 作为个人分母（例如只保留后三项 => 0/3）。关联任务始终只作参考，绝不进入该分母。
+    -- 默认六阶段显示 0/6；用户取消阶段后才缩小个人分母，例如仅保留后三项为 0/3。关联任务不计入。
     progressSelectionEnabled = true,
     relatedObjectives = {
         { role = "征兆守护任务", quests = Q.Activity.crimson.guard },
@@ -197,7 +189,7 @@ Activity("ynystere_purify", "伊尼斯泰尔债券奖励", {
     { quests = Q.Activity.ynysterePurify.main },
 })
 
--- Akasch 入侵汇总任务 9000449 恰好要求这四个目标。当前分类中的其他独立/阶段日常作为关联任务追踪，保证标准 4/4 不失真。
+-- Akasch 汇总任务 9000449 要求这四个目标；其它独立/阶段任务仅关联展示，不计入 4/4。
 Activity("akasch_guard", "守山 / 守护伊弗尼尔山", {
     { quests = Q.Activity.akaschGuard.stage1 },
     { quests = Q.Activity.akaschGuard.stage2 },
@@ -283,10 +275,8 @@ Activity("garden_anthalon", "庭院安塔伦", {
     },
 })
 
--- 精灵的委托10056内部累计积分和Reward Level1..12，但活动完成契约始终为一个日常：未完成0/1，可交付/已完成1/1。
--- QuestProgressV3独占X2Quest状态与Journal Objective读取，Activity只消费独立事实。kind=scoreQuest仅描述详情积分/奖励阶段，不改活动完成语义。
--- 实时积分/奖励只展示RU原生Journal文本；无稳定核实结构化数值API时，禁止猜阈值或建立第二积分表。未来结构化分数应在QuestProgress权威扩展。
--- 单任务不开放个人分母选择，避免取消唯一目标产生0/0。
+-- 精灵的委托 10056 虽有积分和 Reward Level1..12，活动仍是固定 0/1→1/1。
+-- QuestProgressV3 读状态和 Journal，kind=scoreQuest 仅说明详情类型；未核实结构化积分前只显示原生文本。
 Activity("garden_fairy", "精灵的委托", {
     { category = "积分任务", quests = Q.Activity.gardenFairyRequest },
 }, {
@@ -313,7 +303,6 @@ Activity("abyssal", O.abyssal or "深渊之袭", {
 })
 
 S.Data.ActivityQuestGroups = ActivityQuestGroups
--- Quest/Event 服务使用的兼容名称必须指向同一个表，保证活动进度与任务详情不分叉。
 S.Data.EventQuestProgress = ActivityQuestGroups
 
 -- 面板任务分组：保留现有 Daily 展示；下方每个活动行均引用 Event HUD 共用的标准 Activity 表。

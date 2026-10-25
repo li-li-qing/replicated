@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 任务追踪功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 独立生命周期，不自行读取 X2Quest；仅页面或浮动追踪器可见时获取 QuestProgressService。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Runtime = S.FeatureRuntime
@@ -160,10 +157,7 @@ function F:GetWidgetProjection()
     return self.Authority:GetWidgetRows()
 end
 
--- 首页需要独立的周期/完成状态/追踪筛选，不能借用
--- 悬浮窗可见行或直接改 State。Authority 的缓存行是唯一事实来源；这里只建立有界
--- 只读视图，一份 revision+筛选缓存，不在搜索/绘制中查询 Native，不把展开子任务计为新组。
--- 写入仍经现有 Commands，旧追踪选择与存档 schema 不变；未知进度不能算成已完成。
+-- 首页过滤基于 Authority 缓存，按 revision+筛选缓存有界副本，不读 Native、不将展开子任务计为新组；未知进度不算完成。
 function F:GetOverviewProjection(options)
     options = type(options) == "table" and options or {}
     local scope = VALID_SCOPE[options.scope] and options.scope or "all"
@@ -376,9 +370,7 @@ end
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
 
--- 个性化关注（2026-09-18）：目录来自静态 QuestGroups，不借 GetGroups 触发日期采样。
--- Authority 仍为 Tasks Store；进度不由 UI 改写。一次筛选批量只产生一次持久化事务，
--- 先验证全部 key 再改动；默认全选只在第一次明确编辑时转为 configured，空集合有效。
+-- 关注目录来自静态 QuestGroups，不借 GetGroups 采样日期。先验证全部 key，再一次提交；首次明确编辑才 configured，空集合有效。
 function F:GetAttentionCatalog(scope)
     if VALID_SCOPE[scope] ~= true then return {}, "未知任务周期" end
     local ok, err = self:EnsureStoreLoaded(); if not ok then return {}, err end

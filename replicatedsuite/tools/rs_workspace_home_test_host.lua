@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 工作区首页测试宿主
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 首页共享真实 RSUI/Persistence 宿主；游戏数据为受控依赖，测试代码不进入运行时。
-------------------------------------------------------------------------
 return function(options)
  options=options or {}
  local h=dofile('tools/rs_gear_page_test_host.lua')({disk=options.disk});local S=h.S;local counts={quotes=0,enabledWrites=0,pauseWrites=0,reads=0,acquired=0,released=0,widgetWrites=0}
@@ -21,13 +18,7 @@ return function(options)
   function F:GetOverviewProjection(opts)self.lastFilters=opts;return {rows={{id=opts.scope..':quest',groupKey='quest',scope=opts.scope,rawName='任务',cycleText=opts.scope=='daily' and '日常' or '周常',status='进行中',progressText='1/2',tracked=true,available=true}},revision=1,summary={tracked=1,unfinished=1}}end
   function F:GetWidgetWindowState()return {}end;function F:GetWidgetVisible()return false end
  function F:GetRouteSettings()return {fromZone=1,toZone=2}end;function F:GetBondFilter()return {sortMode='continent',continentOrder='west_first',q20=true,q60=true,q100=true,auroria=true,excludeSame=false,priority='west'}end;function F:GetContinentOrder()return 'west_first'end
- -- Phase 0 补强（2026-09-28，test host 契约补齐）：rs_v3_life_economy_widgets.lua:439 要求跑商悬浮内容
- -- 具备 SetFrom/SetTo/SetViewMode/SelectFavorite/ToggleCurrentFavorite/ToggleTrackedProduct/QuoteRowMaterials；
- -- :700 要求债券具备 GetDisplayOrderKey/GetFilterMask/GetDuplicateMode + SetDisplayOrder/SetFilterMask/SetDuplicateMode。
- -- 本 stub 是 .298 时代的旧命令集，缺 SetViewMode/ToggleTrackedProduct/QuoteRowMaterials 与全部债券设置项，
- -- 于是 LifeEconomyContent:Create 直接返回“命令缺失”，home 套件 6 项拿不到内容卡（v3_home_trade_table=nil）。
- -- 这些命令在 features/life/trade/rs_trade_feature.lua 与 features/life/bonds/rs_bonds_feature.lua 中均真实存在，
- -- （2026-09-28，Phase 2 Step 4：原 features/life/rs_life_m16_bundle.lua 已退役）故只补桩，不改生产契约。
+ -- 首页内容卡会检查跑商和债券的命令，替身也要提供同样的接口，避免把缺桩误报成页面故障。
  function F:GetDisplayOrderKey()return 'default'end;function F:GetFilterMask()return 7 end;function F:GetDuplicateMode()return 'keep'end
  for _,k in ipairs({'SetFrom','SetTo','SetSortMode','SetRatioMode','SetCommerceMode','SetAutoRefresh','Refresh','SetViewMode','ToggleCurrentFavorite','ToggleTrackedProduct','SelectFavorite','QuoteRowMaterials','SetBondFilterOption','SetContinentOrder','SetDuplicatePriority','SetDisplayOrder','SetFilterMask','SetDuplicateMode','SetWidgetWindowState','MarkStoreDirty','SetWidgetVisible'}) do F.Commands[k]=function()return true end end
   F.Commands.QuotePendingMaterials=function(_,mode)counts.quotes=counts.quotes+1;counts.lastMode=mode;return true end

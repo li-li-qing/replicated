@@ -1,21 +1,15 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 贸易静态身份数据
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 标准贸易材料身份归本表，不放入 TradeService；compactId 仅用于旧配方兼容，itemId 才是 Auction/Inventory 使用的服务器物品身份。运行时价格禁止存于此处。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}
 local SharedItemIds=(S.GameIds and S.GameIds.Item) or {}
 local SharedBondMaterials=SharedItemIds.BOND_MATERIAL or {}
 
--- 212459 实机挂单证明普通材料的 Native itemGrade 是 0，长脑参是 3。
--- 普通图标/提示显示 Lv.1 并不代表拍卖请求品质 1，不能再用 gradeOffset+1 或缺省 1 推导身份。
--- 全表固定品质按官方 https://wiki.archerage.to/ru-cn/db/items/<itemType> 主物品品质核对；
--- 普通材料映射 Native 0，其余固定品质保留对应等级。itemGrade 才是询价/缓存的品质 Authority；
--- gradeOffset 仅保留旧资源显示兼容，不参与 Native 身份。不搬运旧品质缓存，不放宽挂单严格匹配。
+-- 实机普通材料 Native itemGrade=0，长脑参=3；图标 Lv.1 不代表请求品质 1。
+-- 固定品质按官方 https://wiki.archerage.to/ru-cn/db/items/<itemType> 核对；询价和缓存用 itemGrade，gradeOffset 仅兼容旧显示。
 local RESOURCE_AUCTION_META = {
     ["Chopped Produce"]={itemType=30898,itemGrade=0,gradeOffset=0},
     ["Ground Grain"]={itemType=30902,itemGrade=0,gradeOffset=0},
@@ -114,16 +108,14 @@ end
 
 local COST_POLICY = {
     ["Gilda Star"] = { includeInCost=false, auctionable=false, costKind="bound_resource", note="绑定制作资源；保留配方需求数量，但默认不折算金币成本", itemType=23633, gradeOffset=0 },
-    -- 用户确认 RU 当前客户端 41488 绑定且不可上架。
-    -- 222712 报告反复空列表只是症状，不作为其他材料不可交易的判据。共享运输/Live ItemID
-    -- 均读取此统一规则，保留债券真实需求，只排除拍卖询价与金币折算，不能伪造零单价。
+    -- 用户确认 RU 41488 绑定不可上架；其它材料不能仅凭空列表判为绑定。
+    -- 保留真实材料需求，只排除询价和金币折算，不能伪造零单价。
     ["Blue Salt Bond"] = { includeInCost=false, auctionable=false, costKind="bound_resource", note="绑定债券，无法上架拍卖；保留配方需求数量，未折算金币成本", itemType=SharedItemIds.BLUE_SALT_BOND, gradeOffset=0 },
     ["Quality Certificate"] = { includeInCost=false, auctionable=false, costKind="non_market", note="当前不可购买；保留配方需求数量，但不进入拍卖成本" },
 }
 
--- Live X2Craft 只保证给出 itemType，未必保留
--- English materialKey/compactId。绑定资源策略（例如德翡纳之星 23633）必须能按 ItemID 回到同一静态记录，
--- 否则静态配方正确、Live 配方却会把绑定资源误判为可拍卖材料。反向表仅在启动静态注册时构建一次。
+-- Live X2Craft 可能只给 itemType，须能反查同一材料记录，避免把德翡纳之星 23633 等绑定资源误当可拍卖。
+-- 反向索引仅在加载时构建一次。
 local materialKeyByLegacyName, materialKeyByCompactId, materialKeyByItemId = {}, {}, {}
 S.GameIds = S.GameIds or {}
 S.GameIds.TradeMaterial = S.GameIds.TradeMaterial or { ByLegacyName = {}, ByCompactId = {} }

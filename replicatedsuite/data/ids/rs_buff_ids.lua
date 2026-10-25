@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 增益与减益身份注册
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- rs_skill_effects.lua 是抓取效果数据的唯一来源；本适配层为所有已知 Buff 提供共享的 O(1) ID、名称、标签和家族查询。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Registry = S.GameDataRegistry
@@ -33,9 +30,7 @@ for buffId, buff in pairs(Library.buffs) do
             verifiedAt = "2026-08-25",
             notes = kind == "unknown" and "Buff/Debuff polarity not yet verified in-game" or nil,
         })
-        -- Registry.kind="buff" 是资源命名空间，
-        -- 不是正面效果证明。Adapter 拥有独立元数据视图，保留 Registry identity 兼容旧消费者；
-        -- effectCategory 只来自 SkillEffects 明示 kind。禁止把 unknown 用资源 kind 覆盖。
+        -- Registry.kind="buff" 只是资源命名空间；正负分类只取 SkillEffects 明示的 effectCategory，unknown 不能改成 buff。
         local entry = {}
         for key, value in pairs(record or {}) do entry[key] = value end
         entry.id, entry.name = id, type(buff) == "table" and buff.name or nil

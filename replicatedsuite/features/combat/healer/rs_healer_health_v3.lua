@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗助手健康观察
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 准确性优先的切片观察：成员仅来自 TeamRosterV3，治疗策略归 Recommendation；每 Scheduler 切片最多读取20人健康/距离，周期/定向 Aura 每片最多8人。
 -- 本文件不持久化、不拥有 OnUpdate，仅在 combat_healer 启用时由共享 Scheduler 驱动；Generation 完整暂存后原子发布；不可读 Aura 为 unknown，禁止解释为无 Buff。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}
@@ -49,6 +46,13 @@ local function Recommendation() return F.Recommendation end
 local function AuraBridge() return S.Features and S.Features.HealerAuraBridge or nil end
 local function Scheduler() return S.Scheduler end
 
+-- 名单缓存仅归此 Runtime，保存公开 GetSnapshot 返回的独立副本；不借用 Roster 成员原表，
+-- 也不把副本传给公开投影。健康/状态周期只读这些成员行，各自保留独立游标数组。
+local cachedRoster, cachedRosterRevision, cachedRosterSnapshot
+local function ClearRosterSnapshot()
+    cachedRoster, cachedRosterRevision, cachedRosterSnapshot = nil, nil, nil
+end
+
 local function DiagnosticsCount(code, delta)
     local d = S.DiagnosticsManager
     if type(d) == "table" and type(d.Count) == "function" then d:Count("healer_v3", code, delta or 1) end
@@ -63,7 +67,21 @@ end
 local function CopyMembers(target)
     target = ClearArray(target)
     local roster = Roster()
-    local snapshot = type(roster) == "table" and type(roster.GetSnapshot) == "function" and roster:GetSnapshot() or nil
+    -- 对象身份与已提交 revision 同时匹配才复用；旧宿主无 revision 或职责仍在分片时逐次读取。
+    -- 重新读取前先撤销旧缓存，防止暂时缺失的 revision 支持恢复后误用旧事实。
+    local revision = type(roster) == "table" and type(roster.GetRevision) == "function" and roster:GetRevision() or nil
+    local snapshot
+    if type(revision) == "number" and roster == cachedRoster and revision == cachedRosterRevision then
+        snapshot = cachedRosterSnapshot
+    else
+        ClearRosterSnapshot()
+        snapshot = type(roster) == "table" and type(roster.GetSnapshot) == "function" and roster:GetSnapshot() or nil
+        -- 只缓存同一完整版本；同步读取期间若名单被替换/失效，仍保留本次快照语义但不跨周期复用。
+        if type(revision) == "number" and type(snapshot) == "table" and snapshot.revision == revision
+            and Roster() == roster and roster:GetRevision() == revision then
+            cachedRoster, cachedRosterRevision, cachedRosterSnapshot = roster, revision, snapshot
+        end
+    end
     for index, member in ipairs(type(snapshot) == "table" and type(snapshot.members) == "table" and snapshot.members or {}) do
         target[index] = member
     end
@@ -145,6 +163,8 @@ end
 
 function H:Reset(reason, clearDomain)
     self:AbortCycles()
+    -- Reset/Stop 终止派生缓存生命周期；AbortCycles 只丢暂存，可继续复用准确名单。
+    ClearRosterSnapshot()
     self.statusGeneration, self.healthGeneration = 0, 0
     self.lastStatusStartedAt, self.lastHealthStartedAt = -100000, -100000
     self.metrics.runtimeResets = (tonumber(self.metrics.runtimeResets) or 0) + 1
@@ -163,9 +183,8 @@ function H:OnRosterUpdated(reason)
     -- 即使 TeamRosterV3 已不发布无变化刷新，这里仍校验成员身份；不变名单不能清空全部推荐/健康颜色。
     if changed == false then return true end
     self.metrics.rosterChanges = (tonumber(self.metrics.rosterChanges) or 0) + 1
-    -- 真实加入/退出也不能清除已提交 Generation。Reset(clearDomain=true) 会先发布空数据，随后重采需约300-600ms，导致团队覆盖/头标闪空。
-    -- 保持已提交 healthSnapshot/statusCache/recommendations 作为上一代，直至下一健康周期原子替换；中止正在迭代旧名单的周期，并预置 lastHealthStartedAt，让 Step 立即重开健康周期而非等待 healthScanMs。
-    -- statusGeneration 保持不变，Step 中状态门槛只保护启动后第一代。
+    -- 名单变化保留已提交快照直到下一代原子替换，避免清空后 300–600ms 闪烁。
+    -- 中止旧名单周期并预置 lastHealthStartedAt，让 Step 立即重开；statusGeneration 不变。
     self:AbortCycles()
     self.lastHealthStartedAt = -100000
     DiagnosticsCount("ROSTER_GENERATION_CHANGED", 1)
@@ -433,7 +452,8 @@ function H:Start(reason)
 end
 
 function H:Stop(reason)
-    if self.running ~= true then return true end
+    -- 重复 Stop 也释放私有快照，避免停用态调用留下名单引用。
+    if self.running ~= true then ClearRosterSnapshot(); return true end
     local scheduler = Scheduler()
     if type(scheduler) ~= "table" or type(scheduler.RemoveTask) ~= "function" then return false, "Suite Scheduler unavailable" end
     scheduler:RemoveTask(self.taskName)

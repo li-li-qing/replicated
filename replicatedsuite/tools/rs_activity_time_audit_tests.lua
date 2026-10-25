@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动时间审查测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅用于离线验证，运行真实活动数据层和已核实数据，不复制计时器实现。
 -- 不修改原生状态或存档；服务器时间和地图采样为可控测试边界。
-------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, why = xpcall(fn, debug.traceback)
@@ -156,5 +153,56 @@ Test('minute precision uses approximate wording while second precision uses esti
     assert(r.status:find('约',1,true) and r.status:find('后结束',1,true),r.status)
     local h2,a2=Boot({year=2026,month=9,day=18,hour=11,minute=34,second=0});local r2=Jmg(a2)
     assert(r2.status:find('预计',1,true) and r2.status:find('后结束',1,true),r2.status)
+end)
+Test('aegis war countdown targets the 84 minute spawn threshold',function()
+    for _,case in ipairs({{85*60,'1分钟后出怪',60},{84*60+1,'1分钟后出怪',1}})do
+        local h,a=Boot();h.zone={conflictState=6,remainTime=case[1]};assert(a:ScanZone(102));a:Refresh('aegis-countdown')
+        local r=assert(a:GetRow('dynamic:zone:102:aegis'),'missing Aegis countdown')
+        assert(r.status==case[2],r.status)
+        assert(not r.active and r.timelineState=='upcoming' and r.secondsUntilStart==case[3])
+        assert(r.questScope=='event' and r.questKey=='aegis')
+    end
+end)
+Test('aegis reports spawned at 84 minutes and elapsed whole minutes afterwards',function()
+    for _,case in ipairs({{84*60,'已经出怪',600},{84*60-59,'已经出怪',541},
+        {83*60,'已出怪1分钟',540},{75*60,'已出怪9分钟',60},{74*60+1,'已出怪9分钟',1}})do
+        local h,a=Boot();h.zone={conflictState=6,remainTime=case[1]};assert(a:ScanZone(102));a:Refresh('aegis-spawned')
+        local r=assert(a:GetRow('dynamic:zone:102:aegis'),'missing Aegis spawned row')
+        assert(r.status==case[2],r.status)
+        assert(r.active and r.timelineState=='active' and r.secondsUntilEnd==case[3])
+        assert(not r.status:find('后结束',1,true),'spawn elapsed time must not be an end countdown')
+    end
+end)
+Test('aegis removes only the derived activity when ten minutes after spawn have elapsed',function()
+    for _,remain in ipairs({74*60,73*60})do
+        local h,a=Boot();h.zone={conflictState=6,remainTime=remain};assert(a:ScanZone(102));a:Refresh('aegis-expired')
+        assert(a:GetRow('dynamic:zone:102:aegis')==nil,'Aegis survived its ten minute display window')
+        local live=assert(a:GetRow('zone:102'),'live zone state was removed with the activity')
+        assert(live.presentationSection=='live' and live.status:find('战争',1,true))
+    end
+end)
+Test('aegis conflict countdown includes the six war minutes before spawn',function()
+    local h,a=Boot();h.zone={conflictState=5,remainTime=60};assert(a:ScanZone(102));a:Refresh('aegis-conflict')
+    local r=assert(a:GetRow('dynamic:zone:102:aegis'),'missing Aegis conflict countdown')
+    assert(r.status=='7分钟后出怪',r.status)
+    assert(not r.active and r.secondsUntilStart==7*60)
+end)
+Test('aegis crosses spawn and expiry boundaries using the existing sampled zone clock',function()
+    local h,a=Boot();h.zone={conflictState=6,remainTime=84*60+1};assert(a:ScanZone(102));a:Refresh('before-spawn')
+    assert(a:GetRow('dynamic:zone:102:aegis').status=='1分钟后出怪')
+    local calls=h.mapCalls;h.ms=1000;a:Refresh('spawn')
+    assert(a:GetRow('dynamic:zone:102:aegis').status=='已经出怪')
+    assert(h.mapCalls==calls,'projection added a native zone read')
+    h.zone.remainTime=74*60+1;assert(a:ScanZone(102));a:Refresh('before-expiry')
+    assert(a:GetRow('dynamic:zone:102:aegis').status=='已出怪9分钟')
+    calls=h.mapCalls;h.ms=2000;a:Refresh('expiry')
+    assert(a:GetRow('dynamic:zone:102:aegis')==nil)
+    assert(h.mapCalls==calls,'expiry added a native zone read')
+end)
+Test('aegis never derives spawn status from unavailable or stale zone timing',function()
+    local h,a=Boot();h.zone={conflictState=6,remainTime=-1};assert(a:ScanZone(102));a:Refresh('aegis-invalid')
+    assert(a:GetRow('dynamic:zone:102:aegis')==nil)
+    h.zone.remainTime=83*60;assert(a:ScanZone(102));h.ms=21000;a:Refresh('aegis-stale')
+    assert(a:GetRow('dynamic:zone:102:aegis')==nil)
 end)
 print(string.format('RESULT %d passed, %d failed',pass,fail));if fail>0 then os.exit(1)end

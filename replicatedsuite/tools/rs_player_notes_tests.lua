@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 人员备注测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实 Persistence / Factory 的备注事务回归，Native 团队和目标为边界替身，不写用户文件。
-------------------------------------------------------------------------
 local H=dofile('tools/rs_udf_numeric_test_host.lua')
 local S,P=H.Boot();S.SafeTraceback=debug.traceback
 S.FeatureRuntime={RegisterImplementation=function()return true end}

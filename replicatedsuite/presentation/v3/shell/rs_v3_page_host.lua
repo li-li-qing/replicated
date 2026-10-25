@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 页面生命周期宿主
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 页面工厂按语义路由注册；PageHost 延迟创建并保留页面，所有页面间转换经 Router 返回。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -25,10 +22,8 @@ S.UIV3.PageHost = {
     pageOrder = {},
     activeRoute = nil,
     context = nil,
-    -- 约束（2026-09-18，module-diagnostics-header-1）：buildContext 只在页面工厂
-    -- 同步构建期间存在，用来把 FeatureRegistry 的 moduleId 传给 DesignSystem。它不是运行时
-    -- Feature Authority，也不得跨帧缓存；页面构建成功/失败都必须恢复 previousContext，避免
-    -- 后一个页面错误继承前一个模块的诊断入口。
+    -- buildContext 只在工厂同步构建期间传递 moduleId；成功或失败都恢复 previousContext，
+    -- 不能跨帧缓存，否则后建页面会继承前一模块的诊断入口。
     buildContext = nil,
     failedPages = {},
     stats = {
@@ -67,7 +62,7 @@ function H:Attach(parent)
     self.root = parent
     local controls = S.UIV3.ModuleControlsV3
     if controls then
-        -- 维护（module-controls-diag-2）：工具条固定占一行，正文独立Fill；不侵入ScrollBox也不改Native父级。
+        -- 工具条固定占一行，正文独立Fill；不侵入ScrollBox也不改Native父级。
         self.frame = RSUI:VerticalBox({ id = "v3_page_frame", parent = parent, gap = 6,
             slot = { hAlign = "fill", vAlign = "fill" } })
         if not self.frame then return false, "page_frame_failed" end
@@ -89,22 +84,10 @@ function H:GetBuildContext()
     return { route = row.route, moduleId = row.moduleId, feature = row.feature, controlBar = row.controlBar }
 end
 
-------------------------------------------------------------------------
--- 活跃页面 Feature Consumer 的生命周期桥。
---
--- 约束（2026-09-25，page-feature-consumer-lifecycle-1）：
--- FeatureRuntime 是 Enabled/Disabled 唯一 Authority。Feature:Disable() 会先清空其 Demand，随后才发布
--- `v3.feature.lifecycle=disabled`。过去很多已打开页面只记一份 `consumerHeld=true`，却不监听这个
--- 生命周期事实；功能方案关闭模块后，真实 Demand 已归零而页面旗标仍为 true，再次启用时页面不会
--- Acquire，形成“开关显示已开、实际采集/查询没有恢复”的假开启。
---
--- 本桥只服务当前可见页面的 Presentation Consumer：
--- * 不直接启停 Feature，不写 v3.features，不成为第二生命周期 Authority；
--- * disabled 事件只同步本地 lease 事实并刷新 UI，绝不对已被 Domain 清掉的 token 再 Release；
--- * enabled 事件在页面仍订阅期间重新 Acquire 同一 token；Demand token 幂等，避免重复 lease；
--- * 页面离开时优先用 Demand:Has 校验真实持有状态，防止 stale boolean 导致 `consumer not held`；
--- * 全部发生在页面激活/生命周期边沿，无 Tick、无轮询、无 Native 查询放大。
-------------------------------------------------------------------------
+-- Feature Disable 先清 Demand 再发 disabled。页面若只保留 consumerHeld=true，
+-- 再次启用时就不会重取需求，出现开关已开却未采集的情况。
+-- 此桥只管当前可见页：disabled 同步旗标，enabled 幂等重取同一 token；
+-- 离页先用 Demand:Has 查真实持有关系，不能对已清掉的 token 再 Release。
 local function FeatureConsumerHeld(feature, token, fallback)
     local demand = type(feature) == "table" and feature.Demand or nil
     if type(demand) == "table" and type(demand.Has) == "function" then
@@ -152,8 +135,7 @@ function H:ReleaseFeatureConsumer(page, options, reason)
     local token = tostring(options.token or "")
     if type(page) ~= "table" or type(feature) ~= "table" or token == "" then return false, "invalid page feature consumer release" end
 
-    -- Runtime 已关闭时，Feature Disable 契约已经清空 Demand。这里只同步 Presentation 旗标，
-    -- 不能再发一次 Release；否则严格 Demand 会返回 `consumer not held` 并把正常页面退出误判为故障。
+    -- Disable 已清空 Demand，只同步页面旗标；再次 Release 会误报 consumer not held。
     if featureId ~= "" and S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled(featureId) ~= true then
         self.stats.consumerReleaseSkips = (tonumber(self.stats.consumerReleaseSkips) or 0) + 1
         page.consumerHeld = false
@@ -230,10 +212,8 @@ function H:CreatePage(route)
 
     local controlBar
     local ok, page, detail = RSUI:WithBuildScope("page:" .. route, function()
-        -- 约束（2026-09-18）：PageHeader 的诊断按钮必须自动知道当前 Feature，
-        -- 但不能要求每个业务页面手工传 moduleId。这里以页面工厂同步调用栈作为唯一边界；
-        -- xpcall 确保 factory 抛错时 buildContext 也一定恢复。禁止把 buildContext 留到页面
-        -- 激活/Refresh 阶段，否则异步 UI 会串模块并把错误报告归错 Owner。
+        -- 同步工厂调用期间传递诊断 moduleId，xpcall 后必恢复上下文。
+        -- 不能留到激活或 Refresh 阶段，否则异步 UI 会把报告归给错误模块。
         local previousBuildContext = self.buildContext
         if self.controlsSwitcher and S.UIV3.ModuleControlsV3 then
             local controlErr
@@ -328,7 +308,8 @@ function H:Navigate(route, context)
         return true
     end
 
-    -- 当前页面释放 Consumer 前先准备目标路由，畸形目标不能拆掉正在使用的页面；OnRoute 仅负责表现，不获取运行资源，OnActivated 才是生命周期边界。
+    -- 先准备目标路由再释放当前 Consumer，畸形目标不能拆掉正在使用的页面。
+    -- OnRoute 只处理表现，OnActivated 才获取资源。
     if type(page.OnRoute) == "function" then
         local ok, routeResult, routeErr = xpcall(function() return page:OnRoute(nextContext) end, S.SafeTraceback)
         if not ok then
@@ -341,12 +322,13 @@ function H:Navigate(route, context)
         end
     end
 
-    -- 下拉弹层物理父节点为 UIParent，以越过页面 ScrollBox/卡片裁切；成功路由转换须在隐藏旧页面前关闭这些临时表现窗口，事件驱动且没有 Tick/扫描任务。
+    -- 下拉弹层挂 UIParent 以绕过页面裁切；成功切页前须先关闭，隐藏旧页面不会自动隐藏它。
     if RSUI.DropdownService ~= nil and type(RSUI.DropdownService.CloseAll) == "function" then
         RSUI.DropdownService:CloseAll()
     end
 
-    -- 重选当前路由应幂等；WidgetSwitcher 切到同页的无变更返回不能当成导航拒绝。保留上方 OnRoute 接受新上下文，不拆除/重新获取 Consumer，也不产生激活/停用抖动。
+    -- 重选当前路由仍传递 OnRoute 上下文，但不重取 Consumer 或触发停用、激活；
+    -- switcher 的无变更返回也不能当作导航拒绝。
     if previousPage == page and previousRoute == route then
         self.activeRoute = route
         self.context = nextContext

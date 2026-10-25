@@ -1,11 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态追踪悬浮组件
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并约束：先检查冲突标记、toc.g 加载清单完整性与 Lua 语法，再做运行时验收。
--- 权威归属、调用链和存档协议由实现负责，不能通过清配置、跳过加载或恢复 Legacy 绕过错误。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -15,7 +10,7 @@ local Floating = RSUI and RSUI.FloatingSurface or nil
 if type(RSUI) ~= "table" or type(Host) ~= "table" or type(Feature) ~= "table" or type(Floating) ~= "table" then return end
 
 local ID, OWNER = "combat.buff_display", "v3:widget:buff_display"
--- 维护：新增筛选/操作行需要可操作最小尺寸；旧位置/透明度原样保留，过小旧尺寸仅按政策钳制。
+-- 新增筛选/操作行需要可操作最小尺寸；旧位置/透明度原样保留，过小旧尺寸仅按政策钳制。
 local function Policy() return { defaultWidth = 430, defaultHeight = 300, minWidth = 330, minHeight = 220, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1, defaultTextOpacity = 1 } end
 local function Persist(reason) return Feature.Commands:MarkStoreDirty(250, "widget_" .. tostring(reason or "state")) end
 
@@ -25,7 +20,7 @@ local function CreateWidget()
     if surface == nil then return nil, err or "状态显示悬浮窗创建失败" end
     instance.surface, instance.shell, instance.window, instance.root, instance.windowController = surface, surface.shell, surface.window, surface.shell.root, surface.windowController
     local content = RSUI:VerticalBox({ id = "v3_buff_display_widget_content", parent = surface:GetContentRoot(), gap = 4, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
-    -- 维护（compact-tracker-1）：复用Feature管理投影/持久化命令，不创建第二套Aura监听或追踪Store。
+    -- 复用Feature管理投影/持久化命令，不创建第二套Aura监听或追踪Store。
     -- 窗口视图是会话状态；已有位置/透明度不重置。实时与留存视图明确分开，不停正式HUD。
     instance.view,instance.scope,instance.filter,instance.query="live","all","all",""
     local views=RSUI:HorizontalBox({id="v3_buff_widget_views",parent=content,gap=4,slot={size="fixed",height=26}})
@@ -88,12 +83,10 @@ local function CreateWidget()
             {id="time",title="剩余",field="timeText",size="fixed",width=50,minWidth=42},
             {id="tracked",title="追踪位置",field="trackedText",size="fixed",width=112,minWidth=90}},
         slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
-    -- 约束（tracking-scope-v1）：小窗复用同一四通道命令，不创建第二套追踪状态。
+    -- 小窗复用同一四通道命令，不创建第二套追踪状态。
     -- 行激活仅选择；通道按钮才跨 Persistence boundary。关闭小窗不会影响正式 HUD Consumer。
     local scopeActions=RSUI:HorizontalBox({id="v3_buff_widget_scope_actions",parent=content,gap=4,slot={size="fixed",height=27,hAlign="fill"}})
-    -- 约束（tracking-toggle-label-v1）：悬浮窗与主页面必须读取同一个追踪 Authority，
-    -- 不能各自缓存“是否已追踪”。这里仅把下一次点击的动作显式显示为“设为/取消”，
-    -- Commands:SetTrackedChannel 仍是唯一写边界；关闭窗口、刷新投影或旧存档恢复都不会改变语义。
+    -- 追踪状态与主页面共用投影；按钮只显示下一次“设为/取消”动作，经 SetTrackedChannel 提交。
     local defs={
         {id="v3_buff_widget_player_buff",scope="player",category="buff",setLabel="设为自身 Buff",unsetLabel="取消自身 Buff",status="自身·Buff"},
         {id="v3_buff_widget_player_debuff",scope="player",category="debuff",setLabel="设为自身 Debuff",unsetLabel="取消自身 Debuff",status="自身·Debuff"},

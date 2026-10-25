@@ -1,14 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 实时契约状态测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 2026-09-30，live-contract-state-1：实机两个误报的真实状态回归。
--- 只在 tools 运行，不进入 TOC。加载真实 Boss Feature、Buff Store/Feature/目录、
--- UI 声明和 FoundationGate；仅 Native、磁盘、宿主时钟与观察事实使用离线替身。
--- 禁止给“合规替身”手填 _bossDiag 或把生产 Catalog 降为 v1 来制造通过。
--- 修复前必须复现 boss_diagnostics_projection_missing / schema8_tracking_modules_missing。
-------------------------------------------------------------------------
+-- 复现首领诊断和状态目录的误报，加载真实功能与门禁，不手填诊断字段或降低目录版本。
+-- 原生接口、磁盘、时钟和观察事实由测试提供。
 local passed, failed = 0, 0
 local BOSS_CASE = 'v3_combat_boss_alerts_hud_contract'
 local BUFF_CASE = 'v3_m16_18_4_buff_display_statusmap_contract'

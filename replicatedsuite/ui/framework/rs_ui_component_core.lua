@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 组件核心与构建事务
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- UI Factory 与 UI Framework Diff/Lifecycle 上的公开组件层；已有标准组件时业务模块应经 S.RSUI 构造，不直接操作 ArcheAge 原生控件。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI = S.UI
@@ -205,7 +202,6 @@ RSUI.ReparentPolicyContractVersion = 1
 RSUI.NativeReparentSupported = false
 
 -- 事件驱动失效队列。
---
 -- 数据驱动组合控件的 Collapsed/Visible 变化需自动重新布局，不能等待外部整页 Layout 留下空隙；
 -- 仅最高层逻辑 RSUI 根入队，由现有 Suite Scheduler 执行有界 one-shot，不添加永久 Tick。
 RSUI.layoutQueue = setmetatable({}, { __mode = "k" })
@@ -497,10 +493,8 @@ local function SafeInvoke(label, fn, ...)
         end
         return false, err
     end
-    -- 维护（gear-plan-editor-1）：and/or把显式false折叠成nil，Button将nil视为
-    -- 无返回值成功，造成同名/保存拒绝仍被报告已接受。Callback只负责异常边界，
-    -- 业务布尔值属于调用者Authority；保持true/nil/false原样，不改变多返回值契约。
-    -- 影响所有RSUI回调，必须回归按钮/表单拒绝，不能靠页面特殊补丁掩盖此边界错误。
+    -- and/or 会把显式 false 折成 nil，而 Button 将 nil 当无返回值成功。
+    -- 必须原样传递 true/nil/false 及多返回值，否则保存拒绝也会显示已接受。
     if result == nil then return true, nil end
     return true, result[1]
 end
@@ -665,9 +659,8 @@ function Base:AddChild(component, slot)
     return component, true
 end
 
--- 个人工作台（2026-09-18）：同一 Parent 内的纯顺序修改。先验证完整输入再提交，
--- 不调用 RemoveChild（它会销毁）、不 Reparent、不重新创建 Native；slots 与 children 同步。
--- 未列出的已有子项保持末尾原顺序，便于保留 Scrollbar 等结构子项；跨父/重复项失败不动原数组。
+-- 只调整同一 Parent 内顺序，先验证再提交；RemoveChild 会销毁，不能用来重排。
+-- slots 与 children 同步，未列项留在末尾保持原序，跨父或重复项拒绝时不改原数组。
 function Base:ReorderChildren(ordered)
     if self.released or type(ordered) ~= "table" then return false, "invalid_order" end
     local nextChildren, seen, rank, owned = {}, {}, {}, {}
@@ -710,7 +703,7 @@ function RSUI:ApplyOpacityChannels(component, backgroundOpacity, textOpacity)
         visited = visited + 1
         if background ~= nil then
             node.appearanceBackgroundOpacity = background
-            -- 约束（2026-10-09）：包装式多行 Text 的 Native 子行不在逻辑 children 中，交给组件一起继承透明表面文字样式。
+            -- 包装式多行 Text 的 Native 子行不在逻辑 children 中，交给组件一起继承透明表面文字样式。
             if type(node.ApplyBackgroundOpacity) == "function" then node:ApplyBackgroundOpacity(background)
             elseif theme ~= nil and type(theme.SetBackgroundOpacity) == "function" then theme:SetBackgroundOpacity(node.root, background) end
         end
@@ -722,8 +715,7 @@ function RSUI:ApplyOpacityChannels(component, backgroundOpacity, textOpacity)
                 theme:SetTextOpacity(node.root, text)
             end
         end
-        -- 约束（2026-10-09）：组件显式登记的原生标题/标题底板不在 children 中；仅处理 owner 登记列表，
-        -- 不扫描 Native 父子树，也不改布局/输入。背景与文字通道仍独立，延迟挂接复用本入口。
+        -- 标题和底板不在 children 中，只处理 owner 显式登记列表，不扫描 Native 树；晚挂接也复用此入口。
         for _, widget in ipairs(type(node.appearanceWidgets) == "table" and node.appearanceWidgets or {}) do
             if theme ~= nil then
                 if background ~= nil and type(theme.SetBackgroundOpacity) == "function" then theme:SetBackgroundOpacity(widget, background) end

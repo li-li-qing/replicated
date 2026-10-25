@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 单位身份事实
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 战斗与目标消费者共享保守身份事实，不拥有阵营、关系或 PVP-PVE 业务分类。稳定 ID 仅接受原生 getter；
 -- COMBAT_MSG raw unit ID 只有 GetUnitNameById 精确验证一个可见端点名称后，才绑定 source/target。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}

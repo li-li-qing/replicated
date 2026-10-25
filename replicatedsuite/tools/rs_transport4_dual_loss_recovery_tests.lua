@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 传输协议4双副本丢失恢复测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 维护（2026-09-17，RU v4 双副本同段丢失回归）：
--- schema7->8 会把旧全局追踪复制到 player/target；实机可能在两个 v4 vector 表中都丢失同一 pN，
--- 此时“另一 scope 作为 twin”也不够。测试只允许从已声明导入的静态 Catalog 构造有限候选，
--- 且生产 Load 后仍必须通过原 envelope + canonical fingerprint，禁止猜测用户 ID。
-------------------------------------------------------------------------
+-- schema7 升级后，自身和目标副本可能同时丢掉同一个 pN，互相补齐也无效。
+-- 只从已声明导入的目录生成有限候选，并以原 envelope 和内容指纹认证，不能猜用户 ID。
 local passed,failed=0,0
 local function Test(name,fn)
  local ok,err=xpcall(fn,function(e)return tostring(e)..'\n'..debug.traceback()end)
@@ -27,7 +22,7 @@ local function Boot(options)
  local F=S.Features.BuffDisplay;return S,F,S.Persistence,io
 end
 
--- 中文维护（2026-10-07）：旧 transport 恢复用例直接验证仍注册的 Legacy Store/Core，
+-- 旧 transport 恢复用例直接验证仍注册的 Legacy Store/Core，
 -- 不再把当前 ImportBuiltinPack 的 A/B 提交误当旧 monolith 保存。这里只生成合成故障夹具，
 -- 不替代 schema5 冻结 canonical/hash 金样，也不修改原章或 production Feature mutation。
 local function LegacyLoad(P)

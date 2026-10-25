@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 任务悬浮组件
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅负责表现内容，共享 HUD 状态由 RSUI FloatingSurface 绑定。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -239,9 +236,7 @@ local ok, registerErr = Host:Register(WIDGET_ID, {
 })
 if ok ~= true then error(registerErr) end
 
-------------------------------------------------------------------------
 -- 生命周期响应归表现层，与 Activity 组件一致；Domain 发布事实，组件执行显隐。
-------------------------------------------------------------------------
 if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
     Host:BindFeatureLifecycle(WIDGET_ID, {
         featureId = "life_tasks",

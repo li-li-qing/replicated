@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 制作原生窗口观察
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 制作窗口只读桥连接已验证原生事实与 V3 Presentation，不拥有配方、背包、拍卖查询或 UI。仅在 tools_craft 显
--- 式启用自动侧栏时观察三个受治理 UIC；只用 ADDON:GetContent/GetContentMainScriptPosVis，有界候选顺序
--- MAKE_CRAFT_ORDER -> CRAFT_ORDER -> CRAFT_BOOK，不订阅未验证事件。四返回值版本须有 Content/parent 可见性肯
--- 定事实，几何不足以证明打开；观察循环不调用背包或制作 getter。
-------------------------------------------------------------------------
+-- 仅 tools_craft 开启自动侧栏时观察 MAKE_CRAFT_ORDER→CRAFT_ORDER→CRAFT_BOOK，不读取配方或背包。
+-- 四返回值版本还须 content/parent 明确可见；旧矩形不能证明窗口打开。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -120,9 +115,7 @@ local function ResolveContentRect(content, logicalWidth, logicalHeight)
     for depth = 0, 8 do
         if node == nil then break end
         if S.Layout ~= nil and (type(S.Layout.ResolveViewportLogicalRect) == "function" or type(S.Layout.GetLogicalRect) == "function") then
-            -- （2026-09-22，external-surface-geometry-1）外部原生内容坐标最终用于 UIParent 侧栏锚定，
-            -- 必须优先走已校准的 viewport-logical-v1；旧 GetLogicalRect 会在部分 RU UI Scale 语义下
-            -- 重复除缩放。兼容测试/旧引导环境时才退回 legacy helper，不改变 Native ADDON Authority。
+            -- 外部几何优先用 Layout 的 viewport-logical-v1，避免旧 GetLogicalRect 重复除缩放；旧引导/测试才用兼容入口。
             local ok, x, y, width, height = pcall(function()
                 if type(S.Layout.ResolveViewportLogicalRect) == "function" then return S.Layout:ResolveViewportLogicalRect(node) end
                 return S.Layout:GetLogicalRect(node)

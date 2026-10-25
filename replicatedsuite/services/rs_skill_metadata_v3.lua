@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 技能元数据
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 共享惰性技能元数据解析供 Presentation 下钻；战斗回调绝不调用。X2Skill 读取延迟到用户打开或刷新技能详情，
 -- 有界缓存同时保留成功与负结果。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -24,8 +21,7 @@ local M = {
     nativeLookups = 0,
     nativeFailures = 0,
     evictions = 0,
-    -- （2026-09-28，native-dependency-ownership-4）X2Skill 是 lazy 子能力，
-    -- 只在用户真正打开技能明细/刷新时导入；owner 由本服务自己持有，失败 fail-soft。
+    -- 技能详情实际需要时才惰性导入 X2Skill，owner 由本服务持有。
     nativeOwnerId = "service.skill_metadata_v3",
     nativeSkillLease = false,
     nativeSkillLeaseState = "idle",
@@ -110,10 +106,7 @@ function M:_Store(id, row)
     self.order[#self.order + 1] = { key = key, serial = self.serial }
     return row
 end
--- （2026-09-28，native-dependency-ownership-4，FND-016 收口）X2Skill namespace 的
--- ImportAPI numeric id 已由客户端 API_TYPE 枚举副本确认为 35（证据链见 native/rs_native_contract.lua 的
--- SKILL 行）。这里在“真正需要 Native 明细”时 lazy 取得 owner，成功才可能有 X2Skill 全局；
--- 失败仍然只用 catalog/fallback 结果，不抛错、不阻断状态 HUD 或页面构建。
+-- X2Skill ID=35 的来源见 native/rs_native_contract.lua。导入失败仍用 catalog/fallback，不阻断 HUD 或页面。
 function M:_EnsureNativeSkillLease()
     if self.nativeSkillLease == true then return true end
     local imports = S.ApiImports

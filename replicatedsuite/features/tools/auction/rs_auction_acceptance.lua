@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖助手契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 验证拍卖Feature自身查询、Sidecar和工作区接口，保留所有版本下限；实现缺失不得静默返回，失败为blocker，由sequence_harness报告。
 -- AuctionQueryV3、AuctionSurfaceV3、AuctionSidecar、AuctionSessionListV3、DailyAuctionMaterialsV3、QuestProgressV3等Service/UI契约仍归Foundation。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
@@ -14,7 +11,7 @@ local F = S.Features and S.Features.tools_auction or nil
 
 local function Fail(message) return false, tostring(message or "auction_acceptance_failed") end
 
--- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 运行时只做只读诊断；完整序列测试仅离线执行。
 G:RegisterSequenceCase("v3_tools_auction_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     -- v3_auction_query_contract 的 Feature 侧

@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 副本浏览身份注册
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- ID 命名空间必须分开：databaseZoneId 是 ArcheRage 数据库 Map Zone ID，runtimeInstanceId 是 X2BattleField 的运行时副本类型 ID。
 -- 二者不能互换。下列 RU 数据库地区 ID 已核实；runtimeInstanceId 在客户端 API 提供并验证前保持 nil。QuestService 运行时发现仍按需使用本地化 matchNames 别名。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 if S.GameDataRegistry == nil then return end
@@ -100,7 +97,7 @@ RegisterInstanceZone("greaterKroloalCradle", 88, "Greater Kroloal Cradle")
 RegisterInstanceZone("greaterSharpwindMines", 87, "Greater Sharpwind Mines")
 RegisterInstanceZone("greaterHowlingAbyss", 58, "Greater Howling Abyss")
 
--- 会话内记录实机观察的 X2BattleField entry.type，不将其提升为已验证静态 ID。runtimeInstanceId 属于独立服务器命名空间，持久化或纳入静态表必须另行审查。
+-- entry.type 只作会话观察，不能直接写入静态 runtimeInstanceId；它与数据库地区 ID 属不同命名空间。
 function I:ObserveRuntimeCandidate(key, runtimeInstanceId, runtimeName)
     local row = self.ByKey[tostring(key or "")]
     runtimeInstanceId = tonumber(runtimeInstanceId)
@@ -154,7 +151,7 @@ function I:GetByDatabaseZoneId(databaseZoneId)
     return self.ByDatabaseZoneId[tonumber(databaseZoneId)]
 end
 
--- 仅供诊断的快照，禁止用于逐帧副当前询。
+-- 仅供诊断快照，不用于逐帧副本查询。
 function I:Describe()
     local databaseVerified, runtimeVerified, runtimePending, runtimeObserved, runtimeObservedConflicts = 0, 0, 0, 0, 0
     for _, row in pairs(self.ByDatabaseZoneId or {}) do

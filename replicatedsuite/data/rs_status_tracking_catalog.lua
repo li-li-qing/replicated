@@ -1,27 +1,16 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态追踪目录
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 只读追踪目录，静态数据是身份 Authority，Feature 才拥有用户选择。
--- 原因：实时 Aura 列表无法管理当前未出现的状态，新用户也不应逐职业手工拼 ID。
--- 数据流：SkillEffects / CombatAbilityCatalog / Plates -> 一次编译索引 -> Feature 投影。
--- 兼容：控制标签沿用现有名称推断，仅用于导航，绝不把它升级成已确认 Debuff；欢乐为空。
--- 性能：本文件只在 TOC 加载时扫描数据；渲染和 50ms 更新只按索引查，不匹配 Tag/名称。
--- 导入是一次性复制；这里没有用户 State、Native 调用、自动补齐或后台任务。
-------------------------------------------------------------------------
+-- 将 SkillEffects、CombatAbilityCatalog、Plates 编成只读索引，供管理当前未出现的状态；用户选择由 Feature 保存。
+-- 控制名称推断只用于导航，不等于已确认 Debuff；欢乐暂空。导入只复制一次，不自动补齐用户列表。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 S.Data=S.Data or {}
 local Library=S.Data.SkillEffects or {}
 local Ability=S.Data.CombatAbilityCatalog or {}
 local Plates=S.GameIds and S.GameIds.Plates or {}
---
--- 问题：一键加入追踪使用 importedPacks 水位做增量导入，但旧目录把所有后加 ID 都固定
--- introducedVersion=1。已经导入过 v1 的用户再次点击时，这些新 ID 会被误判为“旧条目/用户主动删除”
--- 而被跳过。Authority 仍由 Catalog 的版本元数据决定，不读取用户实时 Aura，也不全量复活旧选择。
--- v2 当前仅声明 853 为新增目录项：v1 老用户只补 853；新用户 since=0 时仍导入完整目录。
--- 后续新增内置 ID 必须同时登记 introducedVersion，禁止只改 SkillEffects 后忘记升级目录水位。
+-- 新增内置 ID 须登记 introducedVersion，否则已导入旧包的用户会被误判为主动删除，无法增量补入。
+-- v2 只新增 853：v1 用户仅补这一项，since=0 的新用户仍导入完整目录。
 local EFFECT_INTRODUCED_VERSION = {
     [853] = 2,
 }
@@ -92,9 +81,7 @@ for _,seed in ipairs(Plates.ImportantCooldownEntries or {}) do
     C.ByKey[row.key]=row;local pack=kind=="mate" and mate or glider
     pack.entries[#pack.entries+1]=row;C.counts.cooldowns=C.counts.cooldowns+1
 end
--- 旧 all 只有职业效果，隐藏/特殊规则另散在分类中。
--- Catalog 只汇总 ID，不启动冷却或改用户选择；旧包 key/version 原样保留，防止旧导入水位变化。
--- 新用户默认 recommended 是全部已知状态的去重并集；未完成技能 CD 不混进 Buff/Debuff 主入口。
+-- recommended 为全部已知状态的去重并集，不混入技能 CD；旧包 key/version 保留，避免改变导入水位。
 local recommended=Pack("recommended","全部内置 Buff / Debuff（推荐）","一次加入全部内置状态；未知类型自动识别，取消项仅在主动重新导入时恢复。")
 for _,row in pairs(C.ByEffectId) do recommended.entries[#recommended.entries+1]=row end
 table.remove(C.PackOrder,#C.PackOrder);table.insert(C.PackOrder,1,"recommended")

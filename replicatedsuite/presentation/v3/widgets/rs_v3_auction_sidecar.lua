@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖行侧栏
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 原生拍卖行的表现侧栏：初始位置/可见性来自 AuctionSurfaceV3，用户位置使用独立 Store。持久收藏归 tools_auction；
 -- 日常任务事实归 QuestProgressV3/DailyAuctionMaterialsV3；临时购物组归 AuctionSessionListV3。
 -- 不执行后台拍卖搜索；查询仅由明确点击触发，经 tools_auction -> AuctionSearchBridgeV3 -> AuctionQueryV3。原生 EditBox 同步仅尽力处理。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -44,7 +41,7 @@ local function NormalizePosition(value)
     local out={userMoved=value.userMoved==true}
     -- 缺失字段保持缺失，已发布 schema1 的自由坐标 canonical 不补默认；schema2 才保存缩小状态。
     if value.minimized~=nil then out.minimized=value.minimized==true end
-    -- 维护：小锁属于原独立 Presentation Store；只保留显式 true，旧档缺省和解锁仍缺键，避免改变已发布 canonical。
+    -- 小锁属于原独立 Presentation Store；只保留显式 true，旧档缺省和解锁仍缺键，避免改变已发布 canonical。
     if value.locked==true then out.locked=true end
     if out.userMoved then
         if value.coordinateSpace=="logical-edge-v1" then
@@ -118,24 +115,14 @@ local function SessionService()
 end
 
 local function SidecarPreferenceEnabled()
-    -- 约束（2026-09-15，Sidecar 偏好读取边界）：悬浮助手是否启用属于
-    -- tools_auction Feature 永久偏好，Controller 只读公开 facade，不直接读取 Feature 的私有 State / Store。
-    -- facade 缺失时仅为旧实现兼容而默认 true；当前 Gate 会阻断正式包缺失该契约。
+    -- sidecarEnabled 从 tools_auction 公开接口读取；缺接口时默认 true 仅供旧实现兼容，正式包由 Gate 检查。
     if type(Feature.IsSidecarEnabled) ~= "function" then return true end
     return Feature:IsSidecarEnabled() == true
 end
 
--- 约束（2026-09-15，拍卖主页面 Sidecar 入口）：
--- 维护约束：拍卖助手随 AuctionSurfaceV3 在原生拍卖行打开时自动显示；用户手动关闭后，
--- 当前会话 dismissed=true，主页面应读取控制状态并通过受控入口重新打开。
--- 权威归属/数据流：原生拍卖行可见性仍只来自 AuctionSurfaceV3 -> OnSurface；Widget 可见性仍只由
--- WidgetHost 管理。这里仅暴露 detached 的只读控制状态和显式用户动作 RequestShow，Presentation
--- 不直接改 Host、dismissed 或 SurfaceService。收藏/今日任务/临时清单数据 Authority 完全不变。
--- 兼容边界：新增的永久 sidecarEnabled 由 tools_auction Feature 持有，旧 payload 缺字段默认 true；
--- Controller 不写 Store。dismissed 仍只是本次原生拍卖行打开期间的一次性 Session 状态，两者不可混用。
--- 实现理由：主页面和 Sidecar 同属 Presentation，使用一个轻量 ControlTopic 只同步 UI 状态，避免为了
--- 一个按钮复制第二套生命周期。风险：后续若增加新的 Sidecar 隐藏来源，也必须经 Controller 发布状态，
--- 否则主页面按钮文案可能暂时落后；严禁绕过 RequestShow 直接 WidgetHost:SetVisible。
+-- 原生拍卖行打开时助手自动显示；手动关闭设本次会话 dismissed，主页面可经 RequestShow 恢复。
+-- 永久 sidecarEnabled 与会话 dismissed 分开，缺省 true 兼容旧行为。
+-- 只读控制状态经 ControlTopic 同步；新增隐藏路径也须发布，不能绕过 Controller 直接改 WidgetHost。
 function Controller:GetControlState()
     local enabled = SidecarPreferenceEnabled()
     local nativeVisible = self.nativeVisible == true
@@ -180,11 +167,8 @@ end
 local function FavoriteRows()
     local projection = Feature:GetProjection() or {}
     local out = {}
-    -- 约束（2026-09-14，收藏稳定选择）：永久 Store 仍是历史 string[]，这里用 keyword 生成
-    -- Presentation key，而不是 favoriteIndex。排序后 index 会变化，但 keyword 唯一，所以删除/移动不会误操作别行。
-    -- 约束（2026-09-30，presentation-private-state-1）：收藏列表改走 Feature 的公开只读
-    -- facade，不再直接读 State 私有字段 —— Presentation 只消费投影/公开入口，不碰事实本体。
-    -- 返回的已是重新归一后的新表，改它不会写回持久化。
+    -- 收藏索引会随排序变化，用唯一 keyword 作选择键，避免删除、移动错行。
+    -- 列表经 Feature 公开接口取得，返回副本不回写存档。
     for _, keyword in ipairs(type(Feature) == "table" and type(Feature.GetFavorites) == "function" and Feature:GetFavorites() or {}) do
         keyword = tostring(keyword or "")
         if keyword ~= "" then
@@ -210,7 +194,7 @@ local function DailyRows()
         local taskTitle = Trim(task.title)
         if taskTitle == "" then taskTitle = qid > 0 and ("居民做货任务 #" .. tostring(qid)) or "居民做货任务" end
         local recipes = type(task.recipes) == "table" and task.recipes or {}
-        -- 约束（2026-10-04）：今日任务用于采购，正常任务直接接材料行。
+        -- 今日任务用于采购，正常任务直接接材料行。
         -- 解析原因留在共享服务诊断；真正缺材料的任务仍提示不可用，不能伪造材料或空成功。
         local taskStatus = ""
         if task.requiresSelection == true then taskStatus = "请选择制作货物"
@@ -352,7 +336,7 @@ local function CreateSidecar()
             return true
         end,
         persist = function(reason)
-            -- 维护：标题按钮与 API 的锁定/解锁必须沿原位置 Store 同步回读，不能只变更本会话 Native 状态。
+            -- 标题按钮与 API 的锁定/解锁必须沿原位置 Store 同步回读，不能只变更本会话 Native 状态。
             if reason~="geometry" and reason~="layout_reset" and reason~="minimized" and reason~="size" and reason~="locked" and reason~="lock" then return true end
             local loaded,loadErr=Controller:EnsurePositionLoaded()
             if loaded~=true then return false,loadErr end
@@ -385,11 +369,8 @@ local function CreateSidecar()
     local searchRow = RSUI:HorizontalBox({ id = "v3_auction_sidecar_search_row", parent = root, gap = 4,
         slot = { size = "fixed", height = 30, hAlign = "fill" } })
     instance.searchRow = searchRow
-    -- 约束（2026-09-14，Auction Sidecar 临时数量可读性）：临时页签的第二个输入框是手工
-    -- 添加材料时的数量，不是第二个搜索框。旧布局只有默认值“1”，用户无法从视觉上判断其语义。
-    -- 在数量框前增加轻量“×”标记，并只在临时页签显示；收藏/今日任务数据流与搜索行为不变。
-    -- 两个 Sidecar 单行 EditBox 显式以 22px 创建，使 RU Native caret 使用更短的现有 shared caret 预算；
-    -- HorizontalBox 仍会按 30px 行高 Arrange，因此只改变光标视觉，不缩小实际点击区域，也不改全局 EditBox。
+    -- 临时页第二个输入是数量，用“×”标明。
+    -- 单行框以 22px 创建以缩短 RU caret，仍按 30px 行高布局，点击范围不缩小。
     instance.input = RSUI:TextInput({ id = "v3_auction_sidecar_keyword", parent = searchRow, value = "", maxLength = 64,
         allowEmpty = false, placeholder = "物品名称", height = 22, slot = { size = "fill", fill = 1, minWidth = 78 } })
     instance.qtyLabel = RSUI:Text({ id = "v3_auction_sidecar_qty_label", parent = searchRow, text = "×", fontSize = 10, tone = "muted",
@@ -409,12 +390,8 @@ local function CreateSidecar()
     instance.removeButton = RSUI:Button({ id = "v3_auction_sidecar_remove", parent = actionRow, text = "删除", compact = true, slot = { size = "fill", fill = 1 } })
     instance.clearButton = RSUI:Button({ id = "v3_auction_sidecar_clear", parent = actionRow, text = "清空", compact = true, slot = { size = "fill", fill = 1 } })
 
-    -- 约束（2026-09-14，Auction Sidecar logical-id Authority）：FloatingSurface 的 id 是
-    -- `v3_auction_sidecar`，WindowShellV3 会在 footer 内部自动消费保留 logical id
-    -- `v3_auction_sidecar_status`。这里属于业务内容区的操作反馈，不是 WindowShell footer Authority；
-    -- 若复用该 id，会在同一 Build Generation 触发 logical_id_already_consumed_this_generation，
-    -- 使整个 Sidecar 被 WidgetHost 隔离。改用专属 `..._action_status`，只改变 Presentation 身份，
-    -- 不改变收藏/任务/临时清单数据流、AuctionQueryV3 查询 Authority、Store 或用户升级兼容。
+    -- WindowShell footer 已占用 v3_auction_sidecar_status，内容反馈须用 ..._action_status。
+    -- 复用保留 ID 会触发 logical_id_already_consumed_this_generation，隔离整个侧栏。
     instance.status = RSUI:Text({ id = "v3_auction_sidecar_action_status", parent = root, text = "收藏与主菜单共用同一数据", fontSize = 8,
         tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 22, hAlign = "fill" } })
 
@@ -575,13 +552,8 @@ local function CreateSidecar()
     end
 
     local function RelayoutAfterTabChromeChange(self)
-        -- 约束（2026-09-14，Auction Sidecar tab layout authority）：Daily 页签会把 searchRow
-        -- 从布局树中 Collapsed；切回 Favorites/Temp 时又恢复 Visible。RSUI 的 SetVisibility 只负责标记
-        -- Measure/Layout dirty，并不会主动驱动 FloatingSurface 立即重新 Arrange。若这里仅 Refresh 数据，
-        -- searchRow 会恢复到折叠前的旧 Native 坐标，而 actionRow 仍停在 Daily 收缩后的坐标，两行会重叠。
-        -- 因此页签 Chrome 改变布局参与关系后，只通过 FloatingSurface 的统一 ApplyLayout 重新布局一次。
-        -- 权威归属/数据流边界：不修改收藏、任务、临时清单、AuctionQuery 或 Store；这里只消费 Presentation
-        -- 的 dirty layout。风险：禁止改成 Tick/循环 Layout，必须保持“用户页签切换时一次”的事件驱动成本。
+        -- 页签切换会折叠或显示 searchRow；SetVisibility 只标脏，不会立即 Arrange。
+        -- 仅刷新数据会让搜索行和操作行停在不同布局的旧坐标而重叠，故每次切页调用一次 ApplyLayout。
         if self.visible ~= true then return true end
         local ok, layoutErr = self.surface:ApplyLayout(false)
         if ok ~= true then return false, layoutErr or "拍卖助手页签布局刷新失败" end
@@ -851,10 +823,8 @@ local registered, registerErr = Host:Register(WIDGET_ID, {
     opacityAdjustable = false, backgroundOpacityAdjustable = false, textOpacityAdjustable = false,
 })
 if registered ~= true then error(registerErr) end
--- 约束（2026-09-25，feature-profile-lifecycle-1）：拍卖 Sidecar 虽注册在 WidgetHost，历史上
--- 没有绑定 Feature 生命周期。功能方案 Disable 会清掉 tools_auction Demand，但可见 Sidecar 仍保存
--- acquired=true；再次 Enable 后就可能不重新 Acquire。这里由 WidgetHost 在生命周期边沿统一 Hide/Show，
--- preference 只组合“原生拍卖行仍可见 + 用户悬浮助手偏好”，不写 Store、不轮询 Native。
+-- Feature Disable 会清 Demand；若只留 acquired=true，再次 Enable 就不会重取。
+-- 由 WidgetHost 在生命周期边沿 Hide/Show，偏好结合原生拍卖行可见性与用户设置。
 local lifecycleBound, lifecycleErr = Host:BindFeatureLifecycle(WIDGET_ID, {
     featureId = "tools_auction",
     enabled = function() return S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("tools_auction") == true end,
@@ -868,10 +838,8 @@ local function OnSurface(snapshot)
     local wasVisible = Controller.nativeVisible == true
     Controller.nativeVisible = snapshot.status == "ready" and snapshot.visible == true
     Controller.snapshot = snapshot
-    -- 约束（2026-09-15，Sidecar enable fence）：AuctionSurface 事件只提供原生窗口事实，
-    -- 不能覆盖用户的永久“悬浮助手关闭”偏好。偏好为 false 时，无论收到打开/几何刷新/陈旧事件都
-    -- fail-closed：立即隐藏已存在 Widget、清理本次会话 dismissed，并禁止自动重建。真正的观察任务
-    -- 由 Feature.SetSidecarEnabled(false) 同步 Stop，因此这里既是竞态保险，也是生命周期最后一道门。
+    -- AuctionSurface 的打开或几何事件不能覆盖用户的永久关闭偏好。
+    -- 偏好为 false 时隐藏、清 dismissed 且禁止重建；Feature setter 同时停止观察任务。
     if SidecarPreferenceEnabled() ~= true then
         Controller.dismissed = false
         if Host:IsVisible(WIDGET_ID) == true then Host:SetVisible(WIDGET_ID, false, { persist = false, source = "auction_sidecar_preference_disabled" }) end

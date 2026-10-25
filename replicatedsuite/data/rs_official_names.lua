@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 官方中文名称
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 这里只保存无法始终从实时任务对象获取的日程/分组名称；任务子标题仍从 X2Quest 读取。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}

@@ -1,19 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 布局编辑会话
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- Reset/Revert/Apply 语义的共享 Session 权威层。
--- 四状态契约，全部快照为有界数据拷贝：
--- Persisted：调用方确认耐久的最后快照，仅 Apply 更新；SessionBaseline：会话开始接受或成功 Apply 提升的快照，Revert 目标；
--- Working：PreviewAdapter/History 编辑的实时 Domain/布局；Defaults：当前会话冻结默认快照，Reset 仅暂存而不持久化。
--- Revert：Working <- SessionBaseline，不写 SaveData/Store；Reset：Working <- Defaults，不清/写 Store；
--- Apply：明确持久化当前 Working，仅调用方确认耐久成功后推进 Persisted/SessionBaseline。
--- 模型不直接调用 S.Persistence/S.Api；
--- 所属 Feature 或 Workspace 适配器提供 persistSnapshot(snapshot, context)，只有耐久写确认后才返回 true，仅防抖 MarkDirty 不算 Apply 成功。
--- 可选 LayoutEditHistoryModel 事件驱动更新 Working，无轮询；Revert/Reset/Apply 成功即清历史形成屏障，避免 Undo 穿过与实时 Working 不符的语义基线。
--- 无 Tick/OnUpdate/Scheduler；有界快照拷贝/比较仅会话创建、明确命令、rebase、History 事件执行。
-------------------------------------------------------------------------
+-- 会话持有四份有界快照：Persisted 是已确认耐久值，SessionBaseline 是打开或成功 Apply 后的基线，
+-- Working 是当前编辑，Defaults 是本次冻结默认值。Revert 回基线，Reset 用默认，两者均不写盘。
+-- Apply 由 persistSnapshot 确认保存后才推进 Persisted 和基线；仅 MarkDirty 不算成功。
+-- History 事件更新 Working，成功的 Revert/Reset/Apply 清历史形成屏障，避免 Undo 跨过不一致基线。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

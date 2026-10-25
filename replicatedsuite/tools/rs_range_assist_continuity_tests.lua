@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 距离辅助连续性测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 维护（2026-09-30）：范围辅助断续刷新回归。真实 Scheduler/FrameBudget/Events/Demand/
+-- 范围辅助断续刷新回归。真实 Scheduler/FrameBudget/Events/Demand/
 -- Feature/Projection/Presenter/ModuleDiagnostics；仅替换 Native 坐标/UI/存储与注册宿主。
 -- 反例不声称复现了用户客户端的全部根因；不访问玩家 UDF，不进入 toc.g。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

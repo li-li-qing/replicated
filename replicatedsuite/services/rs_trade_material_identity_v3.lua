@@ -1,17 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 贸易材料身份
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 依据本地化货率行解析特产材料；服务拥有身份事实及唯一 X2Craft 访问，Presentation/Feature 不调用 X2Craft。
--- 优先层次：①按产品 itemType 读取 GetCraftTypeByItemType/GetCraftProductInfo/GetCraftMaterialInfo，产品侧证
--- 明查询 itemType 后才信任；按需 250ms 串行，会话按 itemType 缓存。②已验证 Product ItemID，再精确旧名选完整
--- 静态配方；地区或数据库签名冲突则拒绝。③按本地化关键词共享全区相同配方，如发酵/陈化蜂蜜、奶酪、药材、肥料
--- 、时空碎片、蓝盐运输。④originZoneId 从共享目录 nameEn+tradeQuality 决定地区，文本只选 family 尾部：特制特
--- 产=Gilda、传统特产=Local、保存/标准/新鲜/特供特产=Specialty。不能用本地化文本选地区，避免 [十字星] 错映
--- Hasla。无配方且无实况则无身份，显示配方未匹配/解析中；不造材料、不后台扫描，Feature 显式请求期间读取，队
--- 列耗尽或取消即停止。
-------------------------------------------------------------------------
+-- 统一解析配方并访问 X2Craft，按需每 250ms 处理一条，按产品 itemType 缓存；队列空或取消即停。
+-- 优先 Live craft，且产品侧须证明查询 itemType；再用已核 Product ID/精确旧名选静态配方，地区或签名冲突则拒绝。
+-- 其后才匹配全区同配方的发酵/陈化、肥料、时空碎片和蓝盐运输 family；地区始终取 originZoneId。
+-- 尾部 family：特制=Gilda、传统=Local、保存/标准/新鲜/特供=Specialty。未知显示待匹配，不能猜材料。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -36,9 +29,7 @@ local M = {
 }
 S.Services.TradeMaterialIdentityV3 = M
 
--- S.StaticDataV2 是 GetCatalog/Register 登记表；S.Data.TradeStaticV2 才是包含
--- GetRecipeByLegacyName/GetMaterialByLegacyName/GetMaterialByCompactId 的访问门面。不能误通过登记表查询，否
--- 则每次均静默 nil。
+-- StaticDataV2 是登记表；查询配方/材料要用 Data.TradeStaticV2 门面，误用登记表会一直返回 nil。
 local StaticRegistry = S.StaticDataV2
 local StaticFacade = S.Data and S.Data.TradeStaticV2 or nil
 local function NowMs()
@@ -83,10 +74,8 @@ local TAIL_RULES = {
     { token = "特产", tail = "Specialty" },
 }
 
--- 玩家材料命名统一在此把身份转为官方中文或诚实通用标签。Chopped Produce 等标准英文键、紧凑 ID、craftType、
--- Halcyona Preserved Specialty 等 legacyName 都是数据层事实，不得进入页面或 HUD。优先顺序：按 itemType 的精
--- 选 Localization 权威（用于核验原生名的同表）->本地化静态记录名->调用者 fallback->中性材料/贸易品，绝不输
--- 出原始键。
+-- 显示名优先取 itemType 精选本地化名，其次静态本地名、调用方 fallback，最后用中性标签。
+-- 英文材料 key、compactId、craftType 和 legacyName 只供数据匹配，不显示到页面/HUD。
 local function LocalizedItemName(itemType)
     local id = tonumber(itemType)
     if id == nil or S.Localization == nil or type(S.Localization.GetName) ~= "function" then return nil end
@@ -97,7 +86,6 @@ local function LocalizedItemName(itemType)
     return name
 end
 
--- 把单材料行解析为玩家可读中文。
 function M:ResolveMaterialDisplayName(row)
     if type(row) ~= "table" then return "材料" end
     local name = LocalizedItemName(row.itemType)
@@ -127,8 +115,7 @@ function M:ResolveRecipeDisplayName(legacyName)
     if type(recipe) ~= "table" then return nil, "recipe_unknown" end
     local productName = LocalizedItemName(recipe.productItemId)
     if productName ~= nil then return productName, "native_item_name" end
-    -- （2026-10-03）没有产品 ItemID/客户端名称不等于地区未知。今日任务
-    -- 沿用 1.2 的地区显示思路，只读已核配方的 originZoneId；不输出英文键、不猜物品 ID。
+    -- 无产品名时仍可用已核 originZoneId 显示地区特产；不能猜物品 ID 或输出英文 key。
     local zones = S.GameIds and S.GameIds.Zone and S.GameIds.Zone.ById or {}
     local zone = zones[tonumber(recipe.originZoneId)]
     local name = type(zone) == "table" and tostring(zone.nameZh or "") or ""
@@ -231,8 +218,7 @@ function M:ResolveStatic(sourceName, originZoneId, productItemType)
         return { rows = rows, label = label, source = "static_recipe" }
     end
 
-    -- （2026-10-02）货率回执已提供真实商品 ItemID 时，先查已核 TradeProduct
-    -- 的精确配方身份，不因汉化变更/货物名中的“特产”猜品类。纯任务标题没有 ItemID，仍走地区链。
+    -- 有真实商品 ItemID 时先查 TradeProduct 精确配方，不能因汉化或“特产”二字猜品类；纯标题仍走地区链。
     local products = S.GameIds and S.GameIds.TradeProduct
     local product = type(products) == "table" and type(products.GetByItemId) == "function"
         and tonumber(productItemType) ~= nil and products:GetByItemId(productItemType) or nil
@@ -243,7 +229,6 @@ function M:ResolveStatic(sourceName, originZoneId, productItemType)
     end
     if raw == "" then return nil end
 
-    -- 精确旧名直接命中；服务器身份可能直接匹配。
     local direct = StaticFacade:GetRecipeByLegacyName(raw)
     if direct ~= nil then
         return RecipeResult(direct, tostring(direct.legacyName or raw))
@@ -263,7 +248,6 @@ function M:ResolveStatic(sourceName, originZoneId, productItemType)
         end
     end
 
-    -- 地区权威配合本地化 family 尾部。
     local zoneId = tonumber(originZoneId)
     local zones = S.GameIds and S.GameIds.Zone and S.GameIds.Zone.ById or nil
     local zone = type(zones) == "table" and zones[zoneId] or nil
@@ -392,13 +376,11 @@ end
 
 local function CallCraft(name, ...)
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return false end
-    -- object=nil 使 ResolveCapabilityHost 在调用时解析 X2Craft 全局；某 RU 加载时捕获会错过整个命名空间，不
-    -- 能在此缓存 host。
+    -- object=nil 让能力边界每次解析当前 X2Craft；缓存早期 host 会错过后续惰性导入。
     return S.Api:CallCapability("X2Craft:" .. name, nil, name, ...)
 end
 
--- 能力拒绝须结合宿主事实解释：登记表可区分命名空间从未构造与已有命名空间缺方法，但 IsAllowed 仅返
--- Unavailable。StaticState 加实时 host 探测提供区别，避免报告只有“能力未放行”而让维护靠猜测。
+-- 结合 StaticState 和实时 host 区分从未导入与缺方法，不能只报告笼统 Unavailable。
 local function CapabilityBlockReason(capabilityName)
     local allowed, reason = S.Api:IsCapabilityAllowed(capabilityName)
     if allowed == true then return nil end
@@ -486,8 +468,7 @@ function M:GetCachedLive(itemType)
     return entry
 end
 
--- 检查 itemType 实时尝试是否已终止（ready/failed）；失败后投影显示配方未匹配，不把已经失败误作仍排队/在途而
--- 永久解析中。
+-- ready/failed 都是终态；失败显示未匹配，不能继续显示永久解析中。
 function M:HasLiveAttempt(itemType)
     itemType = tonumber(itemType)
     if itemType == nil then return false end
@@ -509,8 +490,7 @@ function M:_StopLane()
     M.running = false
 end
 
--- liveCache 按 itemType 使用稀疏键，Lua 5.1 # 不表示哈希表项数，不能用其检查 128 项上限。预算统一在写入点执
--- 行：先淘汰最旧失败项，再淘汰最旧 ready，不在查询循环反复遍历，不驱逐尚未进入缓存的 pending。
+-- liveCache 是稀疏 itemType map，不能用 # 检查 128 项上限；写入时先淘汰最旧失败，再淘汰最旧 ready，不动 pending。
 local function TrimLiveCacheForInsert()
     local maxEntries = math.max(1, math.floor(tonumber(M.maxCacheEntries) or 128))
     local count = 0

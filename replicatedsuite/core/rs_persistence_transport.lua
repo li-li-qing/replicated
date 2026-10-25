@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 持久化传输编码
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 纯值与传输编码转换；承载用户配置磁盘格式，行为变化须验证已有存档兼容。
 -- 不持有领域事实、不读写 Store、不执行完整性验证；必须先于 core/rs_persistence.lua 加载（见 toc.g）。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -47,8 +44,7 @@ local function TransportEncodeValueV1(value, seen) -- 只用于兼容 Harness/�
     return out, nil
 end
 
-local function TransportDecodeValueV1(value, seen) -- Transport v1 永久保留只读解码，保证用户从 `.18.194-.196` 升
-                                                   -- 级时无需清配置。
+local function TransportDecodeValueV1(value, seen) -- 保留 v1 解码，旧档升级无需清配置。
     local kind = type(value)
     if kind == "string" then
         if value == TRANSPORT_V1_FALSE then return false, nil end
@@ -73,8 +69,7 @@ local function TransportDecodeValueV1(value, seen) -- Transport v1 永久保留�
     return out, nil
 end
 
-local function TransportEncodeValueV2(value, seen) -- 冻结历史 v2 语义供兼容；非零数字不保护的缺口由新的 v3 处理，
-                                                   -- 禁止偷换 v2 解码。
+local function TransportEncodeValueV2(value, seen) -- 保留 v2 原语义；非零数值的保护由 v3 处理。
     local kind = type(value)
     if kind == "boolean" then return value == false and TRANSPORT_V2_FALSE or true, nil end
     if kind == "number" then return value == 0 and TRANSPORT_V2_ZERO or value, nil end
@@ -128,13 +123,9 @@ local function TransportDecodeValueV2(value, seen) -- v2 只识别 `__rs_t2:`，
     return out, nil
 end
 
--- （2026-09-12 真实跑商取证）normalizedCenterX 的旧业务 token 是
--- 0.0903896（整表精确复现旧章），Native 返回 0.09038999676704407，token 变成 0.09039。
--- “六位有效数字 Hash”并不能抵抗“先保留六位小数，再转单精度”的传输损失。
--- Authority：只有 Persistence 拥有物理传输；Store/Feature 仍接收原数值，不量化其 Domain。
--- v3 用 17 位往返十进制字符串封装非整数和超出 binary32 连续整数区间的数值（包含键）。
--- 非负小整数/版本路由继续用 Native number；v1/v2 解码永久保留，健康旧档不在启动时批量重写。
--- 风险：编码串计入原预算，超限仍拒绝；不扩大 StringBudget、不弱化业务指纹、不做循环内 I/O。
+-- 真实跑商中心值曾从旧 token 0.0903896 变为 Native 0.09038999676704407（token 0.09039）。
+-- 六位有效数字指纹无法抵抗固定六位小数再转单精度；v3 用 17 位往返文本保护非整数和 binary32 连续整数区间外的值（含键）。
+-- 非负小整数/路由仍用 Native number；编码串计入原预算，健康旧档不批量重写。
 local TRANSPORT_V3_PREFIX = "__rs_t3:"
 local TRANSPORT_V3_FALSE = TRANSPORT_V3_PREFIX .. "f"
 local TRANSPORT_V3_EMPTY_TABLE = TRANSPORT_V3_PREFIX .. "t"
@@ -150,11 +141,8 @@ local function TransportEncodeValueV3(value, seen)
     if kind == "number" then
         if value ~= value or value == math.huge or value == -math.huge then return nil, "transport_nonfinite_v3" end
         if value == 0 then return TRANSPORT_V3_ZERO, nil end
-        -- （2026-09-12）实机回读证据为 buffs.y 的 -2 -> 0，负整数原先绕过了
-        -- n-token。尚无该次原始 LoadData 表，不能断言 Native 内部是省略还是置零；
-        -- 但负号不应继续裸传。Core 在 Save/Load 冷边界复用旧版已可读的 n-token，
-        -- Domain 仍持有原负数；旧裸负整数解码保留。正整数 ID/路由不变，预算照旧。
-        -- 不把 -2 改为 0、不从 Hash 猜旧坐标，也不放宽 expected/stamped/actual 校验。
+        -- 实机曾把 buffs.y=-2 回读为 0，具体是省略还是置零尚不明确，因此负整数也走已兼容的 n-token。
+        -- 旧裸负整数仍可读，正整数 ID/路由不变；不能改成 0 或放宽 stamped/expected/actual 校验。
         if value > 0 and value == math.floor(value) and value <= NATIVE_EXACT_INTEGER_LIMIT then return value, nil end
         return TRANSPORT_V3_NUMBER .. string.format("%.17g", value), nil
     end
@@ -239,13 +227,9 @@ local function TransportDecodeValueV3(value, seen)
 end
 
 
--- （2026-09-12 批量追踪实机）397条导入在回读auto[189]首次缺失，
--- 测试的“保留前188个数字键”可精确复现04287DD8>3AF652D5，但不是Native上限的断言。
--- Authority：Core独占物理表示；Store只显式选择transport4。业务结构、canonical及旧章不改。
--- v4继承v3标量精度保护，只将>32项的连续正整数序列装成16项/串、最多2048项的短块。
--- 每串最多143字节，每表最多130项；计数/键集/段长严格验证，缺段绝不默认为短列表。
--- 旧1/2/3永久可读。真实保留前缀先转义，禁止用户字段被误识别为传输标记。
--- 只在已有Save/Load冷路径执行；没有新I/O/计时任务，物理大小仍受Store预算约束。
+-- 397 项导入曾在 auto[189] 首次缺失；保留前 188 项可复现旧章变化，但这不能视为 Native 上限。
+-- v4 保留 v3 标量保护，将 >32 项的连续正整数序列编码成每串 16 项、最多 2048 项的短块。
+-- 每串最多 143 字节、每表最多 130 项；严格验计数/键集/段长，缺段不能当短列表。旧版本可读，原前缀先转义。
 local TRANSPORT_V4_PREFIX = "__rs_t4:"
 local TRANSPORT_V4_STRING = TRANSPORT_V4_PREFIX .. "s"
 local TRANSPORT_V4_ARRAY = TRANSPORT_V4_PREFIX .. "a"
@@ -340,16 +324,9 @@ local function TransportDecodeValueV4(value,seen)
     seen[value]=nil;return out,nil
 end
 
--- （2026-09-17，schema8 六通道实机）Transport4 在 schema7->8 自动迁移后
--- 立即回读出现 transport_vector_missing_chunk_v4。旧 v4 用同一表上的 p1..pN
--- 字符串键承载分块；schema8 把原全局追踪复制到 player/target 后物理体积翻倍，
--- 实机证明这种表示仍可能被 SaveData 丢失某个 pN 字段。我们只把“字段丢失”
--- 作为已证事实，不猜 Native 的具体全局容量。
--- Authority：Core 仍独占物理传输。v5 保留 v3 标量精度保护，把 >32 的连续
--- 正整数序列编码为 {marker,count,chunks={1..N}}；chunks 最多128项，低于此前
--- 已实证的 numeric key 189 丢失边界，同时避免 v4 的几十/上百个 pN 字符串键。
--- Decoder 接受 Native 将 1..N 数字键表示为规范十进制字符串，但拒绝重复、稀疏、
--- 越界、非法 token 或额外字段。旧 transport1..4 永久保留只读兼容。
+-- schema8 双 scope 使物理体积增大，实机曾丢失 v4 的 pN 字段，具体容量未知。
+-- v5 将 >32 项序列改存 {marker,count,chunks={1..N}}，chunks 最多 128 项，继续保留 v3 标量保护。
+-- 接受 Native 将数字索引改成规范十进制字符串，拒绝重复、稀疏、越界、非法 token 和额外字段；旧 1..4 仍可读。
 local TRANSPORT_V5_PREFIX = "__rs_t5:"
 local TRANSPORT_V5_STRING = TRANSPORT_V5_PREFIX .. "s"
 local TRANSPORT_V5_ARRAY = TRANSPORT_V5_PREFIX .. "a"
@@ -443,7 +420,7 @@ local function TransportDecodeValueV5(value,seen)
     seen[value]=nil;return out,nil
 end
 
--- 导出（供 rs_persistence.lua 以 T.<名> 调用）
+-- 供 rs_persistence.lua 调用。
 -- v6 仅压紧完整的死亡摘要标量树。
 -- Domain、codec1、schema2 与指纹均不改变；所有其他值仍经过 v3 的精确数值/假值保护。
 -- 固定字段顺序 + 数值往返文本 + 字符串 HEX 消除每行 11 个键/缩进的 Native 开销。

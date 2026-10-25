@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 视口安全布局
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- UMG 风格安全层，全部明确/事件驱动，不注册 Tick 或隐藏轮询。
 -- S.Api:GetUiMetrics() 负责逻辑视口；ResolutionRoot 负责视口尺寸组合而不持业务；SafeZone 负责边距/安全排列；CanvasPanel 限屏幕/HUD/诊断用途。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -17,7 +14,7 @@ local N, Clamp, Pad, Measure, Align, Arrange, Host = U.N, U.Clamp, U.Pad, U.Meas
 local Base = RSUI.BaseComponent
 
 local function GetUiMetrics()
-    -- 维护（viewport-recovery-1）：ResolutionRoot 消费同一次 Layout context，不能各自
+    -- ResolutionRoot 消费同一次 Layout context，不能各自
     -- 重新采样得到不同 viewport。真实采样只在创建/显示/事件/Reset 边沿，无每帧 GetUiMetrics。
     -- 独立工具测试尚未安装 Layout 时保留历史 API fallback，不改变 Popup/HUD 的坐标语义。
     if S.Layout and type(S.Layout.GetContext) == "function" then
@@ -70,9 +67,7 @@ local function ClampInsets(inset, width, height)
     return inset
 end
 
-------------------------------------------------------------------------
 -- ResolutionRoot 分辨率根。
-------------------------------------------------------------------------
 local ResolutionRoots = setmetatable({}, { __mode = "k" })
 RSUI.ResolutionRoots = ResolutionRoots
 
@@ -157,9 +152,7 @@ function RSUI:RefreshResolutionRoots(force)
     return changed, count
 end
 
-------------------------------------------------------------------------
 -- SafeZone 安全区域。
-------------------------------------------------------------------------
 RSUI:RegisterType("SafeZone", function(spec)
     local c, err = Host("SafeZone", spec)
     if c == nil then return nil, err end
@@ -212,9 +205,7 @@ RSUI:RegisterType("SafeZone", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- AspectRatioBox 宽高比容器。
-------------------------------------------------------------------------
 RSUI:RegisterType("AspectRatioBox", function(spec)
     local c, err = Host("AspectRatioBox", spec)
     if c == nil then return nil, err end
@@ -268,9 +259,7 @@ RSUI:RegisterType("AspectRatioBox", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- CanvasPanel 受限绝对布局。
-------------------------------------------------------------------------
 RSUI:RegisterType("CanvasPanel", function(spec)
     local c, err = Host("CanvasPanel", spec)
     if c == nil then return nil, err end
@@ -325,9 +314,7 @@ RSUI:RegisterType("CanvasPanel", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- 按需屏幕边界辅助函数。
-------------------------------------------------------------------------
 function RSUI:GetAbsoluteRect(component)
     if not self:IsComponent(component) then return nil end
     local x, y = tonumber(component.x) or 0, tonumber(component.y) or 0

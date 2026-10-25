@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生界面差异与生命周期
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 有限 ArcheAge/RU 原生 UI API 上的增量框架层。
--- Native 仅渲染对象，不存业务；DiffRenderer 持迁移字段表现缓存；Lifecycle 负责处理器释放、隐藏、逻辑引用清理，RU 无已验证通用 DestroyWidget，不能宣称安全销毁。
--- 热路径诊断仅廉价计数，不每写格式化日志。
-------------------------------------------------------------------------
+-- 有限 RU API 上的差异渲染和生命周期管理；缓存只存表现，业务留在 Feature。
+-- 释放包括处理器、隐藏和引用清理，RU 无验证过的通用 DestroyWidget，不能等同销毁 Native。
+-- 热路径只计数，不逐次格式化日志。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI = S.UI
@@ -78,7 +75,7 @@ UI.NativeCaretPlacementPreservationContractVersion = 2
 UI.PostArmFocusPromotionContractVersion = 1
 UI.InputActivationDiagnosticsContractVersion = 1
 UI.DeferredKeyboardActivationContractVersion = 1
--- 维护（report-selection-1）：仅显式启用的只读报告交付框有额外选区保护；普通表单策略不变。
+-- 仅显式启用的只读报告交付框有额外选区保护；普通表单策略不变。
 UI.ReportCopySelectionContractVersion = 1
 UI.ExplicitInputCommitFocusContractVersion = 1
 UI.Tokens = S.UITokens
@@ -269,7 +266,7 @@ local function SetInputKeyboardState(widget, armed, owner, reason)
         return false, false, tostring(acceptErr or "keyboard_toggle_rejected")
     end
     widget.rsUiKeyboardArmed = armed
-    -- 维护：只为请求复制保护的输入记录本次键盘状态原因，不记录正文/按键/聊天目标。
+    -- 只为请求复制保护的输入记录本次键盘状态原因，不记录正文/按键/聊天目标。
     -- 每框常量大小；隐藏/停用的真实撤权也留证，不以新的计时任务维持或夺回焦点。
     local activity = widget.rsUiCopyActivity
     if type(activity) == "table" then
@@ -291,7 +288,7 @@ function UI:ArmInputWidget(widget, owner, reason)
     return SetInputKeyboardState(widget, true, owner, reason or "explicit_input_activation")
 end
 
--- 维护（report-selection-1）：复制框失焦时仅允许一个下一帧复核；任何显式撤权先取消。
+-- 复制框失焦时仅允许一个下一帧复核；任何显式撤权先取消。
 -- Task属于此Native实例/owner/generation；不让隐藏、换页、释放后遗留回调修改键盘状态。
 local function CancelCopyFocusRecheck(widget)
     if widget == nil then return end
@@ -304,7 +301,7 @@ end
 
 function UI:DisarmInputWidget(widget, owner, reason)
     CancelCopyFocusRecheck(widget)
-    -- 维护：先把最后的合法键入交回Diff，再撤销键盘权；清空/取消在disarm后也不会误报警。
+    -- 先把最后的合法键入交回Diff，再撤销键盘权；清空/取消在disarm后也不会误报警。
     if type(self.AdoptInputDraftText)=="function" then self:AdoptInputDraftText(widget,owner) end
     return SetInputKeyboardState(widget, false, owner, reason or "input_deactivation")
 end
@@ -366,9 +363,8 @@ end
 
 function UI:DisarmInputWithin(widget, owner, reason)
     if widget == nil then return true, 0, nil end
-    -- 约束（performance-cache-1）：无输入子树的 HUD 隐藏不能扫描其它窗口的输入框。
-    -- 计数由 Register/UnregisterInputTarget 沿真实父链维护；全局停用与输入框自身仍执行清理，
-    -- 不把“已隐藏”当成失去键盘权限的证明，保留原有焦点/重载安全边界。
+    -- 沿真实父链维护输入计数，无输入的 HUD 隐藏时无需扫描其它窗口。
+    -- 输入自身和全局停用仍清理键盘权，不能用已隐藏证明已撤权。
     local allSuiteInputs = widget == UIParent or widget == "UIParent"
     if not allSuiteInputs and not IsInputTarget(widget)
         and (tonumber(widget.rsUiKeyboardInputSubtreeCount) or 0) <= 0 then return true, 0, nil end
@@ -427,7 +423,7 @@ function UI:BindDeferredInputActivation(widget, owner, label, options)
     if not IsInputTarget(widget) then return false, "input_target_required" end
     if type(self.SafeHandler) ~= "function" then return false, "handler_contract_unavailable" end
     local eventLabel = tostring(label or widget.rsUiLogicalId or widget.rsNativeLogicalId or "input")
-    -- 维护：Native失焦通知可能晚于一次重新激活；无条件Disarm会使选中文字仍可见但Ctrl+C失效。
+    -- Native失焦通知可能晚于一次重新激活；无条件Disarm会使选中文字仍可见但Ctrl+C失效。
     -- 仅报告框显式请求且实时identity仍证明焦点属于同一输入时保留已激活键盘，不调用SetFocus。
     -- 外部/聊天焦点、查询失败、隐藏、退休仍走原撤权流程。此保护不能证明客户端此次2秒触发源。
     local preserveSelection = type(options) == "table" and options.preserveFocusedSelection == true
@@ -505,7 +501,7 @@ function UI:GetFocusedInputWidget()
     return widget
 end
 
--- 维护（report-selection-1）：只读有界状态供打印使用，禁止复制整个Native对象/正文，
+-- 只读有界状态供打印使用，禁止复制整个Native对象/正文，
 -- 不扫描UI、不查询剪贴板、不从未知focused ID推断所有权；数据只在本generation内存在。
 function UI:GetCopyInputSnapshot(widget)
     if not IsInputTarget(widget) then return { available = false } end
@@ -707,10 +703,9 @@ local function TryNativeAnchorMatches(widget, parent, x, y)
         -- RU 祖先隐藏时 Effective 偏移不能可靠探测局部锚，等可见后再验证。
         return nil, false
     end
-    -- 约束（2026-10-04）：Windowing 顶层窗必须用已校准的逻辑矩形核对位置。
-    -- RU 的 UIParent 可能只有字符串身份，没有 GetEffectiveOffset；且 raw/scaled 两者
-    -- 任意命中会把 x/uiScale 的真实偏移当成正确。仅此显式窗口车道使用 Layout readback，
-    -- 不增加 HUD 热路径探测；缓存回退不能证明缓存本身正确。
+    -- 顶层窗用校准后的逻辑矩形核对。UIParent 可能仅为字符串、没有 EffectiveOffset，
+    -- 而 raw/scaled 任一命中会漏掉真实的 x/uiScale 偏移；缓存回退也不能证明缓存正确。
+    -- 仅显式 Windowing 车道用 Layout readback，HUD 热路径不加探测。
     if widget.rsUiWindowGeometryReadback == true and (parent == UIParent or parent == "UIParent")
         and S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect) == "function" then
         local ok, lx, ly, _, _, info = pcall(S.Layout.GetWindowLogicalRect, S.Layout, widget)
@@ -933,7 +928,7 @@ function UI:SetText(widget, value, owner)
             RecordAttempt("SET_TEXT", widget, false, 0, owner)
             return false
         end
-        -- 维护：显式提交/拒绝可以覆盖用户草稿，但必须先完成合法输入的缓存交接。
+        -- 显式提交/拒绝可以覆盖用户草稿，但必须先完成合法输入的缓存交接。
         if self:AdoptInputDraftText(widget,owner) ~= true then
             RepairCachedField(row, "text", nativeText)
             RecordCacheRepair("text", widget, owner)
@@ -987,7 +982,7 @@ function UI:SetVisible(widget, visible, owner)
     return true
 end
 
--- 事务显隐 facade：SetVisible 保留 changed 语义，EnsureVisible 区分缓存无操作与 Native 拒绝；确认已接受写入并缓存后，组件才发布逻辑可见。
+-- Transactional visibility facade. 区分缓存命中与 Native 拒绝，写入确认后才发布逻辑可见。
 function UI:EnsureVisible(widget, visible, owner)
     local usable, usableErr = WidgetUsable(widget)
     if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
@@ -1049,12 +1044,9 @@ function UI:SetColor(widget, red, green, blue, alpha, owner)
     return true
 end
 
--- RU 图标 drawable 用 ClearAllTextures/AddTexture，不假设通用 SetTexture；缓存路径，使 HUD/列表重用同图标快照不重复纹理写。
--- 维护（pvp-hud-1）：pcall成功只表示未抛Lua错误，不表示原生接受纹理。
--- 旧实现吞掉AddTexture的false并缓存新路径，装备切换后便不再重试。清除与添加视为
--- 一次提交：任何失败都作废缓存；调用方隐藏不确定图标，待下次内容刷新重试。
--- 兼容：Native无返回值仍视作接受；SetIconTexture保留false=no-op旧接口；需要提交证明
--- 的HUD使用EnsureIconTexture区分接受/变化，不能将no-op误判成错误。缓存由RSUI独占。
+-- RU 图标用 ClearAllTextures/AddTexture，清除与添加视为一次提交。
+-- 任一步拒绝都作废路径缓存；旧代码吞掉 AddTexture=false，切装备后便不再重试。
+-- 无返回仍兼容接受。SetIconTexture 保留 false=no-op，须证明成功的 HUD 用 EnsureIconTexture。
 function UI:SetIconTexture(drawable, path, owner)
     if drawable == nil then return false end
     local value = tostring(path or "")
@@ -1186,7 +1178,7 @@ function UI:SetExtent(widget, width, height, owner)
         -- 未知 Native 单位空间不能回写逻辑缓存，下方权威写恢复请求逻辑 extent。
         RecordCacheRepair("extent", widget, owner)
     end
-    -- 维护（viewport-recovery-1）：原生 false 与抛错同为拒绝；nil 仍是历史成功。
+    -- 原生 false 与抛错同为拒绝；nil 仍是历史成功。
     -- 不发布未被 Native 接受的 Diff cache，否则 Reset 会命中虚假缓存且 Store 误存。
     -- 仅改变失败边界，不改变 accepted/changed 契约和正常高频 diff 路径。
     local ok, err = pcall(function() return widget:SetExtent(w, h) end)
@@ -1251,7 +1243,7 @@ function UI:SetAnchor(widget, parent, x, y, owner)
     end
     local nativeCalls = 0
     if type(widget.RemoveAllAnchors) == "function" then
-        -- 维护：与 extent 同一 Native 成功判据；坐标仍为 UIParent logical，不做缩放。
+        -- 与 extent 同一 Native 成功判据；坐标仍为 UIParent logical，不做缩放。
         local removeOk, removeErr = pcall(function() return widget:RemoveAllAnchors() end)
         if removeOk ~= true or removeErr == false then RecordNativeSafetyFailure("REMOVE_ANCHORS", widget, removeErr, owner); return false end
         nativeCalls = nativeCalls + 1
@@ -1289,7 +1281,6 @@ function UI:EnsureAnchor(widget, parent, x, y, owner)
 end
 
 -- 屏幕吸附适配器。
---
 -- 顶层控件不重复发现兄弟或计算几何；Feature/Domain 持久化，适配器仅登记可见屏幕控件并经普通 Diff 提交吸附，集中 UIParent 根锚语义。
 function UI:RegisterScreenSnap(id, widget, options)
     if S.Layout == nil or type(S.Layout.RegisterScreenSnap) ~= "function" or widget == nil then return false end
@@ -1316,7 +1307,7 @@ end
 function UI:CommitScreenSnap(id, widget, options)
     options = type(options) == "table" and options or {}
     if widget == nil or S.Layout == nil or type(S.Layout.GetLogicalRect) ~= "function" then return false, nil, nil, false, nil end
-    -- 维护（2026-09-16，snap-committed-rect-1）：拖动事务已经拥有逻辑矩形时，吸附必须
+    -- 拖动事务已经拥有逻辑矩形时，吸附必须
     -- 使用同一份 committed rect，不能再次读 Native；否则 UI Scale/原生更新时序可能在吸附前
     -- 就把旧坐标带回持久化链。无显式矩形的屏幕控件调用使用统一 Native logical 校准，HUD 的其它坐标 helper 不变。
     local x, y, width, height
@@ -1329,7 +1320,7 @@ function UI:CommitScreenSnap(id, widget, options)
     if tonumber(x) == nil or tonumber(y) == nil then return false, x, y, false, nil end
     local sx, sy, snapped, targetId = self:ResolveScreenSnap(id, x, y, width, height, options)
     if snapped == true then
-        -- 维护：吸附也是 Native 几何事务，拒绝不能冒充 committed 并进入位置 Store。
+        -- 吸附也是 Native 几何事务，拒绝不能冒充 committed 并进入位置 Store。
         local windowing=S.RSUI and S.RSUI.Windowing
         local ok,err
         if windowing and type(windowing.ApplyGeometry)=="function" then
@@ -1548,7 +1539,7 @@ function UI:SetLabelTone(widget, tone, owner)
     return changed
 end
 
--- 维护（module-controls-diag-2）：保留既有 WidgetUsable 与 Native 写计数，Theme 是唯一着色 Authority。
+-- 保留既有 WidgetUsable 与 Native 写计数，Theme 是唯一着色 Authority。
 function UI:SetButtonStatusTone(widget, tone, owner)
     if WidgetUsable(widget) ~= true then return false end
     if S.Theme == nil or type(S.Theme.SetButtonStatusTone) ~= "function" then return false end

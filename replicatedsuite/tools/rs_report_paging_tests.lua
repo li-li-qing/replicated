@@ -1,15 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 报告分页测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护：用户明确要求固定报告+独立上一页/下一页。使用实际报告/传输/Page工厂；只模拟Native。
+-- 用户明确要求固定报告+独立上一页/下一页。使用实际报告/传输/Page工厂；只模拟Native。
 -- 此测试不在TOC，既不证明RU实机输入框容量，也不解除任何业务Store写保护。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,e=pcall(fn);if ok then passed=passed+1;print('PASS paging '..name)else failed=failed+1;print('FAIL paging '..name..': '..tostring(e))end end
 local function Boot(cap)

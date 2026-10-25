@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗历史完整性测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 使用真实 Persistence 和生产 Store；固定封装由改动前的生产代码生成。
 -- 仅使用构造的内存磁盘，不读写玩家文件；迁移测试必须保留旧指纹。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

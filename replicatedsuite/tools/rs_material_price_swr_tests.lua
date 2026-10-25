@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 材料价格后台刷新测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- MaterialPriceServiceV3 纯 Lua 回归，不调用 ArcheRage 原生 API；验证持久化、时效、异常价格和后台任务准入语义。
-------------------------------------------------------------------------
 local root = (... and tostring(...)) or "."
 
 local server = { year = 2026, month = 9, day = 25, hour = 15, minute = 0 }
@@ -126,12 +123,9 @@ price, meta = M:GetPrice(30902, 1)
 Eq(price, 63000, "confirmed anomaly becomes stable price")
 Eq(meta.freshness, "fresh", "confirmed replacement fresh")
 
--- 维护（2026-09-28，material-price-anomaly-jump-1）：下面这组是**实机取证**得到的真实故障模式，
--- 不再是假设。从 `USER<id>/udf` 的 v3.market.material_prices（38 次写入 / 22 条材料）还原：
--- 「捣碎的香料」(30901) 前 34 次写入稳定 559 铜，随后**一次**跳到 1,499 铜（2.68 倍，无中间值）；
--- 同族 6 个加工品当时都在 385~576 铜，只有它 3 倍偏离 —— 典型的“拍卖行临时缺货、只剩一个高价挂单”。
--- 它占 `[玛瑞诺普]新鲜特产` 配方成本的 93.7%（180/198 件），于是把一趟 +16 金 26 银 的跑商
--- 直接算成 −66 银 04 铜。旧阈值 8 只防数量级错误，让这种 2~3 倍跳变直接落库，因此收紧到 2.5。
+-- 实档中的捣碎香料（30901）曾从 559 铜涨到 1499 铜，达到 2.68 倍。
+-- 它占配方成本的 93.7%，一次异常挂单就把利润算成亏损；旧 8 倍阈值拦不住。
+-- 因此用 2.5 倍阈值保留候选，等第二次报价确认，而不是立即覆盖已知价格。
 server = { year = 2026, month = 10, day = 4, hour = 15, minute = 2 }
 accepted = M:ObserveConfirmedPrice(30901, 1, 559, "name_search_direct_unit")
 assert(accepted == true, "baseline spice price accepted")
@@ -144,7 +138,7 @@ Eq(price, 559, "held shortage spike cannot poison the stable spice price")
 accepted = M:ObserveConfirmedPrice(30901, 1, 1499, "name_search_direct_unit")
 assert(accepted == true, "second consistent spike confirms regime change")
 Eq(M:GetPrice(30901, 1), 1499, "confirmed spike becomes the stable price")
--- 关键：**回归已知历史样本必须立即采纳**。否则修正价会因为同一个 2.68 倍而被再次挡在候选区，
+-- 关键：回归已知历史样本必须立即采纳。否则修正价会因为同一个 2.68 倍而被再次挡在候选区，
 -- 玩家要询价两次才看到正确毛利；而“回到已知样本区间”本来就不是市场新常态。
 accepted, reason = M:ObserveConfirmedPrice(30901, 1, 559, "name_search_direct_unit")
 assert(accepted == true, "reverting to a known historic sample is accepted immediately: " .. tostring(reason))
@@ -159,7 +153,7 @@ price, meta = M:GetPrice(3603, 1)
 Eq(price, 120, "session price readable without server calendar")
 Eq(meta.freshness, "fresh", "session acceptance clock keeps quote fresh")
 
--- 维护（2026-09-25，RS-ERROR-PAGE-1 / service-boundary-declaration-1）：Foundation Gate 的
+-- Foundation Gate 的
 -- service_presentation_boundary 会枚举 S.Services.* 的每一张表并要求显式声明
 -- presentationBoundary ∈ {service_only, event_host_only}；缺失会让整份自检报告变成 BLOCKED。
 -- 这里直接断言真实加载出来的服务表，防止再次漏声明。
@@ -167,7 +161,7 @@ Eq(tostring(M.presentationBoundary), "service_only", "MaterialPriceServiceV3 pre
 
 print("MATERIAL PRICE SWR RUNTIME: PASS")
 
--- 维护（2026-09-27，material-price-store-backoff-1）：持久 Store 故障必须是冷边沿失败，不能被每个材料 GetPrice
+-- 持久 Store 故障必须是冷边沿失败，不能被每个材料 GetPrice
 -- 放大成 LoadStore 风暴；自动 SWR 在该状态下 fail-soft，显式 QuoteQueue 仍由 Trade 自己回退读取。
 local failingLoadCalls = 0
 local function BootWithFailingStore()
@@ -227,7 +221,7 @@ Eq(failingLoadCalls, 2, "store retry resumes only after bounded retry window")
 
 print("MATERIAL PRICE STORE BACKOFF: PASS")
 
--- 维护（2026-09-27，material-price-cache-recovery-1）：材料价 Store 是可再生派生缓存。
+-- 材料价 Store 是可再生派生缓存。
 -- current-schema fingerprint mismatch 已由 .18.323 实机证明会让 Store 永久 Fence；服务只允许该
 -- 明确错误走一次 replaceCorrupt + durable verified replacement，不能把 LoadData/未来 schema 等错误吞掉。
 local integrityLoadCalls, replacementCalls = 0, 0

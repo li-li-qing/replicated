@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 背包快捷操作工具条
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- tools_bag 的表现侧栏；仅已验证 bank/coffer 窗口打开时显示可自由移动的工具条。背包扫描/移动留在 Feature 内，只在明确点击后执行。
 -- 取 / 放 / 全放 / 设置；搬运按钮沿用再点停止及方向切换契约。
 -- 位置由独立 Presentation Store 保存；不再跟随原生背包移动。
-------------------------------------------------------------------------
  if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
  local S = ReplicatedSuite
  local feature = S.Features and S.Features.tools_bag or nil
@@ -15,8 +12,7 @@
  local P = {
      version=10, ReloadVisibilityContractVersion=2, NativeTransientHostContractVersion=2,
      VisibleRetryContractVersion=2, TooltipLayerContractVersion=1, TwoButtonContractVersion=1, ReleasedRootRecoveryContractVersion=1,
-     -- 工具条默认标签为空，仅短暂显示执行状态或拒绝原因，消息清除后恢复紧凑宽度。
-    -- 常驻“银行 · 可快捷取放”会给游戏覆盖层增加无用信息，应保持简单方便。
+     -- 默认只留按钮，短暂显示执行状态或拒绝原因，清除后恢复紧凑宽度。
      QuietByDefaultContractVersion=1,
      -- 350 ms 心跳中的几何/文本写入必须按差异提交；保顶 Raise 应让位于已打开提示，避免周期性窗口在一秒内把用户提示压住，并保持差异渲染契约。
      DiffRenderContractVersion=1, HintYieldContractVersion=1,
@@ -117,10 +113,11 @@ function P:ResetPosition()
     return ok,saveErr
 end
 
--- 可见转换时宿主构建失败应在帧节拍有界重试，不等待下一次 100 ms 仓库心跳；RU 可能在仓库开启动画中拒绝首次临时窗口创建，用户若提前关闭会错过整个会话。
--- one-shot 在回调前自动移除，不引入永久 Tick。
+-- 仓库开启动画可能暂时拒绝创建，帧节拍有界重试，避免错过整个打开会话。
+-- one-shot 执行前自行移除；计数须放 P 而非闭包局部变量，否则回调重入会清零，导致无限重试。
+
 local CREATE_RETRY_TASK = "v3_bag_quick_overlay_create_retry"
--- 重试周期状态保存在 P，不能作为闭包局部变量；回调再次调用此方法时须保留计数，仅外部启动新周期才重置，否则上限不会触发而无限重试。此控制流边界需由 Lua 模拟验证。
+
 function P:ScheduleCreateRetry(freshCampaign)
     if S.Scheduler == nil or type(S.Scheduler.AddHighFrequencyOneShot) ~= "function" then return false end
     -- 同一时刻只允许一个在途重试；运行中的任务已覆盖此次请求。
@@ -183,8 +180,8 @@ function P:EnsureCreated()
     end
     if self.root ~= nil then return true end
     self.createAttempts=(tonumber(self.createAttempts) or 0)+1
-    -- RU 顶层 emptywidget 不能可靠作为 system 层宿主，可能投影有效却完全不可见。快捷操作属于交互式屏幕表现，须用临时 WINDOW；
-    -- 该条不是组件弹层，Windowing 负责 UIParent 几何与原生拖动租约，Feature 仅负责可见性/操作。
+    -- RU 的顶层 emptywidget 可能有有效投影却不可见，交互工具条须用临时 WINDOW。
+    -- Windowing 管 UIParent 几何和拖动租约，Feature 管显隐与操作。
     local root,err=S.UI:CreatePanel(UIParent,"v3_bag_quick_overlay_root",0,0,MIN_WIDTH,32,"soft",{
         transientWindow=true, visible=false, pickable=false, gradient=false,
         accentStrip=false, owner=self.owner,
@@ -248,8 +245,7 @@ function P:EnsureCreated()
     end)
     local tooltip=S.RSUI and S.RSUI.Tooltip or nil
     if type(tooltip)=="table" and type(tooltip.Bind)=="function" then
-        -- “停”按钮移除后，停止规则须在其它位置清楚说明；
-        -- 用户点击前会查看按钮悬浮提示；仅保留两条短行，提示池按原生标签测量，长句会裁切。切换规则和“仅同类”的完整说明放在能自动换行的页面提示 Text 中。
+        -- 停止按钮已移除，按钮悬停提示须说明再点停止；提示池长句会裁切，完整规则留给可换行页面文本。
         tooltip:Bind(take,{ text="取：取出与背包同类的物品（只移两边都有的）。再点一次＝停止。", allowRaw=true, cursorFollow=true, maxWidth=320 })
         tooltip:Bind(put,{ text="放：存入与仓库同类的物品（仓库满时仍会堆叠）。再点一次＝停止。", allowRaw=true, cursorFollow=true, maxWidth=320 })
         tooltip:Bind(allPut,{ text="全放：尝试存入所有非黑名单物品，不能存的会跳过。再点一次＝停止。", allowRaw=true, cursorFollow=true, maxWidth=360 })
@@ -348,7 +344,7 @@ function P:Refresh(forceGeometry)
         ..":"..tostring(viewport.uiScale)..":"..tostring(viewport.logicalWidth)..":"..tostring(viewport.logicalHeight)
     local firstShow=self.shown~=true
     local geometryChanged=self.appliedGeometry~=geometryKey
-    -- 约束（2026-10-04）：仅 Windowing 提交/校验自由位置，永不引用原生背包锚点。
+    -- 仅 Windowing 提交/校验自由位置，永不引用原生背包锚点。
     self.anchorChecks=(tonumber(self.anchorChecks) or 0)+1
     local anchored,anchorErr=Windowing:ApplyGeometry(self.root,self.owner,x,y,width,32,forceGeometry==true or firstShow)
     if anchored~=true then

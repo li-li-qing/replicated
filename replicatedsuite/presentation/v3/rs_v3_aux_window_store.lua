@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 辅助窗口位置存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 仅持久化可移动辅助窗口的表现状态，不持有业务数据。Store 启动时注册，首次打开辅助窗口时才延迟加载，使隐藏详情/诊断窗口没有 SaveData 读取成本；Feature/Service 权威层保持原归属。
-------------------------------------------------------------------------
+-- 辅助窗只保存几何，首次打开才加载 Store，避免隐藏详情和诊断窗产生读盘成本。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence
@@ -16,8 +13,7 @@ local V3 = S.UIV3
 local STORE_ID = "v3.presentation.aux_windows"
 local SCHEMA = 2
 
--- 只有真实可拖动/缩放、且没有自己 Feature Store 的辅助窗进入此表。
--- 不允许业务字段加入这里，否则会形成 Presentation 与 Feature 的双 Authority。
+-- 只收纳可拖动或缩放、且没有 Feature Store 的辅助窗；业务字段留在 Feature。
 local POLICIES = {
     trade_detail = {
         defaultWidth = 620, defaultHeight = 440, minWidth = 470, minHeight = 300,
@@ -34,8 +30,7 @@ local POLICIES = {
         defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
         defaultFontScale = 1.0, minFontScale = 0.80, maxFontScale = 1.25,
     },
-    -- 约束（2026-09-18，module-diagnostics-1）：模块诊断窗只有 Presentation 几何进入
-    -- AuxWindow Store；报告正文、页码、moduleId 都是 Session 冷快照，禁止持久化，避免诊断自己污染业务/存档。
+    -- 诊断窗只保存几何；报告、页码和 moduleId 都是本次会话的冻结快照。
     module_diagnostics = {
         defaultWidth = 760, defaultHeight = 590, minWidth = 560, minHeight = 380,
         defaultOverallOpacity = 0.98, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
@@ -64,16 +59,13 @@ end
 local CURRENT_POLICY_IDS = { "trade_detail", "trade_diagnostics", "quest_detail", "module_diagnostics" }
 local OPTIONAL_POLICY_IDS = { "trade_settings", "bonds_settings", "bag_settings", "player_notes" }
 local HISTORICAL_POLICY_SETS = {
-    -- 约束（2026-09-22，aux-window-canonical-recovery-1）：quest_detail 在原 schema1 发布后
-    -- 才加入 POLICIES，但旧 NormalizeState 会对“缺失窗口”主动补默认表。于是仅新增一个窗口类型就改变了
-    -- 整个 Store canonical，旧用户即使磁盘内容完全健康也会被 Integrity v4 fence。以下历史集合冻结真实
-    -- 发布过的 Presentation policy 代际；候选只有重新计算后精确命中旧 stamped fingerprint 才能恢复。
+    -- schema1 后新增 quest_detail，旧规范会为缺失窗口补默认表，改变健康旧档的 canonical。
+    -- 以下集合对应实际发布过的 policy 组合，只在重新计算精确命中旧章时恢复。
     { id = "pre_quest_detail", policies = { "trade_detail", "trade_diagnostics", "module_diagnostics" } },
     { id = "pre_module_diagnostics", policies = { "trade_detail", "trade_diagnostics" } },
-    -- 约束（2026-10-02）：实机自检 RS-20261002-195813-365029-1.2 的 schema1
-    -- 实际已有 quest_detail，却没有 module_diagnostics；旧两个历史集合漏掉此发布形态。
-    -- 其三窗 canonical 精确重现旧章 782943CD，而补第四窗后为 188C8DDF，Transport3 数值本身未丢失。
-    -- 只补这个有原档证据的 policy 集合，不白名单指纹、不删窗/清档；已有模块窗内容时禁止忽略它求匹配。
+    -- 原档 RS-20261002-195813-365029-1.2 已有 quest_detail、没有 module_diagnostics。
+    -- 三窗 canonical 重现旧章 782943CD，补第四窗后为 188C8DDF，Transport3 数值未丢失。
+    -- 仅补有此证据的 policy 集合；已有诊断窗时不能忽略它来求匹配。
     { id = "schema1_quest_without_module", policies = { "trade_detail", "trade_diagnostics", "quest_detail" }, absentWindow = "module_diagnostics" },
 }
 
@@ -207,9 +199,9 @@ function A:PersistWindow(id, reason, delayMs)
     if POLICIES[id] == nil then return false, "unknown auxiliary window: " .. id end
     local ok, err = self:EnsureLoaded()
     if ok ~= true then return false, err end
-    -- 约束（2026-10-04）：详情/诊断窗也必须跨立即重载保留位置；不依赖下一次保存心跳。
-    -- 维护：辅助窗小锁归本 Store；标题按钮 lock 与公开 API locked 均须在返回前写入并回读，保留 false 解锁值。
-    -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+    -- 详情/诊断窗也必须跨立即重载保留位置；不依赖下一次保存心跳。
+    -- 辅助窗小锁归本 Store；标题按钮 lock 与公开 API locked 均须在返回前写入并回读，保留 false 解锁值。
+    -- NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
     if reason == "geometry" or reason == "layout_reset" or reason == "minimized" or reason == "locked" or reason == "lock"
         or reason == "overall_opacity" or reason == "background_opacity" or reason == "text_opacity" or reason == "font_scale" then
         return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason="aux_window:" .. id .. ":" .. reason })

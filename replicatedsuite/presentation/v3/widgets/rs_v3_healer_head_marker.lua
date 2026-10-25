@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗推荐头顶标记
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 独立表现 Consumer，只在 Domain 发布时缓存推荐事实；50ms 视觉任务执行有界世界到屏幕投影与 Diff 写入，不创建 Native 控件，也不读取 Health/Aura/Roster。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Feature = S.Features and S.Features.Healer or nil

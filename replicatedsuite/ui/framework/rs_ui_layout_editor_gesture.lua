@@ -1,16 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 布局编辑手势桥
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 编辑移动/缩放的有限手势桥。
--- 边界：Native StartMoving/StopMovingOrSizing 是已验证 RU 捕获；RSUI.Pointer 只提供逻辑坐标，无通用捕获；
--- S.Layout RectTransformTransaction 负责数学/回滚；LayoutGuideResolver 基于 Begin 冻结候选作有界吸附；
--- SelectionOverlay/LayoutGuideOverlay 仅表现；持久化与功能状态由调用方回调负责。
--- Pointer 采样为视口逻辑坐标；rect 若为父/画布局部，调用方必须提供 pointerToLocal(x,y)，仅声明 coordinateSpace="viewport" 时接受恒等转换。
--- 无永久 Tick/OnUpdate；活跃手势仅借一个约 16 ms InteractiveTask，Scheduler 拒绝/不可用才用手势期 OnUpdate；
--- 候选只 Begin 查一次，每次脉冲仅采样与 O(有界候选) 数学；持久化只应在调用方 onCommit。
-------------------------------------------------------------------------
+-- Native StartMoving/StopMovingOrSizing 持捕获；Pointer 仅供逻辑位置，变换与吸附由纯模型计算。
+-- 指针属 viewport，rect 若属局部空间，调用方须传 pointerToLocal；只有声明 viewport 才可恒等转换。
+-- 候选在 Begin 冻结，活跃手势借约 16ms InteractiveTask，调度不可用才用手势期 OnUpdate；
+-- 停止即释放，仅调用方 onCommit 可以保存。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

@@ -1,19 +1,14 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 生活功能页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
--- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
-------------------------------------------------------------------------
+-- 总开关复用 PageHost 的按钮，刷新时不能改父级或重复绑定 OnClick。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
 local Host = S.UIV3 and S.UIV3.PageHost or nil
 local WidgetHost = S.UIV3 and S.UIV3.WidgetHost or nil
 if type(RSUI) ~= "table" or type(D) ~= "table" or type(Host) ~= "table" or type(WidgetHost) ~= "table" then return end
--- 约束（2026-09-25，life-page-consumer-binding-1）：Acceptance 用此只读契约标记阻止
--- “新 PageHost + 旧 LifeM16Pages”部分覆盖。它不代表 Consumer 状态，也不得被业务逻辑写入。
+-- 此标记供验收拦住 PageHost 与旧生活页混装，不代表 Consumer 状态。
 S.UIV3.LifeM16PagesContract = { version = 1, featureConsumerBindingContractVersion = 1, tradeMultiQuoteUiContractVersion = 1 }
 
 local function Items(rows, label)
@@ -22,8 +17,7 @@ local function Items(rows, label)
     return out
 end
 
--- 约束（2026-09-24，债券筛选下拉）：选项表只在页面脚本加载时构造一次，
--- 不在 Refresh/Tick 中反复分配。业务值仍由 Bonds Feature 持久化；Presentation 只提供可读标签。
+-- 下拉选项加载时构造一次，Refresh 不重复分配；选择值由 Bonds Feature 保存。
 local BOND_ORDER_ITEMS = {
     { value = "continent:west_first", text = "按大陆 · 西→东" },
     { value = "continent:east_first", text = "按大陆 · 东→西" },
@@ -100,15 +94,11 @@ local function Build(parent, route, feature, kind)
     local root, err = D:PageRoot(parent, "v3_page_" .. tostring(kind))
     if root == nil then return nil, err end
     root.consumerHeld = false
-    -- 约束（performance-cache-1）：下拉框 Render 只读页面已取得的 detached 快照，
-    -- 同一次 Refresh 不为每个标量再构建全量 Trade 投影。每次刷新覆盖，用户动作仍走 Commands。
+    -- 一次 Refresh 共用一份投影，避免每个下拉字段重新构建完整 Trade 快照。
     local function ControlProjection() return root.controlProjection or feature:GetProjection() or {} end
-    -- 约束（2026-09-25，life-page-consumer-binding-1）：life.trade / life.bonds / life.treasure /
-    -- life.fishing 共用本 Builder。18.309 接入 PageHost Feature 生命周期桥时若只替换 Activate/Deactivate，
-    -- 却漏掉这个共享 consumerBinding，BindFeatureConsumerLifecycle 会收到 nil 并让所有生活页在激活阶段报
-    -- `invalid feature lifecycle binding`。这里保留旧版 token `page:<kind>`，避免升级后同时出现新旧 Demand
-    -- 身份；Feature.Id 是 Runtime Authority，Presentation 的 consumerHeld 仅为镜像。Refresh 回调只在生命周期
-    -- 边沿执行，不增加 Tick/轮询，也不直接读取 Native 数据。后续新增生活页必须复用同一 binding。
+    -- 四个生活页共用 consumerBinding。曾只替换 Activate/Deactivate 而漏掉此绑定，
+    -- 导致激活时 invalid feature lifecycle binding。新页面须复用它，并保留 page:<kind> token，
+    -- 避免升级后出现两份需求；consumerHeld 只是镜像，持有关系以 Demand 为准。
     local consumerBinding = {
         feature = feature,
         featureId = tostring(feature.Id or ""),
@@ -173,9 +163,8 @@ local function Build(parent, route, feature, kind)
         if tradeSortSelector == nil then return nil, "跑商排序选择器创建失败" end
         root.tradeFavoriteButton, root.tradeSortSelector = tradeFavoriteButton, tradeSortSelector
 
-        -- 维护（2026-09-23，trade-view-mode-ui-1）：服务器仍按路线返回整包货率；这里的“关注”只过滤本地
-        -- Display Projection，避免对不关心的几十个货物做材料/利润重投影。“随身”由背部装备 ItemID Authority
-        -- 驱动目的地串行扫描，不在 Presentation 读取 X2Equipment。
+        -- 服务器按路线返回整包货率，“关注”只筛本地投影，减少材料与利润计算。
+        -- 随身扫描由背部装备 ItemID 决定，页面不直接读装备 API。
         local tradeViewRow = RSUI:HorizontalBox({ id = "v3_trade_view_row", parent = root, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
         RSUI:Text({ id = "v3_trade_view_label", parent = tradeViewRow, text = "显示", fontSize = 10, tone = "muted", slot = { size = "fixed", width = 52 } })
         local tradeViewSelector = RSUI:SegmentedSelector({
@@ -192,7 +181,7 @@ local function Build(parent, route, feature, kind)
             if ok == true then root:Refresh() end
             return ok, commandErr
         end
-        -- 维护（2026-09-25，trade-multi-row-quote-ui-1）：批量入口放在“显示”行而不是继续挤 actionRow，
+        -- 批量入口放在“显示”行而不是继续挤 actionRow，
         -- 保持 1024×768 等窄宽度下主操作按钮不重叠。它只创建 RowJob，Native 查询仍由共享 Queue 串行/去重。
         local tradeQuoteListButton = RSUI:Button({ id = "v3_trade_quote_list", parent = tradeViewRow, text = "查询当前材料", compact = true, slot = { size = "fixed", width = 108 } })
         tradeQuoteListButton.onClick = function()
@@ -218,7 +207,7 @@ local function Build(parent, route, feature, kind)
             return ok, modeErr
         end
 
-        -- 维护（2026-09-25，trade-multi-row-quote-ui-1）：询价任务现在按货物 RowJob 独立存在；
+        -- 询价任务现在按货物 RowJob 独立存在；
         -- 用户可以连续双击任意多行，已运行的其它货物不会被 supersede。
         -- 单击仅选择，详情由显式按钮打开，双击同一行把该行加入独立询价任务，避免第一次点击弹窗截断双击手势。
         local tradeDetailButton = RSUI:Button({ id = "v3_trade_detail", parent = actionRow, text = "货物详情", compact = true, slot = { size = "fixed", width = 92 } })
@@ -230,7 +219,7 @@ local function Build(parent, route, feature, kind)
             if type(detail) ~= "table" or type(detail.Open) ~= "function" then return false, "贸易品详情悬浮窗不可用" end
             return detail:Open(row.key)
         end
-        -- 维护（2026-09-23，trade-track-direct-action-1）：关注货物是高频筛选动作，不应强迫玩家先打开详情窗。
+        -- 关注货物是高频筛选动作，不应强迫玩家先打开详情窗。
         -- 按钮只消费 Feature 当前 selectedKey，并调用同一 ToggleTrackedProduct Command；关注 Store/ItemID Authority 不复制到 UI。
         local tradeTrackButton = RSUI:Button({ id = "v3_trade_track", parent = actionRow, text = "关注货物", compact = true, slot = { size = "fixed", width = 92 } })
         tradeTrackButton:SetEnabled(false)
@@ -248,11 +237,8 @@ local function Build(parent, route, feature, kind)
         })
         root.tradeRatioModeButton, root.tradeCommerceModeButton, root.tradeQuoteListButton, root.tradeDetailButton, root.tradeTrackButton = tradeRatioModeButton, tradeCommerceModeButton, tradeQuoteListButton, tradeDetailButton, tradeTrackButton
     elseif kind == "bonds" then
-        -- 约束（2026-09-24，债券选项下拉收敛）：旧版 8 个小按钮在 1024/1280 宽度下
-        -- 既拥挤又难理解“排序方式/大陆顺序/数量范围/重复策略”的组合关系。现在收敛为 3 个 Dropdown：
-        -- 排列、显示范围、重复材料。18.303 的“排列”明确区分大陆、数量与材料三种排序维度，并给数量/材料
-        -- 提供正反方向；Dropdown 关闭 popup 后才调用 Feature 原子命令，避免同步 Publish 重入。
-        -- Authority/Store 不在 UI 复制；旧按钮对应的 Feature Commands 仍保留兼容但不再由页面直接使用。
+        -- 排列、范围和重复材料分为三个下拉框；数量、材料均支持正反排序。
+        -- 先关闭 popup 再调用 Feature 原子命令，避免同步 Publish 重入。
         local bondOptionsRow = RSUI:HorizontalBox({ id = "v3_bonds_options", parent = root, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
         root.bondOrderDropdown = RSUI:Dropdown({
             id = "v3_bonds_order", parent = bondOptionsRow, items = BOND_ORDER_ITEMS, maxVisible = 6, popupWidth = 210,
@@ -348,9 +334,8 @@ local function Build(parent, route, feature, kind)
         local target = not enabled
         local ok, enableErr = S.FeatureRuntime:SetPreferredEnabled(feature.Id, target, "life_page_toggle")
         if ok ~= true then return false, enableErr end
-        -- 约束（page-feature-consumer-lifecycle-1）：生命周期事件会同步恢复当前页面 Consumer；
-        -- 这里再做一次幂等核验只是为了把 Acquire 失败直接反馈给本次点击，并在失败时回滚 Feature。
-        -- 禁止继续只写 consumerHeld boolean；真实持有关系以 Feature.Demand token 为准。
+        -- PageHost 恢复可见页 Consumer；此处幂等核验，以便获取失败时回滚本次点击。
+        -- 持有关系以 Demand token 为准，不能只改 consumerHeld。
         local synced, syncErr = Host:SyncFeatureConsumer(root, consumerBinding, "life_page_toggle")
         if synced ~= true and target == true then
             local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled(feature.Id, false, "life_page_acquire_rollback")
@@ -419,7 +404,7 @@ local function Build(parent, route, feature, kind)
 
     if kind == "trade" then
         tableView.onSelectionChanged = function(index)
-            -- 维护（2026-09-23，trade-row-double-click-1）：单击仅更新 Feature 的 selectedKey，
+            -- 单击仅更新 Feature 的 selectedKey，
             -- 不再自动弹详情；否则第二次点击落不到同一 TableView 行，双击查询无法稳定成立。
             local row = tableView:GetItem(index)
             if row == nil or row.key == nil then return false end
@@ -507,7 +492,7 @@ local function Build(parent, route, feature, kind)
         root.controlProjection = projection -- 缓存仅属页面这一轮展示；不回写 Feature/Store。
         tableView:SetItems(rows, projection.revision or 0, kind == "trade") -- Trade 行由 revision 提交，其它生活倒计时保留原刷新。
         if kind == "bonds" then
-            -- 2026-10-15：空列表必须区分未采集和筛选隐藏，原因来自同一 Feature 读模型。
+            -- 空列表必须区分未采集和筛选隐藏，原因来自同一 Feature 读模型。
             if #rows > 0 then
                 tableView:SetViewState("ready")
             elseif projection.filterHint then
@@ -522,7 +507,7 @@ local function Build(parent, route, feature, kind)
         if kind == "trade" then
             local fromItems = Items(projection.zones, function(row) return row.displayName or row.name end)
             local toItems = Items(projection.sellableZones, function(row) return row.displayName or row.name end)
-            -- 维护（2026-09-23，trade-cargo-ui-authority-1）：随身模式的 origin/destination 由背包 ItemID +
+            -- 随身模式的 origin/destination 由背包 ItemID +
             -- Cargo Authority 决定，Presentation 不能让历史路线下拉继续可操作，否则用户会误以为它能改变随身扫描来源，
             -- 还可能无意义地抢占 SingleFlight。退出随身模式后原路线仍完整保留。
             local routeControlsEnabled = enabled and projection.viewMode ~= "cargo"
@@ -555,8 +540,6 @@ local function Build(parent, route, feature, kind)
                     or "自动刷新：关")
             end
             if root.tradeViewHint then
-                -- 维护（2026-09-23，trade-view-help-1）：视图名称不再只显示计数，直接解释用途。
-                -- 这是 Presentation 帮助文案，不推断 Trade 数据，也不改变任何筛选 Authority。
                 if projection.viewMode == "tracked" then
                     root.tradeViewHint:SetText("仅显示你关注的货物；回到“全部货物”后单击货物即可直接关注/取消关注")
                 elseif projection.viewMode == "cargo" then
@@ -592,7 +575,7 @@ local function Build(parent, route, feature, kind)
             end
 
             if root.tradeInteractionHint then
-                -- 维护（2026-09-30，auction-user-priority-1）：暂停提示来自 Feature，只改文案，保留任务/配置。
+                -- 暂停提示来自 Feature，只改文案，保留任务/配置。
                 local activity = projection.quoteActivity
                 if type(activity) == "table" and activity.paused == true then
                     root.tradeInteractionHint:SetText(tostring(activity.text or "材料名称查询已暂停"))
@@ -613,8 +596,7 @@ local function Build(parent, route, feature, kind)
                 end
             end
 
-            -- 页面底部只保留不可从控件直接看出的状态。旧版把地区计数、视图、排序、收藏、熟练度、
-            -- 待询价数量等全部重复一遍，造成高信息密度但低可操作性。
+            -- 底部只显示控件本身无法表达的状态，避免重复地区、排序、视图等选项。
             local statusParts = {}
             if not enabled then
                 status:SetText("功能已关闭")
@@ -653,6 +635,10 @@ local function Build(parent, route, feature, kind)
             local treasureStatus = (projection.status or "--") .. " · " .. tostring(#rows) .. (projection.viewKind=="maps" and " 处坐标" or " 个资料点")
                 .. (projection.selected and (" · 当前 " .. tostring(projection.selected.name or "--")) or "")
             if projection.viewKind=="maps" and projection.totalMapCount~=nil then treasureStatus=treasureStatus.." · 合计 "..projection.totalMapCount.." 张（含各箱扫描记录）" end
+            if projection.selected and projection.selected.kind=="custom" then
+                treasureStatus="自定义点："..tostring(projection.selected.text or "")
+                    ..(projection.selected.distance and (" · "..math.floor(projection.selected.distance+0.5).."m") or "")
+            end
             local treasureError = root.treasureActionError or projection.lastMapActionError
             if treasureError then treasureStatus = "操作未完成：" .. tostring(treasureError) end
             if projection.mapActionPending == true then treasureStatus = "地图定位等待中，冷却结束后自动执行" end -- 冷却等待不是定位失败；只显示 Feature 请求状态。
@@ -730,6 +716,7 @@ local function Build(parent, route, feature, kind)
     end
     function root:OnDeactivated()
         if kind == "treasure" then S.UIV3.TreasureMapInteraction:Reset(self) end
+        if self.treasureControls and self.treasureControls.custom then self.treasureControls.custom:ClosePopups()end
         self:UnbindFeatureUpdates()
         return Host:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end

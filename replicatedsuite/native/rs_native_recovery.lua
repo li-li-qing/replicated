@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 引导恢复入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 引导恢复入口在 Native Foundation 后立即安装，使后续 TOC 故障仍保留 Suite 自有最小游戏内恢复控件。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite
 

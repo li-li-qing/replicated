@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 主窗口状态存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 仅保存应用窗口偏好，不存 Domain/Feature 状态。Schema v7 保留显式 V3 自由位置和响应式来源视口信息；
--- Schema v6 是精确完整性恢复的只读历史规范，不升 schema 不能改变规范形状。旧边缘位置仅重新居中一次，避免继承左上角默认值；Windowing 仅在调用方明确选择时添加语义最小/最大值。
-------------------------------------------------------------------------
+-- 只存主窗口偏好。schema7 保存自由位置和来源视口；schema6 作为只读历史规范，形状不能变。
+-- 旧边缘位置只重新居中一次；语义尺寸上限仅由调用方显式选择。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence
@@ -93,10 +90,8 @@ V3.ShellCanonicalMigrationContractVersion = 1
 V3.ShellStoreSchemaContractVersion = 7
 V3.ShellKnownLegacyRecoveryContractVersion = 1
 
--- 实机事件身份：在 `.18.184` 与 `.18.187` 观测结果一致；stamped v4 = 2EA0A82A，current canonical = 2EC2F5C5。
---
--- 此处不是通用 Shell 失配放行口；Persistence 仅在封印、元数据、解码、预算和精确历史重建按要求检查后调用。额外要求精确新旧指纹对与 schema 6；
--- 按 Death Review 的一次性 Store 迁移模式保留已验证 UI 载荷，立即重标 schema 7，未知指纹继续隔离。
+-- 实机 .18.184 与 .18.187 均出现旧章 2EA0A82A、当前 canonical 2EC2F5C5。
+-- 仅在封印、元数据、解码和预算均通过，且 schema6 精确命中此指纹对时迁到 schema7；未知指纹仍隔离。
 local KNOWN_V6_STAMP = "2EA0A82A"
 local KNOWN_V7_CANONICAL = "2EC2F5C5"
 local SHELL_BUDGET = { maxDepth = 5, maxNodes = 80, maxStringBytes = 2048, maxEntriesPerTable = 40 }

@@ -110,6 +110,44 @@ function P:Arm(index) -- 中文维护：只记录用户明确选择的一瓶药�
     self.arm = { index = index, slot = row.slot, before = stock, started = self.now, order = {}, candidates = {} } -- 中文维护：最多8个本机真实事件候选，不进行技能编号枚举。
     self:RefreshText() -- 中文维护：立即显示正在记录。
 end -- 中文维护：60秒上限只用于避免遗忘的记录，用户不必在3秒内操作。
+function P:ProtectAfterDeath(fromHealth) -- 中文维护：本人死亡通知或实际零血量只建立不可用条件，不按低血量猜复活，不取消既有用药/共享期限。
+    if not self.reviveProtected or self.reviveAliveSeen then -- 中文维护：首次死亡或已复活后再次死亡才开始新周期；同次死亡的重复通知/连续零血量不能推迟兜底。
+        self.reviveProtected, self.reviveVerifyAfter = true, self.now + 150; self:ClearStockChanges() -- 中文维护：死亡通知可能先于血量更新；短暂等待新血量，不能用死前满血/战斗标志立即抹掉通知，已确认Usage继续保留。
+        self.reviveResumeAt, self.reviveAliveSeen = self.now + 20000, false -- 中文维护：用户指定从死亡起20秒自动解除保护，不从点击复活或首次读到正血量重新计时；真正再次死亡重开本周期。
+        for _, row in ipairs(self.rows) do row.stock, row.remaining, row.duration, row.at, row.observationRetryAt, row.cooldownRetryAt, row.wakeAt, row.sleeping = nil, nil, nil, nil, nil, nil, nil, false end -- 中文维护：复活后不继承死前Ready或库存比较基线，期间手动消耗/换槽不能被延迟归因成新用药。
+        self.highHealthIdle = true -- 中文维护：死亡保护期间同样暂停药品观察；结束后沿现有恢复核对重新取得共享药CD，不拿旧零值放行。
+    end -- 中文维护：保护可跨暂停和同会话重载，但不会自动启用已暂停插件。
+    if fromHealth then self.reviveVerifyAfter = nil end -- 中文维护：已经实读零血量即确认生命状态转换，不额外延迟随后真实复活后的健康/战斗解除。
+    self.reviveCombatAt, self.nextSampleAt = nil, nil; self:HideSignal() -- 中文维护：死亡通知当次回调同步撤色并唤醒血量观察，全药长CD休眠也不能漏掉死亡到复活的转换。
+end -- 中文维护：没有复活、吃药、按键或其它游戏写入API。
+function P:EndReviveProtection() -- 中文维护：真实回血、明确战斗、用户主动启用或死亡20秒兜底只解除复活否决；超时不直接授予Ready，也不启动手动暂停的插件。
+    if self.reviveProtected then -- 中文维护：以实际解除时刻交接；保护期间暂停诊断或热重载可能已消费死亡时的一次性恢复标记。
+        for _, row in ipairs(self.rows) do row.stock, row.remaining, row.duration, row.at, row.observationRetryAt, row.cooldownRetryAt, row.wakeAt, row.sleeping = nil, nil, nil, nil, nil, nil, nil, false end -- 中文维护：保护期观察只用于诊断，不能在解除后沿用为Ready或拿旧数量归因新用药；Usage与已证实共享否决不变。
+        self.highHealthIdle = true -- 中文维护：重新安排完整映射的共享CD恢复核对，保护期间漏掉的手动用药不能借另一方单侧零放行。
+    end -- 中文维护：普通未受保护的启用不额外清观察或增加恢复查询。
+    self.reviveProtected, self.reviveVerifyAfter, self.reviveCombatAt, self.reviveResumeAt, self.reviveAliveSeen, self.nextSampleAt = false, nil, nil, nil, false, nil -- 中文维护：解除后清本次死亡期限；后续仍核对当前血量、库存、真实CD及Usage，下一次死亡独立计时。
+end -- 中文维护：解除不直接产生颜色或Ready。
+function P:OnDeathNotice(name) -- 中文维护：沿本机CombatEventBus已验证的UNIT_DEAD_NOTICE首参数姓名契约，不猜其它死亡/复活事件参数。
+    if type(name) ~= "string" or name == "" then return end -- 中文维护：未知归属不能把别人的死亡当成本人。
+    local ok, playerName = self:Read("X2Unit", "UnitName", "player") -- 中文维护：低频死亡通知现场核对本人，不能借重载/换角色前缓存的姓名。
+    if ok and type(playerName) == "string" and playerName ~= "" and name == playerName then self:ProtectAfterDeath(); self.reason = "角色死亡：复活后低血量期间暂缓自动用药" end -- 中文维护：只给本人建立保守否决，团队成员死亡不改变本人的信号。
+end -- 中文维护：本人零血量仍提供无事件时的补充证据。
+function P:CheckReviveProtection() -- 中文维护：只消费本轮真实血量；普通战斗没有新API轮询，复活保护期间才读取战斗状态。
+    local health, maximum = self.health, self.maximum -- 中文维护：血量与上限已按原ABI严格解析，不用nil/加载中读数推断死亡或复活。
+    if health == 0 and maximum and maximum > 0 then self:ProtectAfterDeath(true) end -- 中文维护：真实零血量即撤色并确认生命状态；缺失血量不触发错误的复活保护。
+    if self.reviveProtected and not self.Number(self.reviveResumeAt) then self.reviveResumeAt = self.now + 20000 end -- 中文维护：升级前旧实例可能只有保护布尔；仅补一次有限期限，不能每帧重置导致永远无法兜底。
+    if self.reviveProtected and health and maximum and maximum > 0 and health > 0 and health <= maximum then -- 中文维护：只有本轮明确存活才能检查解除条件，死人或未知不能被战斗标志放行。
+        if self.reviveVerifyAfter and self.now < self.reviveVerifyAfter then return true end -- 中文维护：刚到达的死亡通知优先于可能滞后的正血量；150ms仅等状态更新，不是自动恢复期限，后续仍按健康、战斗或20秒兜底判定。
+        self.reviveAliveSeen = true -- 中文维护：保护期间实读存活后若再收到死亡/零血量，应开始新的20秒周期；死前短暂旧血量不能生成这个标记。
+        local percent = health * 100 / maximum -- 中文维护：用当前上限计算，回血/装备/Buff变化不读取缓存最大血量。
+        if self.now >= self.reviveResumeAt or health == maximum or (percent > self:Threshold(1) and percent > self:Threshold(2) and percent > self:Threshold(3)) then self:EndReviveProtection() -- 中文维护：回血可提前解除；死亡已满20秒且本轮确认存活时兜底恢复，仍死亡/血量未知时禁止发色，晚复活也不重开20秒。
+        elseif not self.reviveCombatAt or self.now >= self.reviveCombatAt then -- 中文维护：保护期间战斗状态最多每100ms读取，正常运行和死亡等待不增加该Native调用。
+            self.reviveCombatAt = self.now + 100 -- 中文维护：失败也按有限周期重试，未知不等于已进战斗，不能每16ms反复跨Native。
+            if self.playerCombatAvailable then local ok, active = self:Read("X2Player", "PlayerInCombat"); if ok and active == true then self:EndReviveProtection() end end -- 中文维护：只接受已允许getter的明确true；缺失、异常、nil或非布尔都继续保护，用户仍可主动重新启用。
+        end -- 中文维护：20秒前保留原省药保护；战斗与回血仍可提前解除，接口未知不会阻止已确认存活后的20秒兜底。
+    end -- 中文维护：战斗复活确认进入战斗后尽快沿原16ms采样恢复救急药品决策。
+    return self.reviveProtected -- 中文维护：此结果只否决颜色，不制造CD、库存或任何用药动作。
+end -- 中文维护：保护与各药CD独立，复活不会清空用药历史。
 function P:OnCombat(_, eventType, sourceName, _, skillId, abilityName) -- 中文维护：私有Widget的COMBAT_MSG payload为unitId,eventType,sourceName,targetName,abilityId,abilityName，来自本机CombatEventBus实际消费端。
     if eventType ~= "SPELL_CAST_SUCCESS" then return end -- 中文维护：治疗量、Buff/aura ID不能升级为可查CD的技能ID。
     skillId = self.Integer(skillId); if not skillId then return end -- 中文维护：只消费真实成功事件中的合法技能编号，不枚举探测。
@@ -170,6 +208,7 @@ function P:EnableSignal() -- 中文维护：内置实测映射直接可用，关
     if self.error or not located or not any then self:Disable(self.error or err or "没有已确认的药品映射"); self:SetPanelVisible(true); return end -- 中文维护：初始化或定位失败保持暂停与可见诊断。
     if not self.health or not self.maximum or self.maximum <= 0 or self.health <= 0 or self.health > self.maximum then self:Disable("暂不能启用：血量未知或角色死亡，见上方原始读数"); self:SetPanelVisible(true); return end -- 中文维护：未知血量时面板留在原位，不伪称已经可运行。
     if not self:ApplySignalGeometry(true) then self:SetPanelVisible(true); return end -- 中文维护：每次明确启用立即核对当前UI比例；未知或拒写保留设置窗口与停止状态，不能等待旧缓存到期。
+    self:EndReviveProtection() -- 中文维护：本人明确点击启用且已确认存活、位置与布局后，允许主动结束复活等待；死人/未知血量在上方仍被拒绝。
     self.enabled = true; self:Sample(); self:CollapsePanel(); self:RefreshText() -- 中文维护：本轮决策即提交，收起只释放自己的编辑焦点，不启动LCot或发送键盘输入。
 end -- 中文维护：血量高于阈值时可以正常启用并等待，颜色仍保持撤下。
 function P:RowWakeAt(index) -- 中文维护：返回下一次必须核对真实库存/CD的时点；只有不可用事实可以缓存，Ready没有休眠权限。
@@ -179,6 +218,7 @@ function P:RowWakeAt(index) -- 中文维护：返回下一次必须核对真实�
     row.blockedUntil = use and use.blockedUntil or nil -- 中文维护：只同步已有的保守限制，不生成Native冷却读数。
     if row.inventoryPendingUntil then return nil end -- 中文维护：数量变化待确认时保留快速CD反馈，不能被失败退避、缺货缓存或旧合并期限压住。
     if row.awaitCooldown and use and use.pendingUntil and self.now < use.pendingUntil then return nil end -- 中文维护：用药后最多500ms保留实际正CD确认通道；一读到反馈即由UsagePending解除全局等待，不能让休眠平白拖慢独立可用药。
+    if row.healthIdleRecovery then return self.healthIdleRetryAt and self.now < self.healthIdleRetryAt and self.healthIdleRetryAt or nil end -- 中文维护：恢复核对两药共用250ms重试期限，Unknown不能因缺货休眠丢失后续正CD，也不能每16ms空转重试。
     if row.inventoryUncertain then return self.inventoryPairRetryAt and self.now < self.inventoryPairRetryAt and self.inventoryPairRetryAt or nil end -- 中文维护：共享未归因时两方一起按250ms核对CD，不能被长CD/缺货休眠挡住，也不拖慢独立图1。
     if use and use.blockedUntil - 250 > self.now then return use.blockedUntil - 250 end -- 中文维护：21/90/30秒及30/60秒共享限制已由用药层确认，提前250ms恢复检查，禁止乘除未核实的Native CD单位。
     if not row.slot and row.emptyConfirmed then local emptyUntil = self.EmptyUntil(row, self.now); if emptyUntil then return emptyUntil end end -- 中文维护：无药时沿现有两秒补货扫描周期休眠，不再每16ms查没有意义的技能CD。
@@ -188,19 +228,36 @@ function P:RowWakeAt(index) -- 中文维护：返回下一次必须核对真实�
 end -- 中文维护：此查询仅访问Lua标量，无游戏API，也不分配每帧任务或计时器。
 function P:Sample() -- 中文维护：仅到期药读取Native，休眠药保留不可用事实；恢复Ready前仍要求当轮真实库存和零CD。
     if self.inventoryPairLock then self:SyncInventoryPair() end -- 中文维护：重载或同映射导入后的新行恢复已观察到的否决，正常无锁采样不增加Usage查询。
+    local pairedMappings = self.rows[2].verified and self.rows[2].skillId and self.rows[3].verified and self.rows[3].skillId -- 中文维护：verified只由预设/手动校准在合法skillId校验后置真；共享两方完整映射才有能力完成高血量后的双向核对，未记录项保持原完整采样。
+    if self.healthIdleRecovery and not pairedMappings then self.healthIdleRecovery, self.healthIdleRetryAt = nil, nil; self.rows[2].healthIdleRecovery, self.rows[3].healthIdleRecovery = nil, nil end -- 中文维护：切换到合法部分预设时取消无法完成的临时读取需求，不清已见正CD的Usage否决，也不为未验证技能开放Native读取。
+    if self.healthIdleRecovery then self.rows[2].healthIdleRecovery, self.rows[3].healthIdleRecovery = true, true end -- 中文维护：同映射导入重建行也不能跳过尚未完成的共享恢复核对，资格直到真实结果明确才结束。
     self.sampleProbes = self.sampleProbes or { {}, {}, {} } -- 中文维护：三份固定探测缓冲属于本实例，复用空间减少16ms路径的短命表与GC。
-    local probes, needsLocate, allSleeping, usageRevision, stockPending = self.sampleProbes, false, true, self.usageRevision, false -- 中文维护：先收齐数量候选再核对CD，结果供正式行更新复用；共享药库存不能单独归因用药方向。
+    local probes, needsLocate, allSleeping, usageRevision, stockPending, feedbackRequired = self.sampleProbes, false, true, self.usageRevision, false, false -- 中文维护：先收齐数量候选再核对CD，结果供正式行更新复用；用药反馈有独立需求，不能被高血量短路压住。
     for i, row in ipairs(self.rows) do -- 中文维护：先清所有已过期数量候选，再采集新变化，不能让上个不重叠的窗口制造新的共享歧义。
         if row.inventoryPendingUntil and self.now > row.inventoryPendingUntil then row.inventoryPendingUntil = nil end -- 中文维护：只清未确认候选，已见正CD的pairUncertain保守否决独立保留。
+        if row.inventoryPendingUntil or row.awaitCooldown then feedbackRequired = true end -- 中文维护：尚待确认的数量变化/本人用药必须继续读取真实CD，即使当前血量已回满也不能滞留500ms反馈窗口。
         row.wakeAt = self:RowWakeAt(i); row.sleeping = row.wakeAt ~= nil; probes[i].slot, probes[i].cooldownSampled = nil, false; if not row.sleeping then allSleeping = false end -- 中文维护：库存/CD候选结果仅允许本轮复用；校准期间三药均不休眠。
     end -- 中文维护：过期清理完成后才允许比较任意药品的新数量下降。
-    self.healthSleeping = self.enabled and allSleeping -- 中文维护：三药均因冷却、缺货或Unknown暂不能发色时，血量不会改变结果；暂停/启用核对仍读取真实血量。
+    self.healthSleeping = self.enabled and allSleeping and not self.reviveProtected -- 中文维护：三药休眠可免查血量，但死亡/复活保护需要继续观察存活及回血，不能睡过整个复活过程。
     if not self.healthSleeping then -- 中文维护：任一药接近可用时立即恢复原有16ms血量响应，不把界面低频扩散到战斗信号。
         local hpOk, hp = self:Read("X2Unit", "UnitHealth", "player") -- 中文维护：只消费本人的实际血量。
         local maxOk, maxHp = self:Read("X2Unit", "UnitMaxHealth", "player") -- 中文维护：最大血量不可读时禁止计算假比例。
         self.health, self.maximum = hpOk and self.HealthNumber(hp) or nil, maxOk and self.HealthNumber(maxHp) or nil -- 中文维护：失败清掉旧血量，不能因减少Native读取保留旧Ready。
         self.healthRaw = self.panelOpen and ("当前 " .. self.HealthRaw(hp, hpOk) .. " / 上限 " .. self.HealthRaw(maxHp, maxOk)) or nil -- 中文维护：原值诊断只在面板可见时格式化，收起后的16ms路径不生成无人读取的字符串。
     else self.health, self.maximum, self.healthRaw = nil, nil, nil end -- 中文维护：休眠明确撤销旧血量权限，唤醒必须重读，不能借缓存发色。
+    if self:CheckReviveProtection() and self.enabled and not self.arm and not self.armCross then self.nextSampleAt = nil; self.reason = self.health == 0 and "角色死亡：等待复活，暂不发出药品颜色" or "复活保护：回血/战斗可提前恢复，死亡满20秒兜底恢复"; self:RenderSignal(nil); return end -- 中文维护：保护期撤色并免查背包/CD，血量仍16ms监测；20秒只解除保护，诊断/校准及已确认限制不变。
+    if self.enabled and pairedMappings and not self.panelOpen and not self.arm and not self.armCross and not feedbackRequired and not self.inventoryPairLock and not self.healthIdleRecovery and self.health and self.maximum and self.maximum > 0 and self.health > 0 and self.health <= self.maximum then -- 中文维护：只有共享映射完整、隐藏面板的正常运行可按高血量取消药品读取；部分预设、诊断、校准、共享恢复/否决及未知/死亡血量保留完整路径。
+        local percent = self.health * 100 / self.maximum -- 中文维护：使用本轮真实血量与上限的原比例，不按UI取整，不缓存可能随Buff变化的最大血量。
+        if percent > self:Threshold(1) and percent > self:Threshold(2) and percent > self:Threshold(3) then -- 中文维护：严格高于全部已提交阈值才无用药需求；等于阈值或用户配置100%时必须立即核对药品。
+            if not self.highHealthIdle then -- 中文维护：只在进入无需求阶段清理一次标量，后续每16ms只保留真实血量读取，不重复遍历清观察。
+                for _, row in ipairs(self.rows) do row.stock, row.remaining, row.duration, row.at, row.observationRetryAt, row.cooldownRetryAt, row.wakeAt, row.sleeping = nil, nil, nil, nil, nil, nil, nil, false end -- 中文维护：旧Ready和消耗比较基线失去权限；高血量期间换堆叠或漏掉数量更新，都不能在掉血后反推一次新用药。Usage限制与完整缺货证明独立保留。
+            end -- 中文维护：不缓存背包关闭或物品位置不变这一未经证明的事实。
+            self.highHealthIdle, self.nextSampleAt = true, nil -- 中文维护：只跳过药品读取，血量仍每16ms检查；下降到任一阈值时同轮重读库存、槽位及实际CD，不能继承旧合并睡眠期限。
+            self.reason = "血量未到任何药品阈值：色块已撤下"; self:RenderSignal(nil); return -- 中文维护：当前血量本身足以确定无颜色，必须同步撤掉旧信号，不能等文字刷新。
+        end -- 中文维护：发生阈值需求后继续本函数，保持原16ms内真实Ready判定。
+    end -- 中文维护：无需求优化不改变任何阈值、优先级或共享CD规则。
+    local returningFromHealthIdle = pairedMappings and self.highHealthIdle; self.highHealthIdle = false -- 中文维护：完整映射才恢复双向核对；高血量期间导入部分预设必须沿原采样继续，不能等待未记录项永远拿不到的CD。
+    if returningFromHealthIdle then self.healthIdleRecovery = true; for i = 2, 3 do local row = self.rows[i]; row.healthIdleRecovery, row.wakeAt, row.sleeping = true, nil, false end end -- 中文维护：恢复资格保留到两方真实结果已知；首次绕过缺货/失败休眠，最后一瓶也要查CD，不能把首次Unknown当核对已完成。
     for i, row in ipairs(self.rows) do -- 中文维护：探测先保留原槽与库存，最后一瓶用完不能因自动定位清掉消耗证据。
         if not row.sleeping and row.slot then -- 中文维护：休眠药不查背包，限制结束前才重新核对实际槽位；没有槽位时不能猜位置。
             local id, stock = self:ReadItem(row.slot); local probe = probes[i]; probe.slot, probe.id, probe.stock = row.slot, id, stock -- 中文维护：只写本轮复用缓冲，不保留Native对象，不再每药每帧分配新表。
@@ -225,7 +282,7 @@ function P:Sample() -- 中文维护：仅到期药读取Native，休眠药保留
                 local id, stock; if probe and probe.slot == row.slot then id, stock = probe.id, probe.stock else id, stock = self:ReadItem(row.slot) end -- 中文维护：缓存仅覆盖本次16ms采样，不复用上一次库存。
                 if id == row.itemId then row.stock = stock end -- 中文维护：身份不符保持Unknown，不把旧槽物品当固定药。
             elseif self.EmptyUntil(row, self.now) then row.stock = 0 end -- 中文维护：只接收仍有效的完整缺货证明，两秒边界立即过期，重扫失败不能保留零库存。
-            if row.stock == 0 and not row.awaitCooldown and not row.inventoryPendingUntil and not row.inventoryUncertain and not self.arm and not self.armCross then row.wakeAt = self.EmptyUntil(row, self.now) -- 中文维护：常态缺药免查CD；最后一瓶、共享未归因或校准仍须读取实际CD，保证真实双零可解除否决。
+            if row.stock == 0 and not row.awaitCooldown and not row.inventoryPendingUntil and not row.inventoryUncertain and not row.healthIdleRecovery and not self.arm and not self.armCross then row.wakeAt = self.EmptyUntil(row, self.now) -- 中文维护：常态缺药免查CD；共享恢复尚未完成、最后一瓶、共享未归因或校准仍须读实际CD，缺货不能掩盖漏报的共享用药。
             elseif row.skillId and row.verified then -- 中文维护：正常运行只查询有库存需求或校准需要的已验证技能。
                 local probe = probes[i] -- 中文维护：库存候选的CD结果只在同一轮、同一已验证技能下复用，不能沿用上轮或旧映射。
                 if probe.cooldownSampled and probe.cooldownSkillId == row.skillId then row.remaining, row.duration = probe.cooldownRemaining, probe.cooldownDuration -- 中文维护：复用刚完成的实际CD核对，未知原样保留，不再跨Native重复查询。
@@ -242,6 +299,14 @@ function P:Sample() -- 中文维护：仅到期药读取Native，休眠药保留
         if row.inventoryPendingUntil then row.wakeAt = nil end -- 中文维护：待确认阶段继续16ms核对；即使本轮CD未知也不能提前按250ms退避把正反馈响应变慢。
         row.sleeping = row.wakeAt ~= nil -- 中文维护：本轮刚确认正CD也可能已经进入休眠，面板须把保留的CD明确标作上次观察，不能等待下一次采样才更新展示状态。
     end -- 中文维护：三行状态完全更新后只做一次决策，避免中间帧出现错误药色。
+    if self.healthIdleRecovery then -- 中文维护：首次恢复或其Unknown重试都属于同一核对，不能只在第一次尝试时检查漏报的共享用药。
+        for i = 2, 3 do local row = self.rows[i]; if row.at == self.now and row.remaining and row.remaining > 0 and (not row.blockedUntil or row.blockedUntil <= self.now) then self:LockInventoryPair(); break end end -- 中文维护：未被精准Usage解释的实际正CD只否决关联两药，不猜方向或新建整段CD。
+        local two, three = self.rows[2], self.rows[3] -- 中文维护：未知必须继续取得两方同轮结果，不能使用旧零值或缺货证明代替CD。
+        if self.inventoryPairLock or (two.at == self.now and two.remaining ~= nil and three.at == self.now and three.remaining ~= nil) then -- 中文维护：正CD交由已证实的共享否决接管；否则两方当前结果都明确后才能结束恢复，已知Usage仍独立否决其限制内Ready。
+            self.healthIdleRecovery, self.healthIdleRetryAt = nil, nil; two.healthIdleRecovery, three.healthIdleRecovery = nil, nil -- 中文维护：只清本次读取需求，不撤销Usage或已见正CD的pairUncertain。
+            for i = 2, 3 do local row = self.rows[i]; row.wakeAt = self:RowWakeAt(i); row.sleeping = row.wakeAt ~= nil end -- 中文维护：恢复后立即按精准限制重新长休眠或恢复真实零CD的16ms响应，不残留250ms旧期限。
+        else if not self.healthIdleRetryAt or self.now >= self.healthIdleRetryAt then self.healthIdleRetryAt = self.now + 250 end; for i = 2, 3 do self.rows[i].wakeAt, self.rows[i].sleeping = self.healthIdleRetryAt, true end end -- 中文维护：Unknown保留两药否决并共同退避；只在真实到期时续下一周期，独立图1的16ms采样不能不断后推本期限导致永远不重试。
+    end -- 中文维护：恢复核对不是库存归因，失败不续旧数量基线，不按时间猜Ready。
     if self.inventoryPairLock then self:ResolveInventoryPair() end -- 中文维护：仅同轮真实双零可解除共享歧义，500ms候选结束本身永远不授予两药Ready。
     pending = self:UsagePending() -- 中文维护：全部三行实际读数完成之后同步额外限制与短反馈等待，不恢复旧Ready。
     local arm = self.arm -- 中文维护：只读记录有独立的有限生命周期。
@@ -323,7 +388,7 @@ function P:Update(dt) -- 中文维护：唯一OnUpdate只合并到期读数，�
     if not self.enabled and not self.panelOpen and not self.arm and not self.armCross then self.sampleElapsed, self.textElapsed = 0, 0; return end -- 中文维护：暂停且收起时不轮询血量、背包或CD；单调时钟仍推进用药限制。
     self.sampleElapsed, self.textElapsed = (self.sampleElapsed or 0) + dt, (self.textElapsed or 0) + dt -- 中文维护：采样与可读诊断刷新分开。
     local interval = (self.enabled or self.arm or self.armCross) and 16 or 250 -- 中文维护：战斗与校准保留16ms响应，暂停时仅为可见诊断每250ms取一次数据。
-    if self.sampleElapsed >= interval and (not self.enabled or self.arm or self.armCross or not self.nextSampleAt or self.now >= self.nextSampleAt) then self.sampleElapsed = self.sampleElapsed % interval; self:Sample() end -- 中文维护：全药休眠期间跳过整个采样函数，最早到期只合并采样一次，不补跑已过去的帧。
+    if self.sampleElapsed >= interval and (not self.enabled or self.arm or self.armCross or self.reviveProtected or not self.nextSampleAt or self.now >= self.nextSampleAt) then self.sampleElapsed = self.sampleElapsed % interval; self:Sample() end -- 中文维护：全药休眠可跳过采样，但本人死亡通知建立的复活观察必须继续，不补跑历史帧或延迟保护解除。
     if self.textElapsed >= 250 then self.textElapsed = self.textElapsed % 250; if self.panelOpen then self:RefreshText() end end -- 中文维护：面板收起时不刷新隐藏文字；真实色块仍由16ms采样更新，重新打开立即读取并投影。
 end -- 中文维护：LCot是否按键仅由它自己每次重新识别此时的颜色决定。
 for i = 1, 3 do P.rows[i] = { itemId = P.FixedItemIds[i], verified = false, name = P.Specs[i].name } end -- 中文维护：已知药品自动定位，未验证技能不会发色。
@@ -348,10 +413,11 @@ if not built then P.error = tostring(buildError); P:Shutdown(); return end -- �
 P.driver:SetHandler("OnUpdate", P:Guard(function(_, dt) P:Update(dt) end)) -- 中文维护：只挂自己的调度宿主，不改公共UIParent回调。
 P.driver:SetHandler("OnEvent", P:Guard(function(_, event, ...) -- 中文维护：实际Native回调先带widget和event，不能吞掉owner导致payload错位。
     if event == "COMBAT_MSG" then P:OnCombat(...) -- 中文维护：仅私有自端事件用于明确手动记录及用药撤色。
+    elseif event == "UNIT_DEAD_NOTICE" then P:OnDeathNotice(...) -- 中文维护：已验证的本人姓名死亡通知同步撤色，可唤醒全药长CD休眠，其他单位不改变本人的保护状态。
     elseif event == "BAG_UPDATE" then P.bagDirty = true; P.nextSampleAt = nil; for _, row in ipairs(P.rows) do row.emptyConfirmed = false; row.cooldownRetryAt, row.observationRetryAt = nil, nil end; P:HideSignal() -- 中文维护：事件立即撤色并失效缺货/失败退避，下一轮重新核对，既有用药限制仍保留。
     elseif event == "ENTERED_WORLD" then P.arm = nil; P.armCross = nil; P.nextSampleAt = nil; P.bagDirty = true; P:ClearStockChanges(); for _, row in ipairs(P.rows) do row.cooldownRetryAt, row.observationRetryAt, row.emptyConfirmed, row.at, row.remaining, row.stock = nil, nil, false, nil, nil, nil end; P:Disable("进入/切换世界：请核对配置后重新启用") end -- 中文维护：切换世界同时丢弃未确认的旧数量变化，保留已确认用药限制，不能把旧候选绑定到新世界或自动恢复信号。
 end)) -- 中文维护：处理器代次受Guard保护，重载旧事件不能复活颜色。
-for _, event in ipairs({ "COMBAT_MSG", "ENTERED_WORLD" }) do -- 中文维护：已在本机运行代码使用的事件，不试探未知事件。
+for _, event in ipairs({ "COMBAT_MSG", "ENTERED_WORLD", "UNIT_DEAD_NOTICE" }) do -- 中文维护：三个事件均由本机生产代码实际使用；死亡通知保证长CD休眠期间仍可建立复活保护，不试探未知复活事件。
     local ok, result = pcall(P.driver.RegisterEvent, P.driver, event) -- 中文维护：注册失败是Unknown，需要显示失败并保持暂停。
     if not ok or result == false then P.error = "事件注册失败：" .. event; P:Disable(P.error) end -- 中文维护：不能把没有事件记录能力的插件标成可校准。
 end -- 中文维护：不注册公共全局覆盖处理器。

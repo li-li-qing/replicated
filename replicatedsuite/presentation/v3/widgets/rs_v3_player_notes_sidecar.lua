@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 人员备注侧栏
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 恢复原生打开名单时有效回包带出备注窗；上线等变化只更新名单，不得解除手动关闭。
 -- 整个社交窗口可读时跟随显示/关闭，Getter全nil时保留回包兼容路径；本窗口 Escape 隐藏仍走 OnHide 回收需求。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local R,Host=S.RSUI,S.UIV3 and S.UIV3.WidgetHost

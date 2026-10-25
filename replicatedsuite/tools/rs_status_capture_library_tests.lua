@@ -1,15 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态采集内置库测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 使用真实 Feature、Store 和元数据服务，原生事实、时钟及 UI
 -- 由受控适配器提供；这些断言不能作为 RU 客户端验收。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn) local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS '..name) else failed=failed+1;print('FAIL '..name..': '..tostring(err)) end end
 local function Copy(v) if type(v)~='table' then return v end;local t={};for k,x in pairs(v) do t[k]=Copy(x) end;return t end
@@ -179,7 +172,7 @@ Test('missing icon probe is cached and does not retry each row bind',function()
     local info=M:GetInfo(21,true);assert(info and info.name=='valid name');assert(count==3 and M:HasCached(21,true))
     M:GetInfo(21,true);assert(count==3)
 end)
--- 中文维护（2026-10-07，release-metadata-lifecycle）：同一 owner 订阅多个 topic 的行为必须
+-- 同一 owner 订阅多个 topic 的行为必须
 -- 使用真实 Events；旧 listeners[owner] mock 会把库刷新回调覆盖成 settings 回调。
 -- 生命周期也沿用真实 PageHost 的 disabled 同步，确保静态目录需求不被业务停用一并清掉。
 local function WithRealPageLifecycle(fn)

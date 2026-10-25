@@ -1,12 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 首领机制提示契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 验证首领HUD契约≥2、实时事实桥契约≥1与实现存在；必须注册诊断provider，观察运行中必须有真实诊断表。
--- 关闭/尚未开始观察是合法状态，禁止验收强制开启或制造空统计。失败为blocker，由sequence_harness报告。
--- rs_architecture_audit按行匹配且不跳过注释，说明中禁止加入业务实现表加字段的点号形式，避免被计作CORE_FEATURE依赖。
-------------------------------------------------------------------------
+-- 验证首领 HUD、实时事实桥与诊断 provider；关闭/未观察是合法状态，验收不启用功能或制造统计。失败由 sequence_harness 报告。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
@@ -15,7 +10,7 @@ local F = S.Features and S.Features.combat_boss_alerts or nil
 
 local function Fail(message) return false, tostring(message or "boss_alerts_acceptance_failed") end
 
--- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 运行时只做只读诊断；完整序列测试仅离线执行。
 G:RegisterSequenceCase("v3_combat_boss_alerts_hud_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.HudContractVersion) or 0) < 2 then return Fail("hud_contract_version") end

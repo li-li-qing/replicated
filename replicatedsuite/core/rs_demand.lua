@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 消费者需求与租约
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 需求与消费者租约基础层。Demand 只拥有消费者意图，引用计数供共享生命周期使用；业务和服务副作用归拥有者的
--- reconcile 回调。转换采用事务语义：reconcile 失败时恢复消费者状态，并反向调用 reconcile，撤销下游租约、启
--- 动及订阅副作用。
-------------------------------------------------------------------------
+-- Demand 保存消费者意图和引用计数，实际启停由拥有者的 reconcile 执行。
+-- reconcile 失败时恢复消费者快照，再反向调用以撤销租约、任务和订阅。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -187,7 +183,7 @@ function D:Create(spec)
         if self.needsQuiesce == true or self.quiescing == true then return false, "demand requires quiesce" end
         -- 无变化获取没有副作用，但忙中还必须命中事务前已提交的同值 token；外层新建/更新随后可能失败，不能提前承诺成功。
         if self.consumers[token] ~= nil and DeepEqual(self.consumers[token], normalized) then
-            local committed = transitionBefore and transitionBefore.consumers[token] -- 本轮 before 是唯一已提交证据，不从临时投影推断。
+            local committed = transitionBefore and transitionBefore.consumers[token] -- 忙事务只认可 before 快照，不能使用本轮临时投影。
             if self.transitioning ~= true or (committed ~= nil and DeepEqual(committed, normalized)) then return true, false end
         end
         if self.transitioning == true then return false, "demand transition in progress" end
@@ -269,8 +265,7 @@ function D:Get(id) return self.registry[tostring(id or "")] end
 
 function D:ClearAll(reason)
     local ok = true
-    -- Demand 依赖通常按 foundation->service->feature 顺序创建；关闭时逆序遍历，使 Feature 先释放下游
-    -- 服务层和基础层。
+    -- 通常按基础层、服务、Feature 的顺序创建；关闭时反向遍历，让 Feature 先释放下游。
     for index = #self.order, 1, -1 do
         local lease = self.registry[self.order[index]]
         if lease ~= nil then

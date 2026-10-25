@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 重构实时门禁测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 重构复核回归：真实 FoundationGate + TOC 顺序 + 通用存档 apply。
 -- 只在离线 runner 执行；不会装进游戏 TOC，不读取用户存档。
 -- 2026-09-30：先在提交包观察失败，再修复，避免只测试假的注册器。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = pcall(fn)
@@ -190,7 +187,7 @@ Test('real TOC retains all 28 explicit runtime checks even with missing implemen
         'v3_m16_dps_shared_analytics_contract', 'v3_combat_range_assist_visual_guide_contract',
         'v3_combat_boss_alerts_hud_contract', 'v3_combat_buff_cap_observation_contract',
         'v3_combat_unit_lines_visual_guide_contract', 'v3_m15_2h_death_review_contract',
-        -- 中文维护（5.3 发布自检）：朝向功能已加入实际 TOC，必须计入只读契约并保留缺实现的失败证据。
+        -- 朝向功能已加入实际 TOC，必须计入只读契约并保留缺实现的失败证据。
         'v3_facing_indicator_contract',
         -- 当前 TOC 的寻宝 acceptance 已显式注册库存组件契约；不能继续冻结在组件新增前的27项。
         'v3_life_treasure_inventory_contract',

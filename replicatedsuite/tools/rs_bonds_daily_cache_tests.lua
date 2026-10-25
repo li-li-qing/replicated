@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 债券每日缓存测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 开发期回归使用实际 Bonds、Persistence 和 Demand，服务器时间与原生存储介质为受控输入。
 -- 不写游戏 UDF，仅验证缓存和生命周期契约，不能替代 RU 实机验收。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

@@ -1,17 +1,12 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 装备与称号方案契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 装备与称号契约验收。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 本文件是 combat_gear 的
--- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
--- 独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败。
+-- 验收必须注册；实现缺失时明确失败，不能静默跳过。
 local F = S.Features and S.Features.Gear or nil
 
 local function Fail(message) return false, tostring(message or "gear_acceptance_failed") end
@@ -136,9 +131,7 @@ G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
     if S.UIV3.GearQuickSettingsModalV3 == nil or type(S.UIV3.GearQuickSettingsModalV3.Open) ~= "function" then return Fail("quick_button_settings_modal_contract") end
     local quickSpec = S.UIV3.WidgetHost and S.UIV3.WidgetHost:GetSpec("combat.gear.quick") or nil
     if quickSpec == nil or quickSpec.windowingRequired ~= false then return Fail("quick_button_widget_contract") end
-    -- 删除入口虽然属于 Presentation 可发现性修复，但真正写入必须
-    -- 始终穿过 Commands -> Authority；验收锁住这条链，防止未来 UI 为了“方便”直接 table.remove
-    -- F.State.sets，从而绕过 SaveIndexNow、payload 清理和 QuickButton 同步。Store/schema 不因此升级。
+    -- 删除必须经过 Commands→Authority，才能同步 SaveIndexNow、payload 清理和 QuickButton，不能由 UI 直接删 State 行。
     if type(F.Commands) ~= "table" or type(F.Commands.ApplyQuickSnapEnabled) ~= "function"
         or type(F.Commands.ApplyQuickSnapDistance) ~= "function" or type(F.Commands.ApplyQuickButtonGap) ~= "function"
         or type(F.Commands.ResetQuickSnapSettings) ~= "function" or type(F.Commands.MarkStoreDirty) ~= "function"
@@ -157,14 +150,8 @@ G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
     return true
 end)
 
--- 快速入口启动意图契约。
--- 原先由 core/rs_foundation_gate.lua 的 v3_quick_surface_reload_reconcile_contract 直接点名实现表检查；
--- 搬到这里之后 Core 不再认识具体业务 Feature。判定与旧版**逐条等价**：
---   * 快速启动意图契约版本 >= 1
---   * GetStartupEnableIntent / OnStartupEnableIntentCommitted / ShouldShowQuickButtons 三个函数存在
--- 语义保持：Gear 的旧版快速意图只做一次性修复，持久化的快速按钮可见性仍以用户偏好为 Authority。
--- 边界：同一判定里的 FeatureRuntime 启动意图契约版本留在 Foundation（那是 Core 侧，不是 Feature 债）。
--- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 检查快速启动意图版本>=1 及三个公开入口；旧意图只修复一次，按钮可见性仍取持久用户偏好。
+-- FeatureRuntime 自己的启动意图契约留在 Foundation；这里只读运行诊断，完整序列离线验收。
 G:RegisterSequenceCase("v3_m4_gear_quick_startup_intent_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.QuickStartupIntentContractVersion) or 0) < 1 then return Fail("quick_startup_intent_contract_version") end

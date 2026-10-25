@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗分析与指标登记
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 战斗分析运行体与指标登记表使用一个 self/all CombatEventBus 消费者，将借用的不可变事实分发到独立有界指标插
--- 件。可选原生补充共享，降级不能使战斗事实流水线失败。
-------------------------------------------------------------------------
+-- 共用一个 self/all 战斗消费者，将借用的只读事实分发给有界指标；可选 Native 补充失败不影响事实流。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -156,7 +152,7 @@ function A:NotifyMetricChanged(reason)
     return self:_SchedulePublish(reason or "metric_changed")
 end
 
--- 维护：固定位置的紧凑数组复用容量，避免每条事件重建 37 项字符串键快照。
+-- 固定位置的紧凑数组复用容量，避免每条事件重建 37 项字符串键快照。
 local function CaptureCombatFact(v, fact)
     v[1], v[2], v[3], v[4] = fact.schemaVersion, fact.sequence, fact.receivedAt, fact.transport
     v[5], v[6], v[7], v[8] = fact.kind, fact.category, fact.environmental, fact.amount
@@ -194,7 +190,7 @@ local function CombatFactChanged(fact, v)
         or fact.auraType ~= v[34] or fact.auraId ~= v[35] or fact.auraName ~= v[36] or fact.auraEvidence ~= v[37]
 end
 
--- 维护：团战热路复用最多 8 层私有工作区，保护快照和 xpcall 闭包不再逐事件/逐指标分配。
+-- 团战热路复用最多 8 层私有工作区，保护快照和 xpcall 闭包不再逐事件/逐指标分配。
 -- 每层独立避免指标同步重入覆盖外层事实；更深层仍用临时帧，不能无限扩大常驻缓存。
 local factFrames, factDepth, FACT_FRAME_LIMIT, FACT_FIELD_COUNT = {}, 0, 8, 37
 local function AcquireFactFrame(fact)
@@ -216,8 +212,7 @@ local function ReleaseFactFrame(frame)
     for index = 1, FACT_FIELD_COUNT do frame.snapshot[index] = nil end
     factDepth = factDepth - 1
 end
--- （2026-10-08）首个指标前的过滤过去没有死者证据。只为 death 类记录32槽标量环，
--- 由 Analytics 自己解释采集范围；不扩大自身 Actor、伤害账本或订阅，计数保留本代全部过滤原因。
+-- death 类入口保留 32 槽标量环和本代过滤计数，不扩大伤害账本或订阅。
 local deathIngress={rows={},next=1,count=0,evicted=0,counters={}}
 local function IngressScalar(value)
     local kind=type(value)
@@ -270,9 +265,9 @@ function A:_DispatchFact(fact)
     if type(fact) ~= "table" then return false end
     -- 无活动指标的类别直接退出，避免状态/施法等事件分配 borrowed fact 保护快照。
     local plan = self.factPlans[tostring(fact.category or "other"):lower()] or self.factPlans.other
-    if type(plan) ~= "table" or #plan == 0 then RecordDeathIngress(self,fact,"no_active_metrics");return false end -- 无指标与缺通知必须可区分。
+    if type(plan) ~= "table" or #plan == 0 then RecordDeathIngress(self,fact,"no_active_metrics");return false end
     -- 在指标分发之前过滤；其它模块的全场 Consumer 不扩大本统计的处理范围。
-    if self:GetCollectionScope() == "self" and self:IsRelevantSelfFact(fact) ~= true then RecordDeathIngress(self,fact,"self_scope_filtered");return false end -- 排除他人仍保留有界死亡入口证据。
+    if self:GetCollectionScope() == "self" and self:IsRelevantSelfFact(fact) ~= true then RecordDeathIngress(self,fact,"self_scope_filtered");return false end
     RecordDeathIngress(self,fact,"accepted") -- 只证明进入指标链，最终归属仍以 kills 的 decision 为准。
     self.factsReceived = self.factsReceived + 1
     -- 复用的完整标量快照仍保护同级指标互不污染；上层 CombatEventBus 保留完整消费者隔离。

@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · feature停用测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 用户 2026-10-06 删除三个工具功能，2026-10-07 删除快捷键方案；检查目录/路由/旧存档兼容。
-------------------------------------------------------------------------
 local h=dofile('tools/rs_gear_page_test_host.lua')();local S=h.S
 dofile('features/rs_feature_registry.lua')
 local retired={tools_portal_profiles='tools.portal_profiles',tools_reinforce_analysis='tools.reinforce_analysis',tools_random_shop='tools.random_shop',tools_hotkey_profiles='tools.hotkey_profiles'}

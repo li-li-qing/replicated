@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 制作助手原生窗口生命周期
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- Native 窗口观察归 tools_craft，不能归 Presentation。Store 仅保存用户 autoSidecar 偏好，Native 窗口快照与 sidecar 会话关闭状态均为临时事实。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Feature = S.Features and S.Features.tools_craft or nil

@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 视觉设置输入测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 真实 Business Page + RSUI 输入/调度链，Feature/Native 数据为替身。
--- 回归 2026-09-14：UnitLines/RangeAssist 高频 visual_tick 不能在用户持有 NumericInput draft 时
--- 触发整页 Refresh；整页更新会改写 Table/Status/Enabled 等 Native 状态，RU 会丢失 EditBox 焦点或把 draft 恢复为 Authority。
-------------------------------------------------------------------------
+-- 用真实页面和输入控件检查：用户还在编辑数值草稿时，高频视觉刷新不能刷新整页。
+-- 否则 RU 可能丢失焦点，或把未提交的输入恢复成已保存值。
 local Base = dofile('tools/rs_gear_page_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)
@@ -30,7 +26,7 @@ local function Boot(id, reused, strict,nativeDraft)
         end
     end
     if not reused then -- 连续开页回归保留同一 Generation/RSUI 消耗 ID 表，不重建宿主掩盖碰撞。
-    -- 维护（2026-09-30，range-continuity-1）：Gear 的旧测试宿主只有 RegisterFactory，
+    -- Gear 的旧测试宿主只有 RegisterFactory，
     -- Business Page 已采用真实 PageHost Consumer 生命周期桥；补齐生产加载顺序，
     -- 不用返回 true 的空桩掩盖订阅/租约行为，也不改生产输入逻辑来迁就过期测试宿主。
     dofile('presentation/v3/shell/rs_v3_page_host.lua')

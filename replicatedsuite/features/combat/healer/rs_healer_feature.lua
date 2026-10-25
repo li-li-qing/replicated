@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗助手功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- Feature Enabled 持有一个独立 Healer 运行租约，资源依次为 TeamRosterV3→HealerAuraBridge→内部事件→HealthRuntime；关闭严格逆序，观察者不能超出功能生命周期。Presentation 只消费公共投影/命令。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Runtime = S.FeatureRuntime
@@ -350,9 +347,7 @@ end
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
 
--- 把本 Feature 的健康投影
--- 注册到 Core 的取值表。原先 core/rs_foundation_gate.lua 的诊断 detail 直接按 id 读取实现表取 health；
--- 搬到这里之后 Core 不再认识这个业务 Feature，而**诊断可观察性不降级**。provider 每次实时调用、不缓存。
+-- 向 Core 注册实时健康投影，避免诊断直接依赖具体 Feature。
 local providers = S.FeatureHealthProviders
 if type(providers) == "table" then
     providers:Register("healer_health", function()

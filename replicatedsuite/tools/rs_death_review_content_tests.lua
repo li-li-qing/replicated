@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 死亡复盘内容测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实 RSUI TableView/图标/布局，Native 绘制和命中为模型；不代表 RU 实机截图。
-------------------------------------------------------------------------
 local NewHost=dofile('tools/rs_gear_page_test_host.lua')
 local passed=0
 local function Test(name,fn)fn();passed=passed+1;print('PASS death-content '..name)end

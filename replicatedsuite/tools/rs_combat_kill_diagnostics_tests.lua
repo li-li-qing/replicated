@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗击杀诊断测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实 Bus/Analytics/指标/模块报告；原生启停和磁盘为替身，不代表 RU 已确认击杀 ABI。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)
@@ -312,7 +309,7 @@ Test('skill victim retention is bounded while kill totals stay exact',function()
     for _,row in ipairs(p.skills) do kills=kills+row.kills;omitted=omitted+(row.omittedTargets or 0) end
     assert(kills==150 and omitted>0,'capacity silently lost aggregate skill counts or hid omitted victims')
 end)
--- 中文维护（2026-10-08）：入口证据须早于自身范围过滤，才能区分未收到和收到后排除；替身事件不证明 RU 必然发通知。
+-- 入口证据须早于自身范围过滤，才能区分未收到和收到后排除；替身事件不证明 RU 必然发通知。
 Test('native ingress survives self filtering and distinguishes rejected payloads',function()
     local h=Boot()
     h.bus:_OnKillNotice('UNIT_KILL_STREAK',{killerName='Other',victimName='Untouched',killerKillStreak=1,gameType=5})

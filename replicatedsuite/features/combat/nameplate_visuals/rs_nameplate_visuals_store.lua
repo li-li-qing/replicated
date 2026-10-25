@@ -1,18 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生头标与血条外观设置存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 1) 这里只保存用户希望写入的“绝对客户端显示值”，不保存运行时 CVar 当前值。
--- 原因：ReloadAddon / ENTERED_WORLD 后当前值可能来自 system.cfg 或其它插件，若把
--- 当前值当缩放基线反复相乘会出现 1.5x -> 2.25x 的累乘漂移。
--- 2) Native 写入 Authority 在独立文件，Store 不接触 X2Option；加载配置本身不能产生
--- 客户端副作用，也不能因为打开设置页就改变头标/血条。
--- 3) schema1 为已发布兼容边界，当前不升 schema：markerWidth/markerHeight/markerOffset 三个字段
--- 继续保留原 canonical 形状。18.273 起 Native 只用 markerWidth/46 计算 name_tag_mark_size_ratio；
--- markerHeight 仍由百分比预设同步保存，markerOffset 仅作为旧配置兼容保留，不再写入无效 CVar。
--- 这样旧用户存档指纹不会因为字段增删而触发 fence。
-------------------------------------------------------------------------
+-- 保存用户期望的绝对显示值，不能将重载/跨区后的当前 CVar 再乘比例，避免 1.5x→2.25x 漂移；加载本身不写 X2Option。
+-- schema1 保留 markerWidth/Height/Offset；Native 仅使用 markerWidth/46 的比例，height 随预设保存，offset 只兼容旧档。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence

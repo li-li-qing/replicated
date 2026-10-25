@@ -1,16 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 钓鱼热键恢复事务
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 钓鱼热键事务只拥有可逆动作栏按键修改；鱼/Buff/区域识别归 Fishing Feature，持久化归 v3.life.fishing Store
--- ，UI 只读 projection。服务不建轮询；唯一自有控件是隐藏且不可交互的首槽读取器，不另建 SaveData key。每次 Native 写通过 S.Api 能力门禁，只使用
--- OfficialEnabled Hotkey/PlayerInCombat，禁止 not-allowed getter。Feature 先完整槽位快照 -> 耐久 SaveData/
--- 读回 -> AdoptRecovery -> MoveR -> SaveHotKey -> Native 读回；首次写及首次触碰每个目标槽前都须持久化恢复快
--- 照。战斗状态读不到视为战斗中，不写热键；恢复可延至脱战但快照保留。空槽只能用 RemoveOptionBinding 精确恢复
--- ，接口不可用时拒绝 Arm。写失败不丢快照，精确恢复来源/目标且调用者清除耐久记录后才释放恢复权威。不能将服务
--- 变成轮询器、页面状态源或第二持久化权威。
-------------------------------------------------------------------------
+-- 只执行可逆热键事务，鱼/Buff 识别归 Fishing，恢复快照保存在原 fishing Store，不另建键。
+-- 首次写及首次触碰目标槽前，先保存完整槽快照并耐久回读，再 AdoptRecovery→MoveR→SaveHotKey→Native 回读。
+-- 战斗状态未知时按战斗中处理，保留快照待脱战恢复；空槽须能用 RemoveOptionBinding 精确还原，否则拒绝 Arm。
+-- 写失败不能丢快照；来源/目标都恢复且耐久记录清除后才释放恢复权。自有首槽读取器隐藏，不另建轮询。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -125,8 +119,7 @@ function H:ReadActionSlotBinding(slot)
             if text ~= nil then return text, true end
         end
     end
-    -- （2026-10-07）第二返回值区分“确实未绑定”和“Getter 全部失败”。
-    -- 原有快照调用仍取第一返回值；同槽复核不能把读取失败当成缺键授权重写。
+    -- 第二返回值区分空绑定和 getter 全失败；不能把读取失败当作缺键而重写。
     return nil, readSucceeded
 end
 
@@ -188,8 +181,7 @@ function H:BuildSessionSnapshot(originalRSlot)
     if originalRSlot == nil then return nil, "原 R 槽位无效" end
     originalRSlot = math.floor(originalRSlot)
 
-    -- （2026-10-07，发布复核）恢复依据必须是成功读取的原键位，
-    -- 不把 Getter 失败补成 R/空槽；否则关闭时可能删除用户原有的非 R 按键。
+    -- 只备份成功读到的原键位，不能用 R/空槽补 getter 失败，否则恢复时会误删原键。
     local sourceBinding, sourceReadOk = self:ReadActionSlotBinding(originalRSlot)
     if sourceReadOk ~= true then return nil, "原 R 槽位读取失败，拒绝建立恢复快照" end
     if self:IsR(sourceBinding) ~= true then return nil, "原 R 槽位读回不一致" end
@@ -335,10 +327,8 @@ function H:MoveR(slot, persistTouch)
     slot = math.floor(slot)
     local snapshot = self.sessionSnapshot
     if type(snapshot) ~= "table" then self.stats.moveFailures = self.stats.moveFailures + 1; return false, "缺少钓鱼改键恢复快照" end
-    -- （2026-10-07，多鱼切换）currentSlot 只记录上次成功事务，不证明原生
-    -- 动作栏仍保留 R。切到另一条鱼（含相同 Buff），或切换事件后动作栏才重设时，
-    -- 由现有 Feature 事件/100ms 兜底复核当前槽位；保持 R 时只读，丢失时重走原事务。
-    -- 不清 currentSlot：它仍负责恢复上一槽位；不建新轮询，也不重复写稳定键位。
+    -- currentSlot 只代表上次成功事务，不证明动作栏仍有 R；切鱼或动作栏延迟重置后，由既有事件/100ms 兜底复核。
+    -- R 丢失才重走事务，保留 currentSlot 以恢复上一槽，不增加轮询或重复写稳定键位。
     if tonumber(self.currentSlot) == slot then
         self.stats.sameSlotChecks = (tonumber(self.stats.sameSlotChecks) or 0) + 1
         local binding, readOk = self:ReadActionSlotBinding(slot)

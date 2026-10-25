@@ -1,23 +1,15 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享屏幕投影
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 共享只读屏幕投影权威供 Healer 标记、当前目标连线和用户范围圈使用；不拥有循环，Feature Demand 决定节奏，游
--- 戏读取均通过 S.Api。合并须先检查冲突标记、完整 toc.g 和 Lua 语法，再运行验收；不能清配置、跳过加载或恢复
--- Legacy 绕过错误，各权威和存档协议归各自实现。
-------------------------------------------------------------------------
+-- 共用单位/世界投影读取，节奏由各 Feature 的 Demand 决定；游戏 API 统一经 S.Api。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
 S.Services.ScreenProjectionV3 = S.Services.ScreenProjectionV3 or {}
 local P = S.Services.ScreenProjectionV3
--- 投影采用原始 Native 坐标，不转换缩放、不按视口拒绝；以 depth 剔除摄像机后方，并记录每个拒绝原因。
--- 2026-09-07 对齐证据：.18.130b 报 proj失败=2831，逻辑视口启发式、边界拒绝及 Native/摄像机一致性判断与真实
--- 客户端空间冲突。可工作 rp_api.lua UnitScreenPoint/ProjectWorldToScreen 和 easypull.lua
--- ConvertWorldToScreen 均把原始值直接锚到 UIParent 屏幕空间；Suite addonScale 不参与此路径。
+-- 直接使用 Native 屏幕坐标，不额外缩放或按视口拒绝，只按非正 depth 剔除后方。
+-- rp_api.lua 和 easypull.lua 均直接锚到 UIParent；逻辑视口启发式曾与 RU 空间冲突，产生大量假失败。
 P.version = 19
--- 维护 2026-09-12：本轮只修正批量投影的事实依赖/深度否决，不改raw坐标尺度。
 P.NativeScreenIndependentWorldContractVersion = 1
 P.NativeDepthVetoContractVersion = 1
 P.presentationBoundary = "service_only"
@@ -38,9 +30,8 @@ P.metrics.failuresByReason = P.metrics.failuresByReason or {}
 
 local function N(v) v=tonumber(v); if v==nil or v~=v or v==math.huge or v==-math.huge then return nil end; return v end
 
--- 原生 player screen 锚点噪声不能逐次 1:1 平移整圈。权威仍为 Native player screen 与 Camera world
--- projection；同一 projection context 内只对坐标系平移差做六样本有界会话平均，不平滑用户半径、不持久化。分
--- 辨率/FOV 变化立即更换 context 并重建，避免旧校准跨环境污染。
+-- 仅对同一 context 内 Native 玩家锚点与 Camera 投影的平移差作六样本平均，不平滑半径或存档。
+-- 分辨率/FOV 变化后换 context，避免旧校准污染。
 function P:_StabilizeRangeAnchorOffset(frame, rawDx, rawDy)
     rawDx,rawDy=N(rawDx),N(rawDy)
     if type(frame)~="table" or rawDx==nil or rawDy==nil then return rawDx,rawDy,nil end
@@ -52,10 +43,8 @@ function P:_StabilizeRangeAnchorOffset(frame, rawDx, rawDy)
     end
     local now=S.NowMs and math.max(0,N(S.NowMs()) or 0) or 0
     local samples=state.samples
-    -- 小幅抖动才参与平均；真实锚点发生明显跳变（例如分辨率外的相机/原生锚语义变化）时
-    -- 立即重建窗口，避免 6 帧平均把真实变化拖成“慢慢追过去”的另一种抽动。长时间没有 Camera
-    -- fallback 也丢弃旧样本，防止几秒前的校准污染重新进入 fallback 的第一帧。阈值仅作用于
-    -- screen calibration offset，不修改世界坐标/用户圆半径。
+    -- 只平均小抖动；锚点明显跳变或长时间未用 Camera fallback 时丢弃旧样本，避免真实变化被拖慢。
+    -- 阈值只影响屏幕平移差，不改世界坐标或半径。
     if (#samples>0 and ((state.stableDx~=nil and math.abs(rawDx-state.stableDx)>12)
         or (state.stableDy~=nil and math.abs(rawDy-state.stableDy)>12)))
         or (now>0 and tonumber(state.lastAt)~=nil and now-(tonumber(state.lastAt) or 0)>500) then
@@ -74,9 +63,8 @@ function P:_StabilizeRangeAnchorOffset(frame, rawDx, rawDy)
     return stableDx,stableDy,state
 end
 
--- UIParent raw视口和投影事实由同一个Service提供，Presentation不再自己查询Native。
--- 来源与现有相机frame一致，不采用Layout logical大小或除以UIScale；失败显式返回unknown，
--- 下游只取消裁剪而不取消有限坐标的绘制。按需两个只读getter，无任务/常驻尺寸缓存。
+-- 视口与 Camera frame 同源，使用 UIParent raw 尺寸，不取 Layout logical 或再除缩放。
+-- 读失败返回 unknown，下游可停裁剪但保留有限坐标绘制，不另建尺寸缓存。
 function P:GetUiParentViewport()
     if UIParent==nil or type(UIParent.GetScreenWidth)~="function" or type(UIParent.GetScreenHeight)~="function" then return nil,nil end
     local okW,w=pcall(UIParent.GetScreenWidth,UIParent)
@@ -86,7 +74,6 @@ function P:GetUiParentViewport()
     return w,h
 end
 
--- 所有拒绝读取走单一入口，使一份复制诊断可说明原因。
 local function RecordFailure(reason)
     reason = tostring(reason or "unknown")
     local byReason = P.metrics.failuresByReason
@@ -119,8 +106,7 @@ function P:GetUnitWorldPosition(unitToken, isLocal)
     if unitToken == "" then return nil,nil,nil,"unit_token_required" end
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return nil,nil,nil,"api_unavailable" end
     self.metrics.worldReads = (tonumber(self.metrics.worldReads) or 0) + 1
-    -- （2026-10-09）官方坐标 API 第四个数据返回值是弧度朝向；保留到第五返回位，
-    -- 前四位 x/y/z/error 不变，不能把 angle 塞进旧消费者的 error 位或把缺失 angle 伪造为零。
+    -- Native 第四个数据值是弧度朝向，在此放第五返回位，保留 x/y/z/error 兼容；缺 angle 不补 0。
     local ok, x, err, y, z, angle = S.Api:CallCapability("X2Unit:GetUnitWorldPositionByTarget", X2Unit, "GetUnitWorldPositionByTarget", unitToken, isLocal == true)
     x, y, z = N(x), N(y), N(z)
     if ok ~= true or x == nil or y == nil or z == nil then
@@ -139,10 +125,7 @@ function P:GetUnitPose(unitToken, isLocal)
     return { x=x, y=y, z=z, angle=angle % (2 * math.pi) }, nil
 end
 
--- （2026-09-15，range-meter-authority-1）RangeAssist 页面里的“m”不能由
--- 世界坐标数值自行解释。RU 已有官方只读 UnitDistance，故游戏米数以该 API 为事实 Authority；
--- 世界坐标只承担几何绘制。这里放在 ScreenProjectionV3 是因为它已经统一拥有 unit world/screen
--- 事实读取边界，Feature 不再直接跨层访问 X2Unit。失败保持 nil，绝不把未知距离当 0。
+-- 游戏米数取 UnitDistance，世界坐标只用于几何；读失败留 nil，不能把未知当 0。
 function P:GetUnitDistanceMeters(unitToken)
     unitToken = tostring(unitToken or "")
     if unitToken == "" then return nil,"unit_token_required" end
@@ -206,9 +189,8 @@ function P:_ProjectWithCameraFrame(frame, wx, wy, wz)
 end
 
 
--- EasyPull 兼容 frame 复现 Strawberry-devs/ArcheRage-addons globals/WorldToScreen.lua 数学，不共享
--- _BuildCameraFrame()：EasyPull 不归一化 camDir、不夹紧 FOV。RU 实机 ConvertWorldToScreen 不可用时，此兜底
--- 是真实范围圈路径，须保持已验证空间。
+-- EasyPull 兼容数学来自 Strawberry-devs/ArcheRage-addons globals/WorldToScreen.lua：不归一化 camDir、不夹 FOV。
+-- 它与 _BuildCameraFrame 不同，RU 无 ConvertWorldToScreen 时仍需保留这条已验证路径。
 function P:_BuildEasyPullCameraFrame()
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return nil,"api_unavailable" end
     local okP, camPos = S.Api:CallCapability("UIParent:GetViewCameraPos", UIParent, "GetViewCameraPos")
@@ -260,16 +242,12 @@ function P:_ProjectWithEasyPullCameraFrame(frame, wx, wy, wz)
     return screenX,screenY,distance
 end
 
--- 世界范围圆是刚性几何，RangeAssist rigidBatch 的 camera basis 须正交归一。GetViewCameraDir() 长度可不为 1
--- ，若只归一化 right、保留 forward 原长再构造 up，会导致水平/垂直比例不同，单一 metricScreenScale 无法修正
--- 。使用 UIParent 摄像机事实，保持世界点、半径、Native 锚点及 EasyPull 屏幕/FOV 语义；精确复刻 EasyPull 的
--- 消费者仍可用 _BuildEasyPullCameraFrame。不改配置、不 Tick 缓存，不把真实 3D 地面透视压缩伪装为屏幕正圆。
+-- 范围刚性批次的 camera basis 须正交归一；camDir 长度不为 1 时，只归一 right 会扭曲横纵比例。
+-- 精确 EasyPull 消费者仍可用 _BuildEasyPullCameraFrame；地面透视压缩不能强行修成屏幕正圆。
 function P:_BuildRangeAspectSafeCameraFrame()
     local base, err = self:_BuildEasyPullCameraFrame()
     if type(base) ~= "table" then return nil, err end
-    -- （2026-10-07，range-projection-stability-1）副本切换/镜头过渡时 FOV 可能暂不可读。
-    -- 不能以 EasyPull 的 1.57 默认值画另一尺寸的圈；范围 Camera 缺事实则不绘制并保留诊断原因。
-    -- 仅收紧 Range 专用 frame，其它兼容调用仍保留原默认；Native 整批成功不依赖 Camera/FOV。
+    -- 范围相机缺 FOV 时不绘制，不能用 EasyPull 默认 1.57 画另一尺寸的圈；Native 整批成功则不依赖 FOV。
     if base.fovVerified~=true then return nil,"camera_fov_unavailable" end
     if N(base.fov)==nil or base.fov<0.2 or base.fov>3 then return nil,"camera_fov_invalid" end
     local fx,fy,fz=N(base.fx),N(base.fy),N(base.fz)
@@ -292,12 +270,8 @@ function P:_BuildRangeAspectSafeCameraFrame()
     }
 end
 
--- （2026-09-15，range-meter-calibration-1）只做“测量”，不拥有循环。
--- Authority：gameDistanceMeters 来自 X2Unit:UnitDistance；worldUnitsPerMeter 由同一时刻 player/target
--- 世界坐标比值得到；projectionScale 仅比较 Camera fallback 与 Native unit-screen 的相对向量。
--- 数据流：RangeAssist Demand(16/32/48ms 自适应) -> 本 Service 每 <=500ms 一次受控采样 -> bounded median ->
--- 世界半径换算 + Camera batch 围绕玩家 Native 锚点等比缩放。无目标、高差/距离不可靠的样本
--- 不更新任何比例，保留会话已核验值（从未校准时 1:1）；不写死倍率、不保存到用户配置。
+-- 这里只测量同刻 UnitDistance、世界距离和 Camera/Native 相对向量，得到米数与投影比例。
+-- GetRangeMetricCalibration 负责中位数和节流：默认 500ms，可设 250..5000ms，forceSample 可跳过等待。
 function P:MeasureRangeMetricCalibration(options)
     options = type(options) == "table" and options or {}
     self.metrics.rangeMetricSamples = (tonumber(self.metrics.rangeMetricSamples) or 0) + 1
@@ -509,10 +483,8 @@ function P:ProjectWorldBatch(points, options)
     local depthMin, depthMax = nil, nil
     local rigidSource = nil
 
-    -- （2026-09-18，range-rigid-batch-1）范围圆是一个刚性几何体，不能一半点走 Native、
-    -- 另一半点走 Camera fallback。旧逐点 fallback 在 Native 瞬时失败/恢复时会让个别点在两套投影间
-    -- 跳变，旋转镜头时尤其像“点抽一下”。rigidBatch 先验证整批 Native；只要任一点不完整，就整批
-    -- 改用一次捕获的 Camera frame。UnitLines/其它调用默认不启用此选项，兼容既有逐点策略。
+    -- rigidBatch 不能混用两套投影，否则单点在 Native 恢复时跳动。先验整批 Native，任一点不完整就整批用同一 Camera frame。
+    -- 其它调用默认保留逐点策略。
     if rigidBatch then
         local nativeRows, allNative = {}, nativeAvailable == true
         if allNative then
@@ -629,13 +601,12 @@ function P:ProjectWorldBatch(points, options)
             end
         end
     end
-    end -- rigidBatch 刚性批次与旧逐点投影。
+    end
 
     if frameTried==true then self.metrics.cameraBatches=(tonumber(self.metrics.cameraBatches) or 0)+1 end
 
-    -- 摄像机投影提供正确透视，但 RU 摄像机主点与原生单位屏幕锚点未必在各分辨率/UI 缩放共享原点，1280x768 时
-    -- 可见环形正确但中心偏离。只有整个 EasyPull 批次走摄像机兜底时，以一个投影世界中心对齐一个原生单位屏幕
-    -- 事实，全批次应用同一平移。保持刚性投影，不逐点混合或缩放，校准每次刷新随分辨率/缩放更新。
+    -- 全 Camera 批次可因主点与 Native 锚点原点不同而整圈偏移；用一个世界中心对齐一个 Native 玩家锚点，全批同移。
+    -- 不逐点混合或缩放，每次刷新重算校准。
     local calibrationStatus, calibrationDx, calibrationDy, calibrationErr = "not_requested", nil, nil, nil
     local calibrationRawDx,calibrationRawDy,calibrationStableDx,calibrationStableDy,calibrationStableSamples=nil,nil,nil,nil,nil
     local calibrationAnchorX,calibrationAnchorY=nil,nil
@@ -689,10 +660,8 @@ function P:ProjectWorldBatch(points, options)
         calibrationStatus="mixed_source_skipped"
     end
 
-    -- （2026-09-15，range-screen-scale-1）锚点平移只修正 principal-point 偏移，
-    -- 不能修正 Camera fallback 与 Native screen 的焦距比例。只有“整批全 Camera + Native 玩家锚点已成功”
-    -- 时，才允许围绕同一个玩家锚点做一次 rigid isotropic scale；Native 投影点或混合批次绝不缩放，
-    -- 避免半个圆使用另一尺度。倍率来自上面的 UnitDistance/target 校准，不在这里猜常量。
+    -- 平移不能修焦距比例；仅全 Camera 且 Native 玩家锚点成功时，才围绕该锚点等比缩放。
+    -- 倍率取上方 UnitDistance/target 校准，Native 或混合批次不缩放。
     local metricScreenScale=N(options.metricScreenScale)
     local metricScreenScaleStatus=metricScreenScale~=nil and "pending" or "not_requested"
     local metricAnchorX,metricAnchorY=nil,nil
@@ -799,9 +768,8 @@ local function CameraForwardDistance(frame, wx, wy, wz)
     return (wx-frame.cx)*frame.fx + (wy-frame.cy)*frame.fy + (wz-frame.cz)*frame.fz
 end
 
--- 单位连线需要比 GetUnitScreenPosition depth 更强的可见性事实；RU 某些摄像机角度下后方单位也会返回正 depth
--- 和镜像点，夹到视口会产生假角落指向。批次只捕获一次摄像机基、去重单位 token，按前半球验证世界点再解析屏幕
--- 点。不跨调用缓存，节奏与寿命仍归 Feature Demand。
+-- RU 后方单位可能仍返回正 depth 和镜像点，夹到视口会画出假角落线。
+-- 连线批次捕获一次摄像机基、去重 token，并校验世界前半球；不跨调用缓存。
 function P:ProjectUnitBatch(unitTokens, options)
     options = type(options) == "table" and options or {}
     local source = type(unitTokens) == "table" and unitTokens or {}
@@ -815,9 +783,8 @@ function P:ProjectUnitBatch(unitTokens, options)
     local requireFront = options.requireFrontHemisphere == true
     local worldZOffset = tonumber(options.worldZOffset) or 1
     local frontEpsilon = math.max(0.001, tonumber(options.frontEpsilon) or 0.05)
-    -- validateNativeAgainstCamera/reconcileNativeScale 为兼容接受但忽略，Native 坐标始终优先，摄像机只补缺
-    -- 。不同 token 几乎相同的世界坐标在 RU 可是目标切换临时别名，屏幕 getter 已指向真实目标。0.15 世界单位
-    -- 阈值刻意极小，不把正常近邻玩家当别名。
+    -- 兼容参数 validateNativeAgainstCamera/reconcileNativeScale 仍接受但忽略。
+    -- Native 屏幕优先，Camera 只补缺；不同 token 世界坐标接近 0.15 单位内可能是切目标临时别名，不能把正常近邻都判成别名。
     local aliasWorldDistance = math.max(0.001, tonumber(options.worldAliasDistance) or 0.15)
     local aliasWorldDistanceSq = aliasWorldDistance * aliasWorldDistance
     local aliasScreenSeparation = math.max(24, tonumber(options.worldAliasScreenSeparation) or 48)
@@ -883,9 +850,8 @@ function P:ProjectUnitBatch(unitTokens, options)
         local fact=facts[token]
         local worldAvailable=fact.wx~=nil and (not requireFront or fact.forward~=nil)
         local definitelyBehind=requireFront and worldAvailable and fact.forward<=frontEpsilon
-        -- 非strict调用原本也必须先有world才读screen，导致焦点world暂缺时
-        -- 连有效screen也被丢弃。Authority是本次Native screen；world仅提供可选回退。
-        -- strict消费者仍须证明world/front，不重启以前因RU空间不一致禁用的全局相机门。
+        -- 非 strict 可直接用本次 Native screen，world 仅作回退；strict 仍须证明 world/front。
+        -- 不能恢复因 RU 空间不一致而停用的全局相机门。
         if not requireFront or (worldAvailable and (not definitelyBehind or fact.aliasCandidate==true)) then
             local x,y,depth,err=self:ProjectUnit(token)
             fact.nativeX,fact.nativeY,fact.nativeDepth,fact.nativeErr=x,y,depth,err
@@ -920,9 +886,7 @@ function P:ProjectUnitBatch(unitTokens, options)
             self.metrics.behindCameraRejects=(tonumber(self.metrics.behindCameraRejects) or 0)+1
             out[token]={visible=false,reason="behind_camera",forward=forward}
         elseif fact.nativeErr=="behind_camera" then
-            -- ProjectUnit已取得明确的非正深度。旧分支把这种“不可见”当读取缺失，
-            -- 再用world回退复活端点，生成朝屏幕边缘的假线。禁止任何fallback覆盖此否决；
-            -- 缺少depth仍保留旧接口兼容，不把缺值编造成behind。
+            -- Native 明确给非正 depth 时已证明不可见，不能用 world fallback 复活端点；缺 depth 仍兼容未知，不伪造 behind。
             out[token]={visible=false,reason="behind_camera",forward=forward}
         elseif fact.worldAliased==true then
             -- 此处不能用摄像机投影，它来自已证明不一致的世界事实；原生端点仅本调用有效。
@@ -939,9 +903,8 @@ function P:ProjectUnitBatch(unitTokens, options)
             local sourceName="native_unit"
 
             if fact.aliasCandidate==true then
-                -- 别名候选世界事实可疑，摄像机投影也由其推导。若原生屏幕读取失败或两原生点重合而无法确认别
-                -- 名，接受 camera fallback 会将端点锚到别名位置，导致连线缩到自身角色。独立 Native 屏幕证据
-                -- 可原样接受，缺此证据则端点失败封闭。
+                -- 疑似别名的 world 不能再推导 Camera 兜底，否则连线可能缩回自身。
+                -- 只接受独立 Native 屏幕证据，缺失或无法消除歧义时拒绝该端点。
                 if x~=nil and y~=nil then
                     self.metrics.aliasNativeKept=(tonumber(self.metrics.aliasNativeKept) or 0)+1
                     out[token]={visible=true,x=x,y=y,depth=depth or 1,
@@ -953,11 +916,8 @@ function P:ProjectUnitBatch(unitTokens, options)
                 end
             else
 
-            -- 原始 Native 屏幕坐标优先；摄像机只补缺。不能在两者差超视口 10% 时用逻辑 frame 替换 Native，因
-            -- 为错误空间可能恰是摄像机侧（proj失败=2831 实机证据）。
-            -- validateNativeAgainstCamera/reconcileNativeScale 只接受兼容参数并忽略。
+            -- Native 坐标优先，不能因与 Camera 差超视口 10% 就替换；错误空间也可能在 Camera 侧。兼容校验参数继续忽略。
             if x~=nil and y~=nil then
-                -- 保留原生事实。
             elseif cameraX~=nil and cameraY~=nil then
                 x,y,depth=cameraX,cameraY,cameraDepth
                 sourceName="camera_world"

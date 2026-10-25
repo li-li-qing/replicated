@@ -1,17 +1,12 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 任务追踪契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 任务追踪验收与序列契约。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 本文件是 life_tasks 的
--- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
--- 独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败。
+-- 验收必须注册；实现缺失时明确失败，不能静默跳过。
 local F = S.Features and S.Features.Tasks or nil
 
 local function Fail(message) return false, tostring(message or "task_acceptance_failed") end
@@ -73,12 +68,7 @@ G:RegisterSequenceCase("v3_m1_tasks", function(runtimeOnly)
     return true
 end, { runtime = true })
 
--- 任务侧的持久化契约。
--- 原先由 core/rs_foundation_gate.lua 的 v3_feature_persistence_mutation_contract（活动/任务各一半）
--- 与 v3_task_persistence_stable_codec_contract 直接点名实现表检查；搬到这里之后 Core 不再认识
--- 具体业务 Feature。判定与旧版**逐条等价**：
---   * PersistenceMutationContractVersion >= 2 —— 任务专属持久化变更必须在 Store 拒绝时回滚
---   * PersistenceCodecVersion >= 2 —— 追踪成员必须以确定性 codec v2 序列持久化
+-- 任务变更契约>=2 要求 Store 拒绝时回滚；codec>=2 要求追踪成员按确定序列保存。
 G:RegisterSequenceCase("v3_life_tasks_persistence_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.PersistenceMutationContractVersion) or 0) < 2 then

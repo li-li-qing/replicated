@@ -1,9 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 分组件屏幕固定 Renderer 回归
 -- 作者：Replicated
 -- QQ群：1104129461
 -- 真实 Runtime/Feature/Renderer；Native 图形与游戏事实使用现有受控宿主。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

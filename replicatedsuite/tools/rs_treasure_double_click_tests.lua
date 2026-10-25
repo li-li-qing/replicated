@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 宝藏双点击测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实RSUI行按钮、选择、页面和共用助手内容；Native与Feature地图动作仅为边界模型。
-------------------------------------------------------------------------
 local NewHost=dofile('tools/rs_workspace_home_test_host.lua')
 local passed=0
 local function Test(name,fn)fn();passed=passed+1;print('PASS treasure-click '..name)end

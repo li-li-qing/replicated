@@ -1,16 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 焦点报告测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护：RS-FOCUS-1 兼容格式回归；真实Diagnostics/Core/Page，仅Native和外部诊断Getter模拟。
+-- RS-FOCUS-1 兼容格式回归；真实Diagnostics/Core/Page，仅Native和外部诊断Getter模拟。
 -- 页面默认必须使用完整的 paged fault report；Focused 仅保留旧工具兼容，不能再次成为用户默认输出。
 -- 测试不进TOC，不清除业务Fence，不可将合成Native容量/档案当作RU实机验证。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=pcall(fn)
@@ -59,7 +52,7 @@ local function Boot(real)
         ADDON.ClearData=function()error('must not clear')end
         dofile('core/rs_demand.lua');dofile('core/rs_persistence_transport.lua');dofile('core/rs_persistence.lua');dofile('ui/framework/rs_ui_floating_surface.lua')
         dofile('features/combat/buff_display/rs_buff_display_store.lua');dofile('features/combat/death_review/rs_death_review_store.lua')
-        -- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役；
+        -- life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役；
         -- 本宿主只需要 v3.life.trade / v3.trade_preferences 的 Store 注册，因此按 toc 顺序补工厂 + Trade。
         dofile('features/life/shared/rs_life_slice_factory.lua')
         dofile('features/life/trade/rs_trade_feature.lua')
@@ -92,7 +85,7 @@ local function Page(S,calls,cap)
     function h.edit:SetText(v)self.text=v:gsub('[\r\n]',''):sub(1,cap or 4096)end
     return root,h
 end
--- 中文维护（5.3 发布自检）：诊断页已增加性能入口和五个性能操作；逐个核对原报告操作和性能操作，
+-- 诊断页已增加性能入口和五个性能操作；逐个核对原报告操作和性能操作，
 -- 保留严格数量检查，避免按钮重复或旧报告/分页入口消失被忽略。
 local function CheckDiagnosticActions(h)
     local ids={'v3_diag_full_check','v3_diag_output','v3_diag_output_full','v3_diag_export_file',
@@ -222,7 +215,7 @@ Test('real store compact envelope preserves exact raw values and existing full e
     for name,value in pairs({compact=compact,full=full})do local f=assert(io.open('tools/.focus_evidence_'..name..'.txt','wb'));f:write(value);f:close()end
     assert(c.writes==0)
 end)
--- 维护：Focused Builder 仅作为历史兼容入口保留；页面默认禁止依赖它。
+-- Focused Builder 仅作为历史兼容入口保留；页面默认禁止依赖它。
 Test('focused builder preserves its single trade sample for compatibility tools',function()
     local S,D,c=Boot(true);local before=#c.reads
     local text,meta=Focus(D);assert(text,meta)
@@ -267,7 +260,7 @@ Test('different healthy registry sizes do not increase printed report bytes',fun
     for i=1,300 do S.Persistence.stores['healthy.'..i]={id='healthy.'..i,writeFenced=false}end
     local second=assert(Focus(D));assert(#second==#first)
 end)
--- 维护：与现有聚焦报告回归共用真实Builder，不加载任何新的采集通道。
+-- 与现有聚焦报告回归共用真实Builder，不加载任何新的采集通道。
 Test('copy-budget raw omission retains per-store numeric facts without a second Native read',function()
     local S,D,c=Boot();S.Persistence.stores['v3.life.trade']=nil
     S.Persistence.BuildFailedStoreEvidenceText=function(_,id)
@@ -310,7 +303,7 @@ Test('oversized evidence advertises the offline udf route without hiding omissio
     assert(text:find('next=udf_snapshot',1,true) and m.evidenceIncluded==0 and #c.reads==1)
     assert(#text<=3500 and not text:find('RAW_BEGIN',1,true))
 end)
--- 维护：默认打印必须直接保留大故障原档并分页，不能先裁成 Focus；兼容 Focus API 仍可单独测试。
+-- 默认打印必须直接保留大故障原档并分页，不能先裁成 Focus；兼容 Focus API 仍可单独测试。
 Test('default paged fault report retains oversized failed-store evidence instead of focus clipping it',function()
     local S,D,c=Boot();S.Persistence.BuildFailedStoreEvidenceText=function(_,id)
         c.reads[#c.reads+1]=id;return ('x'):rep(50000)

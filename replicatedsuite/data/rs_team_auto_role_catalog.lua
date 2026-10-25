@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队自动职责目录
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 来源于项目保留的 ArcheRage classmappings 基线，以及已验证的 TeamUtility Vitalism+Dancer 分类修正。只允许按 class key 精确查询，热路径禁止模糊推断职业名。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 S.Data=S.Data or {}
@@ -81,10 +78,8 @@ C.byClassKey["name_8_10_14"]={role="healer", classType="Dancer"}
 C.byClassKey["name_2_10_14"]={role="healer", classType="Dancer"}
 C.byClassKey["name_3_4_14"]={role="tank", classType="Dancer"}
 C.byClassKey["name_1_3_14"]={role="tank", classType="Dancer"}
--- 用户已在 RU 实机确认 8(暗杀)+9(吟游)+14(欢乐) 的团队职责是治疗。
--- 权威边界：这里只修改 TeamAutoRoleCatalog 的业务职责映射；classType 仍保留 Dancer，因为它服务职业类别/图标，不等同于团队职责。
--- 数据流：ResolveAutoRole 精确按排序后的三天赋 key 读取 role，再映射到 TMROLE_HEALER；Presentation 不参与判定。
--- 兼容边界：不改 Store schema、不改其它 Dancer 组合，也不按职业名称模糊推断。风险：未来 RU 若重做该职业组合语义，必须用新的实机证据更新此精确 key。
+-- 用户在 RU 确认 8(暗杀)+9(吟游)+14(欢乐) 的团队职责为治疗。
+-- 仅修改这一精确组合的 role；classType 仍为 Dancer，供职业图标使用。
 C.byClassKey["name_8_9_14"]={role="healer", classType="Dancer"}
 C.byClassKey["name_3_9_14"]={role="tank", classType="Dancer"}
 C.byClassKey["name_3_10_14"]={role="healer", classType="Healer"}

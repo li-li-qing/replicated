@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动悬浮组件
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅负责表现内容；外层 HUD 外框/状态归 RSUI FloatingSurface -> WindowShellV3 -> Windowing。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -76,7 +73,7 @@ local function CreateActivityWidget()
         id = "v3_activity_widget_content", parent = surface:GetContentRoot(), gap = 5,
         slot = { hAlign = "fill", vAlign = "fill" },
     })
-    -- ActivityLists 只分配双视口；原 Consumer/开关/保存逻辑保留，区域不再被长时间线挤出。
+    -- 时间线与区域各占一个视口，避免长时间线把区域挤出。
     instance.table = S.UIV3.ActivityLists:Create({
         id = "v3_activity_widget_table", parent = content,
         items = instance.rows,
@@ -117,8 +114,7 @@ local function CreateActivityWidget()
             self.table:SetViewState("ready")
         end
         local summary = Feature:GetSummary()
-        -- 约束（2026-09-18，Activity Timeline v2）：悬浮窗与主页面必须消费同一 Summary 语义；
-        -- 只显示 timelineActive/withinTwoHours/liveZones，禁止再用 summary.active 把 live 战争状态混入“当前活动”。
+        -- 与主页面共用 timelineActive/withinTwoHours/liveZones，不能用 summary.active 混合实时战争状态。
         self.surface:SetStatus("当前 " .. tostring(summary.timelineActive or 0) .. " · 两小时内 " .. tostring(summary.withinTwoHours or 0)
             .. " · 实时 " .. tostring(summary.liveZones or 0), "muted")
         return true
@@ -272,11 +268,8 @@ local ok, registerErr = Host:Register(WIDGET_ID, {
 })
 if ok ~= true then error(registerErr) end
 
-------------------------------------------------------------------------
 -- 由表现层持有的生命周期响应。
---
 -- Domain 仅发布事实（`v3.feature.lifecycle`、`v3.activities.*`），组件自行决定响应；Activity Feature 不能直接调用 WidgetHost。
-------------------------------------------------------------------------
 if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
     Host:BindFeatureLifecycle(WIDGET_ID, {
         featureId = "life_activities",

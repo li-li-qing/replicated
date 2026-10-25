@@ -1,18 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态显示追踪管理
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并前必须清除冲突标记，核对源码与加载清单完整性。
--- Authority、调用数据流与存档协议保持下方实现的原有责任，
--- 禁止通过清配置、跳过加载或恢复Legacy绕过故障；源码与toc.g、UI实现必须成套，
--- 合并后先检查Lua语法，再做运行时验收。
--- 问题：旧“冻结”只保留 tracked 行且复用 HUD；未出现的已追踪 ID 无处取消。
--- 本文件属于 BuffDisplay Feature：只拥有管理投影、持续Session留存与用户追踪命令。
--- 事实仍来自 AuraObservationV3；只读目录来自 StatusTrackingCatalogV3；写入只经 MutateStore。
--- 不调用业务写 API，不保留旧架构旁路，不把 Session 快照/筛选状态写进永久 Store。
--- 管理缓存按选择/数据 revision 失效；五种视图与悬浮窗各保留一个查询，禁止 live 与 tracked 互相驱逐后每 50ms 重建整库。
-------------------------------------------------------------------------
+-- 管理页使用 AuraObservationV3 事实和 StatusTrackingCatalogV3 目录，拥有会话留存、管理投影与追踪命令。
+-- Session/筛选不入永久存档；五种视图和悬浮窗各留一份 revision 缓存，避免 live/tracked 互相驱逐后高频重建。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local F=S.Features and S.Features.BuffDisplay
@@ -41,10 +31,7 @@ local function Publish(reason)
     if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish("v3.buff_display.updated",reason) end
 end
 local function PublishSettings(reason)
-    -- tracking.meta 的耐久提交完成后，
-    -- 必须通知 Feature 重建 CooldownObservationV3 lease。过去 SetTrackedCooldownId/内置 CD 包只改 Store
-    -- 和管理页缓存，没有发布 settings topic；若 Runtime 已经持有 Consumer，它会继续探测旧 ID 集合。
-    -- 发布只发生在低频用户写操作成功之后，不进入 Native/50ms/100ms 热路径。
+    -- tracking.meta 耐久提交后发布设置更新，让已有 CooldownObservationV3 lease 换成新 ID 集合；仅在低频写成功后通知。
     if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish("v3.buff_display.settings",reason or "tracked_cooldown") end
     Publish(reason or "tracked_cooldown")
 end
@@ -149,15 +136,8 @@ local function Decorate(row,index)
     if meta and type(meta.GetCached)=="function" then
         local info=meta:GetCached(row.id)
         if info then
-            --
-            -- 原因：旧实现只在静态名称为空/等于 ID 时才采用 GetBuffTooltip 名称，导致内置库中
-            -- 的英文名、旧译名或人工占位名永久压过 RU 客户端实际本地化名称。
-            -- 权威边界：BuffMetadataV3/X2Ability:GetBuffTooltip 是运行时展示名称 Authority；
-            -- SkillEffects/Catalog.name 只是离线 fallback 与搜索种子，不拥有最终显示文案。
-            -- 数据流：可见行按需请求 Metadata -> 缓存 -> Decorate 覆盖展示 name/icon；不修改 ID、
-            -- Buff/Debuff 分类或用户 tracked 配置，也不把 Native 名称写回持久化配置。
-            -- 性能/兼容：这里只 peek 已有缓存，不增加 Native 调用；原有每批最多 8 个的延迟元数据
-            -- 队列仍负责读取，关闭页面/Feature 后没有新增轮询。
+            -- 展示名优先采用 BuffMetadataV3 的客户端本地化结果，静态 Catalog/SkillEffects 名称仅作 fallback 和搜索种子。
+            -- 这里只 peek 缓存，不改 ID/分类/追踪，也不持久化 Native 名称；原延迟队列每批最多 8 项。
             if type(info.name)=="string" and info.name~="" then row.name=info.name end
             if (row.iconPath==nil or row.iconPath=="") and type(info.iconPath)=="string" then row.iconPath=info.iconPath end
         end
@@ -327,9 +307,7 @@ function F:ResetManagementCapture()
     return true,active and "记录已清空，继续留存随后观察到的状态。" or "记录已清空。"
 end
 
--- 目录不嵌复制资源表。行绑定仅请求ID，绝不在渲染回调调用 Native。
--- Feature 用一个可取消的 one-shot 分批请求共享 BuffMetadataV3；每批最多8个、队列最多64个。
--- 仅页面可见期间运行，隐藏/销毁取消；命中或未命中都由共享服务缓存，不产生整库热遍历。
+-- 渲染只提交 ID；可取消 one-shot 向 BuffMetadataV3 分批请求，每批最多 8 个、队列最多 64。页面隐藏/销毁即取消。
 local META_TASK="v3_buff_management_metadata"
 F.managementMetadata={active=false,queue={},pending={},queued=0,revision=0,batches=0,generation=0}
 function F:SetManagementPageActive(active,token)
@@ -353,10 +331,8 @@ function F:SetCooldownManagementActive(active)
     active=active==true
     if self.cooldownManagementActive==active then return true end
     self.cooldownManagementActive=active
-    -- 只有“技能 CD”管理视图本身可见时，
-    -- 才把管理页计入 CooldownObservationV3 Demand。自动入口只识别本机施放成功的 Skill ID，
-    -- 手动追踪/真实倒计时保持 Native GetCooldown/GetMateCooldown Authority，不读 Aura、不扫描技能库。
-    -- 最后一个消费者释放后回收两条 Scheduler 任务与临时缓存，Store 中的 Skill ID 收藏保持不变。
+    -- 只有技能 CD 视图可见才持管理页 Demand；事件仅发现自身 Skill ID，真实计时来自 GetCooldown/GetMateCooldown。
+    -- 最后 Consumer 释放回收两任务及临时缓存，保留 Store 收藏。
     if self.enabled==true and (tonumber(self.consumerCount) or 0)>0 and type(self.ReconcileLanes)=="function" then return self:ReconcileLanes() end
     return true
 end
@@ -583,10 +559,7 @@ function F:GetManagementProjection(options)
     self.managementCaches[cacheSlot]={key=key,rows=filtered,coverage=coverage}
     return filtered,key,coverage
 end
--- 调用没成功时以前可能只留下旧的lastImport成功记录，
--- Core虽已记录保存失败，但缺少导入阶段/包名上下文，预检失败也可能只在短提示中。Feature拥有命令结果；
--- 每次点击从validate开始记录，只有Core耐久保存/回读完成后才标committed；不新增写入旁路。
--- 上下文只存数量/阶段，不复制目录或用户配置；未知包/容量/写保护/保存失败均进入既有分页报告。
+-- 每次导入从 validate 记录阶段和数量，Core 耐久保存/回读后才标 committed。失败不能沿用上次成功记录；不复制目录或配置。
 F.LibraryIntegrationPatch="status-library-durable-3" -- Core 在磁盘中完整保留长 ID 序列。
 function F:ImportBuiltinPack(key,newOnly)
     key=tostring(key or "")
@@ -608,10 +581,8 @@ function F:ImportBuiltinPack(key,newOnly)
     local loaded,loadErr=self:EnsureStoreLoaded();if loaded~=true then return Failed(loadErr) end
     local result={included=#pack.entries,buff=0,debuff=0,auto=0,cooldown=0,existing=0,rejected=0}
     attempt.result=result
-    -- recommended/all 包只属于 Tracking Authority。
-    -- 一次用户点击现在物理上会写 inactive player/target/meta + manifest 四次，这是有意的两阶段提交，
-    -- 不能为了恢复“单次 SaveData”测试指标而写回旧 monolith。只有 manifest 成功才把 attempt 标为 committed；
-    -- 任一 inactive 写失败都保留上一代配置，准确率优先于写次数。
+    -- 导入依次写 inactive player/target/meta，再提交 manifest；四次物理写入是两阶段提交，不应改回旧单表。
+    -- 任一 inactive 失败保留上一代，只有 manifest 成功才标 committed。
     local ok,err=self:MutateTrackingStore(function()
         attempt.stage="mutate"
         local settings=Settings();local index=self:BuildTrackedIndex(settings)
@@ -661,12 +632,8 @@ end
 function F:SetTrackedCooldownId(id,kind,enabled)
     id=tonumber(id)
     if (kind~="skill" and kind~="mate") or not id or id<=0 or id~=math.floor(id) or id>2147483647 then return false,"冷却技能 ID/类型无效" end
-    -- 状态 ID 与技能 ID 是两个不同 namespace。
-    -- BuffDisplay 可以观察到坐骑/宠物技能产生的 Aura，但 Aura/Effect ID 绝不能直接写入
-    -- trackedCooldowns；X2Skill:GetCooldown/GetMateCooldown 的参数 Authority 是 Skill ID。
-    -- 启用时先让 CooldownObservationV3 做只读身份校验：已知 Effect-only ID 明确拒绝，
-    -- 未收录但可能是真实 RU Skill ID 仍允许进入 Native 探测，避免静态库不完整阻断用户。
-    -- 删除旧条目不做身份校验，确保历史误填的 Buff ID 始终可以被用户清理。
+    -- Aura/Effect ID 不能当 Skill ID 写入 trackedCooldowns。启用先让 CooldownObservationV3 校验：已知 Effect-only 拒绝，未收录但可能有效的 RU Skill ID 可探测。
+    -- 删除不验身份，历史误填项仍能清理。
     if enabled then
         local cooldown=S.Services and S.Services.CooldownObservationV3 or nil
         if type(cooldown)=="table" and type(cooldown.ValidateSkillId)=="function" then
@@ -674,8 +641,7 @@ function F:SetTrackedCooldownId(id,kind,enabled)
             if valid~=true then return false,detail or "该 ID 不是可追踪的技能 ID" end
         end
     end
-    -- trackedCooldowns 与 classification/library 一起属于 tracking.meta；该 Store 只保存用户选择，
-    -- 不保存 Buff 事实或实时剩余时间。运行时 CD 仍完全由 CooldownObservationV3 Native 读数所有。
+    -- tracking.meta 只存冷却选择和分类/库元数据；实时 CD 读数归 CooldownObservationV3。
     local ok,err=self:MutateTrackingStore(function()
         local list={};for _,value in ipairs(Settings().trackedCooldowns[kind] or {}) do if value~=id then list[#list+1]=value end end
         if enabled then if #list>=256 then return false,"冷却追踪达到上限" end;list[#list+1]=id end
@@ -685,9 +651,7 @@ function F:SetTrackedCooldownId(id,kind,enabled)
     return ok,err
 end
 function F:GetManagementHealth()
-    -- CD 自动发现、手动收藏、Native 活动计数分别取证，不用发现数量冒充当前真实冷却数量。
-    -- tracking-scope-v1：诊断既保留 player/target 六通道明细，也提供 buff/debuff/auto 通道总数；
-    -- 后者只为旧诊断消费者兼容，不是新的持久化 Authority，也不是去重后的状态数量。
+    -- 发现数、收藏数、Native 活动数分别取证。player/target 六通道总数仅兼容旧诊断，不是去重后的状态数量。
     local trackedSettings=Settings().tracked
     local player={buff=#trackedSettings.player.buff,debuff=#trackedSettings.player.debuff,auto=#trackedSettings.player.auto}
     local target={buff=#trackedSettings.target.buff,debuff=#trackedSettings.target.debuff,auto=#trackedSettings.target.auto}
@@ -701,9 +665,7 @@ function F:GetManagementHealth()
         },
         classification=S.Services.StatusClassificationV3:GetHealth(),
         catalog=Catalog:GetHealth(),lastImport=Copy(self.lastLibraryImport),
-        -- 状态显示持久化已拆成多个 Store，诊断必须
-        -- 直接暴露 manifest generation/slot 与一次性 legacyMigration 结果；禁止再用旧
-        -- v3.buff_display 的 loadStatus 推断当前运行 Authority，否则旧损坏证据会被误报成当前故障。
+        -- 诊断以 manifest generation/slot 和一次性 legacyMigration 为准，不能用旧主 Store 的 loadStatus 判断当前故障。
         persistence=type(self.GetTrackingPersistenceHealth)=="function" and self:GetTrackingPersistenceHealth() or nil,
         -- 只读已有解析结果/返回形态，用于区分未调度、Native未提供图标、界面未更新。
         -- GetHealth绝不触发新的tooltip读取；采样表有界，不能把整份tooltip正文塞进诊断。

@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 伤害统计悬浮组件
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅负责实时计量表现，统计归 DPS Feature；悬浮几何、透明度、最小化状态通过 DPS Store 持久化。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -27,9 +24,7 @@ local function CompactNumber(value)
     return string.format(abs >= 100000 and "%.0fK" or "%.1fK", n / 1000)
 end
 local function Policy()
-    -- Widget 不再维护第二套几何默认值，避免保存后 Reload 被
-    -- Feature 的另一套 policy 二次规范化。只复制 Store-owned policy，Presentation
-    -- 可消费但不能成为配置 Authority。
+    -- 复制 Store 的几何 policy，不另设默认值，避免 Reload 时被两套规则重复规范化。
     return S.Utils.DeepCopy(Feature.WidgetWindowPolicy or {})
 end
 local function Persist(reason, delayMs) return Feature.Commands:MarkStoreDirty(delayMs or 300, "widget_" .. tostring(reason or "state")) end

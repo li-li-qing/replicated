@@ -1,12 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 目标监控功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
--- event（TARGET_CHANGED）与 reconcileDemand 语义全部与被搬迁前逐字一致。
--- Authority 边界：目标身份来自 X2Unit 只读事实，本文件不缓存跨帧目标、不做全单位枚举。
-------------------------------------------------------------------------
+-- 由 TARGET_CHANGED 和 Demand 驱动目标只读观察，不保留跨帧目标或枚举全部单位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory

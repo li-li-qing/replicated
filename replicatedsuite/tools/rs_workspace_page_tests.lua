@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 工作区页面测试
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,e=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS '..name)else failed=failed+1;print('FAIL '..name..' '..tostring(e))end end
 local function Boot()

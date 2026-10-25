@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 角色物理键隔离与只读旧键迁移回归
--- 中文维护：加载真实 Core/Transport，只替换 Native 身份与磁盘为内存；不访问或修改实机 UDF。
+-- 加载真实 Core/Transport，只替换 Native 身份与磁盘为内存；不访问或修改实机 UDF。
 -- 新键必须隔离有损姓名，旧键只有完整归属和内容证明通过后才能迁移；旧物理值始终保留。
-------------------------------------------------------------------------
 local function Copy(value)
     if type(value)~='table' then return value end
     local out={};for k,v in pairs(value)do out[k]=Copy(v)end;return out

@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 窗口外壳紧凑拖拽测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- WindowShell 紧凑最小化回归：可见的 + 方块不能占用共享拖拽区域。
-------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

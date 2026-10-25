@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生击杀通知双入口测试
 -- 真实 Core Events / Demand / Bus / Analytics / 指标 / 个人历史；仅 Native
 -- Host、时钟、Scheduler 和磁盘为替身，不读取玩家存档，不证明 RU 全局投递覆盖。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

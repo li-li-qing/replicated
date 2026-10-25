@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 背包悬浮栏实际尺寸与贴边位置回归（Lua 5.1 离线模型）
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 运行真实 Bag/Persistence/Layout/Windowing/BagQuickOverlay；沿用现有 BagAction
 -- 宿主，仅补原生叶节点方法和视口度量。不代表 RU 拖动、绘制或文件系统实机验收。
-------------------------------------------------------------------------
 local pass,fail=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

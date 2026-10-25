@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 远程武器默认测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 开发期验证玩家远程武器默认值、兼容和布局顺序；使用真实 BuffDisplay Store 及 ComputePlateLayout，原生事实仅由测试宿主提供。
-------------------------------------------------------------------------
 local H = dofile('tools/rs_udf_numeric_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)

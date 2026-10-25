@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · UDF数值测试宿主
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 持久化和 HUD 数值回归共用的离线宿主，不进入 toc.g。
 -- 仅模拟原生存储边界，运行真实 Persistence、BuffDisplay Store 和 Feature，以及 FloatingSurface 归一化器。
-------------------------------------------------------------------------
 local H = {}
 local function Copy(value, seen)
     if type(value) ~= 'table' then return value end
@@ -47,7 +44,7 @@ function H.Boot(initialDisk)
     function S.Events:SubscribeOptional(name,owner,fn) self.listeners[#self.listeners+1]={name=name,owner=owner,fn=fn}; return true end
     function S.Events:SubscribeInternal(name,owner,fn) return self:SubscribeOptional(name,owner,fn) end
     function S.Events:UnsubscribeOwner(owner) for i=#self.listeners,1,-1 do if self.listeners[i].owner==owner then table.remove(self.listeners,i) end end return true end
-    -- Phase 1 Batch C（2026-09-28，test host 契约补齐）：NewFeature 的事件投影路径会先 BindOwner，
+    -- NewFeature 的事件投影路径会先 BindOwner，
     -- 释放时用 UnsubscribeInternalOwner；两个拍卖/领导 Feature 的 Demand 0→1 也会走 SubscribeInternal。
     -- 这里的形状与 core/rs_events.lua 一致（BindOwner 只记录 owner→moduleId），离线宿主不做 Native 绑定。
     function S.Events:BindOwner(owner, moduleId)
@@ -78,12 +75,8 @@ function H.Boot(initialDisk)
     end
     function S.Api:ClearData(key) io.clears=io.clears+1; io.disk[key]=nil; return true end
     function S.Api:IsCapabilityAllowed() return true end
-    -- Phase 0 补强（2026-09-28，test host 契约补齐）：ScreenProjectionV3 / Unit Lines 等消费者
-    -- 通过能力门 S.Api:CallCapability 读 Native，本 host 原先只桩了 IsCapabilityAllowed，
-    -- 缺少正式入口，于是 ProjectUnit 一律以 api_unavailable 失败（unit-lines 套件 15 项误报）。
-    -- 这里按 core/rs_api.lua 的真实契约补齐只读调用路径：成功返回 ok, value, nil, extra...，
-    -- 失败返回 false, nil, err —— 调用方按 `local ok,x,err,y,depth = CallCapability(...)` 解包，
-    -- 第三个返回值是错误位而不是第二个数据位，mock 必须保持同样形状。离线 host 不模拟限速。
+    -- CallCapability 的返回顺序是 ok, value, err, extra...，第三项是错误，不是第二个坐标。
+    -- 替身也要保持这个顺序；这里只模拟调用结果，不模拟能力冷却。
     function S.Api:ConsumeCapabilityCooldown() return true end
     function S.Api:Call(object, methodName, ...)
         if object == nil then return false, nil, 'object unavailable' end
@@ -102,10 +95,8 @@ function H.Boot(initialDisk)
         if paced ~= true then return false, nil, 'capability cooldown active: ' .. tostring(name) end
         return self:Call(object, methodName, ...)
     end
-    -- Phase 0 补强（2026-09-28，test host 契约补齐）：world 回退路径（ProjectWorld →
-    -- ConvertWorldToScreen）走的是 core/rs_api.lua 的 CallGlobalCapability，全局函数没有隐式 self，
-    -- 且成功形态同样是 ok, value, nil, extra...。缺这个入口时 ScreenProjectionV3 会静默跳到相机投影，
-    -- 于是“负深度不可绘制”这类用例失去覆盖。这里按真实契约补齐，仍不模拟限速。
+    -- 全局能力没有隐式 self，成功时仍返回 ok, value, nil, extra...。
+    -- 保留这个入口，世界投影用例才不会悄悄改走相机回退。
     function S.Api:CallGlobalCapability(name, ...)
         if self:IsCapabilityAllowed(name) ~= true then return false, nil, 'capability blocked: ' .. tostring(name) end
         local methodName = tostring(name or ''):match('^[^:]+:(.+)$') or tostring(name or '')
@@ -119,10 +110,8 @@ function H.Boot(initialDisk)
         if not ok then return false, nil, tostring(a) end
         return true, a, nil, b, c, d
     end
-    -- Phase 1 Batch A（2026-09-28，test host 契约补齐）：写路径走 ActionCapability，返回形态是
-    -- `true, value` / `false, err`（core/rs_api.lua），不是读路径的 ok,value,nil,extra…
-    -- 缺这个入口时 Feature 的显式写命令会静默变成“API boundary unavailable”，离线回归无法发现。
-    -- 离线宿主同样不模拟 1000ms 能力冷却；冷却 Authority 是 core/rs_api.lua 的 ConsumeCapabilityCooldown。
+    -- 写能力返回 true, value 或 false, err，与读能力的错误位置不同。
+    -- 这里只模拟调用结果，真实冷却仍由 ConsumeCapabilityCooldown 管。
     function S.Api:Action(object, methodName, ...)
         local ok, value, err = self:Call(object, methodName, ...)
         if ok ~= true then return false, err end

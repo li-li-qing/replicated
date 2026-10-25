@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗助手光环适配
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 旧 Healer status-cache 契约与 AuraObservationV3 之间的 Feature 适配层，仅拥有 Aura 消费租约和归一化状态读取；评分、规则、距离、优先级仍归 Healer Domain。禁止增加 Tick 或后台扫描。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}
@@ -100,7 +97,8 @@ function B:Read(unitToken, options)
     end
 
     local aura = Aura()
-    if type(aura) ~= "table" or type(aura.GetSnapshot) ~= "function" or type(aura.GetStatusMap) ~= "function" then
+    if type(aura) ~= "table" or (type(aura.GetUnitStatusMap) ~= "function"
+        and (type(aura.GetSnapshot) ~= "function" or type(aura.GetStatusMap) ~= "function")) then
         self.metrics.failures = (tonumber(self.metrics.failures) or 0) + 1
         return nil, nil, "AuraObservationV3 status projection unavailable"
     end
@@ -108,7 +106,7 @@ function B:Read(unitToken, options)
     options = type(options) == "table" and options or {}
     local limit = NormalizeLimit(options.limit)
     local ttlMs = NormalizeTtl(options.ttlMs)
-    local snapshot, snapshotErr = aura:GetSnapshot(unitToken, {
+    local readOptions = {
         buff = true,
         debuff = true,
         hidden = true,
@@ -116,13 +114,22 @@ function B:Read(unitToken, options)
         debuffLimit = NormalizeLimit(options.debuffLimit or limit),
         hiddenLimit = NormalizeLimit(options.hiddenLimit or limit),
         ttlMs = ttlMs,
-    })
+    }
+    local statusMap, meta, snapshot, snapshotErr
+    -- 新服务直接归一化缓存事实，避免Healer只需map却先复制所有原生行；旧宿主继续走原契约。
+    if type(aura.GetUnitStatusMap) == "function" then
+        statusMap, meta, snapshot, snapshotErr = aura:GetUnitStatusMap(unitToken, readOptions)
+    else
+        snapshot, snapshotErr = aura:GetSnapshot(unitToken, readOptions)
+        if type(snapshot) == "table" then
+            statusMap, meta = aura:GetStatusMap(snapshot, { buff = true, debuff = true, hidden = true })
+        end
+    end
     if type(snapshot) ~= "table" then
         self.metrics.failures = (tonumber(self.metrics.failures) or 0) + 1
         return nil, nil, snapshotErr or "aura snapshot unavailable"
     end
 
-    local statusMap, meta = aura:GetStatusMap(snapshot, { buff = true, debuff = true, hidden = true })
     meta = type(meta) == "table" and meta or { available = false, complete = false, reliable = false }
     local coverage = {
         available = meta.available == true,

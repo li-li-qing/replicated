@@ -1,18 +1,13 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 通用安全工具
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 通用工具。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.Utils = {}
 local U = S.Utils
 
--- 下方 SafeNumber/FormatMoney 等归 rs_utils；Clamp/Trim/DeepCopy/TableCount 的权威实现由紧接加载的
--- core/rs_reuse.lua 重新导出到 S.Utils.*，本地死副本已物理移除。
+-- Clamp/Trim/DeepCopy/TableCount 由随后加载的 rs_reuse.lua 导出；其余工具放在这里。
 
 function U.SafeNumber(value, fallback)
     local n = tonumber(value)
@@ -20,10 +15,8 @@ function U.SafeNumber(value, fallback)
     return n
 end
 
--- UnitGearScore(unit,comma) 第二参控制千分位，不是 target 标志；格式化返回如 "12,345" 不能直接 tonumber。此
--- 辅助不读 API、不缓存业务状态，只归一化 X2Unit 返回事实为 number，BuffDisplay/RaidReadiness 共用同一地区格
--- 式规则。支持数字、逗号、ASCII 空白、UTF-8 NBSP/thin-space，未知 table/object 返回 nil，不猜非数字内容，0/
--- 负数不是有效装分。仅短字符串替换，由既有低频装备/就绪路径调用，不新建 Tick 循环。
+-- UnitGearScore 的第二参控制千分位，不是 target 标志；"12,345" 不能直接 tonumber。
+-- 共用解析器接受数字、逗号、ASCII 空白及 UTF-8 NBSP/thin-space；未知对象、非数字、0 和负值返回 nil。
 U.GearScoreParseContractVersion = 1
 function U.ParseGearScore(raw)
     local rawType = type(raw)

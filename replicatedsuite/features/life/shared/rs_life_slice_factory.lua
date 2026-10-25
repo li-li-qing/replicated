@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 生活功能通用装配
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 生活Feature各自独立注册，本文件只提供共享装配。仅认识Core/Persistence/FeatureRuntime/Demand/Events/RSUI FloatingSurface/API边界，不认识Trade/Bonds/Treasure/Fishing业务State。
--- 禁止另建Registry/Runtime/Demand，也不能改变Store ID/Schema、Demand所有者、UpdateTopic或Commands。
--- 与features/shared/rs_feature_slice_factory.lua的Copy/RegisterStore/LoadStore语义不同，生活版migrate/canonical/budget为独立契约，禁止未经验证合并。
-------------------------------------------------------------------------
+-- 只提供生活 Feature 通用装配，不持有各业务 State 或另建 Runtime/Demand。
+-- 此处 migrate/canonical/budget 与通用 FeatureSliceFactory 不同，合并前须验证存档协议。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence
@@ -79,10 +75,7 @@ local function InstallLifeWidgetContract(feature, policy)
         end)
     end
     function feature:MarkStoreDirty(delayMs, reason)
-        -- 跑商/钓鱼/债券/藏宝共享的位置事务必须在返回前落盘回读。
-        -- 精确限定用户窗口边沿，业务快照继续走既有 debounce，外观仅最终提交进入此入口。
-        -- 维护：共享生活窗的小锁完成操作立即耐久，兼容旧按钮 lock；仍由各 feature.storeId 独立持有状态。
-        -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+        -- 生活窗位置、锁定及外观最终操作须立即保存/回读，各 Feature 独立 Store；业务快照仍用原 debounce，连续预览不走此入口。
         if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" or reason == "widget_locked" or reason == "widget_lock"
             or reason == "widget_overall_opacity" or reason == "widget_background_opacity" or reason == "widget_text_opacity" or reason == "widget_font_scale" then
             return P:SaveStore(self.storeId, { durable=true, consumeDirty=true, reason=reason })

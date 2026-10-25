@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 背包操作测试宿主
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 使用真实 Bag、InventorySnapshot、Demand、Persistence 和 Scheduler；仅原生容器由测试数据替代。
-------------------------------------------------------------------------
 return function(options)
     options=options or {}
     local h=dofile('tools/rs_gear_page_test_host.lua')({disk=options.disk})

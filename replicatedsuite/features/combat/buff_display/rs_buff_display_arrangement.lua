@@ -1,10 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · HUD 排列与布局预设
 -- 作者：Replicated
 -- QQ群：1104129461
 -- 方向独立存档并叠加只读投影，不扩充历史主Store/layout canonical。
 -- default保留旧横排坐标；显式横/纵排列使用完整图标间距，避免新预设换行重叠。
-------------------------------------------------------------------------
 if not ReplicatedSuite or ReplicatedSuite.BootError then return end
 local S=ReplicatedSuite
 local F,P=S.Features and S.Features.BuffDisplay,S.Persistence

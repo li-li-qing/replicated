@@ -1,17 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生数值传输测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护（2026-09-12）：Core已支持物理4，未知版本拒绝样本改5；旧精度/破损拒绝断言保持。
--- 维护：真实取证 fixture + 独立构造的 Native 数值降精度测试。此工具不进 TOC。
--- Authority：生产 Store/Persistence/API 原样加载；仅存储为内存盘，不代表 RU 客户端实测。
--- 原始 fixture 没有修改指纹；数值转换模型是对证据的可复现实验，非客户端源码结论。
-------------------------------------------------------------------------
+-- 使用真实取证样本和独立的数值降精度模型；Store、存档层和 API 不替换。
+-- 保留原始指纹。当前支持物理版本 4，因此用版本 5 检查未知版本拒绝路径。
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=pcall(fn)
@@ -58,7 +49,7 @@ local function Boot(disk,loss)
     dofile('ui/framework/rs_ui_floating_surface.lua')
     dofile('features/combat/buff_display/rs_buff_display_store.lua')
     dofile('features/combat/death_review/rs_death_review_store.lua')
-    -- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役。
+    -- life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役。
     dofile('features/life/shared/rs_life_slice_factory.lua')
     dofile('features/life/trade/rs_trade_feature.lua')
     return S,S.Persistence,io

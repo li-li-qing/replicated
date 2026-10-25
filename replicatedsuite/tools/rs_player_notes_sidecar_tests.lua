@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 人员备注伴随浮窗测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实EventBus/Feature/Store/WidgetHost/RSUI；仅Native绘制与游戏好友名单响应为边界模型。
-------------------------------------------------------------------------
 local Base=dofile('tools/rs_gear_page_test_host.lua')
 local passed=0
 local function Boot(options)

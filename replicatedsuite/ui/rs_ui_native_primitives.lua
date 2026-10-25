@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生控件工厂
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 仅活跃 V3 Foundation；旧 ManagedWindow/Page 导航 helper 已移 legacy_reference/ui 且不加载。
--- 本文件仅构造/注册原生原语，后续几何/表现修改归 rs_ui_framework.lua。
-------------------------------------------------------------------------
+-- 构造并注册原生原语，后续几何与表现交给 rs_ui_framework；旧窗口、导航 helper 不加载。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -17,13 +13,8 @@ S.UI = {
     CriticalInteractionDeliveryContractVersion = 1,
     -- 根临时弹层/菜单使用真实 Native Window，树内普通 Panel 保持 emptywidget，避免 RU 跨根层级失效。
     TopLevelTransientWindowContractVersion = 1,
-    -- 约束（2026-09-17，visual-guide-native-layer-1）：世界空间 HUD 引导（当前仅范围圆/单位连线）
-    -- 与普通插件 Window/Popup 的层级 Authority 分离。CreateOverlayWindow 必须固定进入 game 层，
-    -- 让背包/拍卖/地图等 normal/dialog/system 原生窗口天然覆盖这些点；不能让 Feature/Presenter 自行
-    -- Raise/切 system。数据流：CombatVisualGuides -> CreateOverlayWindow -> Native SetUILayer("game")。
-    -- 兼容边界：只改变这类 non-pickable transient overlay host 的 Native z-layer，不改变投影坐标、
-    -- 点池、Feature 生命周期、刷新频率或 Store。风险：若 RU 客户端未来改变 game 层可见性，需要通过
-    -- 实机诊断升级此契约，而不能回退到 system 以免再次遮挡原生窗口。
+    -- 世界 HUD 的非交互宿主固定 game 层，让背包、拍卖、地图自然覆盖。
+    -- Feature/Presenter 不能自行 Raise 到 system；若 RU 层级行为变化，先实机诊断，不能用升层遮挡原生窗口。
     WorldHudNativeLayerContractVersion = 1,
 }
 local UIX = S.UI
@@ -427,10 +418,8 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
     return self:Register(id, panel)
 end
 
--- 单位连线/范围圆点池的非交互屏幕宿主必须为真实 Native WINDOW；RU emptywidget 不可见。
--- WINDOW 类型不代表 system 层；世界 HUD 固定 game 层，使 normal/dialog/system 原生窗口自然覆盖。
--- DrawPriority 仅负责 game 层内部排序，host 保持不可拾取，不截获鼠标。
--- 层级策略不改变投影坐标、子点、可见性或生命周期；不能为解决显示问题升到 system 遮挡背包/拍卖/地图。
+-- 点池宿主须用真实 WINDOW，RU emptywidget 不可见；WINDOW 仍固定 game 层、不可拾取。
+-- DrawPriority 只排同层，不能升到 system 来解决显示问题。
 function UIX:CreateOverlayWindow(id, explicitOwner)
     local factory = S.NativeObjectFactory
     if type(factory) ~= "table" or type(factory.CreateWindow) ~= "function" then return nil, "overlay_window_factory_unavailable" end
@@ -443,9 +432,7 @@ function UIX:CreateOverlayWindow(id, explicitOwner)
     window.rsUiTransientWindow = true
     local configured, configureErr = pcall(function()
         if type(window.SetUILayer) == "function" then
-            -- 维护（2026-09-17）：范围辅助/单位连线只应覆盖 3D 世界，不应覆盖原生窗口。
-            -- Authority 在本 Primitive：所有 CreateOverlayWindow consumer 统一 game；Presenter 禁止另行升层。
-            -- 若 Native 拒绝 game，fail-closed 隐藏/隔离 host，不能静默回退 system。
+            -- game 层被拒绝时隐藏并隔离宿主，不能静默回退 system 覆盖原生窗口。
             local ok, result = pcall(function() return window:SetUILayer("game") end)
             if ok ~= true or result == false then error("overlay window layer rejected:game") end
         end
@@ -461,7 +448,7 @@ function UIX:CreateOverlayWindow(id, explicitOwner)
         -- 绘制优先级属已验证 CreatePanel/popup 策略，缺少时窗口可能在应用/世界下方，全部子点不可见。
         local priority = S.UITokens and type(S.UITokens.Number) == "function" and S.UITokens:Number("layer.popupPriority", 10000) or 10000
         if type(window.SetDrawPriority) == "function" then pcall(function() window:SetDrawPriority(priority) end) end
-        -- 维护（overlay-root-anchor-1）：实机日志在此拒绝 UIParent Table 参数。
+        -- 实机日志在此拒绝 UIParent Table 参数。
         -- 复用同文件的根锚点转换，Native 用 "UIParent"，下方 Diff 缓存仍持有真实对象；
         -- 不改变层级、拾取、坐标或刷新频率。避免构造被隔离而影响世界 HUD 显示。
         if window.AddAnchor ~= nil then window:AddAnchor("TOPLEFT", RootAnchorParent(UIParent), 0, 0) end
@@ -554,16 +541,13 @@ end
 
 function UIX:ConfigureEditCaret(edit, height)
     if edit == nil then return false, nil end
-    -- 约束（2026-09-14，RU 单行 EditBox caret 几何）：实机 .18.215 证明
-    -- SetCursorHeight(14) 并不是 14px 最终高度，而会渲染为约 29px 的竖线（接近 2*N+1），
-    -- 因此旧实现把“最终像素高度”直接传给 Native，导致 caret 穿过输入框下边界。这里统一把
-    -- 目标视觉高度转换为 Native half-extent，并把最终视觉预算限制在单行输入框内部。Authority
-    -- 仍由 Native 控制闪烁/选择，Suite 只设置颜色和有界几何；不在 Layout/Tick 中重复写。
+    -- 实机 SetCursorHeight(14) 约显示 29px，接近 2*N+1，并非最终像素高度。
+    -- 须把目标高度换成 Native half-extent 并限制在单行框内，避免光标穿出边界；不在每次布局重复写。
     local outer = math.max(18, math.floor(tonumber(height) or 24))
     local desiredVisual = math.max(11, math.min(19, outer - 6))
     local nativeHalf = math.max(5, math.min(9, math.floor((desiredVisual - 1) * 0.5)))
     if type(edit.SetCursorColor) == "function" then
-        -- 约束（2026-10-09）：布局只调光标几何，颜色仍遵循 Theme 的透明表面策略，不能恢复浅底深色。
+        -- 布局只调光标几何，颜色仍遵循 Theme 的透明表面策略，不能恢复浅底深色。
         local c=S.Theme and type(S.Theme.ResolveTextColor)=='function' and S.Theme:ResolveTextColor('input.caret',edit) or (S.UITokens and S.UITokens.input and S.UITokens.input.caret) or {1,.82,.36,1};edit:SetCursorColor(unpack(c))
     end
     if type(edit.SetCursorHeight) == "function" then

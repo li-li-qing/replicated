@@ -1,16 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 单位连线回归测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护：真实投影/Feature/Demand/Presenter/诊断逻辑；只模拟Native坐标、RSUI写入和调度驱动。
+-- 真实投影/Feature/Demand/Presenter/诊断逻辑；只模拟Native坐标、RSUI写入和调度驱动。
 -- 故障依据：2026-09-12 客户端 rows=2/4、(1280,731)->(931,-3345)、partial仍标ok。
 -- 这些反例证明代码分支，不声明已复现RU原生投影返回值的全部原因；不读写用户UDF。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=pcall(fn)
@@ -45,7 +38,7 @@ local function Boot()
     dofile('features/shared/rs_feature_slice_factory.lua')
     dofile('features/shared/rs_shared_bounds.lua')
     dofile('features/tools/auction/rs_auction_read_model.lua')
-    -- 中文维护注释（2026-09-28，Phase 1 Batch E）：bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
+    -- bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
     dofile('features/combat/unit_lines/rs_unit_lines_feature.lua')
     dofile('features/combat/range_assist/rs_range_assist_feature.lua')
     dofile('presentation/v3/widgets/rs_v3_combat_visual_guides.lua')

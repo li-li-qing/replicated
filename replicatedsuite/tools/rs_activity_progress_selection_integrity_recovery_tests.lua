@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动进度选择完整性恢复测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 离线冷启动存档测试：通过真实 Persistence v4 写入已发布的 schema1/codec1 Store，再启动当前 schema2 Store，验证先认证旧规范数据再迁移。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

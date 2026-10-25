@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动追踪功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 活动功能生命周期。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Runtime = S.FeatureRuntime
@@ -33,10 +30,8 @@ function F:Initialize()
     if ok ~= true then return false, err end
     local progress = S.Services and S.Services.QuestProgressV3 or nil
     if type(progress) == "table" then
-        -- 只有 QuestProgress 明确提供 detached
-        -- per-objective facts 契约时，Activity Authority 才启用个人分母投影。这样用户只覆盖一部分补丁文件时
-        -- 会安全退回原始 0/N，而不是因为 objectiveStates 缺失把进度变成 --/0。QuestProgress 仍独占 Native
-        -- 任务事实；正常路径不会增加 Quest API 读取，只过滤其刷新时已经生成的 detached objectiveStates。
+        -- 只有 QuestProgress 声明 per-objective facts 契约才启用个人分母；部分覆盖旧文件时退回原始 0/N，避免缺字段变 --/0。
+        -- 只过滤已有 objectiveStates，不额外读任务 API。
         if (tonumber(progress.ActivityObjectiveFactsContractVersion) or 0) >= 1 then
             self.Authority:SetQuestProgressProvider(function(scope, key) return F:GetActivityQuestProgress(scope, key) end)
         else
@@ -212,9 +207,7 @@ function F:SetProgressTaskSelected(eventKey, token, enabled, source)
     if self.enabled == true and self.consumerCount > 0 then
         local refreshed, refreshErr = self.Authority:Refresh("progress_selection")
         if refreshed == false and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Record) == "function" then
-            -- 到这里 Store 事务已经成功，不能因为一次 Presentation 投影刷新失败而
-            -- 对调用者谎报“设置失败”，否则用户重试会对同一持久化偏好执行相反操作。记录告警后
-            -- 保持成功；下一次 Activity 定时刷新/重新打开会从 Store + 缓存 Quest facts 自动收敛。
+            -- Store 已提交后，展示刷新失败只记警告，不能报设置失败诱使用户再次切换；下次刷新从缓存事实收敛。
             S.DiagnosticsManager:Record("warning", "activities_v3",
                 "个人进度选择已保存，但活动投影即时刷新失败: " .. tostring(refreshErr or "unknown"))
         end
@@ -442,11 +435,7 @@ function F:GetRows()
     return self.Authority:GetRows()
 end
 
---
--- Presentation 需要区分“时间线”和“实时区域”，但 Feature 仍是唯一对外 read-model 边界，
--- 页面/悬浮窗禁止直接持有 Authority 表或自行重新排序。这里仅透传 Authority 的同一 revision 快照；
--- 不创建缓存、不触发 Native、不写 Store。以后如果 UI 需要分段渲染，应继续通过这两个 getter，
--- 禁止复制 BuildStaticRows/BuildZoneRows 逻辑到 Presentation。
+-- 页面/悬浮窗通过 Feature getter 取得同 revision 时间线/实时区域副本，不能直持 Authority 或自行重排。
 function F:GetTimelineRows()
     return self.Authority:GetTimelineRows()
 end
@@ -577,9 +566,7 @@ function F.Commands:SetWidgetSize(width, height, source) return F:SetWidgetSize(
 function F.Commands:RefreshProjection(reason, scanZones) return F:RefreshProjection(reason or "activity_command", scanZones) end
 function F.Commands:HideEvent(key) return F:HideEvent(key) end
 function F.Commands:RestoreHiddenEvents() return F:RestoreHiddenEvents() end
--- 勾选集合直接决定该活动的个人 x/y。
--- Command 只允许 QuestProgressV3 已发布、且静态组显式 opt-in 的 main objective token；related/journal
--- 永远不能通过 UI 混入分母。修改后只从缓存任务事实重建 Activity Projection，不额外读取 Native。
+-- 个人 x/y 只接受静态组 opt-in 的 main objective token；related/journal 不计分母。只用缓存任务事实重建投影。
 function F.Commands:SetProgressTaskSelected(eventKey, token, enabled, source)
     return F:SetProgressTaskSelected(eventKey, token, enabled == true, source or "activity_detail")
 end

@@ -1,12 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 社交名单功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
--- 本文件不认识其它 Feature 的私有 State，也不建立第二个 Registry/Runtime；
--- 装配骨架来自 features/shared/rs_feature_slice_factory.lua（toc.g 已保证先加载）。
-------------------------------------------------------------------------
+-- 名单读取与投影独立于其它 Feature；通用装配由 FeatureSliceFactory 提供。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory
@@ -16,9 +11,8 @@ local Call, Action, NewFeature = FSF.Call, FSF.Action, FSF.NewFeature
 -- S.ApiImports（ApiDependencies 声明 8 个 X2Friend method），本文件不自己 ImportAPI。
 local FriendApi = rawget(_G, "X2Friend")
 
--- tools_social通过X2Friend读取好友/屏蔽/静音名单。RU返回形态尚未实机核实，必须用保守normalizer：表数组、名称数组与名称键表均可归一化。
--- 缺可用名称的条目显示未识别条目并降级partial，禁止渲染表地址；SOCIAL_LIST_MAX_ROWS限制行数并明确截断，避免巨大名单冲垮投影。
--- 各名单失败汇总ready/partial/empty/unavailable，读取失败不能冒充空名单。签名以api_functions.lua导出为准：GetFriendList(allMember)/GetBlockList()/GetMuteList()。
+-- RU 名单形状尚待实机核实；兼容表数组、名称数组和名称键表。无可用名的条目标未识别并降级 partial，不能渲染表地址。
+-- 按 SOCIAL_LIST_MAX_ROWS 截断；失败不能冒充空表。签名以导出为准：GetFriendList(allMember)、GetBlockList()、GetMuteList()。
 local SOCIAL_LIST_MAX_ROWS = 200
 local SOCIAL_LIST_SCAN_LIMIT = 1000
 local SOCIAL_LISTS = {

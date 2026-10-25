@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗识别数据
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 固定 RF246 的识别数据字面量；由 tools/rs_import_raid_framer_catalog.py 转换。
 -- 保留参考语义与来源；全部 reference_unverified_ru，不能冒充 RU 实测或直接改变状态极性。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 ReplicatedSuite.Data = ReplicatedSuite.Data or {}
 ReplicatedSuite.Data.CombatRecognitionSource = {

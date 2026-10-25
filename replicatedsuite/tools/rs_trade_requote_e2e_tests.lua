@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 交易重新询价端到端测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 缓存优先的交易集成测试，配方数量和收入计算保持原样；旧强制询价及异常确认路径仍由 rs_trade_requote_pipeline_tests.lua 覆盖。
-------------------------------------------------------------------------
 dofile('tools/rs_trade_tests.lua')
 local baseS=ReplicatedSuite
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')
@@ -36,7 +33,7 @@ local function Fixture(mode,blocked)
   local unit=id==30901 and 594 or 8800
   return {{itemType=id,itemGrade=id==30901 and 0 or 3,itemStack=100,directPrice=unit*100,name=keyword}}
  end
- -- 中文维护注释（2026-10-02）：阻断场景模拟真正不可读的 Native，而非成功返回 nil 的正常关闭窗。
+ -- 阻断场景模拟真正不可读的 Native，而非成功返回 nil 的正常关闭窗。
  if blocked then h.content=nil;ADDON.GetContentMainScriptPosVis=function()return nil,nil,nil,nil end
   ADDON.GetContent=function()error('native_content_unreadable')end end
  assert(TA:RebuildDisplayRows('requote_fixture'));assert(#TA.rows==1)
@@ -47,7 +44,7 @@ local function Fixture(mode,blocked)
 end
 local function Unknown(h)
  h.content=nil;ADDON.GetContentMainScriptPosVis=function()return nil,nil,nil,nil end
- -- 中文维护注释：保留 unknown 的价格/终态回归，关闭全空形态在 transport 用例单独验证。
+ -- 保留 unknown 的价格/终态回归，关闭全空形态在 transport 用例单独验证。
  ADDON.GetContent=function()error('native_content_unreadable')end
 end
 Test('missing recipe prices yield 12g45s20c cost and 12g93s80c margin within five seconds',function()
@@ -76,7 +73,7 @@ Test('descending native listings repair old sort-dependent cache through the act
  Eq(h.row.materialRows[1].costStatus,'quoted_reference')
  assert(h.row.profitNote:find('毛利按拍卖前三条样本参考价估算',1,true))
 end)
--- 中文维护注释（2026-10-02）：整条跑商消费者链必须在真实报告的“两个 getter 成功全空”条件下
+-- 整条跑商消费者链必须在真实报告的“两个 getter 成功全空”条件下
 -- 得到两份可靠报价并更新成本/利润，不能只证明底层 known=false 被改成 known=true。
 Test('cold absent auction still completes real Trade row materials and economics',function()
  local h=Fixture('missing');h.content=nil;ADDON.GetContentMainScriptPosVis=function()return nil,nil,nil,nil,nil end
@@ -214,7 +211,7 @@ Test('module TXT preserves selected missing-grade evidence without native calls 
  end
  assert(h.T:QuoteRowMaterials(h.row.key));h:advance(5000)
  Eq(h.row.materialCostComplete,false);assert(h.row.profitStatus~='ready')
- -- 中文维护（发布审查）：未知品级不能提交成本/利润；每种材料只读本次单包并保留诊断，
+ -- 未知品级不能提交成本/利润；每种材料只读本次单包并保留诊断，
  -- 不能因为失败原因从“无匹配”变成“字段不可读”而削弱业务终态及无额外 Native 调用断言。
  Eq(h.row.materialCostCopper,nil);Eq(h.row.profitCopper,nil);Eq(h:count('SearchAuctionArticle'),2)
  Eq(h.m:GetTradePrice(30901,0),nil);Eq(h.m:GetTradePrice(14627,3),nil)
@@ -235,7 +232,7 @@ Test('module TXT preserves selected missing-grade evidence without native calls 
  local snap=assert(h.S.ModuleDiagnosticsHub:Capture('life_trade',900))
  assert(snap.exportReport:find('provider.describediagnosticdetail',1,true))
  assert(snap.exportReport:find('listingDetails',1,true) and snap.exportReport:find('grade_missing',1,true))
- -- 本轮补录的 Native 事件和九参数必须穿过真实 Hub 进入 TXT，不能只在服务 Describe 中可见。
+ -- Native 事件及九个参数要经 Hub 写入 TXT，不能只出现在服务 Describe 中。
  assert(snap.exportReport:find('eventPacket',1,true) and snap.exportReport:find('searchArguments',1,true)
   and snap.exportReport:find('searchReturn',1,true),'search packet missing from full TXT')
  assert(snap.exportReport:find('rawRouteRows',1,true));assert(not snap.exportReport:find('PRIVATE_SELLER',1,true))

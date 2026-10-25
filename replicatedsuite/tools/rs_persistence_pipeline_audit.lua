@@ -1,19 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 持久化链路审查
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 中文维护注释（2026-09-12）：三个真实 Store 的公共读写契约回归，仅开发期执行，不进 TOC。
--- 原因：既有测试替代了 S.Api，且只覆盖 actual~=expected 分支，未验证 metadata 业务章。
--- Authority：生产 Persistence/Store/Utils/API/能力门均原样加载，仅 ADDON.Native 边界为内存盘。
--- 所有 fixture 都是合成值；带重新封印的旧指纹仅用于暴露验证器矛盾，不代表用户实档根因。
--- 数据流：real get -> canonical -> transport -> fake Native -> real readback -> fresh boot LoadStore。
--- 兼容/风险：保留真实原指纹拒绝语义；测试不得给未知用户 Hash 加白名单或打开恢复后门。
-------------------------------------------------------------------------
+-- 用三个真实 Store 串起保存、回读和冷启动，只把原生磁盘换成内存。
+-- 合成旧指纹用于检查校验器，不能拿来放宽真实存档的指纹要求。
 local passed, failed = 0, 0
 local function Test(name, run)
     local ok, err = pcall(run)
@@ -50,7 +39,7 @@ local function Boot(disk)
     dofile('ui/framework/rs_ui_floating_surface.lua')
     dofile('features/combat/buff_display/rs_buff_display_store.lua')
     dofile('features/combat/death_review/rs_death_review_store.lua')
-    -- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役。
+    -- life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役。
     dofile('features/life/shared/rs_life_slice_factory.lua')
     dofile('features/life/trade/rs_trade_feature.lua')
     return S,S.Persistence,io

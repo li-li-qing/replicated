@@ -1,19 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 交易测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 覆盖 Trade Feature、业务数据层、单路线请求及超时，
--- 无对应请求及过期回调处理、当前比例和 130% 满比例模式，
--- 贸易熟练度集成、TradePayoutV3 价格计算，
--- 有界材料投影及身份解析、共用单一原生队列的多行询价，
--- 最多 64 条路线收藏、HUD 控件及 TradeDetailFloatingV3，
--- 并核对 FoundationGate 和验收契约。
-------------------------------------------------------------------------
+-- 检查跑商请求、过期回调、货率、成本和多行询价，以及收藏和悬浮窗接线。
+-- 实际交货价格与服务器回包仍需客户端验证。
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -200,7 +189,7 @@ _G.X2Ability = {
     end,
 }
 
--- 维护（2026-09-25，trade-cargo-slot-authority-1）：随身货物读取必须使用实际 ES_BACKPACK 槽位 27。
+-- 随身货物读取必须使用实际 ES_BACKPACK 槽位 27。
 -- 故意把 EST_BACKPACK 设为不同值，确保测试能抓住“装备槽类型被误当装备槽 locator”的回归。
 _G.ES_BACKPACK = 27
 _G.EST_BACKPACK = 127
@@ -222,7 +211,7 @@ _G.X2Equipment = {
 
 dofile("features/life/shared/rs_life_slice_factory.lua")
 
--- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役删除。
+-- life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役删除。
 dofile("features/life/trade/rs_trade_feature.lua")
 
 dofile("features/life/fishing/rs_fishing_feature.lua")
@@ -231,7 +220,7 @@ dofile("features/life/treasure/rs_treasure_feature.lua")
 
 dofile("features/life/bonds/rs_bonds_feature.lua")
 
--- 中文维护注释（2026-09-28，Phase 2 Step 1）：life_treasure 已拆出独立文件；
+-- life_treasure 已拆出独立文件；
 -- economy widgets 在加载期要求全部 life Feature 在场。
 
 dofile("presentation/v3/widgets/rs_v3_trade_detail_floating.lua")
@@ -568,7 +557,7 @@ Test("T7: Material projection, recipe resolution & bounded display", function()
 
     local mockRatioInfo = {
         {
-            -- 中文维护注释（2026-10-02）：此处来源选的是地区 1，必须用真实 Gweonid 产品，
+            -- 此处来源选的是地区 1，必须用真实 Gweonid 产品，
             -- 原用地区 5 的 Solzreed 导致材料验证依赖错误的跨区接受，并可能空循环假通过。
             name = "Gweonid Commercial Specialty",
             ratio = 120,
@@ -723,7 +712,7 @@ Test("T10: HUD widget, Floating Detail & FoundationGate / Acceptance verificatio
 
     local mockRatioInfo = {
         {
-            -- 中文维护注释：与 T7 同源，地区 1 的回执用真实地区 1 商品，不能依赖串区材料。
+            -- 与 T7 同源，地区 1 的回执用真实地区 1 商品，不能依赖串区材料。
             name = "Gweonid Commercial Specialty",
             ratio = 120,
             itemInfo = { name = "Gweonid Commercial Specialty", itemType = 31854 },

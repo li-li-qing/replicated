@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 编辑草稿会话测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- RSUI DraftSession V2 回归使用生产控件及已有有界原生宿主；RU 剪贴板和焦点契约仅模拟明确的宿主状态转换。
-------------------------------------------------------------------------
 local Base = dofile('tools/rs_gear_page_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)

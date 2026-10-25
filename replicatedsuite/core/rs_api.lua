@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 官方 API 调用边界
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 官方 API 边界。可选游戏 API 在功能边界通过中央 Capability Registry 放行；Call/Action 是已通过门禁热路径的
--- 底层受保护调用原语。
-------------------------------------------------------------------------
+-- 可选 API 先经过 Capability Registry；Call/Action 负责底层受保护调用。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 S.Api={}
@@ -41,7 +37,7 @@ function A:ConsumeCapabilityCooldown(name)
         local elapsed = math.max(0, now - last)
         if elapsed < cooldown then return false, "capability cooldown active: " .. tostring(math.ceil(cooldown - elapsed)) .. "ms remaining" end
     end
-    -- 原生调用前先消费额度；原生调用抛错或返回 false 也不能以超过 RU 官方契约的频率反复重试。
+    -- 调用前扣除额度；抛错或返回 false 也占用冷却，避免失败重试超过 RU 限频。
     self.capabilityLastAttemptAt[key] = now
     return true
 end
@@ -84,8 +80,7 @@ function A:ActionCapability(name, object, methodName, ...)
     return self:Action(object, methodName, ...)
 end
 
--- 全局函数能力（例如 ConvertWorldToScreen）不采用 Lua 方法语义，不能隐式把 _G 作为首参。独立调用原语确保普
--- 通 X2*/UI 对象继续遵循已验证的冒号调用契约。
+-- 全局函数（如 ConvertWorldToScreen）不传 _G 作 self；X2*/UI 方法仍显式传宿主。
 function A:CallGlobalCapability(name, ...)
     local allowed, reason = self:IsCapabilityAllowed(name)
     if allowed ~= true then return false, nil, "capability blocked: " .. tostring(reason or name) end
@@ -95,8 +90,7 @@ function A:CallGlobalCapability(name, ...)
     if type(fn) ~= "function" then return false, nil, "global capability unavailable: " .. tostring(name) end
     local paced, paceErr = self:ConsumeCapabilityCooldown(name)
     if paced ~= true then return false, nil, paceErr end
-    -- Lua5.1 pcall 原样接收变参（含中间/尾部nil），
-    -- 不为每次只读调用分配参数表和闭包；权限、冷却及四个数据返回位保持原契约。
+    -- Lua 5.1 的 pcall 可原样传入参数，包括中间和末尾的 nil，无需另建参数表或闭包。
     local ok, a, b, c, d = pcall(fn, ...)
     if not ok then return false, nil, tostring(a) end
     return true, a, nil, b, c, d
@@ -105,7 +99,6 @@ end
 function A:Call(object, methodName, ...)
     if object==nil then return false,nil,"object unavailable" end
     local method=object[methodName]; if type(method)~="function" then return false,nil,methodName.." unavailable" end
-    -- method仍显式传self；protected call和错误返回不变，避免每帧制造临时垃圾。
     local ok,a,b,c,d=pcall(method,object,...)
     if not ok then return false,nil,tostring(a) end
     return true,a,nil,b,c,d
@@ -131,14 +124,12 @@ local function UiNumber(host,name)
     if v==nil or v~=v or v<=0 or v==math.huge then return nil end return v
 end
 function A:GetUiMetrics()
-    -- UIParent:GetExtent() 是 RU ArcheRage 现有 Replicated Gear 使用的可靠逻辑坐标权威。部分客户端和 UI 大
-    -- 小组合中 GetScreenWidth 已经缩放，不能盲目再除缩放，否则 1024x768 浮窗会按错误空间夹紧并落到屏幕外。
+    -- UIParent:GetExtent() 返回逻辑尺寸；部分客户端的 GetScreenWidth 已缩放，再除缩放会把浮窗夹到屏幕外。
     local scale=UiNumber(UIParent,"GetUIScale") or UiNumber(UI,"GetUIScale") or 1
     if scale<=0 then scale=1 end
 
-    -- Api 是 UIParent 逻辑单位唯一入口；异常 extent/scale
-    -- 不能进入 Layout 的比较/夹紧，否则 NaN 比较全部失效。返回来源仅供运行时诊断，
-    -- 不写 Store，不把 screen 当成必然的物理单位，更不能对已知 logical 再除 uiScale。
+    -- 先排除无效 extent/scale，防止 NaN 绕过 Layout 夹紧。
+    -- 来源只供诊断；screen 未必是物理像素，已知逻辑坐标不能再除 uiScale。
     local logicalW,logicalH=nil,nil
     local source = "uiparent"
     if UIParent~=nil and type(UIParent.GetExtent)=="function" then
@@ -162,8 +153,8 @@ function A:GetUiMetrics()
     return screenW,screenH,scale,logicalW,logicalH,{ source=source, ready=source=="uiparent" }
 end
 
--- 鼠标坐标只在 Tooltip OnEnter 等事件驱动交互中读取。ArcheRage RU 于 2026-08-26 官方开放
--- X2Input:GetMousePos；返回值可能随 UI 缩放使用逻辑坐标或物理像素，须在此保守归一化，让表现层免于处理歧义。
+-- X2Input:GetMousePos（RU 2026-08-26 开放）只在交互事件中读取。
+-- 不同 UI 缩放下可能返回逻辑坐标或物理像素，统一在此归一化。
 function A:GetMouseLogicalPosition()
     if X2Input == nil then return nil, nil, "X2Input unavailable" end
     local ok, first, err, second = self:CallCapability("X2Input:GetMousePos", X2Input, "GetMousePos")
@@ -199,10 +190,9 @@ function A:Validate()
     return S.NativeCapabilities:Validate()
 end
 
--- 原生通知归 Api，不替换 UIParent/其它插件的 Handler。
--- OnScale 在原生 UI 历史脚本中存在，但 RU 权限/触发仍须实测；安装失败由 Layout
--- 诊断明确暴露，并保留已知 UI_RELOADED/进入世界事件和 create/show/reset 新鲜采样。
--- 本宿主不持有窗口配置，不增加 OnUpdate；Stop 先废弃 epoch，迟到通知不能重新布局。
+-- 不替换 UIParent 或其它插件的 Handler。RU 的 OnScale 权限与触发仍需实测；
+-- 安装失败时由 Layout 报告，并在 UI_RELOADED、进入世界及创建/显示/重置时重新采样。
+-- Stop 先废弃 epoch，防止迟到通知触发布局。
 function A:StartUiMetricsNotifications(callback)
     if type(callback) ~= "function" then return false, "metrics_callback_required" end
     self:StopUiMetricsNotifications()

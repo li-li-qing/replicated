@@ -1,13 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗团队覆盖层
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 独立表现 Consumer，仅消费已提交 Healer Recommendation 与 Roster 投影。
 -- 架构：RaidTeam 表示团队身份（TeamRosterV3 权威，teamIndex 1/2）；RaidPanel 为各自具有矩形几何的 A/B 屏幕容器；
 -- Calibration 为每面板一个矩形，单元格由此推导。
 -- 面板绑定团队可运行时变化而不改几何；几何归面板，单列表仅 A，双列表显示 A/B。每面板一次创建 50 个池槽，高亮由 v3.healer.updated 驱动，不逐帧全量扫描。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Feature = S.Features and S.Features.Healer or nil
@@ -150,10 +147,8 @@ function P:MakePanel(id)
             local leaseOk = S.UI:BeginNativeGeometryLease(root, P.owner, "healer_raid_calibration")
             if leaseOk ~= true then return false end
         end
-        -- 维护（2026-09-22，geometry-gesture-authority-1）：RU 的 EffectiveOffset/Extent 在不同 UI Scale
-        -- 环境可能返回 logical 或 scaled 单位。治疗面板拖动必须和 Windowing 一样在手势开始时只校准一次，
-        -- 后续 DragStop 只能消费冻结的 effectiveScale；禁止使用旧 GetLogicalRect 无条件除 uiScale。
-        -- viewport 签名只用于阻止跨分辨率手势提交旧坐标，不写 Store，不改变团队/推荐 Authority。
+        -- RU Effective 几何可能返回 logical 或 scaled 单位；手势开始只校准一次，DragStop 用冻结 effectiveScale。
+        -- viewport 签名只用于拒绝跨分辨率提交，不能再无条件除 uiScale。
         if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect) == "function" then
             local _, _, _, _, unit = S.Layout:GetWindowLogicalRect(root)
             panel.geometryUnitScale = type(unit) == "table" and unit.effectiveScale or nil
@@ -329,7 +324,7 @@ end
 
 function P:RefreshHighlights(nowMs)
     if self.running ~= true then return false end
-    -- 约束（performance-cache-1）：Start/Reconcile 在设置事件边沿取得 detached 配置，
+    -- Start/Reconcile 在设置事件边沿取得 detached 配置，
     -- 生命发布/颜色动画复用它；不在每次高亮刷新重复复制 panels/geometry。
     local settings = self.settings or Settings()
     local calibration = settings.calibration == true
@@ -492,7 +487,7 @@ function P:Stop(reason)
     if self.taskActive == true then S.Scheduler:RemoveTask(self.taskName); self.taskActive=false end
     if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self.activeOwner) end
     for _, panel in pairs(self.panels) do
-        -- 维护（geometry-gesture-authority-1）：Stop/模式切换必须主动终止 Native move + lease。
+        -- Stop/模式切换必须主动终止 Native move + lease。
         -- 仅把 moving=false 会让客户端仍保留拖动捕获；迟到 DragStop 可能在重建后再次触碰旧几何。
         -- 这里先撤销交互再隐藏，且清空冻结单位/viewport，生命周期关闭不写任何用户配置。
         if panel.moving == true and type(panel.window.StopMovingOrSizing) == "function" then

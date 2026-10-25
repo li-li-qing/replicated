@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 窗口视口测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- Resolution-independent top-level placement 离线回归。
 -- 真实被测代码：Api/Layout/Windowing/WindowShell/FloatingSurface；只有 Native、RSUI 叶节点和磁盘是替身。
 -- 测试不进入 toc.g；矩阵使用公式而非生产分辨率魔法表。失败不能标记为 RU 实机通过。
-------------------------------------------------------------------------
 local Boot=dofile('tools/rs_window_viewport_test_host.lua')
 local pass,fail=0,0
 local function Test(name,fn)
@@ -317,7 +314,7 @@ local function BootLauncher(h,state)
         GetStore=function(_,id)return stores[id]end,RegisterV3Store=function(_,spec)stores[spec.id]=spec;return true end,
         MarkDirty=function()h.writes=h.writes+1;return not h.rejectPersist,'injected_persist_rejection'end}
     S.Persistence.LoadStore=function(_,id)stores[id].apply(stores[id].get());return true end -- 读取本宿主已种入的 Launcher 偏好，新增锁命令必须先安全读档。
-    S.Persistence.SaveStore=S.Persistence.MarkDirty -- 中文维护：旧几何宿主只记录持久化边沿；下方真实 Store 用例另行证明写盘与立即回读。
+    S.Persistence.SaveStore=S.Persistence.MarkDirty -- 旧几何宿主只记录持久化边沿；下方真实 Store 用例另行证明写盘与立即回读。
     S.RecoveryEntry=h.Native(UIParent,'launcher',300,100,30,30);S.RecoveryEntry.visible=true
     dofile('presentation/v3/rs_v3_launcher_store.lua');return S.UIV3
 end
@@ -442,7 +439,7 @@ Test('calibration drag consumers freeze viewport units and cancel native leases 
     assert(hud:find('self.panel:StopMovingOrSizing()',1,true) and hud:find('self.preview.root:StopMovingOrSizing()',1,true),'HUD HideOverlay does not cancel native moves')
 end)
 Test('external native sidecar fallbacks prefer calibrated viewport logical rect',function()
-    -- 中文维护注释（2026-09-28，Phase 1 Batch E）：rs_business_bridge.lua 已退役；
+    -- rs_business_bridge.lua 已退役；
     -- 外部内容几何的校准读取现在由 features/tools/bag/rs_bag_feature.lua 拥有。
     for _,path in ipairs({'features/tools/bag/rs_bag_feature.lua','services/rs_auction_surface_v3.lua','services/rs_craft_surface_v3.lua'})do
         local f=assert(io.open(path,'rb'));local v=f:read('*a');f:close()
@@ -518,7 +515,7 @@ Test('early invalid metrics recover from real root event without a Main Host',fu
 end)
 Test('relog late viewport settles without lifecycle event and never rewrites Store',function()
     local h=Boot();local state=Save(h,700,300,420,286);local before=Snap(state)
-    -- 中文维护测试：模拟同一分辨率重登。插件先看到一个“合法但临时”的 1024x768 UIParent，
+    -- 模拟同一分辨率重登。插件先看到一个“合法但临时”的 1024x768 UIParent，
     -- 因此不能靠 metricsReady=true 提前结束恢复；真实 1920x1080 随后静默出现且没有 OnScale/
     -- ENTERED_WORLD。Layout 的有界 settle one-shot 必须自行看到变化，并从原 Store intent 恢复
     -- 精确 x/y；runtime projection 绝不能产生持久化写入或累积漂移。
@@ -670,44 +667,44 @@ Test('session settings surface reloads its lock from chrome preferences and roll
     h.rejectLockSave=true;assert(surface.shell.lockButton.spec.onClick()==false)
     assert(not surface:IsLocked() and not surface.shell.lockButton.selected,'session save rejection left a fake lock')
 end)
--- 中文维护：启动器的提交测试使用真实 Persistence/Transport 与 Bootstrap 回调，磁盘替身只控制 Native 成功、拒写及静默丢写；绝不触碰用户 UDF。
+-- 启动器的提交测试使用真实 Persistence/Transport 与 Bootstrap 回调，磁盘替身只控制 Native 成功、拒写及静默丢写；绝不触碰用户 UDF。
 local function PersistentLauncher(disk)
-    local h=Boot();h.disk=disk or {};h.diskWrites=0 -- 中文维护：每次重建独立 Lua 状态，只共享磁盘以模拟没有心跳的冷启动。
-    local function Copy(value)if type(value)~='table'then return value end;local out={};for k,v in pairs(value)do out[k]=Copy(v)end;return out end -- 中文维护：磁盘隔离表引用，不能靠共享内存伪造跨启动恢复。
-    ADDON={LoadData=function(_,key)return Copy(h.disk[key])end,SaveData=function(_,key,value)if h.rejectSave then return false end;if h.dropSave then return true end;h.diskWrites=h.diskWrites+1;h.disk[key]=Copy(value);return true end} -- 中文维护：dropSave 证明调用成功不等于耐久，必须执行真实回读校验。
-    local S=h.S;dofile('core/rs_utils.lua');dofile('core/rs_reuse.lua');dofile('core/rs_api_capabilities.lua');dofile('core/rs_persistence_transport.lua');dofile('core/rs_persistence.lua') -- 中文维护：仅替换 Native 数据传输，保存/完整性/dirty 生命周期完全执行生产代码。
-    S.UIV3={};S.RecoveryEntry=h.Native(UIParent,'persistent_launcher',300,100,30,30);S.RecoveryEntry.visible=true -- 中文维护：恢复按钮独立于主窗，冷启动不继承上次坐标或锁状态。
-    function S.RecoveryEntry:EnableDrag(value)self.dragEnabled=value;return true end -- 中文维护：保留 Native 锁应用证据，回滚必须同步此状态。
-    dofile('presentation/v3/rs_v3_launcher_store.lua');local V=S.UIV3;assert(V:EnsureLauncherStoreLoaded());assert(V:ApplyLauncherPlacement()) -- 中文维护：按 Runtime 的真实顺序先加载账户偏好，再应用启动器位置和锁。
-    assert(BootRecoveryHandlers(h)(S.RecoveryEntry));assert(V:ApplyLauncherPlacement()) -- 中文维护：Bootstrap 安装拖动后再次应用已载入锁，保持真实启动次序与最终 Native 状态。
-    return h,V,S.RecoveryEntry -- 中文维护：测试只通过公开命令和真实回调提交，不直写 Store 以冒充用户操作。
+    local h=Boot();h.disk=disk or {};h.diskWrites=0 -- 每次重建独立 Lua 状态，只共享磁盘以模拟没有心跳的冷启动。
+    local function Copy(value)if type(value)~='table'then return value end;local out={};for k,v in pairs(value)do out[k]=Copy(v)end;return out end -- 磁盘隔离表引用，不能靠共享内存伪造跨启动恢复。
+    ADDON={LoadData=function(_,key)return Copy(h.disk[key])end,SaveData=function(_,key,value)if h.rejectSave then return false end;if h.dropSave then return true end;h.diskWrites=h.diskWrites+1;h.disk[key]=Copy(value);return true end} -- dropSave 证明调用成功不等于耐久，必须执行真实回读校验。
+    local S=h.S;dofile('core/rs_utils.lua');dofile('core/rs_reuse.lua');dofile('core/rs_api_capabilities.lua');dofile('core/rs_persistence_transport.lua');dofile('core/rs_persistence.lua') -- 仅替换 Native 数据传输，保存/完整性/dirty 生命周期完全执行生产代码。
+    S.UIV3={};S.RecoveryEntry=h.Native(UIParent,'persistent_launcher',300,100,30,30);S.RecoveryEntry.visible=true -- 恢复按钮独立于主窗，冷启动不继承上次坐标或锁状态。
+    function S.RecoveryEntry:EnableDrag(value)self.dragEnabled=value;return true end -- 保留 Native 锁应用证据，回滚必须同步此状态。
+    dofile('presentation/v3/rs_v3_launcher_store.lua');local V=S.UIV3;assert(V:EnsureLauncherStoreLoaded());assert(V:ApplyLauncherPlacement()) -- 按 Runtime 的真实顺序先加载账户偏好，再应用启动器位置和锁。
+    assert(BootRecoveryHandlers(h)(S.RecoveryEntry));assert(V:ApplyLauncherPlacement()) -- Bootstrap 安装拖动后再次应用已载入锁，保持真实启动次序与最终 Native 状态。
+    return h,V,S.RecoveryEntry -- 测试只通过公开命令和真实回调提交，不直写 Store 以冒充用户操作。
 end
 Test('launcher drag survives cold reload before any persistence heartbeat',function()
-    local h,V,n=PersistentLauncher();assert(n.handlers.OnDragStart());n.x=500;n.y=320;assert(n.handlers.OnDragStop()) -- 中文维护：直接执行实际 Bootstrap 拖动结束边沿，未调用 Tick/Flush。
-    assert(h.diskWrites==1,'launcher drag only marked dirty');assert(h.S.Persistence:GetStore('v3.launcher').needsBarrierVerify==false,'launcher drag skipped durable readback') -- 中文维护：返回成功前必须已有磁盘写入且已验回。
-    local cold,restored,node=PersistentLauncher(h.disk);Eq(node.x,500);Eq(node.y,320);assert(restored.LauncherState.userMoved==true) -- 中文维护：通过新 Store 的实际加载与布局验证恢复结果，禁止继承原 Native 节点。
+    local h,V,n=PersistentLauncher();assert(n.handlers.OnDragStart());n.x=500;n.y=320;assert(n.handlers.OnDragStop()) -- 直接执行实际 Bootstrap 拖动结束边沿，未调用 Tick/Flush。
+    assert(h.diskWrites==1,'launcher drag only marked dirty');assert(h.S.Persistence:GetStore('v3.launcher').needsBarrierVerify==false,'launcher drag skipped durable readback') -- 返回成功前必须已有磁盘写入且已验回。
+    local cold,restored,node=PersistentLauncher(h.disk);Eq(node.x,500);Eq(node.y,320);assert(restored.LauncherState.userMoved==true) -- 通过新 Store 的实际加载与布局验证恢复结果，禁止继承原 Native 节点。
 end)
 Test('launcher lock survives immediate cold reload',function()
-    local h,V,n=PersistentLauncher();assert(V:SetLauncherLocked(true));assert(h.diskWrites==1,'launcher lock only marked dirty') -- 中文维护：锁是用户最终提交边沿，不能等待后续心跳或退出钩子。
-    local cold,restored,node=PersistentLauncher(h.disk);assert(restored.LauncherState.locked==true and node.dragEnabled==false);assert(node.handlers.OnDragStart()==false) -- 中文维护：冷启动必须同时恢复 Store 和实际拖动权限。
+    local h,V,n=PersistentLauncher();assert(V:SetLauncherLocked(true));assert(h.diskWrites==1,'launcher lock only marked dirty') -- 锁是用户最终提交边沿，不能等待后续心跳或退出钩子。
+    local cold,restored,node=PersistentLauncher(h.disk);assert(restored.LauncherState.locked==true and node.dragEnabled==false);assert(node.handlers.OnDragStart()==false) -- 冷启动必须同时恢复 Store 和实际拖动权限。
 end)
 Test('launcher reset survives cold reload without a heartbeat',function()
-    local h,V,n=PersistentLauncher();assert(n.handlers.OnDragStart());n.x=500;n.y=320;assert(n.handlers.OnDragStop());assert(V:ResetLauncherPlacement(true)) -- 中文维护：先真实拖动再显式恢复默认，验证 reset 没有被上一份健康布局覆盖。
-    assert(h.diskWrites==2,'launcher reset remained queued');local cold,restored,node=PersistentLauncher(h.disk);Eq(node.x,300);Eq(node.y,100);assert(restored.LauncherState.userMoved==false) -- 中文维护：必须先证实拖动和恢复各有一次落盘，再检查冷启动默认意图，避免空盘默认值使测试假通过。
+    local h,V,n=PersistentLauncher();assert(n.handlers.OnDragStart());n.x=500;n.y=320;assert(n.handlers.OnDragStop());assert(V:ResetLauncherPlacement(true)) -- 先真实拖动再显式恢复默认，验证 reset 没有被上一份健康布局覆盖。
+    assert(h.diskWrites==2,'launcher reset remained queued');local cold,restored,node=PersistentLauncher(h.disk);Eq(node.x,300);Eq(node.y,100);assert(restored.LauncherState.userMoved==false) -- 必须先证实拖动和恢复各有一次落盘，再检查冷启动默认意图，避免空盘默认值使测试假通过。
 end)
-for _,failure in ipairs({'rejectSave','dropSave'})do -- 中文维护：显式 Native 拒写与成功但丢写均必须让用户提交失败，避免把 transport 成功当耐久成功。
+for _,failure in ipairs({'rejectSave','dropSave'})do -- 显式 Native 拒写与成功但丢写均必须让用户提交失败，避免把 transport 成功当耐久成功。
     Test('launcher rejected '..failure..' drag restores intent and native placement',function()
-        local h,V,n=PersistentLauncher();local before=Snap(V.LauncherState);local x,y=n.x,n.y;h[failure]=true -- 中文维护：保留原始缺省键形，失败回滚不能增加新 canonical 字段。
-        assert(n.handlers.OnDragStart());n.x=500;n.y=320;assert(n.handlers.OnDragStop()==false,'launcher drag reported success after failed persistence') -- 中文维护：真实回调必须传播失败，不能只记录诊断而返回成功。
-        assert(Snap(V.LauncherState)==before);Eq(n.x,x);Eq(n.y,y) -- 中文维护：失败同时回滚表现与 Authority，视觉位置不能谎报已保存。
+        local h,V,n=PersistentLauncher();local before=Snap(V.LauncherState);local x,y=n.x,n.y;h[failure]=true -- 保留原始缺省键形，失败回滚不能增加新 canonical 字段。
+        assert(n.handlers.OnDragStart());n.x=500;n.y=320;assert(n.handlers.OnDragStop()==false,'launcher drag reported success after failed persistence') -- 真实回调必须传播失败，不能只记录诊断而返回成功。
+        assert(Snap(V.LauncherState)==before);Eq(n.x,x);Eq(n.y,y) -- 失败同时回滚表现与 Authority，视觉位置不能谎报已保存。
     end)
     Test('launcher rejected '..failure..' lock restores intent and native drag',function()
-        local h,V,n=PersistentLauncher();local before=Snap(V.LauncherState);h[failure]=true -- 中文维护：旧锁字段缺失必须原样保留，不能变成新的 false 键。
-        assert(V:SetLauncherLocked(true)==false,'launcher lock reported success after failed persistence');assert(Snap(V.LauncherState)==before and n.dragEnabled==true) -- 中文维护：拒写后恢复原来的 Native 可拖动状态与偏好。
+        local h,V,n=PersistentLauncher();local before=Snap(V.LauncherState);h[failure]=true -- 旧锁字段缺失必须原样保留，不能变成新的 false 键。
+        assert(V:SetLauncherLocked(true)==false,'launcher lock reported success after failed persistence');assert(Snap(V.LauncherState)==before and n.dragEnabled==true) -- 拒写后恢复原来的 Native 可拖动状态与偏好。
     end)
     Test('launcher rejected '..failure..' reset restores last saved placement',function()
-        local h,V,n=PersistentLauncher();assert(n.handlers.OnDragStart());n.x=500;n.y=320;assert(n.handlers.OnDragStop());local before=Snap(V.LauncherState);h[failure]=true -- 中文维护：先取得健康持久位置，恢复默认拒写后必须回到这一份已保存意图。
-        assert(V:ResetLauncherPlacement(true)==false,'launcher reset reported success after failed persistence');assert(Snap(V.LauncherState)==before);Eq(n.x,500);Eq(n.y,320) -- 中文维护：reset 与拖动/锁定共享耐久失败语义，不能视觉恢复默认却保留旧档且返回成功。
+        local h,V,n=PersistentLauncher();assert(n.handlers.OnDragStart());n.x=500;n.y=320;assert(n.handlers.OnDragStop());local before=Snap(V.LauncherState);h[failure]=true -- 先取得健康持久位置，恢复默认拒写后必须回到这一份已保存意图。
+        assert(V:ResetLauncherPlacement(true)==false,'launcher reset reported success after failed persistence');assert(Snap(V.LauncherState)==before);Eq(n.x,500);Eq(n.y,320) -- reset 与拖动/锁定共享耐久失败语义，不能视觉恢复默认却保留旧档且返回成功。
     end)
 end
 print(string.format('VIEWPORT RESULT %d passed / %d failed (%s)',pass,fail,_VERSION))

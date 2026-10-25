@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态与选择组合基础
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 多个功能族共用的 Foundation 组件，不持有业务事实、持久化权限或永久 Tick。
--- 组合能力：StatusChip、PickerModel、有界稳定 TreeModel/TreeView；树采用稳定身份、事务修改、有界展开；
--- SearchablePicker 基于 PickerModel 明确提交，使用 RU 已验证输入而不猜测实时按键；IconPicker 组合 PickerModel、虚拟 TileView 与 Image。
-------------------------------------------------------------------------
+-- 共享状态标签、稳定树模型和选择器；树按稳定身份修改，有界展开。
+-- SearchablePicker 显式提交搜索，IconPicker 复用虚拟 TileView，不持业务数据。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -39,9 +35,7 @@ local function Clamp(value, lo, hi)
     return value
 end
 
-------------------------------------------------------------------------
 -- StatusChip 状态标记。
-------------------------------------------------------------------------
 local STATUS = {
     neutral = { tone = "muted", text = "状态" },
     muted = { tone = "muted", text = "状态" },
@@ -157,12 +151,7 @@ RSUI:RegisterType("StatusChip", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
--- 状态语义及组合状态/详情表头。
--- Pending/Success/Warning/Blocked 和 Empty/Loading/Error/Blocked 均在此统一定义。
--- 页面/功能经 RSUI:ResolveStatusSemantic 解析，不硬编码色调或自建标签堆栈。
--- StateNotice/DetailHeader 是标准组合，不持有业务事实、持久化或 Tick。
-------------------------------------------------------------------------
+-- 统一状态色与默认文案，页面经 ResolveStatusSemantic 使用；StateNotice/DetailHeader 只负责组合显示。
 RSUI.StatusSemanticsContractVersion = 1
 
 local STATE_SEMANTICS = {
@@ -409,11 +398,8 @@ RSUI:RegisterType("DetailHeader", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- PickerModel：明确查询、稳定 key、有界选项投影。
---
 -- SearchablePicker/IconPicker/领域选择器共用模型，不另建页面筛选状态；模型与 UI 无关，不假设 OnTextChanged、通用键盘导航或 Tick 轮询。
-------------------------------------------------------------------------
 local PickerModel = { version = 1 }
 PickerModel.__index = PickerModel
 RSUI.PickerModelContractVersion = 1
@@ -620,12 +606,9 @@ end
 
 RSUI.PickerModel = PickerModel
 
-------------------------------------------------------------------------
 -- SearchablePicker 搜索选择器。
---
 -- PickerModel 上的明确提交表现；
 -- RU 已验证 Enter/EditEnter/LostFocus，未验证通用 OnTextChanged/OnKeyDown，仅 Submit() 或可见搜索按钮执行筛选。组件是嵌入工作台，不隐式弹层。
-------------------------------------------------------------------------
 RSUI.SearchablePickerContractVersion = 1
 RSUI:RegisterType("SearchablePicker", function(spec)
     local c, err = Host("SearchablePicker", spec)
@@ -860,11 +843,8 @@ RSUI:RegisterType("SearchablePicker", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- IconPicker 图标选择器。
---
 -- PickerModel 上的通用图标表现；图标路径来自调用方投影，不解析 Skill/Buff/Item 元数据，也不持有第二套查询/选择模型，TileView 限制原生图块数量。
-------------------------------------------------------------------------
 RSUI.IconPickerContractVersion = 1
 RSUI:RegisterType("IconPicker", function(spec)
     if type(RSUI.TileView) ~= "function" or type(RSUI.Image) ~= "function" then return nil, "icon_picker_dependencies_missing" end
@@ -1241,9 +1221,7 @@ RSUI:RegisterType("IconPicker", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- TreeModel：有界、稳定 key、与 UI 无关。
-------------------------------------------------------------------------
 local TreeModel = { version = 2 }
 TreeModel.__index = TreeModel
 

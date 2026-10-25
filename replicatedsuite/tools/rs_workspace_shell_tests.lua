@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 工作区外壳测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 使用实际 Shell、RSUI、Router 和 Workspace 布局，仅原生边界及页面内容受控。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS workspace-shell '..name)else failed=failed+1;print('FAIL workspace-shell '..name..': '..tostring(err))end end
 local function Boot(options)
@@ -133,8 +130,8 @@ Test('appearance shortcut stays clickable in the main title bar and opens the ac
 end)
 Test('release label, support line and menu tips use visible open edges',function()
  local shell,S,h,n=Boot()
- -- 中文维护（5.6 发布）：核对实际创建的标题，避免发行名称仍停留在上一个版本。
- assert(shell.brandTitle.text:find('QQ群:1104129461   正式版5.6',1,true),'release label missing beside QQ group')
+ -- 核对实际创建的标题，避免发行名称仍停留在上一个版本。
+ assert(shell.brandTitle.text:find('QQ群:1104129461   正式版5.7',1,true),'release label missing beside QQ group')
  assert(n.v3_shell_support_text.text=='如果觉得功能好用，可以邮件给作者提供一点打赏','support line missing')
  local tips={
   '债券功能','装备升级或者翻新','血条太大挡视野','想给朋友取别称吗',
@@ -159,7 +156,7 @@ Test('release label, support line and menu tips use visible open edges',function
  end
 end)
 Test('first appearance click arranges four nonoverlapping slider rows before returning',function()
- -- 中文维护（2026-10-09）：反例必须检查首次点击，不能先手工 ApplyLayout，后者会掩盖惰性创建控件还未排版的问题。
+ -- 反例必须检查首次点击，不能先手工 ApplyLayout，后者会掩盖惰性创建控件还未排版的问题。
  local shell,S,h,n=Boot({actualWorkspaceHost=true,mainAppearance=true})
  assert(n.v3_shell_appearance_button.root.events.OnClick(n.v3_shell_appearance_button.root,'LeftButton'))
  local page=S.UIV3.PageHost.pages['system.workspace'];local bottom=nil

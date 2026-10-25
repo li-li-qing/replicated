@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 死亡复盘功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 独立低成本 CombatEventBus 消费端。Feature Enabled 控制后台记录生命周期；HUD/页面可见性不能启动 DPS 或 scope=all 战斗传输。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Runtime = S.FeatureRuntime
@@ -263,9 +260,7 @@ end
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
 
--- 把死亡回顾的 health 投影
--- 注册到 Core 的取值表。原先 core/rs_diagnostics.lua 直接按 id 读取它（属 CORE_FEATURE 债务）；
--- 现在 Core 只按“用途名”取值，业务 Feature id 只出现在本目录。provider 每次实时调用、不缓存。
+-- 向 Core 注册实时诊断 provider，每次现读，不缓存 Feature 状态。
 local providers = S.FeatureHealthProviders
 if type(providers) == "table" then
     providers:Register("death_review_health", function()

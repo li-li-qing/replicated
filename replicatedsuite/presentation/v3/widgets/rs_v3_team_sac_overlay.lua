@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 牺牲之舞团队覆盖层
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（2026-10-02）：只消费独立牺牲之舞 Feature，职责关闭不释放此视觉池。
+-- 只消费独立牺牲之舞 Feature，职责关闭不释放此视觉池。
 -- 仅消费 combat_sac_highlight.sacActive 的表现；名单/职业/Aura 事实归 Domain，本文件负责短视觉投影节拍。
 -- Tick/任务内不创建 Native，池仅在投影/生命周期边界分配。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Feature = S.Features and S.Features.combat_sac_highlight or nil
@@ -84,11 +81,13 @@ function P:VisualTick()
     if self.running ~= true or #self.active == 0 then return true end
     local projection = S.Services and S.Services.ScreenProjectionV3 or nil
     if type(projection) ~= "table" or type(projection.ProjectUnitBatch) ~= "function" then self.lastError="screen_projection_unavailable"; self:HideAll(); return false end -- 无显示时必须区分没有 Buff 与投影服务缺失，导出只读此事实。
-    local tokens = self.tokens or {} -- 名单在Reconcile时变化，位置每帧实时投影；不缓存坐标或目标身份事实。
-    -- 约束（2026-10-03，sac-native-screen-authority）：真机报告证明本人 Buff 已命中，但严格相机世界门
-    -- 算出 forward=-2026.44，先于 Native screen 读取直接隐藏。RU 相机/单位 world 空间不能在本高亮中混用。
-    -- 与 UnitLines/BuffDisplay 一样以共享服务的原生 screen 坐标为 Authority；非正 Native depth 和读不到点
-    -- 仍由 ScreenProjectionV3 拒绝。这里不猜相机偏移、不改全局 strict 契约，也不对本人伪造固定屏幕位置。
+    local tokens = self.tokens or {} -- 名单随 Reconcile 变，位置每帧投影。实机命中 Buff 后，相机世界门曾算出 forward=-2026.44，
+    -- 提前隐藏本人标记；此处使用 ScreenProjectionV3 原生 screen 车道，不能混用相机和单位 world 空间。
+    -- 无屏幕点或非正 depth 仍由共享服务拒绝，不猜偏移或伪造本人位置。
+
+
+
+
     local points, batchStatus = projection:ProjectUnitBatch(tokens, {
         worldZOffset = 1,
     })

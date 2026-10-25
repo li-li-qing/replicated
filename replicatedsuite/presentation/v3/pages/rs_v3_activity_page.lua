@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
--- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
-------------------------------------------------------------------------
+-- 总开关复用 PageHost 的按钮，刷新时不能改父级或重复绑定 OnClick。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -17,7 +13,7 @@ local ROUTE = "life.activities"
 
 local function OpenActivityDetail(row)
     if type(row) ~= "table" then return false, "活动行数据不可用" end
-    -- 主页面与活动/任务悬浮组件共用独立详情窗口，保证应用 Shell 关闭后仍可查看详情，避免再建立仅供弹窗使用的表现权威层。
+    -- 主页面和悬浮组件共用独立详情窗口，Shell 关闭后仍能查看。
     local detail = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
     if type(detail) ~= "table" or type(detail.Open) ~= "function" then
         return false, "QuestDetailFloatingV3 未加载"
@@ -110,12 +106,12 @@ local function BuildActivityPage(parent, route)
     end
     local hideExecute = hideButton.onClick
     hideButton.onClick = function() return RunAction("hide_selected", hideButton, hideExecute) end
-    -- 完整目录包括已隐藏和未发生的活动/区域，恢复不再只能全部恢复。
+    -- 恢复目录也列出已隐藏和未发生的活动、区域。
     RSUI:Button({id="v3_activity_customize",parent=actionRow,text="自定义",compact=true,slot={size="fixed",width=76},
         onClick=function()return S.UIV3.WorkspacePage:Open("lists","activities")end})
     local progressHint = RSUI:Text({ id = "v3_activity_progress_hint", parent = root, text = "排序：当前活动 → 即将开始（按时间）→ 实时区域（独立视口） · 点击活动行查看任务详情", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 20, hAlign = "fill" } })
 
-    -- ActivityLists 只分配双视口；原 Consumer/开关/保存逻辑保留，区域不再被长时间线挤出。
+    -- 时间线与区域各占一个视口，避免长时间线把区域挤出。
     tableView = S.UIV3.ActivityLists:Create({
         id = "v3_activity_table", parent = root, items = {},
         rowHeight = 29, headerHeight = 29, overscan = 2, desiredRows = 12,
@@ -144,7 +140,7 @@ local function BuildActivityPage(parent, route)
     function root:Refresh()
         local enabled = S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("life_activities") == true
         local rows, revision = Feature:GetRows()
-        -- 三个入口统一应用个人顺序，但不改共享 Authority 数组；双视口内分别排序。
+        -- 三个入口共用个人顺序；各视口排序副本，不改共享数组。
         local workspace=S.UIV3.Workspace
         if workspace then rows=workspace:ProjectRows("activities",rows);revision=tostring(revision)..":"..workspace.revision end
         -- 可见行池的协调由 SetItems 负责；同一 revision 不应紧接着强制再次绑定行。
@@ -159,15 +155,13 @@ local function BuildActivityPage(parent, route)
         local summary = Feature:GetSummary()
         local timing = Feature:GetTimingDiagnostics()
         summaryCard:SetData({
-            -- 约束（2026-09-18，Timeline v2 Presentation）：Summary 不再用 active 混合“计划活动”和“区域战争”。
-            -- timelineActive 是可比较时间线中的当前活动；liveZones 是独立实时状态段。兼容字段 summary.active 仍保留给旧诊断，
-            -- 但新 UI 禁止再次用它把两种语义合成一个数字。
+            -- timelineActive 是日程中的当前活动，liveZones 是实时区域状态。
+            -- summary.active 仅供旧诊断使用，不能把两种含义合计显示。
             value = enabled and ("时间线 " .. tostring(summary.timelineTotal or 0)) or "功能已关闭",
             detail = "当前活动 " .. tostring(summary.timelineActive or 0) .. " · 2小时内 " .. tostring(summary.withinTwoHours or 0)
                 .. " · 实时区域 " .. tostring(summary.liveZones or 0) .. " · 已隐藏 " .. tostring(summary.hidden or 0)
                 .. "\n服务器样本 " .. tostring(timing.serverSample) .. (timing.fresh and "" or "（已过期/未知）")
-                -- 约束（2026-09-19）：普通活动页不暴露“参考”这类内部来源标签；
-                -- 来源可信度仍保存在 Authority/诊断中。这里仅保留玩家真正需要的时间误差说明。
+                -- 普通页面只显示玩家需要的时间误差说明；来源可信度留在诊断中。
                 .. " · 时间按活动日程估算，实际结束时间可能有偏差",
         })
         local widgetVisible = S.UIV3.WidgetHost and S.UIV3.WidgetHost:IsVisible("life.activities") == true

@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 屏幕固定 HUD 回归（Native/磁盘为受控模型）
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

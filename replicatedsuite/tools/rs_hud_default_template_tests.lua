@@ -1,19 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · HUD默认模板测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护（hud-default-template-2）：当前默认布局来自用户 hud.1.1 的完整三页报告，
--- 历史几何基线 RAW_BYTES=1539 / RAW_CHECK=3486F051；.18.221 仅把 PLAYER ranged.enabled 从0改为1，当前期望 RAW_CHECK=37FAF052。下方预期仍是独立的用户输入，
--- 不从生产默认表生成；改错坐标、漏职业图标、误用旧目标装备模板必须失败。
--- Authority：真实 Store/canonical/耐久事务、Calibration 和报告编码器；仅 Native/磁盘使用
--- 既有开发宿主。历史 fingerprint 在改生产代码前采样，禁止随新默认更新；不进 toc.g，
--- 不宣称 Native 替身等于 RU Lua5.1/屏幕布局验收。
-------------------------------------------------------------------------
+-- 布局基线来自用户 hud.1.1 报告，不能从生产默认表反生成期望值。
+-- RAW_BYTES=1539；开启自身远程武器后，RAW_CHECK 从 3486F051 变为 37FAF052。
+-- 测试使用真实 Store、校准和编码器，只替换原生接口与磁盘。
 local H=dofile("tools/rs_udf_numeric_test_host.lua")
 local Open=dofile("tools/rs_hud_template_copy_test_host.lua")
 local passed,failed=0,0
@@ -89,7 +79,7 @@ Test("unreported policy and cooldown geometry retain their defaults",function()
         assert(p.components.distance.x==0 and p.components.gearScore.x==0 and p.plate.opacity==.85)
     end
 end)
--- 维护：这些输入刻意覆盖缺字段、自动大小0和独立目标；预期来自修改前的真实Store，
+-- 这些输入刻意覆盖缺字段、自动大小0和独立目标；预期来自修改前的真实Store，
 -- 用于防止“改默认”影响旧 canonical。普通表不等同新安装请求nil。
 local cases={
  empty={settings={}},

@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗技能目录
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 加载时从已打包的 SkillEffects 注册表编译 O(1) 战斗元数据。运行时战斗回调禁止扫描 SkillEffects 或广泛匹配标签/名称；名称分类标记 inferred，已核实的 Skill/Buff ID 才是身份权威。
-------------------------------------------------------------------------
+-- 加载时从 SkillEffects 编译精确索引，战斗回调不扫完整目录。名称推断标 inferred，不能当作已核实 ID 分类。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}

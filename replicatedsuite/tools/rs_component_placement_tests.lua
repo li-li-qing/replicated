@@ -1,6 +1,4 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 组件独立固定位置回归，真实存档/校准，Native 为模型。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS component-placement '..name)else failed=failed+1;print('FAIL component-placement '..name..': '..tostring(err))end end
 local FILE='features/combat/buff_display/rs_buff_display_placement.lua'

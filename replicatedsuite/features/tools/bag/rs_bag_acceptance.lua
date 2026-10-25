@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 背包整理契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 验证背包Feature自身25项契约版本下限与10条命令；实现缺失不得静默返回，失败为blocker，由sequence_harness报告。
 -- InventorySnapshotV3物理背包权威、BagQuickOverlay和BusinessPagesContract等Service/UI契约仍归Foundation。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
@@ -14,7 +11,7 @@ local F = S.Features and S.Features.tools_bag or nil
 
 local function Fail(message) return false, tostring(message or "bag_acceptance_failed") end
 
--- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 运行时只做只读诊断；完整序列测试仅离线执行。
 G:RegisterSequenceCase("v3_tools_bag_action_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.BagMoveContractVersion) or 0) < 8 then return Fail("bag.move_v8") end

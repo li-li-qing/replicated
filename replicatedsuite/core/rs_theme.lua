@@ -1,10 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 主题样式与安全绘制
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 主题样式。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -17,18 +13,14 @@ local C = S.Constants
 S.Theme = {}
 local T = S.Theme
 T.PaletteContractVersion = 2
--- （2026-10-05）world-HUD 保持原深色文字/阴影；存副本，不能引用会被主题原位更新的色表。
+-- world-HUD 保存配色副本，避免主题原位更新影响其文字和阴影。
 local worldColors = {}
 local worldToneAliases={default='text',strong='text',muted='textMuted',info='blue',success='green',warning='yellow',caution='orange',danger='red'}
 for key,color in pairs(C.Color or {}) do
     if type(color)=='table' and type(color[1])=='number' then worldColors[key]={unpack(color)} end
 end
-T.ManualTypographyOwnershipContractVersion = 1 -- （2026-09-24，visual-guide-resolution-style-recovery-1）允许
-                                               -- 少数 world-HUD glyph 明确声明 rsManualTypography=true，由专
-                                               -- 属 Presenter 管理原生字体尺寸。普通页面控件默认仍由 Theme
-                                               -- Authority 响应 addon/font scale；仅显式 opt-out 的控件跳过
-                                               -- RefreshTypography，避免分辨率/画质切换把手工字号重置为主题
-                                               -- 10..24 范围。
+T.ManualTypographyOwnershipContractVersion = 1 -- world-HUD glyph 可显式设置 rsManualTypography=true，由 Presenter 管字号。
+-- 普通控件仍随 Theme 缩放；手工控件跳过 RefreshTypography，避免被夹回 10..24。
 
 local function Token(path, fallback)
     local tokens = S.UITokens
@@ -137,8 +129,7 @@ function T:ResolveTextColor(role, widget)
     return color
 end
 
--- 一个 Theme Authority 管理组件自己创建的实色装饰。只记录 owner 已拥有的 Drawable，
--- 不遍历 Native 父子链、不新建背景、不改几何/输入/滚动事务；每次显式切换原位重绘。
+-- 只重绘组件已拥有的 Drawable，不遍历 Native 父子链或创建背景。
 function T:ColorRole(role)
     return (C.Color or {})[role] or Token(role,nil) or self:ToneColor(role)
 end
@@ -148,8 +139,7 @@ function T:BindColorDrawable(widget, drawable, role, alpha, opacityChannel)
     widget.rsThemeColorDrawables=widget.rsThemeColorDrawables or {}
     local binding=widget.rsThemeColorDrawables[drawable] or {}
     binding.role,binding.alpha=tostring(role),alpha
-    -- （2026-10-08）可选通道由逻辑宿主拥有；滚动条等辅助 Native 不在组件树里，
-    -- 显式登记为 background 才随背景透明度变化。旧绑定保持原语义，切主题刷新不能丢掉通道。
+    -- 滚动条等辅助 Native 不在组件树中，须由逻辑宿主显式登记为 background，才随背景透明度变化。
     if opacityChannel~=nil then binding.opacityChannel=opacityChannel end
     widget.rsThemeColorDrawables[drawable]=binding
     local color=self:ColorRole(binding.role)
@@ -173,9 +163,8 @@ function T:RefreshTextColor(widget)
     local color=self:ResolveTextColor(role or widget.rsLabelTone or 'default',widget)
     if (self:IsLightWorkspacePalette() or self.workspaceStatusBands) and widget.rsButtonStatusTone then color=self:ResolveTextColor(widget.rsButtonStatusTone,widget) end
     ApplyTextColor(widget,color,widget.rsTextOpacity)
-    -- （2026-10-09）原生 BUTTON 的 normal/highlighted/pushed/disabled 字色独立于 TextStyle。
-    -- 点击进入 Native 状态时不能回到默认浅字；四个色槽共用已解析的主题/语义色与用户文字 alpha。
-    -- 只更新已有按钮，不监听额外鼠标事件、不改变按钮状态；缺少可选 setter 时保留 TextStyle 降级。
+    -- Native BUTTON 四个状态字色独立于 TextStyle，须同时更新，避免点击后回到默认颜色。
+    -- 缺可选 setter 时只更新 TextStyle，不增加鼠标监听。
     if type(widget.rsButtonBgs) == 'table' then
         local base = widget.rsTextBaseColor
         local alpha = base[4] * widget.rsTextOpacity
@@ -239,8 +228,8 @@ function T:AddBorder(widget, soft)
     return border
 end
 
--- 现代深色主题三段竖向渐变使用 CreateThreeColorDrawable 和 ChangeColor1/2/3(r,g,b)，不支持 drawable 时退回
--- 纯色，避免面板不可见。顺序为上->中->下；RU 顺序不同则交换 Constants.Color.Gradient 中的值。
+-- 三段渐变用 CreateThreeColorDrawable 和 ChangeColor1/2/3(r,g,b)，顺序上→中→下；不支持时退回纯色。
+-- RU 顺序不同时调整 Constants.Color.Gradient。
 function T:AddGradientBackground(widget, kind, layer)
     if widget == nil then return nil end
     local bands = (kind == "titlebar" and C.Color.Gradient.titlebar)
@@ -305,7 +294,7 @@ function T:AddAccentStrip(widget, height, color)
     return strip
 end
 
--- 横分隔线使用细 color drawable；不是每个 RU 构建都保证有 Line 控件，1px 色条视觉等价且避免崩溃。
+-- 部分 RU 构建没有 Line 控件，横分隔线用 1px color drawable。
 function T:AddDivider(widget, y, soft)
     if widget == nil or type(widget.CreateColorDrawable) ~= "function" then return nil end
     local c = soft and C.Color.dividerSoft or C.Color.divider
@@ -463,9 +452,8 @@ local function ApplySolidButtonColor(button, index, color)
     return ok == true
 end
 
--- 鼠标仍在同一逻辑控件上时，RU Native BUTTON 可能因父级刷新或布局来回切换 normal/highlight。RSUI 判定鼠标在
--- 内时，两种原生背景都绘制同一悬停视觉，使状态摆动视觉幂等而不闪烁。业务运行态与导航选中态正交；颜色归
--- Theme Drawable，悬停/选中只调亮同色系，不覆盖红绿，不遍历未知 Native 子节点。
+-- RU 可能在父级刷新时反复切 normal/highlight；逻辑悬停期间两种背景用相同视觉，避免闪烁。
+-- 悬停和选中只调亮原色，不覆盖业务红绿。
 local STATUS_BANDS = {
     green = { normal = { {0.06,0.22,0.11}, {0.04,0.17,0.08}, {0.02,0.11,0.05} },
         bright = { {0.13,0.40,0.20}, {0.08,0.30,0.14}, {0.04,0.21,0.09} } },
@@ -562,9 +550,8 @@ function T:SetOpacity(widget, opacity)
     return true
 end
 
--- 浮动 HUD 透明度不能遍历任意 Widget 引用。原生控件已替换或释放时 RU 仍可能保留 Lua wrapper，GetParent()
--- /SetDrawableLayerAlpha 可触发 pcall 无法捕获的原生访问违规。这里只处理 Theme 创建并拥有的 drawable，创建
--- 时保存基准 RGBA，不探测原生后代树，使 label/text 始终完全不透明。
+-- 已释放控件仍可能留 Lua wrapper，GetParent/SetDrawableLayerAlpha 可触发 pcall 捕获不了的原生访问违规。
+-- 只处理 Theme 创建并记录基准色的 Drawable，不探测后代树，文字保持独立透明度。
 local function ApplyOwnedDrawableAlpha(drawable, color, opacity)
     if drawable == nil or type(color) ~= "table" then return end
     local alpha = (tonumber(color[4]) or 1) * opacity
@@ -588,8 +575,7 @@ local function ApplyOwnedDrawableAlpha(drawable, color, opacity)
 end
 
 function T:SetTextOutline(widget, enabled)
-    -- （2026-10-09）只用原生字体描边，保持原有文字颜色/透明度与焦点；没有该能力的客户端安全降级。
-    -- 接受后的值才进入缓存，Native 拒写时保留下次设置/主题刷新重试机会；禁止每帧叠加影子 Label。
+    -- 原生描边只在 setter 成功后缓存；拒写时留待下次刷新重试，不每帧叠加影子 Label。
     if widget == nil or widget.style == nil or type(widget.style.SetOutline) ~= "function" then return false end
     local wanted = enabled == true
     if widget.rsAppliedTextOutline == wanted then return true end
@@ -653,11 +639,8 @@ function T:RefreshTypography()
     if type(controls) ~= "table" then return 0 end
     local changed = 0
     for _, widget in pairs(controls) do
-        -- （2026-09-24，visual-guide-resolution-style-recovery-1）Theme 只拥有普通文本的
-        -- responsive typography。范围辅助/单位连线的“.” glyph 把字体大小当作点直径，Presenter
-        -- 会映射到 16..82px，若这里按主题上限 24px 重算就会在切分辨率后瞬间变成小点。
-        -- rsManualTypography 必须由创建该控件的专属 Presenter 显式设置；默认 nil/false 不改变
-        -- 任何既有页面/HUD。Theme 不清理该 flag，也不代替 Presenter 写回用户配置。
+        -- 连线/范围的“.”字号代表点直径，可达 16..82px，不能在切分辨率后被主题夹回 24px。
+        -- 创建它的 Presenter 显式设置 rsManualTypography；Theme 保留该标记，不替它写配置。
         if widget ~= nil and widget.rsManualTypography ~= true and widget.style ~= nil and widget.rsBaseFontSize ~= nil and widget.style.SetFontSize ~= nil then
             local applied = self:ResolveFontSize(widget.rsBaseFontSize, widget.rsLocalFontScale)
             if widget.rsAppliedFontSize ~= applied then

@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 光环只读观察
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- Aura 观察领域共享 Buff/Debuff/Hidden Buff 只读事实缓存，只拥有原生观察事实；Healer/Plates/Boss 等保留业务
--- 解释。没有 Tick 或后台扫描，消费者显式请求快照，短期有界缓存合并重复读取。
-------------------------------------------------------------------------
+-- 按请求读取 Buff/Debuff/Hidden Buff，短期缓存合并重复读取；效果用途由 Healer/Plates/Boss 等自行解释。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -56,8 +52,8 @@ local function CopyShallow(value)
 end
 
 local function PickEffectId(row)
-    -- 优先 buff_id：唯一有实机证据的字段，wbdebuff/buffblackdragon.lua:46 用 UnitDeBuff(...)["buff_id"] 匹
-    -- 配 23474/25846。若 effectId 与其不同，不能拿来作状态 map 键，否则数字 ID 规则全部静默失配。
+    -- 优先实机字段 buff_id；参考 wbdebuff/buffblackdragon.lua:46 用它匹配 23474/25846。
+    -- effectId 可能不同，不能替换状态 map 的 ID。
     if type(row) ~= "table" then return nil end
     return tonumber(row.buff_id or row.buffId or row.buffID or row.effectId or row.effect_id or row.id or row.buffType or row.buff_type or row.type)
 end
@@ -100,8 +96,7 @@ local function PickString(primary, secondary, keys)
     return nil
 end
 
--- Buff ID 到名称/图标解析归共享 BuffMetadataV3，通过 X2Ability:GetBuffTooltip、有界缓存及负缓存；此文件只保
--- 留薄访问器，降低扫描成本。
+-- 名称/图标统一经 BuffMetadataV3 缓存解析，这里只保留访问器。
 local function BuffMeta()
     return S.Services ~= nil and S.Services.BuffMetadataV3 or nil
 end
@@ -223,9 +218,8 @@ function A:_ScanLane(unitId, lane, limit)
             end
         end
         local effectId = ExtractEffectId(data, nil)
-        -- RU 单位行常省略 name。ID 缺失，或行无可用 name 且 ability-tooltip 缓存尚不能解析时，才读取已有
-        -- plates 证据支持的 tooltip 行。稳态扫描通过缓存门禁免于重复读取；新 ID 首次承担一次 tooltip，随后
-        -- 由能力缓存回答。
+        -- ID 缺失，或无名称且共享 metadata 尚未解析时，才读已有 Plates 证据支持的 tooltip 行。
+        -- 解析结果交回缓存，避免稳态重复查询。
         local rowName = PickString(data, nil, STATUS_KEYS.name) or NameFromExtra(dataExtra)
         if tipWorking and (effectId == nil or (rowName == nil and PeekBuffInfo(effectId) == nil)) then
             self.nativeReads = self.nativeReads + 1
@@ -268,11 +262,13 @@ function A:ClearCache()
     return true
 end
 
-function A:GetSnapshot(unitId, options)
+-- 两种公开读取共用采集入口：TTL、覆盖范围、强刷和revision只在这里裁定。
+-- 缓存引用只交给本文件的私有投影，不传入可覆盖的公开GetStatusMap/GetSnapshot。
+local function CollectSnapshot(self, unitId, options)
     options = type(options) == "table" and options or {}
-    if self.Demand == nil or self.Demand.count <= 0 then return nil, "aura service has no consumer" end
+    if self.Demand == nil or self.Demand.count <= 0 then return nil, nil, nil, "aura service has no consumer" end
     local key = self:_CacheKey(unitId)
-    if key == "" then return nil, "unit id required" end
+    if key == "" then return nil, nil, nil, "unit id required" end
 
     local ttlMs = Clamp(options.ttlMs or self.defaultTtlMs, 0, 2000)
     local requested = {
@@ -310,6 +306,12 @@ function A:GetSnapshot(unitId, options)
         cached = entry
     end
 
+    return cached, requested, key
+end
+
+function A:GetSnapshot(unitId, options)
+    local cached, requested, key, err = CollectSnapshot(self, unitId, options)
+    if cached == nil then return nil, err end
     return {
         unitId = key,
         revision = tonumber(cached.revision) or 0,
@@ -320,9 +322,8 @@ function A:GetSnapshot(unitId, options)
     }
 end
 
--- 从已捕获快照构建归一化只读状态投影，不读取 Native，也不拥有业务含义。Healer/Plates/Raid Readiness 自行判
--- 断效果；投影提供 id/source/stack/time/name/icon 稳定事实，消费者无需重扫 X2Unit。
-function A:GetStatusMap(snapshot, options)
+-- 从已有快照生成 id/source/stack/time/name/icon，不再读 Native；业务判定由消费者处理。
+local function NormalizeStatusMap(snapshot, options, copyExtras)
     snapshot = type(snapshot) == "table" and snapshot or {}
     options = type(options) == "table" and options or {}
     local requested = {
@@ -355,7 +356,11 @@ function A:GetStatusMap(snapshot, options)
                         -- 当前 RU 单位行常无 name，偶尔无 icon。名称只是原始 ID 占位或 icon 缺失时触发缓存
                         -- ability-tooltip；先检查零额外读取成本的原生尾部返回。
                         if name == "" or name == tostring(id) then
-                            local extraName = NameFromExtra(item.extra) or NameFromExtra(item.tooltipExtra)
+                            -- 缓存的data/tooltip已在扫描时浅复制；额外返回仍可能含原生table。
+                            -- 旧公开快照会先剔除table，改变稀疏数组的#，combined须保留这一名称判定。
+                            local extra = copyExtras == true and CopyShallow(item.extra) or item.extra
+                            local tooltipExtra = copyExtras == true and CopyShallow(item.tooltipExtra) or item.tooltipExtra
+                            local extraName = NameFromExtra(extra) or NameFromExtra(tooltipExtra)
                             if extraName ~= nil then name = extraName end
                         end
                         if name == "" or name == tostring(id) or iconPath == "" then
@@ -398,6 +403,45 @@ function A:GetStatusMap(snapshot, options)
     end
     if meta.lanes == 0 then meta.available, meta.complete, meta.reliable = false, false, false end
     return map, meta
+end
+
+function A:GetStatusMap(snapshot, options)
+    return NormalizeStatusMap(snapshot, options, false)
+end
+
+local function CopyLaneHeader(row)
+    if type(row) ~= "table" then return { available = false, reliable = false, count = 0, scanned = 0, limit = 0 } end
+    return {
+        available = row.available == true,
+        reliable = row.reliable == true,
+        complete = row.complete == true,
+        count = tonumber(row.count) or 0,
+        scanned = tonumber(row.scanned) or 0,
+        limit = tonumber(row.limit) or 0,
+        at = tonumber(row.at) or 0,
+    }
+end
+
+-- 直接返回完全分离的归一化map/meta和标量覆盖摘要，省去仅供中转的逐行CopyLane副本。
+-- 先固定本次lane引用和头信息，Metadata回调同步重入/强刷也不能混入下一次采集事实。
+function A:GetUnitStatusMap(unitId, options)
+    local cached, requested, key, err = CollectSnapshot(self, unitId, options)
+    if cached == nil then return nil, nil, nil, err end
+    local snapshot = {
+        buff = requested.buff > 0 and cached.buff or nil,
+        debuff = requested.debuff > 0 and cached.debuff or nil,
+        hidden = requested.hidden > 0 and cached.hidden or nil,
+    }
+    local summary = {
+        unitId = key,
+        revision = tonumber(cached.revision) or 0,
+        at = tonumber(cached.at) or 0,
+        buff = snapshot.buff ~= nil and CopyLaneHeader(snapshot.buff) or nil,
+        debuff = snapshot.debuff ~= nil and CopyLaneHeader(snapshot.debuff) or nil,
+        hidden = snapshot.hidden ~= nil and CopyLaneHeader(snapshot.hidden) or nil,
+    }
+    local map, meta = NormalizeStatusMap(snapshot, options, true)
+    return map, meta, summary, nil
 end
 
 -- 存在性判断保守：所需 ID 未观察到且请求 lane 不完整或不可靠时，返回未知 ok=nil，不能伪造失败。供团队就绪及

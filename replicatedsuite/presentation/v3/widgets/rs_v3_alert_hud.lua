@@ -1,13 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 警报 HUD
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（boss-hud-clock-1）：服务持有单调计时/截止点，
+-- 服务持有单调计时/截止点，
 -- 本文件只接收文本与几何；不自建 OnUpdate/读技能。Native 失败不能冒充文本已显示。
 -- 校准只在显式编辑期间取得鼠标，通过统一 Windowing 提交 Feature 的耐久事务；
 -- 正常战斗穿透，离页/停用释放。位置保存为逻辑偏移，分辨率变化不重写用户存档。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Alerts = S.Services and S.Services.Alerts or nil

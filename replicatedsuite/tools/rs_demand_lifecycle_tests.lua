@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · Demand 事务与失败清理回归
 -- 只加载真实 Demand；依赖替身仅提供深拷贝、诊断和可注入的资源失败。
 -- 权威边界：消费者快照不等于下游已释放，故障标识必须跨空租约清理存活。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, callback)
     local ok, err = xpcall(callback, debug.traceback)

@@ -1,15 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 自检报告格式化
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 按需统一自检报告集中编排已有只读诊断，不拥有修复或业务权威。显式点击 -> Gate(skipSequences) -> 独立只读快
--- 照 -> 已登记错误 -> 故障 Store -> Native 只读证据 -> 同份完整文本 -> 页面输入框由用户 Ctrl+C；聊天只发一
--- 条回执。不 LoadStore/Save/Clear/Apply，不清 fence、不启用 Feature、不注册 Tick/事件。不改 schema 或校验算
--- 法，专项方法保留；剪贴板非 Allowed 接口禁用，只允许用户手动复制，不声称系统剪贴板已验证。报告仅存当前点击
--- /页面内存。合并须先检查冲突标记、完整 toc.g 和 Lua 语法，再运行验收，不能清配置、跳过加载或恢复 Legacy 绕
--- 过错误。
-------------------------------------------------------------------------
+-- 用户打印时收集一次 Gate 只读检查、错误与故障 Store 证据，冻结成完整文本，由页面分页供 Ctrl+C。
+-- 不恢复或写入业务，不启用 Feature；聊天仅发一条交付回执，报告只存当前页面内存。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local D = S.DiagnosticsManager
@@ -225,9 +218,7 @@ local function BuildReport(self, mode)
     if history.evicted>0 or history.clippedMessages>0 or history.captureFailures>0 or (tonumber(S.LogDropped)or 0)>0 then meta.partial=true end
     for _,row in ipairs(history.rows) do Section("RECORDED_ERROR",row) end
 
-    -- 页面“完整报告”实际走 paged，过去未收集已经运行的
-    -- 性能监控/调度/输入计数，导致 TXT 无法核对周期负载。只在显式打印的冷路径读缓存；
-    -- 不启动计时、不刷新药品、不抢焦点、不增添 Tick，也不把帧间隔或零计时当回调耗时。
+    -- 分页报告也读取现有性能、调度和输入计数，不启动采样或抢焦点；帧间隔和零计时不能当作回调耗时。
     local performance = Collect("PERFORMANCE",S.PerformanceMonitor,"Snapshot")
     Section("PERFORMANCE_COVERAGE",{
         patch="mouse-load-evidence-1",capturedAtMs=Now(),
@@ -262,14 +253,8 @@ local function BuildReport(self, mode)
 
     if mode=='paged' then
         Collect("PERSISTENCE_FAILURES",self,"BuildPersistenceFailureReport")
-        -- （2026-09-18，.18.237 分页故障证据）物理 Transport 修复探针属于本次
-        -- Load 的运行时缓存，不存在于 Native LoadData 原表；如果默认按钮从 Focus 切回 BuildPaged
-        -- 却只附 RAW_STORE，就会丢掉 catalog_no_candidate / ambiguous / exact fallback 等决策证据。
-        -- Authority：Persistence/Store 仍是唯一事实来源，这里只复制当前失败 Store 已缓存的
-        -- lastPhysicalTransportRepair* 字段到不可变报告快照；不重新 LoadData、不调用恢复函数、不改
-        -- fingerprint/Fence/Store。Presentation 后续只分页这份固定文本。兼容：健康 Store 不输出，
-        -- Focus 兼容接口保持原样；Format 对单字符串仍有 16KiB 安全上限，而 Store 探针自身受更小
-        -- 的恢复诊断预算约束，因此不会为了分页再次预裁剪。
+        -- 物理恢复探针只存在于本次 Load 缓存，RAW_STORE 不含候选拒绝原因，因此也复制 lastPhysicalTransportRepair*。
+        -- 只附当前故障 Store，页面翻页共用冻结文本；不重读盘或运行恢复。单字符串仍限 16KiB。
         local physicalRows = {}
         for _, st in pairs(type(S.Persistence)=='table' and S.Persistence.stores or {}) do
             if type(st)=='table' and (st.writeFenced==true or st.loadStatus=='integrity_failed')
@@ -285,8 +270,7 @@ local function BuildReport(self, mode)
         end
         table.sort(physicalRows,function(a,b)return Text(a.store)<Text(b.store)end)
         if #physicalRows>0 then Section("PERSISTENCE_PHYSICAL_REPAIR",physicalRows) end
-        -- 仅在打印冷路径读取已存在诊断页的有界输入计数，
-        -- 不创建页面/抢焦点/读正文/启动轮询；记录供区分失焦和重复布局，非剪贴板成功证明。
+        -- 只读已有诊断页输入计数，区分失焦与重复布局；不读正文，也不把它当剪贴板成功证明。
         local host=S.UIV3 and S.UIV3.PageHost
         local page=host and type(host.pages)=="table" and host.pages["system.diagnostics"] or nil
         if type(page)=="table" and type(page.GetReportInputSnapshot)=="function" then
@@ -296,9 +280,7 @@ local function BuildReport(self, mode)
         Collect("PAGE_HOST",S.UIV3 and S.UIV3.PageHost,"Describe")
         Collect("ACTIONS",S.ActionRunner,"GetSnapshot")
         Collect("FEATURE_STATUS",self,"BuildFeatureStatusRows")
-        -- （2026-09-14，拍卖原生同步取证）只在用户打印报告的冷路径读取已有
-        -- AuctionSearchBridgeV3 snapshot；不探测 Native、不 Acquire、不触发搜索。path/name/type/readback
-        -- 失败原因与 fallbackCount 能区分“直接查询可用”与“原生搜索框未同步”，避免下一轮靠猜 UI。
+        -- 只读 AuctionSearchBridgeV3 快照，区分直接查询可用与原生搜索框未同步，不因报告触发搜索。
         if type(S.Services and S.Services.AuctionSearchBridgeV3) == "table"
             and type(S.Services.AuctionSearchBridgeV3.GetSnapshot) == "function" then
             Collect("AUCTION_SEARCH_BRIDGE",S.Services.AuctionSearchBridgeV3,"GetSnapshot")
@@ -428,16 +410,9 @@ function D:BuildSelfCheckReport()
     return text,meta
 end
 
-------------------------------------------------------------------------
--- 历史兼容入口（已非页面默认）：以下RS-FOCUS-1限制只服务旧工具，新页面使用BuildPaged。
--- 真实报告107216字节、10段；当时要求单次短复制，因此继续压缩/分段
--- 不能解决用户“一次复制”。默认只汇总失败检查、完整Store指纹组和已登记错误，不遍历
--- 健康Provider、不重复原日志/Describe.rows。最多读取一份较简单的写保护存档，能完整
--- 容纳才附上；其余明确计数，不把摘录称为全量证据。旧BuildSelfCheckReport保留维护调用。
--- Authority：Gate/Core/错误环仍为事实来源；这里只挑选展示，不能应用/恢复/写盘/解Fence。
--- 3500是低于本次3963字节已成功接收片段的保守正文预算，不声明所有Native都支持；页面
--- 仍精确回读。全部工作由打印点击触发，无Tick/新订阅；临时表随调用/离页释放。
-------------------------------------------------------------------------
+-- RS-FOCUS-1 仅供旧工具兼容，新页面用 BuildPaged。只汇总失败检查、完整指纹组和已登记错误。
+-- 最多读一份简单故障档，容纳不下则整项省略并计数；摘录不能称全量证据。
+-- 3500 字节是低于已成功接收 3963 字节片段的保守预算，展示仍须精确回读。
 local FOCUS_MAX, FOCUS_FOOTER_RESERVE, FOCUS_RAW_MAX = 3500, 576, 16384
 D.FocusedSelfCheckMaxBytes = FOCUS_MAX
 D.FocusedSelfCheckContractVersion = 1
@@ -512,9 +487,8 @@ local function BuildFocused(self)
     end
     meta.evidenceOmitted=#failures-meta.evidenceIncluded
     meta.rawStatus=rawStatus
-    -- 短文本预算省略整份原档时，重复打印不会自动补齐证据。
-    -- 明确转交随包离线只读udf采集器，不增加游戏按钮/读取/写盘，不伪称raw已送达；
-    -- 采集器要求用户退出客户端并确认整个udf隐私范围，不能由游戏代码自动运行。
+    -- 原档被短预算省略时，重复打印不会补齐；转用随包离线 udf 采集器。
+    -- 采集须由用户退出客户端并确认整个 udf 范围，游戏内不能自动运行。
     if rawStatus=="copy_budget" or rawStatus:match("^raw_size_limit:") then
         meta.evidenceNextStep="udf_snapshot"
     end
@@ -538,30 +512,17 @@ local function BuildFocused(self)
         local seq=type(st.lastHistoricalRecoveryProbe)=='string' and st.lastHistoricalRecoveryProbe:match('sequence=([^/;]+)')
         if seq then row=row..' seq='..Short(seq,18) end
         if next(ev)==nil then row=row..' reason='..Short(st.lastError or st.loadStatus,72) end
-        -- （2026-09-17 transport 物理恢复取证）transport decode 在 canonical 之前失败时 ev 为空，
-        -- 旧聚焦报告只给 missing_chunk，无法区分 twin/catalog 候选为何被拒绝，导致仍需整份报告。
-        -- 这里只附加 Core 已缓存的 repair probe/error，不重读 SaveData、不构造 raw、不扩大 Authority。
-        -- （2026-09-18，.18.236 物理恢复后续门禁取证）
-        -- .18.235 RU 实机证明 repairPhysicalTransport 可以先成功返回/解码候选，随后才在 canonical
-        -- fingerprint 门禁被拒绝；此时 st.lastError 已经从 transport_* 变成 integrity/fingerprint，
-        -- 旧条件会把 Store 已缓存的 fallback 结果完全隐藏，报告只剩 hook=candidate，维护者无法判断
-        -- catalog_no_candidate / ambiguous / fallback-fingerprint-mismatch。Authority/数据流不变：这里只读
-        -- Persistence 在同一次失败 Load 已缓存的 probe/error，不重新 LoadData、不重算候选、不清 Fence、
-        -- 不写盘；只要存在物理恢复证据就展示。Store 每次 Load 开始会重置这些字段，因此不会串用旧世代证据。
+        -- transport 修复候选可能解码成功后才被业务指纹拒绝，因此不能只在 transport_* 错误时展示修复探针。
+        -- 有物理恢复证据就复制本次 Load 缓存的 probe/error，区分无候选、歧义与指纹不符，不重读或重算。
         local physical=st.lastPhysicalTransportRepairProbe or st.lastPhysicalTransportRepairError
         if physical then
-            -- （2026-09-17，transport 深度取证）连续三轮恢复失败后，72 bytes
-            -- 只够显示 no_candidate 前缀，反而迫使维护者继续猜测。物理恢复函数现在提供最多
-            -- 2300 bytes 的 bounded 证据（缺块索引、twin 关系、首个同 count chunk 差异）；
-            -- 仍受本聚焦报告 3500 bytes 总预算和 Add() 原子行约束，不重读 Native、不输出整份 Store。
+            -- 修复探针最多 2300 字节，含缺块索引、twin 关系和首个同 count 块差异；仍受 3500 字节总预算限制。
             row=row..' phy='..Short(physical,2300)
         end
         if not Add(row) then meta.storesOmitted=meta.storesOmitted+1 end
     end
-    -- 大死亡历史/追踪库装不进3500字节不应再次只剩相同Hash。
-    -- 使用本次失败Load已记录的两轴17g数值/6g token与受限恢复结果，逐Store原子加入。
-    -- 不重读Native、不把节选称原档、不扩大聊天/文本容量。数值只来自Core已检查的raw，
-    -- 不是从当前默认Domain读取；无证据的Store保持缺项，不能补零/推断同一根因。
+    -- 逐 Store 附本次失败 Load 缓存的两轴 17g 值、6g token 和恢复结果。
+    -- 这些是已检查 raw 的节选，不是完整原档；缺证据时留空，不能取当前默认值补零。
     for _,st in ipairs(failures) do
         local proof=st.lastWindowNumericEvidence
         if type(proof)=='table' then
@@ -642,21 +603,14 @@ function D:PrintFocusedSelfCheckReport(present)
     return self:PresentSelfCheckReport(text,meta,present)
 end
 
--- （2026-09-12）旧流程在 Presentation 写入/回读之前发“报告在文本框”，Native
--- 不可用、截断、离屏时仍产生成功回执。present 是本次用户动作的交付回调，不存为订阅；
--- 先生成一次 -> 页面可见/回读/焦点结果 -> 一条真实回执。生成与交付分开，
--- 不重读 Store、不重跑自检。无 presenter 的内部调用只声明正文已返回，不虚构页面存在。
--- （2026-09-12）9215字节接收端需要多次呈现同一快照。生成与呈现拆开，
--- 翻段仍复用这份text/meta，不再次Gate/LoadData，不改变故障证据的时间点和业务所有权。
--- delivered只表示当前框拥有完整报告；partReady仅表示一个完整分段，不能偷换为全部已交付。
--- 本接口由页面显式点击调用，不驻留回调。错误/重试仍只发一条实际结果，不读OS剪贴板。
+-- 先生成一次，再由 present 回报页面可见、回读和焦点结果，最后只发一条真实回执。
+-- 翻段复用同一 text/meta，不重跑 Gate 或读盘。delivered 表示完整报告到达，partReady 只表示一段到达。
+-- 内部无 presenter 时只承诺已返回文本，不能声称文本框或系统剪贴板已就绪。
 function D:PresentSelfCheckReport(text,meta,present)
     if type(text)~="string" or type(meta)~="table" or type(meta.check)~="table" then
         return false,"self_check_snapshot_required"
     end
-    -- 随包参考把 ADDON:SetClipboardText 放在 Available/not allowed，而非 Allowed。
-    -- 上轮分类错误；这里不再探测/调用该写接口。手动Ctrl+C由Native已激活文本框处理，
-    -- 不是另找系统/Message对象绕过API边界，也不声称已验证用户的系统剪贴板。
+    -- ADDON:SetClipboardText 属于 Available/not allowed，不调用或探测；用户通过已激活的 Native 文本框手动 Ctrl+C。
     meta.clipboard="manual"
     meta.clipboardError="api_reference_not_allowed:ADDON:SetClipboardText"
     meta.presentation={state="unavailable",code="NO_PRESENTER",focused=false}
@@ -689,8 +643,7 @@ function D:PresentSelfCheckReport(text,meta,present)
         .." copy="..meta.clipboard.." view="..delivery.state
         ..(delivery.state=="part" and (" part="..tostring(delivery.index).."/"..tostring(delivery.parts)) or "")
         .." code="..code
-        -- 失败时同一条回执携带真实Set/Get边界数值，不再只显示
-        -- 通用错误。仅短类型/长度/首差异，不泄露正文，不新增消息或另一次Native读取。
+        -- 失败回执带 Set/Get 类型、长度和首差异，不带正文或额外 Native 读取。
         ..(delivery.state=="failed" and type(delivery.readback)=="table"
             and type(S.ReportCopyTransport)=="table" and type(S.ReportCopyTransport.FormatReadback)=="function"
             and (" "..S.ReportCopyTransport:FormatReadback(delivery.readback)) or "")
@@ -705,8 +658,7 @@ function D:PresentSelfCheckReport(text,meta,present)
 end
 
 
--- 用户默认完整错误字符串，固定快照一次采集。分页只属于Presentation；未知/失败
--- 原档仍只读，不清除Fence、不写配置。重载后由Bootstrap新generation重建错误环。
+-- 完整错误一次采集，分页不改变故障或存档。重载后由新 Generation 重建错误环。
 function D:BuildPagedSelfCheckReport()
     if building then return nil,"self_check_report_busy" end
     building=true

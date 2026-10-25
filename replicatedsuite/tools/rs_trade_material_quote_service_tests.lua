@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 交易材料报价服务测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 使用生产服务，仅原生接口、时钟和持久化边界由测试替身提供。
-------------------------------------------------------------------------
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')
 local function Eq(a,b,m) assert(a==b,(m or 'value')..': '..tostring(a)..' ~= '..tostring(b)) end
 local function Fixture()
@@ -62,7 +59,7 @@ Test('timeout and cancel detach consumers with bounded native cleanup',function(
 end)
 Test('native human open or visibility unknown returns blocked without server calls',function()
  for _,unknown in ipairs({false,true})do
-  -- 中文维护注释（2026-10-02）：保持真正不可读与用户开窗两类保护；成功空内容的关闭窗应允许查询。
+  -- 保持真正不可读与用户开窗两类保护；成功空内容的关闭窗应允许查询。
   local h=Fixture();if unknown then h.content=nil;ADDON.GetContentMainScriptPosVis=function()return nil end
    ADDON.GetContent=function()error('native_content_unreadable')end else h:open(false)end
   local r;assert(h.service:RequestRecipe('blocked',{Material(101)},function(x)r=x end));h:advance(5000)

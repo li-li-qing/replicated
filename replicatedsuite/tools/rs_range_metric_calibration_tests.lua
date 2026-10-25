@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 距离度量校准测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 中文维护回归（2026-09-15）：范围辅助的“米”必须以 X2Unit:UnitDistance 为事实 Authority，
 -- 世界坐标仅作为几何载体；EasyPull Camera fallback 若与 Native Screen 的焦距尺度不一致，
 -- 只能在玩家 Native 锚点周围做整批等比校准，禁止写死倍率或逐点猜测。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = pcall(fn)
@@ -223,7 +220,7 @@ Test('camera fallback applies one rigid metric screen scale around native player
 end)
 
 Test('range feature consumes metric calibration without changing persisted meter radius',function()
-    -- 中文维护注释（2026-09-28，Phase 1 Batch E）：rs_business_bridge.lua 已退役，
+    -- rs_business_bridge.lua 已退役，
     -- combat_range_assist 现在由 features/combat/range_assist/rs_range_assist_feature.lua 拥有。
     local f=assert(io.open('features/combat/range_assist/rs_range_assist_feature.lua','r'));local text=f:read('*a');f:close()
     assert(text:find('GetRangeMetricCalibration',1,true),'range feature does not request metric calibration')

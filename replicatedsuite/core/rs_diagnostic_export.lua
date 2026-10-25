@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 诊断导出编码
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- （2026-10-02）完整报告文件出口。RU 没有已验证的任意文件写入接口；
--- Diagnostics 冻结正文 -> Persistence 固定专用 key -> Native SaveData/LoadData
--- 完整回读 -> 本地只读提取工具生成 txt。业务 Store/Fence/配置均不参与此出口。
--- 仅明确点击才分块写快照，无 Tick、自动上传、报告历史堆积或业务启停副作用。
-------------------------------------------------------------------------
+-- RU 没有已验证的任意文件写入接口：报告先经 Persistence 写专用 key，完整回读后再由本地提取工具生成 txt。
+-- 仅响应导出点击，独立于业务 Store 的加载、恢复和写保护。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P, D, T = S.Persistence, S.DiagnosticsManager, S.ReportCopyTransport
@@ -42,9 +37,7 @@ local function Build(text, meta, protocol)
     return out, nil, pages
 end
 
--- Persistence 是 Native 持久化唯一入口。此 key 是用户显式导出的传输快照，
--- 不注册业务 Store、不 Apply/default/migrate、不绕过任何已有业务 Store 的 write fence。
--- SaveData 返回成功仍须逐字段逐块完整回读；失败状态只属于本次导出，不能污染业务健康度。
+-- 专用 key 只传输导出快照，不注册业务 Store。SaveData 成功后仍须完整回读；导出失败不改变业务健康状态。
 local function SaveTextExport(key, protocol, text, meta)
     local payload, err, pages = Build(text, meta, protocol)
     if payload == nil then return false, err end
@@ -60,10 +53,8 @@ local function SaveTextExport(key, protocol, text, meta)
         end
         return true
     end
-    -- 旧单 key 正文被截在 16383 字节。每页最多 4 KiB 原文，
-    -- HEX 与全部元数据小于 9 KiB；固定最多 256 个 key 复用，无 Native 深层大表。
-    -- 每页逐字段回读通过后，最后才提交总清单。本地端还须验证页号、各页及全文校验，
-    -- 因此半途失败或两次导出交错不会被当成完整文件，也不从旧清单拼出新旧混合报告。
+    -- 单 key 曾在 16383 字节被截断，因此每页最多 4 KiB 原文，HEX 加元数据小于 9 KiB，最多复用 256 个 key。
+    -- 各页回读通过后才提交清单；提取端再验页号和校验，拒绝半份或新旧混合报告。
     for index, page in ipairs(pages) do
         local ok, reason = WriteVerified(key .. string.format('_page_%04d', index), page, '第' .. index .. '块')
         if ok ~= true then return false, reason end
@@ -80,8 +71,8 @@ function P:SaveHistoryExport(text, meta)
     return SaveTextExport(HISTORY_KEY, HISTORY_PROTOCOL, text, meta)
 end
 
--- 展示端提交 immutable 原文，而非 Native 编辑框可能被截断的当前页；
--- 成功回执只承诺 Native 快照回读成功，txt 尚须本地提取工具读取磁盘后验证生成。
+-- 提交冻结的完整原文，不能取可能已截断的编辑框当前页。
+-- 成功只代表 Native 快照回读通过；txt 仍需本地工具从磁盘提取并验证。
 function D:ExportReport(text, meta)
     local ok, result = P:SaveDiagnosticExport(text, meta)
     E.last = ok == true and result or { error = tostring(result) }

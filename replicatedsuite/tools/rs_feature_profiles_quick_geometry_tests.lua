@@ -1,14 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能预设快捷几何测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 中文维护（2026-09-25，feature-profile-quick-relog-1）：
--- 功能方案屏幕快捷按钮的 viewport/重登几何离线回归。
--- 真实被测代码：Api -> Layout -> RSUI.Windowing -> FeatureProfile Feature -> FeatureProfile Quick Widget。
--- 只有 Native 叶节点、事件总线、Scheduler 与磁盘是替身；不进入 toc.g，失败不得标记为 RU 实机通过。
--- 运行：cd replicatedsuite && lua tools/rs_feature_profiles_quick_geometry_tests.lua
-------------------------------------------------------------------------
+-- 用真实布局、窗口和功能预设检查快捷按钮的分辨率迁移与重登恢复，
+-- 只替换原生控件、事件、调度和磁盘。
 local BootHost = dofile('tools/rs_window_viewport_test_host.lua')
 _G.unpack = _G.unpack or table.unpack -- Lua 5.4 宿主兼容；游戏客户端为 5.1。
 
@@ -287,9 +281,7 @@ local function SnapshotPlacements(rows)
     return table.concat(out, '|')
 end
 
-----------------------------------------------------------------------
 -- A. 同 viewport 重登：三个位置精确恢复、全部可见、不重叠
-----------------------------------------------------------------------
 Test('A same-viewport relog restores exact positions (3 buttons, visible, no overlap)', function()
     local first = BootSession(nil, { 1920, 1080 })
     PlaceAll(first, { [1] = { 1180, 150 }, [2] = { 1290, 150 }, [3] = { 1500, 150 } })
@@ -305,9 +297,7 @@ Test('A same-viewport relog restores exact positions (3 buttons, visible, no ove
     Eq(second.S.Persistence.writes, 0, 'A: restore wrote the Store')
 end)
 
-----------------------------------------------------------------------
 -- B. 1920 保存 -> 较窄 viewport 恢复：全部留在 safe viewport 且不重叠
-----------------------------------------------------------------------
 Test('B wide save restored into narrower viewport stays fully visible and separated', function()
     local first = BootSession(nil, { 1920, 1080 })
     PlaceAll(first, { [1] = { 1180, 150 }, [2] = { 1290, 150 }, [3] = { 1500, 150 } })
@@ -331,9 +321,7 @@ Test('B wide save restored into narrower viewport stays fully visible and separa
     Eq(narrow.S.Persistence.writes, 0, 'B: reflow wrote the Store')
 end)
 
-----------------------------------------------------------------------
 -- C. 启动期临时 1024x768 -> 稍后静默稳定到最终 viewport，Store write = 0
-----------------------------------------------------------------------
 Test('C startup temporary viewport settles into final viewport with zero Store writes', function()
     local first = BootSession(nil, { 1920, 1080 })
     PlaceAll(first, { [1] = { 1180, 150 }, [2] = { 1290, 150 }, [3] = { 1500, 150 } })
@@ -362,9 +350,7 @@ Test('C startup temporary viewport settles into final viewport with zero Store w
     Eq(relog.S.Persistence.writes, 0, 'C: metrics-only recovery wrote the Store')
 end)
 
-----------------------------------------------------------------------
 -- D. 靠近右边缘保存后重登
-----------------------------------------------------------------------
 Test('D button saved at the right edge survives relog and stays inside', function()
     local first = BootSession(nil, { 1920, 1080 })
     PlaceAll(first, { [1] = { 1800, 180 }, [2] = { 1800, 220 }, [3] = { 1800, 260 } })
@@ -378,9 +364,7 @@ Test('D button saved at the right edge survives relog and stays inside', functio
     Eq(SnapshotPlacements(rows), saved, 'D: right-edge relog drifted')
 end)
 
-----------------------------------------------------------------------
 -- E. LEFT / RIGHT 混合历史 edge placement
-----------------------------------------------------------------------
 Test('E mixed LEFT and RIGHT legacy edge placements restore contained and separated', function()
     -- 手工构造历史 Store：1 号 LEFT/TOP，2 号 RIGHT/TOP，3 号 RIGHT/BOTTOM（无 viewport intent）
     local disk = SeedStore({
@@ -400,9 +384,7 @@ Test('E mixed LEFT and RIGHT legacy edge placements restore contained and separa
     Eq(ctx.S.Persistence.writes, 0, 'E: legacy edge projection wrote the Store')
 end)
 
-----------------------------------------------------------------------
 -- F. restore -> metrics change -> restore -> metrics change 不产生累计漂移
-----------------------------------------------------------------------
 Test('F repeated restore and metrics changes never accumulate drift', function()
     local first = BootSession(nil, { 1920, 1080 })
     PlaceAll(first, { [1] = { 1180, 150 }, [2] = { 1290, 150 }, [3] = { 1500, 150 } })
@@ -428,9 +410,7 @@ Test('F repeated restore and metrics changes never accumulate drift', function()
     end
 end)
 
-----------------------------------------------------------------------
 -- G. 旧 quickX/quickY（无 edge、无 viewport intent）仍可恢复
-----------------------------------------------------------------------
 Test('G legacy quickX/quickY rows still restore exactly on the same viewport', function()
     local disk = SeedStore({
         [1] = { quickPositionCustomized = true, quickX = 320, quickY = 190 },
@@ -447,9 +427,7 @@ Test('G legacy quickX/quickY rows still restore exactly on the same viewport', f
     Eq(stored.quickSavedLogicalWidth, nil, 'G: startup upgraded legacy placement format')
 end)
 
-----------------------------------------------------------------------
 -- H. 旧 logical-edge-v1（无 viewport intent）仍可恢复
-----------------------------------------------------------------------
 Test('H legacy logical-edge-v1 rows still restore without format upgrade', function()
     local disk = SeedStore({
         [1] = { quickPositionCustomized = true, quickX = 700, quickY = 300,
@@ -468,9 +446,7 @@ Test('H legacy logical-edge-v1 rows still restore without format upgrade', funct
     Eq(ctx.S.Persistence.writes, 0, 'H: legacy edge projection wrote the Store')
 end)
 
-----------------------------------------------------------------------
 -- I. 位置恢复不得改变 quick 状态
-----------------------------------------------------------------------
 Test('I placement restore never changes profile quick state or row count', function()
     local first = BootSession(nil, { 1920, 1080 })
     PlaceAll(first, { [1] = { 1180, 150 }, [2] = { 1290, 150 }, [3] = { 1500, 150 } })
@@ -491,9 +467,7 @@ Test('I placement restore never changes profile quick state or row count', funct
     Eq(Snap(second.S.Persistence.disk[STORE_ID]), before, 'I: metrics reflow mutated stored profiles')
 end)
 
-----------------------------------------------------------------------
 -- J. 碰撞恢复：多个按钮被压到同一矩形时必须分离（不得完全覆盖）
-----------------------------------------------------------------------
 Test('J identical resolved rects are separated instead of stacking', function()
     -- 历史 edge 行给出同一组锚点：三个按钮 ResolvePlacement 会得到完全相同的矩形。
     local disk = SeedStore({
@@ -513,10 +487,8 @@ Test('J identical resolved rects are separated instead of stacking', function()
     Eq(ctx.S.Persistence.writes, 0, 'J: de-overlap recovery wrote the Store')
 end)
 
-----------------------------------------------------------------------
 -- K. 原生几何被拒绝时 fail-soft：按钮仍可见、widget 仍可被重排，随后可自愈
 --    （根因回归：旧实现会隐藏按钮 + 整体 Show 失败 -> WidgetHost 把 widget 移出重排名单）
-----------------------------------------------------------------------
 Test('K native geometry rejection keeps buttons visible, reflowable and self-healing', function()
     local first = BootSession(nil, { 1920, 1080 })
     PlaceAll(first, { [1] = { 1180, 150 }, [2] = { 1290, 150 }, [3] = { 1500, 150 } })
@@ -548,9 +520,7 @@ Test('K native geometry rejection keeps buttons visible, reflowable and self-hea
     Eq(ctx.S.Persistence.writes, 0, 'K: healing wrote the Store')
 end)
 
-----------------------------------------------------------------------
 -- L. 诊断快照必须给出每个按钮的完整证据（供实机定位四类根因）
-----------------------------------------------------------------------
 Test('L on-demand diagnostics expose per-button placement and native geometry evidence', function()
     local ctx = BootSession(nil, { 1920, 1080 })
     PlaceAll(ctx, { [1] = { 1180, 150 }, [2] = { 1290, 150 }, [3] = { 1500, 150 } })

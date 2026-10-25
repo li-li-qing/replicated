@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生窗口适配器
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- V3 表现层不能直接调用原生几何 API；此适配器是 Shell 层唯一创建边界，创建后的全部状态由 DiffRenderer 在严格 v3:* 权威约束下写入。
-------------------------------------------------------------------------
+-- Shell 在此创建原生窗口；后续状态由 DiffRenderer 在 v3:* 范围内写入。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI = S.UI
@@ -84,9 +81,8 @@ function A:CreateRootWindow(logicalId, owner, requestedLayer, options)
     local hiddenOk, _, hiddenErr = UI:EnsureVisible(window, false, owner)
     if hiddenOk ~= true then return RejectRoot(window, owner, "v3 root initial hide rejected:" .. tostring(hiddenErr or "unknown")) end
 
-    -- 维护（2026-09-16，v3-root-layer-policy-3）：主 Shell 现在可由 WindowPreferences
-    -- 请求 normal/system；其它既有调用若不传 requestedLayer 仍默认 system，避免 Healer overlay
-    -- 等特殊根窗口被意外降层。Native Escape/Modal 仍由 Adapter 统一治理。
+    -- 主 Shell 可按 WindowPreferences 选择 normal/system；未传 requestedLayer 的旧调用仍默认 system，
+    -- 避免误降 Healer overlay 等特殊窗口层级。Escape/Modal 仍统一在此处理。
     local layerName = tostring(requestedLayer or "system") == "normal" and "normal" or "system"
     local layerOk, layerPresent = OptionalNativeAccepted(window, "SetUILayer", layerName)
     if layerOk ~= true then return RejectRoot(window, owner, "v3 root layer policy rejected:" .. layerName) end

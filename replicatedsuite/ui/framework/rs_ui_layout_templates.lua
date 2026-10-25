@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 组合布局模板
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 模板建在现有 HorizontalBox/VerticalBox/Border/SizeBox/Overlay 上，复用 RSUI.LayoutUtil Measure/Align/Arrange/Slot 与组件树，不新增布局权威。
--- 设计规则见 RSUI_ARCHITECTURE.md §7/§8：纯策略与类型相邻，零 Native 副作用验证小窗口/序列；仅布局/事件驱动，无 Tick/OnUpdate/轮询；
--- Measure 不写 Native，Layout 仅通过 Diff/Anchor；窄窗标签收缩/省略/列折叠须明确并计入 RSUI.metrics，不隐藏钳制。
-------------------------------------------------------------------------
+-- 组合现有面板并复用 LayoutUtil；设计规则见 RSUI_ARCHITECTURE.md §7/§8。
+-- Measure 不写 Native，Layout 经 Diff/Anchor 提交；窄窗省略、折叠须明确并计入 metrics。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -37,11 +33,8 @@ local function SetViewport(child, visible)
     elseif child.root ~= nil and type(UI.SetVisible) == "function" then UI:SetVisible(child.root, child.visible ~= false and visible == true, child.owner) end
 end
 
-------------------------------------------------------------------------
 -- FormRow 表单行。
---
 -- 单行 label | control | hint/feedback；标签占声明份额，窄行先收缩到 labelMinWidth 再压控件，不能让紧凑 HUD 标签与控件重叠。
-------------------------------------------------------------------------
 RSUI.FormRowPolicy = RSUI.FormRowPolicy or { version = 1 }
 RSUI.FormRowPolicy.version = 2
 function RSUI.FormRowPolicy:Resolve(innerWidth, gap, labelShare, labelMinWidth, controlMinWidth, hintWidth)
@@ -191,11 +184,8 @@ RSUI:RegisterType("FormRow", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- KeyValueRow 键值行。
---
 -- 标签在左、值右对齐；先测值并保留固定宽，标签填余量且省略。
-------------------------------------------------------------------------
 RSUI.KeyValueRowPolicy = RSUI.KeyValueRowPolicy or { version = 1 }
 function RSUI.KeyValueRowPolicy:Resolve(innerWidth, gap, valueMinWidth, valueMaxShare)
     innerWidth = math.max(0, tonumber(innerWidth) or 0)
@@ -257,11 +247,8 @@ RSUI:RegisterType("KeyValueRow", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- Toolbar 工具条。
---
 -- 子节点按 slot.group 分组：left 默认从左紧排，right 从右紧排，spacer 扩展填中间。
-------------------------------------------------------------------------
 RSUI.ToolbarPolicy = RSUI.ToolbarPolicy or { version = 1 }
 function RSUI.ToolbarPolicy:Partition(entries)
     local left, right, spacers = {}, {}, {}
@@ -341,11 +328,8 @@ RSUI:RegisterType("Toolbar", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- HeaderBodyFooter 表头/正文/页脚。
---
 -- 标准页面堆栈 header(auto)、body(fill)、footer(auto)；正文固定第二子节点，首/三为表头/页脚。
-------------------------------------------------------------------------
 RSUI.HeaderBodyFooterPolicy = RSUI.HeaderBodyFooterPolicy or { version = 1 }
 function RSUI.HeaderBodyFooterPolicy:Resolve(innerHeight, headerH, footerH, gap, bodyMinHeight)
     innerHeight = math.max(0, tonumber(innerHeight) or 0)
@@ -372,8 +356,7 @@ RSUI:RegisterType("HeaderBodyFooter", function(spec)
     function c:Measure(availableW, availableH)
         local p = Pad(self.spec.padding)
         local header, body, footer = self:GetZones()
-        -- 须显式双值赋值；
-        -- `local hw, hh = header and Measure(...) or 0, 0` 解析为 hw=(header and Measure(...) or 0)、hh=0，逗号优先级低于 or，静默丢高度，与 CollapsibleGroup:Measure 同陷阱。
+        -- 须显式接收两返回值；local hw, hh = header and Measure(...) or 0, 0 会令 hh 恒为 0，丢失高度。
         local hw, hh, bw, bh, fw, fh = 0, 0, 0, 0, 0, 0
         if header ~= nil then hw, hh = Measure(header.child, availableW, availableH) end
         if body ~= nil then bw, bh = Measure(body.child, availableW, availableH) end
@@ -417,11 +400,8 @@ RSUI:RegisterType("HeaderBodyFooter", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- GroupBox 分组框。
---
 -- 单一 Border 内组合标题条、内容、可选页脚；基于 Border/HeaderBodyFooter 继承完整 Measure/Arrange，区别于旧 Section。
-------------------------------------------------------------------------
 RSUI:RegisterType("GroupBox", function(spec)
     local border = UI:CreatePanel(spec.parent, spec.id, N(spec.x, 0), N(spec.y, 0), math.max(1, N(spec.width, 1)), math.max(1, N(spec.height, 1)), spec.variant or "card", { gradient = spec.gradient, accentStrip = spec.accentStrip })
     if border == nil then return nil, "groupbox_create_failed" end
@@ -437,7 +417,7 @@ RSUI:RegisterType("GroupBox", function(spec)
         if title ~= nil then title.rsUiOwner = c.owner end
     end
     c.title = title
-    c.appearanceWidgets = title and { title } or {} -- 约束（2026-10-09）：原生标题显式继承组件外观通道。
+    c.appearanceWidgets = title and { title } or {} -- 原生标题显式继承组件外观通道。
 
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)
@@ -482,11 +462,8 @@ RSUI:RegisterType("GroupBox", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- CollapsibleGroup 可折叠分组。
---
 -- 可点标题展开/折叠的 GroupBox，复用 Border/标题条加小箭头，保留完整 Measure/Arrange；仅增加表现 expanded 标志，不持业务事实。折叠内容隐藏且零高，不留空隙。
-------------------------------------------------------------------------
 RSUI.CollapsibleGroupPolicy = RSUI.CollapsibleGroupPolicy or { version = 1 }
 RSUI.CollapsibleGroupInteractionContractVersion = 2
 function RSUI.CollapsibleGroupPolicy:Resolve(innerHeight, headerH, gap, expanded)
@@ -625,11 +602,8 @@ RSUI:RegisterType("CollapsibleGroup", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- DetailRow 详情行。
---
 -- 前导标签加 1..N 个值列，各值在自身列右对齐；标签保留声明份额，其余宽均分，窄窗先缩标签。
-------------------------------------------------------------------------
 RSUI.DetailRowPolicy = RSUI.DetailRowPolicy or { version = 1 }
 function RSUI.DetailRowPolicy:Resolve(innerWidth, gap, labelShare, labelMinWidth, columnCount, columnMinWidth)
     innerWidth = math.max(0, tonumber(innerWidth) or 0)
@@ -724,14 +698,10 @@ RSUI:RegisterType("DetailRow", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- Steps 步骤指示。
---
 -- 横向步骤指示用于向导/多阶段进度，各步骤均分单元格；纯策略返回几何与 done/active/pending 状态，表现只渲染三色，无 Native 副作用。
---
 -- 模板仅几何、不绘制；步骤子节点显式提供 SetStepState(state,index) 接受 done/active/pending，Layout 仅状态变化时调用。
 -- 无方法的子节点仅排列，普通标签保持零耦合。
-------------------------------------------------------------------------
 RSUI.StepsPolicy = RSUI.StepsPolicy or { version = 1 }
 function RSUI.StepsPolicy:Resolve(innerWidth, gap, count, current)
     innerWidth = math.max(0, tonumber(innerWidth) or 0)
@@ -810,14 +780,10 @@ RSUI:RegisterType("Steps", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- SplitToolbar 分区工具条。
---
 -- 中部 spacer 可承载搜索框等 fill 组件，填左右按钮组间隙；分组复用 ToolbarPolicy:Partition，中部用 SplitViewPolicy 风格 min/fill，不再固定自动宽。
---
 -- 窄窗无法满足两侧与 spacer 最小时，Resolve 保留 spacer 下限并返回 clamped=true，矩形可与右组重叠；
 -- 这是明确降级信号，优于不可见零宽搜索框，调用方须计 RSUI.metrics.splitToolbarSpacerClamped。
-------------------------------------------------------------------------
 RSUI.SplitToolbarPolicy = RSUI.SplitToolbarPolicy or { version = 1 }
 function RSUI.SplitToolbarPolicy:Resolve(innerWidth, gap, leftWidth, rightWidth, spacerMinWidth)
     innerWidth = math.max(0, tonumber(innerWidth) or 0)

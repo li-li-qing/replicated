@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 藏宝图助手功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元保留Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection、ApiDependencies、ObservationContractVersion/MapLocationContractVersion及浮窗策略契约。
--- 地图点击唯一写调用为ShowWorldmapLocation，首参只接受核实zoneGroupId；藏宝图枚举走InventorySnapshotV3，禁止固定bagId=0或按名称过滤。
--- 共享装配来自features/life/shared/rs_life_slice_factory.lua，由toc.g保证先加载。
-------------------------------------------------------------------------
+-- 藏宝图枚举使用 InventorySnapshotV3，不能固定 bagId=0 或按本地化名称过滤。
+-- 地图定位只经显式命令调用 ShowWorldmapLocation，首参须有已核实 zoneGroupId。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P, Runtime, Demand = S.Persistence, S.FeatureRuntime, S.Demand
@@ -22,7 +18,7 @@ local RegisterStore, LoadStore, PersistLifeMutation = LF.RegisterStore, LF.LoadS
 -- 藏宝图：共享 InventorySnapshotV3、DMS 坐标与原生世界地图定位。
 local Treasure = { Id = "life_treasure", storeId = "v3.life.treasure", enabled = false, storeLoaded = false }
 local TREASURE_MAP_REQUEST_TASK = "v3_life_treasure_map_request" -- 仅显式地图请求的一次性冷却等待，不是新的扫描/重试循环。
-local SEA_TRACKING_TOKEN = "tracking:treasure_sea" -- 用户开始追踪后持有现有任务；地图关闭不结束导航，停止/切回宝图/停用时释放。
+local SEA_TRACKING_TOKEN = "tracking:treasure_sea" -- 海上/自定义坐标共用一份追踪租约；关闭页面不结束导航，停止/切回宝图/停用时释放。
 S.Features.Treasure = Treasure
 Treasure.UpdateTopic = "v3.life.treasure.updated"
 -- 罗盘帧单独通知 Presenter，禁止让 30Hz 镜头更新重建生活列表或写入存档。
@@ -35,7 +31,7 @@ Treasure.CompassStyle = { radius = 2.5, groundLift = 1.6, maxDistance = 60000,
 local COMPASS_RADIUS_MIN, COMPASS_RADIUS_MAX = 0.5, 1000
 local RENDER_DISTANCE_MIN, RENDER_DISTANCE_MAX = 1, Treasure.CompassStyle.maxDistance
 Treasure.ObservationContractVersion = 2 -- 藏宝图仍由 InventorySnapshotV3 选择物理背包；2026-10-09 加入 500ms 选中槽核对、3 秒有限补采，罗盘帧不扫描背包。
-Treasure.MapLocationContractVersion = 2 -- v2 修复旧版把 ShowWorldmapLocation 首参固定为 2 的错误假设。RU 2025-11 后签名明确要求 zoneGroupId + 全局坐标；优先使用藏宝图原生条目显式区域组，缺失时只退化到玩家当前区域组，绝不再用魔数伪造地图上下文。
+Treasure.MapLocationContractVersion = 2 -- ShowWorldmapLocation 需要区域组和全局坐标。优先取藏宝图条目中的区域组，缺失时用玩家当前区域组，不能固定传 2。
 Treasure.State = { selectedKey = nil, widgetVisible = false, widgetWindow = nil }
 InstallLifeWidgetContract(Treasure, { defaultWidth = 390, defaultHeight = 220, minWidth = 240, minHeight = 120, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
 Treasure.Authority = { version = 2, revision = 0, maps = {}, selected = nil, status = "idle", error = nil, lastMapActionError = nil, mapOpenAttempts = 0, lastMapZoneGroup = nil, lastMapZoneSource = nil }
@@ -248,9 +244,7 @@ local function TreasureText(item, precise)
     return string.format("%s %d°%d' %d\" · %s %d°%d' %d\"", lon, a, b, c, lat, d, e, f)
 end
 local function TreasureMapFromNativeItem(item, row, bagId)
-    -- RU 客户端物品名不是中文，旧 string.find(name,"藏宝图") 会把真实藏宝图全部过滤掉。
-    -- 藏宝图原生物品事实自身携带完整经纬 DMS 字段，这是本功能真正需要且与语言无关的业务证据；只有八个坐标字段均合法时才接纳，
-    -- 不根据名字、Tooltip 文案或未知 category 猜测。InventorySnapshotV3 只负责“哪个物理背包槽真实存在”，业务坐标判断仍由 Treasure Authority 所有。
+    -- 按八个合法经纬 DMS 字段识别藏宝图，不按中文名称、tooltip 或未知分类猜。Snapshot 证明物理槽存在，坐标判断归此 Feature。
     if type(item) ~= "table" then return nil end
     local worldX = Dms(item.longitudeDir, item.longitudeDeg, item.longitudeMin, item.longitudeSec, 21504)
     local worldY = Dms(item.latitudeDir, item.latitudeDeg, item.latitudeMin, item.latitudeSec, 28672)
@@ -260,9 +254,7 @@ local function TreasureMapFromNativeItem(item, row, bagId)
     local name = Text(item.name or item.itemName)
     if name == "" then name = "藏宝图 " .. tostring(slot) end -- 这里只是缺名时的 Presentation fallback，不参与识别，因此不会重新引入本地化依赖。
     return {
-        -- selectedKey 在旧版一直使用“坐标文本:槽位”。
-        -- 虽然新版 Snapshot 能读到 itemType，也绝不能把它塞进 key，否则用户升级后已保存的当前藏宝图会失配并被静默切回第一张。
-        -- itemType 仍作为事实字段保留供诊断/未来迁移使用；只有显式 schema migration 才允许改变持久身份格式。
+        -- 持久 selectedKey 保留坐标文本:槽位，不能直接加入新 itemType 使旧选择失配；身份格式改变须显式迁移。
         key = text .. ":" .. tostring(slot),
         name = name, text = TreasureText(item,true), worldX = worldX, worldY = worldY,
         -- 部分 RU 物品结构会直接附带 zoneGroupId/zoneGroupType。
@@ -274,18 +266,17 @@ end
 -- 库存组件复用同一原生坐标解析，不另起按名称识别或第二份 DMS 换算。
 function Treasure:ParseInventoryMap(item,row,bagId) return TreasureMapFromNativeItem(item,row,bagId) end
 function XA:Refresh()
+    local fixedTarget=IsSea(self.selected) or (self.selected and self.selected.kind=="custom")
     -- 静态目标与背包物品生命周期独立；海上视图中不为固定坐标反复扫描背包。
-    if self.viewKind~="maps" and (self.selected==nil or IsSea(self.selected)) then
+    if self.viewKind~="maps" and (self.selected==nil or fixedTarget) then
         self.playerX,self.playerY=ReadPlayerPosition();self:RebuildSeaRows(true);Changed("treasure_sea_refresh");return true
     end
     -- 整包扫描只在首次需求、显式刷新、目标变更或 3 秒补采时运行；失败也记录时间，避免空背包每帧重扫。
     self.lastInventoryScanAt = S.NowMs and S.NowMs() or 0
-    -- Treasure 不再直接循环 X2Bag。显式刷新/Consumer 首次进入时只构建一次 bounded Snapshot，
-    -- 由 InventorySnapshotV3 统一处理 bagId=1/0 RU 差异；随后只对 Snapshot 已确认占用的槽做一次原生详情读取以取得坐标字段。
-    -- 该二阶段读取不在 500ms 位置任务内执行，因此不会把背包扫描带入高频路径，也不会复制第二份 Inventory Authority。
+    -- 首开/显式刷新先建一次有界 InventorySnapshot，再只读已占用槽的原生坐标详情；不将背包扫描放入 500ms 位置任务。
     local snapshotService = S.Services and S.Services.InventorySnapshotV3 or nil
     if type(snapshotService) ~= "table" or type(snapshotService.BuildSnapshot) ~= "function" or type(snapshotService.ReadSlot) ~= "function" then
-        if IsSea(self.selected) then self.inventoryError="InventorySnapshotV3 不可用";return false end
+        if fixedTarget then self.inventoryError="InventorySnapshotV3 不可用";return false end
         self.status, self.error = "unavailable", "InventorySnapshotV3 不可用"
         ClearCompass("unavailable") -- 读取未知时停止旧方向指引，不把未知伪装成空背包。
         self.revision = self.revision + 1
@@ -295,7 +286,7 @@ function XA:Refresh()
     -- 首轮共享服务选择可读物理背包，此后本次需求会话锁定同一视图；成功空槽不能触发兼容回退。
     local snapshot, snapshotErr = snapshotService:BuildSnapshot("bag", { maxSlots = 240, bagId = self.inventoryBagId, allowBagFallback = self.inventoryBagId == nil })
     if type(snapshot) ~= "table" or (tonumber(snapshot.readErrors) or 0) > 0 then
-        if IsSea(self.selected) then self.inventoryError=tostring(snapshotErr or "背包读取失败");return false end
+        if fixedTarget then self.inventoryError=tostring(snapshotErr or "背包读取失败");return false end
         self.status, self.error = "unavailable", "背包快照不可用：" .. tostring(snapshotErr or "unknown")
         ClearCompass("unavailable") -- 部分读取失败不能证明最后一张图已消失，保留最后已知列表并显式降级。
         self.revision = self.revision + 1
@@ -311,7 +302,7 @@ function XA:Refresh()
             local map = TreasureMapFromNativeItem(item, row, snapshot.bagId)
             if map ~= nil then maps[#maps + 1] = map end
         elseif readOk ~= true then
-            if IsSea(self.selected) then self.inventoryError="藏宝图详情读取失败";return false end
+            if fixedTarget then self.inventoryError="藏宝图详情读取失败";return false end
             -- 第二阶段详情读取也可能失败；禁止把缺失的坐标详情当作物品已消耗。
             self.status, self.error = "unavailable", "藏宝图详情读取失败"
             ClearCompass("unavailable")
@@ -323,7 +314,7 @@ function XA:Refresh()
 
     local selected = Treasure.State.selectedKey
     local selectedMap = nil
-    local coordinate = Treasure.Inventory and self.selected and self.selected.kind~="catalog" and not IsSea(self.selected)
+    local coordinate = Treasure.Inventory and self.selected and self.selected.kind~="catalog" and not fixedTarget
         and Treasure.Inventory.CoordinateKey(self.selected) or nil
     for _, map in ipairs(maps) do
         if map.key == selected and (not coordinate or Treasure.Inventory.CoordinateKey(map)==coordinate) then selectedMap = map; break end
@@ -338,7 +329,7 @@ function XA:Refresh()
     Treasure.State.selectedKey = selected
     if self.stopped then selectedMap=nil end
     self.maps=maps
-    if not IsSea(self.selected) and not (self.selected and self.selected.kind=="catalog") then self.selected=selectedMap end
+    if not fixedTarget and not (self.selected and self.selected.kind=="catalog") then self.selected=selectedMap end
     -- 分组必须先于 Publish；否则静止时的新增/消耗只更新旧行，页面要等玩家移动才看到新数量。
     if Treasure.Inventory then
         Treasure.Inventory:RebuildGroups()
@@ -357,6 +348,8 @@ function XA:CheckInventory()
     -- 500ms 只核对选中图的真实 bagId/slot；空槽不尝试另一背包视图，防止已消耗图被同槽旧视图复活。
     -- 切槽/排序/消耗时重新取共享快照，3 秒整包补采用于发现新增图和非选中图变化；罗盘热路径永远不扫包。
     local now = S.NowMs and S.NowMs() or 0
+    -- 自定义坐标没有物品槽；只在显式刷新时更新背包列表，位置任务不能拿 nil slot 查包。
+    if self.selected and self.selected.kind=="custom" then return true end
     if self.viewKind~="maps" and self.selected==nil then return true end
     if IsSea(self.selected) then
         if self.viewKind=="maps" and now-(self.lastInventoryScanAt or 0)>=3000 then return self:Refresh() end
@@ -647,6 +640,7 @@ function Treasure:Disable(reason)
     -- 停用即使 Demand 已为空，也要幂等撤销两条任务及所有世界标记，不能残留指向旧藏宝图的箭头。
     local ok, err = self.Demand:Clear(reason or "treasure_disable"); if ok ~= true then return false, err end
     self.trackingConsumerHeld=false
+    if XA.selected and XA.selected.kind=="custom" then XA.selected,XA.stopped=nil,true end
     if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(TREASURE_POSITION_TASK); S.Scheduler:RemoveTask(TREASURE_COMPASS_TASK) end
     self.enabled = false
     XA.compassWorldPoints, XA.compassWorldPointPool, XA.compassGeometry = nil, nil, nil
@@ -680,6 +674,44 @@ function Treasure:GetHealth()
             lastRequest=Copy(XA.lastMapRequest),lastError=XA.lastMapActionError},
         inventoryError=XA.inventoryError,lastMapActionError=XA.lastMapActionError,mapActionPending=XA.pendingMapKey~=nil}
 end
+function Treasure:ReleasePointTracking()
+    if not self.trackingConsumerHeld then return true end
+    local released,why=self:ReleaseConsumer(SEA_TRACKING_TOKEN)
+    if released~=true then return false,why end
+    self.trackingConsumerHeld=false;return true
+end
+function Treasure:TrackCustomPoint(longitude,lonMinutes,lonSeconds,latitude,latMinutes,latSeconds)
+    if not self.enabled then return false,"寻宝功能已关闭" end
+    if self.Inventory and self.Inventory.job then return false,"请先停止取图，再追踪自定义点" end
+    local function Axis(prefix,minutes,seconds,positive,negative,maximum,label,offset)
+        prefix=tostring(prefix or ""):match("^%s*(.-)%s*$"):upper()
+        local dir,degree=prefix:match("^([A-Z])(%d+)$");degree=tonumber(degree)
+        if (dir~=positive and dir~=negative) or not degree or degree>maximum then
+            return nil,label.."请选择"..positive.."/"..negative.."和合法度数"
+        end
+        if seconds==nil or tostring(seconds):match("^%s*$") then seconds=0 end
+        minutes,seconds=Number(minutes),Number(seconds)
+        if not minutes or minutes~=minutes or minutes<0 or minutes>=60 then return nil,label.."的分须为0～60之间的数字（不含60）" end
+        if not seconds or seconds~=seconds or seconds<0 or seconds>=60 then return nil,label.."的秒须为0～60之间的数字（不含60）" end
+        if degree==maximum and (minutes>0 or seconds>0) then return nil,label.."超出度数范围" end
+        return {world=Dms(dir,degree,minutes,seconds,offset),text=string.format("%s %d°%.12g′%.12g″",dir,degree,minutes,seconds)}
+    end
+    local lon,why=Axis(longitude,lonMinutes,lonSeconds,"E","W",180,"经度",21504)
+    if not lon then return false,why end
+    local lat,err=Axis(latitude,latMinutes,latSeconds,"N","S",90,"纬度",28672)
+    if not lat then return false,err end
+    if not self.trackingConsumerHeld then
+        local acquired,acquireErr=self:AcquireConsumer(SEA_TRACKING_TOKEN)
+        if acquired~=true then return false,acquireErr end
+        self.trackingConsumerHeld=true
+    end
+    self:CancelPendingMapAction()
+    XA.selected={key=string.format("custom:%.17g:%.17g",lon.world,lat.world),kind="custom",name="自定义点",
+        text=lon.text.." · "..lat.text,worldX=lon.world,worldY=lat.world,direction="--"}
+    XA.stopped=false;XA.status,XA.error="ready",nil
+    XA.lastMapActionError,XA.lastMapZoneGroup,XA.lastMapZoneSource=nil,nil,nil
+    XA:UpdatePosition();Changed("treasure_custom_track");return true
+end
 function Treasure:Select(key)
     if not self.enabled then return false,"寻宝功能已关闭" end
     local point=Sea and Sea:Get(key)
@@ -698,11 +730,8 @@ function Treasure:Select(key)
         if map.key == key then
             local persisted, persistErr = PersistLifeMutation(self, "treasure_select", function(state) state.selectedKey = key; return true end)
             if persisted ~= true then return false, persistErr end
-            if self.trackingConsumerHeld then
-                local released,why=self:ReleaseConsumer(SEA_TRACKING_TOKEN)
-                if released~=true then return false,why end
-                self.trackingConsumerHeld=false
-            end
+            local released,why=self:ReleasePointTracking()
+            if released~=true then return false,why end
             XA.stopped=false
             if XA.pendingMapKey ~= nil and XA.pendingMapKey ~= tostring(map.key) then self:CancelPendingMapAction() end -- 用户换图取消等待，换回原图也不能复活旧点击。
             XA.selected = map; XA.status,XA.error="ready",nil;XA:UpdatePosition(); return true
@@ -800,18 +829,14 @@ function Treasure:ResetRound()
 end
 function Treasure:StopTracking()
     if not self.enabled then return false,"寻宝功能已关闭" end
-    if self.trackingConsumerHeld then
-        local released,why=self:ReleaseConsumer(SEA_TRACKING_TOKEN)
-        if released~=true then return false,why end
-        self.trackingConsumerHeld=false
-    end
+    local released,why=self:ReleasePointTracking()
+    if released~=true then return false,why end
     XA.selected,XA.stopped=nil,true
     self:CancelPendingMapAction();ClearCompass("tracking_stopped");Changed("treasure_stop");return true
 end
 local function ResolveTreasureMapZoneGroup(map)
-    -- 参考 TreasureMapHunter 的真实调用是 targetZone + global x/y，
-    -- 因此先信藏宝图条目自己的 zoneGroup；没有时只允许用玩家当前 zoneGroup。后者只能保证“玩家已进入藏宝图所在区域”时精确定位，
-    -- 但至少不会像旧魔数 2 那样打开地图却静默落到错误区域。跨区域一键定位若要完全可靠，后续必须补结构化 Treasure Location DB，不能猜。
+    -- TreasureMapHunter 的调用使用 targetZone+global x/y。优先信条目 zoneGroup，缺失时仅回退玩家当前区域。
+    -- 回退只在玩家已到正确区域时可靠；跨区定位须有结构化位置库，不能猜魔数。
     local explicit = type(map) == "table" and NormalizeTreasureZoneGroup(map.zoneGroupId) or nil
     if IsSea(map) then
         if explicit~=nil then return explicit,"sea_catalog" end
@@ -830,8 +855,7 @@ function Treasure:CancelPendingMapAction()
     XA.pendingMapKey = nil
 end
 function Treasure:ShowSelectedOnMap(deferred)
-    -- 地图打开属于显式用户动作，只能从 Command 进入并经 Capability Gate；
-    -- UpdatePosition 不发起定位；Scheduler 只执行 Command 已授权的一次冷却等待。失败只记录诊断并保留当前选择/距离追踪，不清 Store、不切换藏宝图，避免 UI 能力故障污染 Domain Authority。
+    -- 地图打开只由显式 Command 授权，经能力门执行；Scheduler 仅等待该次冷却。失败保留当前选择与距离跟踪，不清存档或换图。
     if self.enabled ~= true then return false, "寻宝功能已关闭" end -- 即时和延后请求都遵守同一个 Feature 生命周期，不靠 UI 可见性判断授权。
     local map = XA.selected
     if type(map) ~= "table" then return false, "请先选择追踪目标" end
@@ -932,6 +956,7 @@ Treasure.Commands = {
     SetViewKind=function(_,kind)return Treasure:SetViewKind(kind)end,
     SetRegion=function(_,region)return Treasure:SetRegion(region)end,
     TrackNearest=function()return Treasure:TrackNearest()end,
+    TrackCustomPoint=function(_,...)return Treasure:TrackCustomPoint(...)end,
     VisitAndNext=function(_,mark)return Treasure:VisitAndNext(mark)end,
     UndoVisit=function()return Treasure:UndoVisit()end,
     ResetRound=function()return Treasure:ResetRound()end,

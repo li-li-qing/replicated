@@ -1,20 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生头标与血条外观业务权威
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 原因：18.272 RU 实机已确认 name_tag_hp_* 能实时改变血条，但 over_head_marker_width /
--- over_head_marker_height / over_head_marker_offset 即使 SetConsoleVariable 成功也没有视觉效果。
--- console_vars.lua 同时提供 name_tag_mark_size_ratio（help: name tag mark scale），它与
--- X2Unit:SetOverHeadMarker 所产生的头顶队伍标记处于 NameTag 标记层，因此改为用该“比例”变量作为
--- 头顶标记大小的唯一 Native Authority；旧 over_head_marker_* 不再写入，避免继续制造无效设置。
--- Authority / 数据流：Presentation -> Feature.Commands -> 本 Authority -> Capability Registry -> X2Option。
--- 页面和 Feature 不直接访问 X2Option。无 Tick/轮询；仅 Enable、显式设置、ENTERED_WORLD、Disable 写入。
--- 兼容边界：v3.nameplate_visuals Store 不升 schema；历史 markerWidth/markerHeight/markerOffset
--- 字段继续原样保存，只把 markerWidth/46 解释为新的 marker scale（预设仍会同步写 width/height）。
--- 这样 18.270-18.272 用户不会因为 canonical shape 改动触发 Persistence 指纹保护。Native 基线仍按
--- “可读值 -> system.cfg -> 已知默认”解析，关闭恢复启用前值；失败事务继续回滚。
-------------------------------------------------------------------------
+-- RU 实测 name_tag_hp_* 可改血条，over_head_marker_width/height/offset 写成功却无视觉效果。头标大小使用 name_tag_mark_size_ratio。
+-- Commands 经此处能力门访问 X2Option，仅 Enable、显式设置、ENTERED_WORLD、Disable 写入。
+-- 旧 markerWidth/Height/Offset 字段保留 schema1 形状，markerWidth/46 转比例。启用前基线按可读值→system.cfg→默认解析，关闭恢复，失败回滚。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}
@@ -74,10 +63,7 @@ end
 
 local MARKER_BASE_WIDTH = 46
 local SPECS = {
-    -- 18.272 实机已证明 over_head_marker_width/height/offset
-    -- 不是当前 RU 构建可实时控制的头顶队伍标记尺寸入口。name_tag_mark_size_ratio 的客户端 help
-    -- 明确为 "name tag mark scale"，且 SetOverHeadMarker 属于 NameTag/OverHeadMark 渲染链，因此这里只
-    -- 使用 ratio。resolve 同时兼容 Authority 自己的 markerScale 快照与 schema1 持久设置的 markerWidth。
+    -- 只用 name_tag_mark_size_ratio，旧 over_head_marker_* 在 RU 无实时效果。兼容 markerScale 快照与 schema1 markerWidth 编码。
     { key = "markerScale", cvar = "name_tag_mark_size_ratio", default = 1, resolve = function(settings)
         local direct = type(settings) == "table" and NativeNumber(settings.markerScale) or nil
         if direct ~= nil then return direct end
@@ -93,10 +79,8 @@ local SPECS = {
 }
 A.Specs = SPECS
 
--- RU参考的原生飘字使用 combatTextFrame.combatTexts
--- 和 combatTextLocale.fontSize，但主脚本变量未必暴露给 addon。只在显式模块诊断时查看这两个已知入口，
--- 最多30个控件；不调用控件方法/CVar、不扫描全局、不修改字体或动画，也不把方法存在视为可用性验证。
--- 数据所有者仍为客户端；本 Authority 只返回 primitive 候选证据，原生写入路径与 schema1 保持不变。
+-- 显式诊断只查看已知 combatTextFrame.combatTexts/combatTextLocale.fontSize，最多 30 控件；变量未必向 addon 暴露。
+-- 不调用方法/CVar、不扫全局或修改字体，仅返回标量证据，方法存在不代表可用。
 local function CombatTextMember(value, key)
     if type(value) ~= "table" and type(value) ~= "userdata" then return nil end
     local ok, member = pcall(function() return value[key] end)

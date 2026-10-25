@@ -1,15 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗事件总线
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 战斗事件总线为 DeathReview/DPS/Healer/Boss 等提供唯一原生战斗事件权威。私有隐藏 Widget 的 COMBAT_MSG 提供
--- 可靠 SELF 端点；只有消费者请求 scope="all" 才启用 UI/UIParent 全局路由，RU 实机团队行可能仅在该处。全局路
--- 由过滤 SELF，保持切片互斥；仅跨不同宿主配对去重，同宿主相同重复行不抑制。只归一化
--- kind/category/amount/raw 原生事实，不推导阵营、PVP/PVE、友敌、排名或治疗结论；原始单位 ID 仅通过
--- UnitIdentityV3 已验证名称绑定 source/target。没有 Tick/OnUpdate；租约存在才持有原生处理器，缺显式释放 API
--- 的版本采用隐藏停放兼容模式，配代际/运行 guard。
-------------------------------------------------------------------------
+-- 私有 COMBAT_MSG 提供 SELF，只有 scope=all 消费者才启用 UI/UIParent 全局桥；全局滤去 SELF，两个切片互斥。
+-- 跨宿主按出现次数配对去重，同宿主重复行保留。这里只归一原生事实，不判阵营、PVP/PVE 或排名。
+-- raw 单位 ID 须经 UnitIdentityV3 验证名称才能绑定。租约存在才持有处理器，无释放 API 时隐藏停放并以代际隔离。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -115,8 +109,7 @@ local function DiagnosticScalar(value)
     while finish>0 and (value:byte(finish+1) or 0)>=128 and (value:byte(finish+1) or 0)<192 do finish=finish-1 end
     return value:sub(1,finish).."<clipped>"
 end
--- （2026-10-08）原生死亡/归属入口先留证据，再交消费者过滤。仅低频通知分配标量行，
--- 64槽环形覆盖是 O(1)，不持有原生 payload；跨停用保留本代现场，普通伤害不能写入此环。
+-- 原生死亡/归属入口先留 64 槽标量证据，再交消费者过滤；普通伤害不入环，停用后保留本代现场。
 local noticeEvidence={rows={},next=1,count=0,evicted=0}
 local function RecordNoticeEvidence(fact,reason)
     local row={at=fact.receivedAt,sequence=fact.sequence,kind=fact.kind,reason=reason,transport=fact.transport,
@@ -136,8 +129,7 @@ local function CopyNoticeEvidence()
     end
     return rows
 end
--- （2026-10-06）未知 Native 类型可能藏着漏记的死亡 ABI，不能只导出 unknownKinds。
--- 每种类型仅首次保留一份标量样本（最多32种），后续只加计数；已识别伤害无额外快照。
+-- 未知 Native 类型可能含死亡 ABI：每种仅留首份标量样本，最多 32 种，后续只计数。
 function C:_RecordUnrecognizedFact(fact)
     local key=tostring(DiagnosticScalar(fact.rawEventType) or "")
     local row=self.unknownEvidence[key]
@@ -353,7 +345,7 @@ function C:_StartKillGlobal()
 end
 
 function C:_ReleaseKillGlobal()
-    -- Epoch 先撤权，保证同代 Stop/Start 后保存的旧业务闭包也不能复活。
+    -- Epoch 先撤销执行权，防止同代 Stop/Start 复活旧闭包。
     self.killGlobalEpoch = self.killGlobalEpoch + 1
     self.killGlobalStarted, self.killGlobalActive = false, false
     local events = S.Events
@@ -506,20 +498,18 @@ function C:_Stop()
     if globalOk ~= true then self.stopFailures = self.stopFailures + 1; return false, globalErr end
     if privateOk ~= true then self.stopFailures = self.stopFailures + 1; return false, privateErr end
     self.running = false
-    -- 维护：全局 Clear 也会经此处归还全部租约，必须同步撤销回调执行权；失败路径仍由 Demand 回滚保留原订阅。
+    -- 全局 Clear 也会经此处归还全部租约，必须同步撤销回调执行权；失败路径仍由 Demand 回滚保留原订阅。
     self:_RevokeSubscribers()
     return true
 end
 
--- 强制使总线惰性但不假称原生释放成功。正常 Clear 失败（如释放 API 存在但返回 false）时 Demand 可走
--- ForceQuiesce，消费者投影仍被丢弃，因此业务回调必须停止，即使宿主未解绑。原生闭包先检查独立于租约的
--- running/globalActive 保护条件。
+-- Clear 失败后 ForceQuiesce 仍须停止业务回调；宿主可能未解绑，原生闭包先查独立 running/globalActive。
 function C:_MarkInert()
     self:_ReleaseKillGlobal()
     self.forcedInert = self.forcedInert + 1
     self.running = false
     self.globalActive = false
-    -- 维护：原生解绑失败仍须撤销旧 Owner；后来新消费者重启不能唤醒被强制清空租约的回调。
+    -- 原生解绑失败仍须撤销旧 Owner；后来新消费者重启不能唤醒被强制清空租约的回调。
     self:_RevokeSubscribers()
     self.globalHostCoverage = { UI = false, UIParent = false }
     self.pairDedup, self.pairOrder, self.pairHead, self.pairPendingCount = {}, {}, 1, 0
@@ -538,8 +528,7 @@ local function TransportIsPrivate(transport)
     return transport == "private" or transport:sub(1, 8) == "private:" or transport == "death_notice"
 end
 
--- scope 是订阅契约：self 仅私有可靠 SELF 事实，all 为私有加全局切片。过滤确保任一 DPS 类消费者启用全局桥后
--- ，低成本 self 消费者不会承担全部 all 行。暴露方法供验收框架无原生宿主断言。
+-- self 只收私有 SELF，all 收私有加全局切片；全局桥启用后不能让 self 消费者也承担全部行。
 function C:AcceptsTransport(options, transport)
     if type(options) ~= "table" then return true end
     if options.scope == "all" then return true end
@@ -673,8 +662,7 @@ function C:_IsCrossHostDuplicate(hostLabel, signature, now)
         self.pairDedup[signature] = entry
     end
 
-    -- 每个逻辑行与另一个宿主的一次出现精确配对；单槽 map 会丢重复次数，让 UI,UI,UIParent,UIParent 的第四行
-    -- 泄漏为重复。各宿主 FIFO token 保留同宿主重复命中，跨宿主镜像仍按 1:1 去重。
+    -- 跨宿主用 FIFO token 逐次配对；单槽 map 会漏掉 UI,UI,UIParent,UIParent 的第四条镜像。
     for otherHost, queue in pairs(entry.hosts) do
         if otherHost ~= hostLabel then
             local token = PopMatchingToken(self, queue, now)
@@ -751,7 +739,7 @@ end
 
 function C:_FlushPreIdentityJournal(now)
     if Identity == nil or type(Identity.IsPlayerIdentityReady) ~= "function" or Identity:IsPlayerIdentityReady() ~= true then return false, "identity_not_ready" end
-    -- 维护：身份就绪后的普通全局行也会经过此处；空 journal 保留已有容器，避免镜像行逐条制造空表垃圾。
+    -- 身份就绪后的普通全局行也会经过此处；空 journal 保留已有容器，避免镜像行逐条制造空表垃圾。
     if #self.journal == 0 then self.journalHead = 1; return true, 0 end
     now = tonumber(now) or NowMs()
     self:_DropExpiredJournal(now)
@@ -883,7 +871,7 @@ function C:_CompactSubscriberOrder()
 end
 
 function C:_RevokeSubscribers()
-    -- 维护：派发中只标记旧行无效，保留快照下标；当前回调返回后跳过旧尾部，再统一压缩。
+    -- 派发中只标记旧行无效，保留快照下标；当前回调返回后跳过旧尾部，再统一压缩。
     -- 清空 owner 映射使同一 Owner 重新获取时创建新行，不复用已撤销的执行权。
     for _, row in pairs(self.subscribers) do
         row.active = false
@@ -893,7 +881,7 @@ function C:_RevokeSubscribers()
     self:_CompactSubscriberOrder()
 end
 
--- 维护：每层同步派发独占一个 xpcall 工作帧，保留原有局部事实快照和逐订阅者恢复边界。
+-- 每层同步派发独占一个 xpcall 工作帧，保留原有局部事实快照和逐订阅者恢复边界。
 -- 常驻最多八层；更深重入使用临时帧，不能无限扩大常驻空间，也不能复用外层执行中的借用事实。
 local callbackFrames, CALLBACK_FRAME_LIMIT = {}, 8
 local function AcquireCallbackFrame(depth)
@@ -971,8 +959,7 @@ function C:_DispatchFact(fact)
 end
 
 function C:_OnCombatRaw(transport, unitId, eventType, sourceName, targetName, abilityId, abilityName, damageType, effectType, isActive, more, more2, more3, more4, more5, receivedAt)
-    -- 独立于租约的门禁：原生闭包先查 running，此处第二道隔离覆盖 journal 回放、强制静止和停放宿主等内部路径
-    -- ；已释放租约的消费者绝不收到战斗工作。
+    -- 此处再查 running，覆盖 journal 回放和停放宿主等内部入口，释放租约后不能继续派发。
     if self.running ~= true then return 0 end
     local fact = self:_NormalizeCombatFact(transport, unitId, eventType, sourceName, targetName, abilityId, abilityName, damageType, effectType, isActive, more, more2, more3, more4, more5, receivedAt)
     return self:_DispatchFact(fact)
@@ -994,7 +981,7 @@ function C:_OnDeathNotice(info1, info2, info3, info4, info5)
         rawNotice4 = info4,
         rawNotice5 = info5,
     }
-    RecordNoticeEvidence(fact,"normalized") -- 即使无自身伤害账本，也要证明原生姓名死亡通知曾到达。
+    RecordNoticeEvidence(fact,"normalized")
     return self:_DispatchFact(fact)
 end
 
@@ -1119,11 +1106,11 @@ end
 function C:Unsubscribe(owner)
     if owner == nil then return false, "owner required" end
     local row = self.subscribers[owner]
-    -- 维护：总线全局清理已撤销回调时，上层可幂等确认释放；有记录的失败仍保留并返回真实错误。
+    -- 总线全局清理已撤销回调时，上层可幂等确认释放；有记录的失败仍保留并返回真实错误。
     if row == nil then return true end
     local ok, err = self.demand:Release(row.token, "combat_unsubscribe")
     if ok ~= true then return false, err end
-    -- 维护：最后消费者成功 Stop 已撤销整组订阅，不能重复扣计数或误删后来替换的行。
+    -- 最后消费者成功 Stop 已撤销整组订阅，不能重复扣计数或误删后来替换的行。
     if self.subscribers[owner] == row then
         self.subscribers[owner] = nil
         row.active = false

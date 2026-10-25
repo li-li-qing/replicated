@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 副本浏览功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 页面范围功能，仅初始化时导入X2BattleField；InstanceCatalogV3仅可见消费端存在时运行。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Runtime = S.FeatureRuntime

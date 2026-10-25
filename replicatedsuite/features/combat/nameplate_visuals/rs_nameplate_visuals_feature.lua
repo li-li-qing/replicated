@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生头标与血条外观功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- Feature 只拥有生命周期、设置事务与 ENTERED_WORLD 重新应用；Native 读写属于 Authority，
 -- 持久化属于 Store，Presentation 只能走 Commands。该功能没有 Scheduler/Tick，关闭后仅保留
 -- Durable 设置，不保留事件监听、Native baseline 或其它运行时资源。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Runtime, P = S.FeatureRuntime, S.Persistence
@@ -49,7 +46,7 @@ end
 
 function F:Enable(reason)
     if self.enabled == true then return true end
-    -- 维护：上次失败可能尚欠 Native 恢复，baseline 是该义务的唯一凭证；先清理再捕获新基线，
+    -- 上次失败可能尚欠 Native 恢复，baseline 是该义务的唯一凭证；先清理再捕获新基线，
     -- 否则直接调用 Feature 的重试可能把插件残留值当作玩家原值。Runtime 入口也沿用同一 Disable。
     if self.Authority.baseline ~= nil then
         local cleaned, cleanupErr = self:Disable("startup_failure")
@@ -68,7 +65,7 @@ function F:Enable(reason)
     self.lastLifecycleStage = "enable_apply_native"
     local applied, applyErr = self.Authority:ApplySettings(self:GetSettings(), reason or "feature_enable")
     if applied ~= true then
-        -- 维护：Apply 的逐项回滚也可能被 Native 拒绝；在恢复确认前保留原始 baseline，供 Core 清理/关闭重试。
+        -- Apply 的逐项回滚也可能被 Native 拒绝；在恢复确认前保留原始 baseline，供 Core 清理/关闭重试。
         local restored, restoreErr = self.Authority:RestoreBaseline("enable_apply_rollback")
         if restored ~= true then return FailLifecycle("enable_apply_rollback_failed",
             tostring(applyErr) .. "；Native 回滚同时失败：" .. tostring(restoreErr)) end
@@ -76,9 +73,7 @@ function F:Enable(reason)
         return FailLifecycle("enable_apply_failed", applyErr)
     end
 
-    -- GitHub 上 RU 社区 reloadcfg 明确选择 ENTERED_WORLD 重读 system.cfg；本功能按同一
-    -- 生命周期边沿重新声明自己的 CVar，而不是用轮询对抗其它设置。事件订阅失败时先恢复启用前值
-    -- 再拒绝 Enable，保持事务性；是否在所有 RU 场景都需要重写仍留给实机验收。
+    -- 沿 RU 社区 reloadcfg 的 ENTERED_WORLD 边沿重新应用 CVar。订阅失败先恢复启用前值再拒绝 Enable；全场景效果仍须实机验收。
     S.Events:BindOwner(self, self.Id)
     local subscribed = S.Events:Subscribe("ENTERED_WORLD", self, function()
         if F.enabled ~= true then return end
@@ -89,7 +84,7 @@ function F:Enable(reason)
     end)
     if subscribed ~= true then
         local restored, restoreErr = self.Authority:RestoreBaseline("enable_subscribe_rollback")
-        -- 维护：恢复失败不能释放旧值，否则 enabled=false 的后续关闭将再也无法撤销本次 Native 写入。
+        -- 恢复失败不能释放旧值，否则 enabled=false 的后续关闭将再也无法撤销本次 Native 写入。
         if restored ~= true then return FailLifecycle("enable_subscribe_rollback_failed", "ENTERED_WORLD 订阅失败；Native 回滚同时失败：" .. tostring(restoreErr)) end
         self.Authority:ReleaseBaseline()
         return FailLifecycle("enable_subscribe_failed", "ENTERED_WORLD 订阅失败")
@@ -103,7 +98,7 @@ end
 
 function F:Disable(reason)
     self.lifecycleMetrics.disableAttempts = (tonumber(self.lifecycleMetrics.disableAttempts) or 0) + 1
-    -- 维护：启用未完成时 enabled 可仍是 false；只要旧值凭证还在，就必须实际恢复再释放，不能提前报清理成功。
+    -- 启用未完成时 enabled 可仍是 false；只要旧值凭证还在，就必须实际恢复再释放，不能提前报清理成功。
     if self.enabled ~= true and self.Authority.baseline == nil then
         self.lastLifecycleStage = "disabled"
         return true
@@ -152,9 +147,7 @@ function F:GetProjection()
     }
 end
 
--- Store schema1 不新增 markerScale 字段；页面与诊断
--- 统一从历史 markerWidth 推导百分比，避免 schema/canonical 变化。46 是 console_vars dump 中旧基准宽度，
--- 只作为持久兼容编码，不再写 over_head_marker_width。
+-- schema1 保留 markerWidth/46 的百分比编码，46 来自 console_vars 旧基准；不新增 markerScale 或写无效旧 CVar。
 function F:GetMarkerPercent()
     local settings = self:GetSettings()
     local width = tonumber(settings and settings.markerWidth) or tonumber(self.Defaults and self.Defaults.markerWidth) or 46
@@ -259,9 +252,7 @@ function F.Commands:Reapply()
     return ok, err
 end
 
--- Provider 只读取现有 Lua/Store/API
--- 对象状态，不触发 Initialize、LoadStore 或 Native CVar。即使启动按钮在 FeatureRuntime 前置检查阶段
--- 被拒绝，模块诊断也能区分“按钮没进 Feature”与“Feature 已开始但 Native 阶段失败”。
+-- Provider 只读现有对象状态，不 Initialize/LoadStore 或读 CVar，让启动前置拒绝与 Native 阶段失败都可诊断。
 if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
     -- 用户希望可行时将飘字大小放在本页；先取原生句柄证据，不增加无效设置。
     S.ModuleDiagnosticsHub:RegisterProvider(F.Id, "native_combat_text_access", function()

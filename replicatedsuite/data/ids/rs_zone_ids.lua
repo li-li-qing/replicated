@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 地区身份注册
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 地区身份归共享 GameDataRegistry。稳定贸易元数据（如历史货包品质家族）同步到 StaticDataV2，Service 不应维护私有地区魔数表。
--- 这些 ID 来源于现有 RU 人工整理的贸易数据；独立复核前不得标记 database_verified。
-------------------------------------------------------------------------
+-- 共用地区身份与静态贸易属性，Service 不另存地区魔数表。
+-- 来源为现有 RU 整理数据，独立复核前不标 database_verified。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Registry = S.GameDataRegistry

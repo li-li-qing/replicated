@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-# ---------------------------------------------------------------------
 # Replicated Suite · 债券生产排序器提取运行测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 """在最小 Lua 宿主中执行生产 Bonds 的行排序比较器。
 
 从生产打包文件提取比较器函数体，不能在测试数据中复制排序算法。
@@ -15,7 +13,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-# 中文维护注释（2026-09-28，Phase 2 Step 3）：life_bonds 已搬到独立源码单元，探针随之重定向。
+# life_bonds 已搬到独立源码单元，探针随之重定向。
 BONDS = (ROOT / "features/life/bonds/rs_bonds_feature.lua").read_text(encoding="utf-8")
 
 match = re.search(

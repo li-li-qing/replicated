@@ -1,10 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 角色消费者绑定回归
 -- 作者：Replicated
 -- QQ群：1104129461
--- 中文维护：真实 Core/Transport 与消费者，Native 身份及磁盘为内存替身；同代切角不能沿用上一角色的 loaded 或收入基线。
+-- 真实 Core/Transport 与消费者，Native 身份及磁盘为内存替身；同代切角不能沿用上一角色的 loaded 或收入基线。
 -- 开发期离线测试，不进入运行时 TOC，也不访问真实 UDF。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Copy(v)if type(v)~='table'then return v end;local o={};for k,x in pairs(v)do o[k]=Copy(x)end;return o end
 local function Test(name,fn)local ok,e=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS character-feature '..name)else failed=failed+1;print('FAIL character-feature '..name..': '..tostring(e))end end

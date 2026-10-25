@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 个人战斗历史
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 个人长期统计。每日摘要 + 全期累计；实时排行的 reset 永不删除此 Store。
 -- 从同一个击杀指标接收明确归属/荣誉补记增量，不监听第二套原生事件。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local F = S.Features and S.Features.CombatAnalytics

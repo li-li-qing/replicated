@@ -11,6 +11,7 @@ function P:RestoreUsage() -- 中文维护：热重载沿用同会话单调时钟
     local previous = self.previousUsage; self.previousUsage = nil -- 中文维护：读取一次后解除旧实例引用，不能继续执行旧代次回调。
     if type(previous) ~= "table" or not self.Number(previous.now) or previous.now < 0 or type(previous.usage) ~= "table" then return end -- 中文维护：未知旧状态不生成Ready或伪造剩余秒数。
     self.now = previous.now -- 中文维护：与旧限制期限同一单调时间域；不调用未验证游戏时钟接口。
+    local resumeAt = self.Number(previous.reviveResumeAt); self.reviveResumeAt = self.reviveProtected and resumeAt and resumeAt >= 0 and resumeAt or nil -- 中文维护：死亡兜底与当前恢复时钟绑定，热重载沿用原20秒截止点；未知旧版本由保护层补一次有限期限，不持久化到角色存档。
     for i = 1, 3 do -- 中文维护：只传递当前相同固定映射的三个有限标量状态。
         local old, row = previous.usage[i], self.rows[i] -- 中文维护：持久化恢复与内置映射完成后再核对身份。
         if type(old) == "table" and row.verified and old.itemId == row.itemId and old.skillId == row.skillId and self.Number(old.blockedUntil) then -- 中文维护：不同技能不能借旧证据，NaN等时钟值拒绝传递。

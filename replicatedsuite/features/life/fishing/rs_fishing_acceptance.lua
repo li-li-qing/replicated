@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 钓鱼助手契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 仅验证观察契约：实现存在、ObservationContractVersion≥1、UpdateTopic非空string、Demand存在。
--- Auto-R热键事务仍由v3_feature_truth_contract负责，禁止混入此验收；失败为blocker，由sequence_harness报告。
--- 架构审计不跳过注释，说明禁止添加业务表加字段的点号引用。
-------------------------------------------------------------------------
+-- 验证观察版本、更新主题和 Demand；热键事务另行检查，所有 case 均不执行 Native 写键。失败由 sequence_harness 报告。
+
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
@@ -15,7 +11,7 @@ local F = S.Features and S.Features.Fishing or nil
 
 local function Fail(message) return false, tostring(message or "fishing_observation_failed") end
 
--- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 运行时只做只读诊断；完整序列测试仅离线执行。
 G:RegisterSequenceCase("v3_life_fishing_observation_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.ObservationContractVersion) or 0) < 1 then return Fail("observation_contract_version") end
@@ -28,13 +24,8 @@ G:RegisterSequenceCase("v3_life_fishing_observation_contract", function()
     return true
 end, { runtime = true })
 
--- Auto-R 事务契约。
--- 原先由 core/rs_foundation_gate.lua 的 v3_feature_truth_contract 硬编码点名 Fishing 检查；
--- 搬到这里之后 Core 不再认识具体业务 Feature。判定与旧版**逐条等价**：
---   * Auto-R 不得被硬阻塞（旧 gate 曾把“必须硬阻塞”当真值，导致真实事务恢复后仍被基础验收判失败）
---   * Feature 侧热键契约 >= v3；独立热键事务服务的 TransactionContractVersion >= v3
--- 兼容边界不变：这里只验证契约存在，**不执行任何 Native 热键读写**；RU 写键行为仍由
--- FishingHotkeyV3 的 capability gate / 战斗门 / 持久恢复快照保护。
+-- 只检查 Auto-R 未被硬阻塞、Feature 热键契约>=3 和独立事务服务契约>=3，不执行 Native 热键读写。
+-- 实机写键仍须经过能力门、战斗门、持久恢复快照与 readback。
 G:RegisterSequenceCase("v3_life_fishing_auto_r_transaction_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if F.HotkeyRuntimeBlocked == true then return Fail("auto_r_hard_blocked") end

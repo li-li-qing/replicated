@@ -1,18 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能方案快捷按钮
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 每个用户方案对应一个紧凑可拖动屏幕按钮；Feature 持有方案数据/生命周期意图，组件仅投影并转发点击。
--- 约束（feature-profile-quick-relog-1）：
--- * 恢复优先级：source-viewport intent（logical-free-v2，同分辨率精确、跨分辨率按中心比例
--- 重投影）> 旧 logical-edge-v1 边锚点 > 旧 quickX/quickY 绝对坐标 > 默认出生点。
--- 旧存档只在内存里做兼容投影，加载/重排阶段绝不写 Store、绝不升级格式。
--- * 组级去重叠：同一 screen_buttons 组先各自 ResolvePlacement，再交给 Layout 纯 solver
--- 消解重叠；无重叠时结果逐像素不变。
--- * 可见性 fail-soft：原生几何被拒绝不再隐藏按钮、也不再让整个 widget 显示失败（否则
--- WidgetHost 会把它从 ApplyResponsiveLayout 名单里排除，临时 viewport 投影永远无法自愈）。
-------------------------------------------------------------------------
+-- 每个方案一个可拖按钮，数据和启停意图由 Feature 管理。
+-- 位置依次采用 source-viewport intent、旧 edge 锚点、旧 quickX/Y、默认点；加载兼容只在内存投影。
+-- screen_buttons 组分别解算位置后消除重叠，无重叠时保持像素不变。
+-- 几何拒写仍保留可见资格，否则 WidgetHost 会停止送入重排，临时失败便无法恢复。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI = S.UI
@@ -44,7 +36,7 @@ local function PlacementFromMeta(meta)
     }
 end
 
--- 维护：Feature-owned 的 source-viewport intent 是同一分辨率精确恢复的唯一 Authority。
+-- Feature-owned 的 source-viewport intent 是同一分辨率精确恢复的唯一 Authority。
 -- 只有完整的一组值（x/y + 逻辑宽高 + 中心比例）才被接受，避免产生半套 viewport 身份。
 local function ViewportIntentFromMeta(meta)
     if type(meta) ~= "table" then return nil end
@@ -61,7 +53,7 @@ local function ViewportIntentFromMeta(meta)
     }
 end
 
--- 维护：一次捕获两套 intent —— 旧 edge schema（Store 兼容字段）与新的 source-viewport
+-- 一次捕获两套 intent —— 旧 edge schema（Store 兼容字段）与新的 source-viewport
 -- intent（同分辨率精确恢复 + 跨分辨率安全重投影）。两者都只从已提交的 committed rect 派生。
 local function BuildPlacements(x, y, width, height)
     if not (S.Layout and type(S.Layout.StorePlacementRect) == "function") then return nil end
@@ -104,7 +96,7 @@ local function CreateWidget()
             createFailures = 0, fallbackPlacements = 0,
         } }
 
-    -- 约束（2026-09-25，feature-profile-screen-snap-1）：功能方案按钮与换装按钮属于同一
+    -- 功能方案按钮与换装按钮属于同一
     -- screen_buttons 吸附组；Layout 只负责几何/邻居发现，方案 Store 仍独立保存最终位置。隐藏按钮会被
     -- ScreenSnapRegistry 自动排除，因此不会因保留 Native 实例而产生不可见吸附目标。
     function instance:RegisterSnapRecord(record)
@@ -112,7 +104,7 @@ local function CreateWidget()
         if record.snapRegistered == true then return true end
         local snapId = tostring(record.snapId or "")
         if snapId == "" then return false end
-        -- 维护（ui-position-reload-1）：与 WindowShell 使用同一恢复边沿，不重新扫描/应用功能方案。
+        -- 与 WindowShell 使用同一恢复边沿，不重新扫描/应用功能方案。
         local options = { ensureNow = false, snapGroup = "screen_buttons", snapKind = "button",
             positionOwner = OWNER,
             isPositionInteracting = function() return record.dragging == true end,
@@ -139,7 +131,7 @@ local function CreateWidget()
         return row
     end
 
-    -- 维护：几何事件只保留有界计数 + 最近一条原因，绝不进入热路径、不读 Native。
+    -- 几何事件只保留有界计数 + 最近一条原因，绝不进入热路径、不读 Native。
     function instance:NoteGeometryFailure(record, err)
         self.metrics.geometryRejects = (tonumber(self.metrics.geometryRejects) or 0) + 1
         self:PushDiagnostic("geometry_rejected", {
@@ -271,7 +263,7 @@ local function CreateWidget()
                 })
                 if snapped == true then x2, y2 = sx, sy end
             end
-            -- 维护（feature-profile-quick-relog-1）：用户真实拖动是唯一允许升级持久化格式的边沿。
+            -- 用户真实拖动是唯一允许升级持久化格式的边沿。
             -- 提交前把 committed rect 夹进 safe viewport，使 Store 里的 intent 永远至少完整可见，
             -- 之后无论重登还是重投影都从这份 intent 出发，不会以“上次投影结果”为输入累积漂移。
             local clampX, clampY = x2, y2
@@ -308,7 +300,7 @@ local function CreateWidget()
         return record
     end
 
-    -- 维护：解析阶段只做纯投影（无 Native 写入、无 Store 写入）。createAllowed=false 用于
+    -- 解析阶段只做纯投影（无 Native 写入、无 Store 写入）。createAllowed=false 用于
     -- metrics 重排：只重排已存在按钮，绝不在重排里创建 Native 控件。
     function instance:BuildPlan(createAllowed)
         local plan = {}
@@ -333,7 +325,7 @@ local function CreateWidget()
                 items[position] = { key = tostring(row.meta.profileId or position), order = position,
                     x = row.x, y = row.y, width = row.width, height = row.height }
             end
-            -- 维护：间距参数必须为 0。用户用吸附把按钮紧贴排列时，两矩形只是“相邻”而不是
+            -- 间距参数必须为 0。用户用吸附把按钮紧贴排列时，两矩形只是“相邻”而不是
             -- “重叠”；若这里强制 gap，恢复过程会把用户排好的贴合布局每次推开几个像素。
             local solved = S.Layout:DeoverlapScreenRects(items, { gapX = 0, gapY = 0 })
             for position, row in ipairs(solved) do
@@ -397,10 +389,7 @@ local function CreateWidget()
         end
         local geometryFailures = self:ApplyPlan(plan, false)
         for _, reason in ipairs(geometryFailures) do failures[#failures + 1] = reason end
-        -- 维护（feature-profile-quick-relog-1）：几何失败绝不隐藏按钮。旧实现把 placed==false
-        -- 的按钮设为不可见，并让 Show() 整体失败，于是 WidgetHost 认为 widget 不可见 →
-        -- 之后的 ApplyResponsivePresentation 再也不会把 ApplyLayout 送到这里，临时 viewport
-        -- 投影就永久留在屏幕外（用户看到的现象正是“只剩第一个按钮”）。
+        -- 几何失败不隐藏按钮；否则 Host 会把它移出重排名单，后续 viewport 恢复也无法自愈，表现为只剩首个按钮。
         for _, row in ipairs(plan) do
             local record = row.record
             UI:SetVisible(record.button, self.visible == true, OWNER)
@@ -417,10 +406,7 @@ local function CreateWidget()
             end
         end
         if #plan == 0 then
-            -- 维护（feature-profile-quick-relog-1）：没有任何可显示按钮时也必须返回成功。
-            -- 让 Show() 失败会把 widget 从 WidgetHost 的可见/重排名单里摘掉，随后用户新建方案
-            -- 或 viewport 恢复都不会再触发这里，形成“必须重启才可能出现”的死状态。这里只记录
-            -- 有界诊断（真实创建失败仍由 EnsureButton/ApplyPlan 逐条上报）。
+            -- 无按钮也返回成功，保留 Host 重排资格，后续新建方案仍能显示。真实创建失败由 EnsureButton/ApplyPlan 上报。
             self:PushDiagnostic("empty_projection", { rowCount = #self.rows, failures = #failures })
             if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then
                 S.DiagnosticsManager:WarningRateLimited("feature_profiles_v3", "FEATURE_PROFILE_QUICK_EMPTY", 5000,
@@ -472,7 +458,7 @@ local function CreateWidget()
         return true
     end
 
-    -- 维护：metrics/分辨率边沿只重排已存在按钮；不创建 Native、不读装备/投影、不写 Store。
+    -- metrics/分辨率边沿只重排已存在按钮；不创建 Native、不读装备/投影、不写 Store。
     function instance:ApplyLayout(fromMetrics)
         if fromMetrics == true then self.metrics.reflows = (tonumber(self.metrics.reflows) or 0) + 1 end
         local plan = self:BuildPlan(false)
@@ -500,18 +486,14 @@ local function CreateWidget()
         return self:ApplyLayout(true)
     end
 
-    ------------------------------------------------------------------------
     -- 诊断（按需读取，绝不进入热路径 / 绝不创建 Native / 绝不写 Store）
-    ------------------------------------------------------------------------
     function instance:GetQuickButtonDiagnostics()
         local context = S.Layout and S.Layout:GetContext() or {}
         local layout = S.Layout
         local widthRatio = (tonumber(context.logicalWidth) or 0) > 0 and (tonumber(context.screenWidth) or 0) / tonumber(context.logicalWidth) or nil
         local heightRatio = (tonumber(context.logicalHeight) or 0) > 0 and (tonumber(context.screenHeight) or 0) / tonumber(context.logicalHeight) or nil
-        -- 维护（2026-09-25，viewport-authority-evidence-1）：只做证据，不改 Authority。
-        -- 如果 screen/uiScale 与 logical extent 的比例不一致，就说明当前 logical canvas 与真实
-        -- 客户区不是同一个空间（"logical 内但物理窗外" 的必要条件）。真正修改 GetUiMetrics 之前
-        -- 必须先有实机证据，本页只负责把它变成可读数字。
+        -- screen/uiScale 与 logical extent 比例不一致时，可能存在“逻辑画布内、物理窗口外”的坐标差。
+        -- 这里只记录证据，修改 GetUiMetrics 前须实机确认。
         local uiScale = tonumber(context.uiScale) or 1
         local tolerance = math.max(0.02, uiScale * 0.02)
         local payload = {
@@ -618,7 +600,7 @@ local registered, registerErr = Host:Register(WIDGET_ID, {
 })
 if registered ~= true then error(registerErr) end
 
--- 约束（2026-09-25，feature-profile-quick-diagnostics-1）：方案 Store 是否真的落盘、
+-- 方案 Store 是否真的落盘、
 -- 三个快捷按钮最终落在哪个 Native 矩形，必须能从模块诊断页直接读到。Provider 只读取已经存在的
 -- widget 实例与缓存 rows，不 EnsureInstance、不创建 Native、不写 Store、不采样 metrics。
 if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
@@ -633,9 +615,7 @@ if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.Regis
     end, 36)
 end
 
-------------------------------------------------------------------------
 -- 可见响应归表现层；方案修改发布一次投影事件，Host 负责显隐及生命周期响应。
-------------------------------------------------------------------------
 if S.Events and type(S.Events.SubscribeInternal) == "function" then
     local Reaction = { id = "v3:feature_profile_quick:host_reaction" }
     local function Sync(reason)

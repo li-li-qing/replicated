@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享静态游戏定义
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 面向共享 Service 的索引化游戏定义数据按契约不可变；价格、比价、背包和任务进度等运行时状态禁止注册在这里。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -136,7 +133,7 @@ function D:GetCatalog(name)
     return self.catalogs[Normalize(name)]
 end
 
--- 为可能含中俄文的来源名称生成稳定 ASCII key；对 UTF-8 字节哈希，不能删除非 ASCII 字符，保证跨语言目录身份确定，并避免把展示文本放入热查询路径。
+-- 对完整 UTF-8 字节生成 ASCII key；不能直接删去中俄文，否则不同来源名会折成同一身份。
 function D:StableTextKey(prefix, value)
     local text = tostring(value or "")
     local hash = 5381

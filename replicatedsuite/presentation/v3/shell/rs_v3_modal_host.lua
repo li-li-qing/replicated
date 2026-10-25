@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 模态窗口宿主
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 统一应用级模态堆栈负责完整 Shell 遮罩与最上层可见性，功能页不能另建层级/阻塞规则。当前 RU 未验证通用键盘处理器，因此关闭必须显式操作，不自行补造 Escape 行为。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

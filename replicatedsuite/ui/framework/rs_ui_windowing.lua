@@ -1,13 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 顶层窗口移动与缩放
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 全部 V3 顶层 Native 窗口在此绑定移动/缩放；表现提供策略/持久回调，此层持有原生事务、八向把手、自由位置安全及移动后严格缓存协调。
 -- 无永久 Tick/OnUpdate，Native StartMoving/StartSizing 持鼠标；
 -- 仅活跃拖动/缩放时借共享约 16ms 交互任务；拖动走原生屏幕修正，缩放重排实时 extent。
 -- 调度不可用时由手势控件的 OnUpdate 兜底；手势停止立即移除，不在空闲或内容刷新时轮询。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -49,7 +46,7 @@ local function EnsureNativeResizing(window, enabled)
     return true, nil
 end
 
--- 维护（viewport-recovery-1）：只从校准后的 viewport logical 读顶层窗口，
+-- 只从校准后的 viewport logical 读顶层窗口，
 -- 不沿用 GetLogicalRect 无条件 /uiScale。手势中使用 Begin 固定单位，防止 native resize
 -- 改变 extent 后用旧 cache 误判比例；同一链只变换一次，持久化仅在 CommitGeometry。
 local function ReadLogicalRect(window, pinnedScale)
@@ -64,7 +61,7 @@ local function ReadLogicalRect(window, pinnedScale)
     return tonumber(x) or 0, tonumber(y) or 0, math.max(1, tonumber(width) or 1), math.max(1, tonumber(height) or 1)
 end
 
--- 维护：Windowing 是顶层 Native 几何写入 Authority。reset/metrics/手势结束强制失效
+-- Windowing 是顶层 Native 几何写入 Authority。reset/metrics/手势结束强制失效
 -- 仅几何缓存，避免沿用旧 anchor 命中；不清除颜色/可见性等其它状态，也不碰任何 Store。
 -- extent/anchor 任一拒绝就返回失败并尽力回滚；Native 若连回滚也拒绝，明确报告而非假成功。
 function W:ApplyGeometry(window, owner, x, y, width, height, force)
@@ -73,14 +70,12 @@ function W:ApplyGeometry(window, owner, x, y, width, height, force)
     end
     if x == nil or y == nil or width == nil or height == nil or width <= 0 or height <= 0 then return false, "invalid_window_rect" end
     if type(UI.EnsureAnchor) ~= "function" or type(UI.EnsureExtent) ~= "function" then return false,"geometry_transaction_unavailable" end
-    -- 约束（2026-10-04）：Primitive 首次 Show 后 Native 可能调整出生锚点，
-    -- 随后首次进入 Windowing 才建立校准后的几何基线。这个初始化交接必须失效旧几何镜像，
-    -- 否则被误报为 strict 外部写入（换装/功能方案启动各按钮一次）。后续非 force 校验仍严格
-    -- 记录真实越权位移；不清历史违规、不改变 Gate。仅顶层窗口进入该车道，HUD 不加入。
+    -- 首次 Show 可能由 Native 调整锚点，进入 Windowing 时须失效旧镜像建立校准基线，
+    -- 否则合法初始化被误报 strict 越权。仅顶层窗口如此，后续校验仍记录真实外部位移。
     local previousReadback = window.rsUiWindowGeometryReadback
     local firstGeometryCommit = previousReadback ~= true
     window.rsUiWindowGeometryReadback = true
-    -- 维护：内容刷新可能很频繁，常规布局只用 DiffRenderer 已提交矩形作为回滚基线。
+    -- 内容刷新可能很频繁，常规布局只用 DiffRenderer 已提交矩形作为回滚基线。
     -- 只有 create（无缓存）/show/reset/metrics/手势结束 force 边沿读取 Native，禁止变相逐帧读坐标。
     local row=UI.NativeStateCache and UI.NativeStateCache[window]
     -- 新的布局/手势提交取代旧重试；EndNativeGeometryLease 清空该行也会取消重试。
@@ -109,11 +104,9 @@ function W:ApplyGeometry(window, owner, x, y, width, height, force)
     return true,x,y,width,height
 end
 
--- 维护（2026-09-30，ui-position-reload-1）：UI_RELOADED/重登可以只重置 Native 锚点，
--- 而 UIParent 尺寸与 UI Scale 完全不变。此前 settle 只比较 metrics 签名，这种位移永远不会恢复。
--- 这里只在生命周期与已有的 8 次 one-shot 中检查“已创建、可见、无手势”的顶层控件。
--- Authority 仍是 Diff 已成功提交的逻辑矩形；Native 读数只用于比对，绝不反写用户位置/尺寸。
--- 无变化不布局；真正偏移才强制重放同一矩形，不调用 geometry/state/business 回调。
+-- UI_RELOADED 可能只重置 Native 锚点而不改尺寸、Scale，不能仅比较 metrics 签名。
+-- 生命周期及已有 8 次 one-shot 仅检查可见、无手势的已建窗口；发现偏移才重放已提交矩形，
+-- Native 读数只作比对，不写回用户意图或触发业务回调。
 local function PositionNumber(value)
     local n = tonumber(value)
     if n == nil or n ~= n or n == math.huge or n == -math.huge then return nil end
@@ -326,11 +319,8 @@ local function ReconcileWindow(controller, window, owner, x, y, width, height, r
     if window == nil then return false end
     local originalX, originalY = tonumber(x) or 0, tonumber(y) or 0
     local boundaryMode = tostring(controller and controller.boundaryMode or "free")
-    -- 维护（2026-09-22，viewport-contained-floating-1）：Windowing 是真实用户 Drag/Resize
-    -- 提交 Authority。若这里只做“标题仍可抓取”的 recoverable clamp，后续 FloatingSurface 会把
-    -- 这个部分离屏矩形原样持久化，下一次登录/切分辨率仍会从错误 intent 开始。普通 free/strict
-    -- 顶层窗口在手势提交时统一做 full-safe clamp；只有显式 recoverable 模式保留部分离屏语义。
-    -- 这样 Native 最终矩形与 StorePlacementRect 收到的 committed rect 始终一致，不产生二次修正漂移。
+    -- 普通 free/strict 手势提交时限制整窗在安全区内，显式 recoverable 才允许部分离屏。
+    -- 否则部分离屏矩形会被保存，重登后继续恢复错误位置；Native 与 Store 须消费同一 committed rect。
     if (boundaryMode == "strict" or boundaryMode == "free") and S.Layout ~= nil and type(S.Layout.ClampTopLeft) == "function" then
         -- 手势可能来自较大分辨率遗留窗口，也可能是用户把 Resize 拉到当前 viewport 之外。
         -- 运行时 extent 先拟合当前 usable area，再夹紧 top-left；FloatingSurface 对 drag 不会把
@@ -409,7 +399,7 @@ function W:Attach(spec)
     }
 
 
-    -- 维护：Metrics 在手势中只标记，停止后放弃旧 viewport 的提交并重放原 intent。
+    -- Metrics 在手势中只标记，停止后放弃旧 viewport 的提交并重放原 intent。
     -- Reset 主动取消 lease 和捕获；迟到 OnDragStop 不能再写 Store 或移动恢复后的窗口。
     function controller:GetLogicalRect() return ReadLogicalRect(self.window, self.geometryUnitScale) end
     function controller:CancelInteraction()
@@ -570,7 +560,7 @@ function W:Attach(spec)
         local scale = self.scaleWithAddon == false and 1 or math.max(0.01, tonumber(context.addonScale) or 1)
         local minW = math.max(1, (tonumber(self.minWidth) or 1) * scale)
         local minH = math.max(1, (tonumber(self.minHeight) or 1) * scale)
-        -- 维护：语义 min 不能大于当前 viewport，否则运行时 fit 被 native resize 限制撤销。
+        -- 语义 min 不能大于当前 viewport，否则运行时 fit 被 native resize 限制撤销。
         -- 原 min/preferred 不改，返回大屏时自动恢复；这里只更新本次 native bounds。
         minW = math.min(minW, context.usableWidth or minW)
         minH = math.min(minH, context.usableHeight or minH)
@@ -618,7 +608,7 @@ function W:Attach(spec)
         self.geometryUnitScale, self.interactionViewport = nil, nil
         local context = S.Layout and S.Layout:GetContext() or { addonScale = 1 }
         local scale = self.scaleWithAddon == false and 1 or math.max(0.01, tonumber(context.addonScale) or 1)
-        -- 维护：drag 只改位置；compact / runtime-fitted 尺寸不能被语义 min 拉大，
+        -- drag 只改位置；compact / runtime-fitted 尺寸不能被语义 min 拉大，
         -- 更不能当作用户 resize 写回 preferred size。只有 resize 才应用尺寸约束。
         if tostring(reason) == "resize" then
             width = math.max(math.min((tonumber(self.minWidth) or 1)*scale,context.usableWidth or width),width)
@@ -646,13 +636,9 @@ function W:Attach(spec)
 
     function controller:LayoutHandles(width, height)
         width, height = math.max(1, tonumber(width) or 1), math.max(1, tonumber(height) or 1)
-        -- 维护（2026-09-22，window-resize-capture-stability-1）：StartSizing 之后 Native 窗口本身
-        -- 是唯一 capture/geometry Authority。旧实现的 16ms live reflow 会再次进入 LayoutHandles，
-        -- 对 8 个手柄持续重锚，并且每帧重新调用 UseResizing/SetMinResizingExtent/SetMaxResizingExtent。
-        -- RU 客户端对活动中的 sizing transaction 不保证这些配置调用幂等，实机表现就是“按住边缘有时
-        -- 没反应 / 刚开始又失效”。Slider 与 Table separator 已经遵守“活动 drag surface 不重锚”规则，
-        -- Windowing 现在统一同一语义：手势期间只让内容跟随 实时 extent，手柄和 原生缩放边界
-        -- 冻结到 DragStart；DragStop/Commit 后一次性重排。无 Tick 新增，不改变 Store 或窗口尺寸 Authority。
+        -- StartSizing 后 Native 持有捕获和实时几何。手势中只让内容跟随 extent，冻结把手锚点和缩放边界。
+        -- 旧 16ms reflow 反复重锚、重设 UseResizing/min/max，RU 不保证幂等，曾让边缘拖动无响应或中途失效。
+        -- DragStop 后再统一重排。
         if self:IsResizing() == true then return true end
         local t = self.handleThickness
         local interactive = self.resizeEnabled == true and self.locked ~= true and self.enabled ~= false
@@ -679,9 +665,7 @@ function W:Attach(spec)
                 if visibleOk ~= true or enabledOk ~= true or pickOk ~= true then
                     return false, tostring(visibleErr or enabledErr or pickErr or "window_handle_state_rejected")
                 end
-                -- FloatingSurface 的 Feature 内容是在 WindowShell 创建后才追加的；如果不重新 Raise，
-                -- 后创建的 ListView/Scrollbar/Border 可能位于 resize emptywidget 之上，导致同一条边有时命中
-                -- 内容、有时命中手柄。这里只在非活动手势的低频 Layout/Show/ResizeStop 边沿重建 z-order。
+                -- 后追加内容可能盖住 resize 把手；仅在非手势的 Layout/Show/ResizeStop 边沿重新 Raise，避免边缘命中内容。
                 if interactive and type(handle.Raise) == "function" then
                     local raised = pcall(function() handle:Raise() end)
                     if raised then W.metrics.resizeSurfaceRaises = (tonumber(W.metrics.resizeSurfaceRaises) or 0) + 1 end
@@ -829,7 +813,7 @@ function W:Attach(spec)
                 -- RU 提供 X2Cursor:SetCursorImage，但尚无已验证缩放光标纹理；验证前使用框架边缘悬浮高亮，不猜资源名，命中/缩放手势保持一致。
                 local hoverLine = nil
                 if type(handle.CreateColorDrawable) == "function" then
-                    -- 维护（window-resize-hit-plane-1）：完全 alpha=0 的 EmptyWidget 在 RU 不同父层/后创建
+                    -- 完全 alpha=0 的 EmptyWidget 在 RU 不同父层/后创建
                     -- 子控件组合下命中不稳定。0.001 是肉眼不可见的 Native hit plane，与自定义 Slider 已验证
                     -- 的透明拖动面保持一致；hover 才提高到 0.72。该 Drawable 不拥有几何或持久化。
                     hoverLine = handle:CreateColorDrawable(0.84, 0.68, 0.28, 0.001, "overlay")

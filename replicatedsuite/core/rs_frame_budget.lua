@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享帧预算
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 帧预算协调器集中管理 Suite 周期工作软预算，不替代 Domain 运行体，也不持有 OnUpdate。当前 Suite Scheduler
--- 是预算执行权威；接口可供专业运行体复用，独立原生 OnUpdate 宿主逐步迁移，不能在此强行接线。P0/P1 关键或用
--- 户动作工作绝不丢弃；低优先级可延后，但有界饥饿保护确保后台维护不会永久停滞。热路径仅使用有界计数：每次
--- Request() 不写诊断日志、不逐帧全表扫描、不依赖墙上时钟，以原生帧 delta 表示压力；这里不执行任务回调。
-------------------------------------------------------------------------
+-- 按原生帧 delta 分配周期工作的软预算，任务仍由 Scheduler 执行。
+-- P0/P1 不拒绝，低优先级可延后并受饥饿保护；Request 只更新有界计数，不扫描全表或写日志。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -17,8 +12,7 @@ local BACKLOG_PRESSURE = {
     Normal="Normal", Delayed="Busy", ["Heavy Backlog"]="Heavy", Critical="Critical",
 }
 
--- 额度采用保守的抽象工作单位而非毫秒，保证缺少可靠 Lua 执行计时器的 RU 客户端上策略仍确定。任务可通过
--- Scheduler:SetCost 声明更高成本，不改变业务行为。
+-- RU 缺少可靠 Lua 执行计时器，因此额度用抽象工作量，不用毫秒；较重任务通过 Scheduler:SetCost 声明。
 local PROFILE = {
     Normal   = { credits=10, maxExecutions=10 },
     Busy     = { credits=8,  maxExecutions=8  },
@@ -146,8 +140,7 @@ function B:_OwnerStats(owner)
     return stats, owner
 end
 
--- （2026-10-03，scheduler-starvation-fairness）饥饿阈值只归预算 Broker；Scheduler 排序和 Request
--- 必须用同一判定，否则 P2 长期抢走唯一 starvation escape，P3 候选/P4 高亮永远等待。纯函数不记统计/不分配表。
+-- Scheduler 排序与 Request 共用饥饿阈值，避免 P2 一直抢走 P3/P4 唯一的逃逸机会。
 function B:IsStarving(priority, deferCount, lateRatio)
     local p=NormalizePriority(priority)
     if p<=1 then return false end
@@ -174,10 +167,8 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio, lane)
     if p <= 1 then
         current.granted = current.granted + 1
         current.criticalGranted = current.criticalGranted + 1
-        -- P1连续视觉由HF车道保证每帧最多一次。
-        -- 旧账本把4个HF的执行量扣进Critical的3credits/4slots，后台只剩1个饥饿逃生，
-        -- 单次停顿即可让lateRatio长期Critical。视觉与普通工作分账，用于下方有限预留；
-        -- 所有工作仍扣原总credits。普通P0/P1动作也占后台账，缺lane的旧调用不改变行为。
+        -- 高频视觉由 HF 车道限制每帧一次，单独记账，避免占满普通工作的预留额度。
+        -- 所有工作仍扣总 credits；普通 P0/P1 也扣后台额度，未传 lane 的旧调用保持原行为。
         if lane == "highfrequency" and p == 1 then
             current.visualGranted = current.visualGranted + 1
             current.visualCostUnits = current.visualCostUnits + cost
@@ -199,9 +190,8 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio, lane)
 
     local executionRoom = current.granted < current.maxExecutions
     local creditRoom = current.creditsRemaining >= cost
-    -- 仅原生帧已恢复（<40ms）但后台lateRatio仍高时，确保最多2个普通
-    -- slots/credits可运行。已执行的普通工作（包括P0/P1）抵扣预留，不能额外叠加2次。
-    -- 原生长帧保持旧总预算/饥饿保护，不把全部后台配额叠在视觉之后，不新增追赶循环。
+    -- 原生帧恢复到 <40ms 而后台 lateRatio 仍高时，最多预留 2 个普通 slots/credits。
+    -- 已执行的普通工作（含 P0/P1）抵扣预留；长帧仍受原总预算限制，不追加追赶循环。
     local reserveRoom = current.visualGranted > 0 and current.frameDtMs < 40
         and current.budgetedGranted < 2 and current.budgetedCostUnits + cost <= 2
     if (executionRoom and creditRoom) or reserveRoom then
@@ -219,9 +209,8 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio, lane)
         return true, "budget"
     end
 
-    -- 每个渲染帧仅允许一次饥饿逃逸；若所有旧任务同时逃逸，会重新造成预算协调器要避免的卡顿。
-    local starving = self:IsStarving(p,deferCount,lateRatio) -- 只轮转“已达旧阈值”的任务；仍严格每帧最多一个 escape，不放宽
-                                                             -- credits/maxExecutions。
+    -- 每帧最多让一个已到饥饿阈值的任务逃逸，轮转选择，不放宽 credits/maxExecutions。
+    local starving = self:IsStarving(p,deferCount,lateRatio)
     if starving and current.starvationRuns < 1 then
         current.granted = current.granted + 1
         current.budgetedGranted = current.budgetedGranted + 1

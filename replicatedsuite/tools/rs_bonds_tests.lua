@@ -1,17 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 债券测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 覆盖债券业务数据层、公告板 1..7 读取，以及空、就绪和不可用状态，
 -- 材料数量读取的 bagId=1/0 和按激活索引获取的真实任务进度，
 -- 筛选、排序、行选择及悬浮详情集成，
 -- 并覆盖 v3_m1_bonds 顺序用例。
-------------------------------------------------------------------------
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -159,7 +152,7 @@ dofile("features/life/shared/rs_life_slice_factory.lua")
 dofile("features/life/trade/rs_trade_feature.lua")
 dofile("features/life/fishing/rs_fishing_feature.lua")
 
--- 中文维护注释（2026-09-28，Phase 2 Step 1）：life_treasure 已拆出独立文件；
+-- life_treasure 已拆出独立文件；
 -- economy widgets 在加载期要求全部 life Feature 在场。
 dofile("features/life/treasure/rs_treasure_feature.lua")
 
@@ -181,7 +174,7 @@ Test("B1: Registry contract & metadata", function()
     assert(reg.navigationDevelopmentState == "complete", "user-accepted bonds must be complete in navigation, got: " .. tostring(reg.navigationDevelopmentState))
     assert(Bonds ~= nil, "Bonds feature missing")
     assert(Bonds.Commands ~= nil, "Bonds commands missing")
-    -- 中文维护注释（2026-09-15，多大陆债券排序契约）：大陆顺序必须是独立设置，不能再复用
+    -- 大陆顺序必须是独立设置，不能再复用
     -- “重复任务保留哪一侧”的 priority。这样排序只改变展示顺序，绝不会隐式删除另一大陆数据。
     assert(type(Bonds.Commands.SetContinentOrder) == "function", "SetContinentOrder compatibility command missing")
     assert(type(Bonds.Commands.SetDisplayOrder) == "function" and type(Bonds.Commands.SetFilterMask) == "function"
@@ -195,7 +188,7 @@ Test("B1b: pre-continentOrder canonical can recover exact historical stamp", fun
     local store = assert(S.Persistence:GetStore("v3.life.bonds"), "bonds store missing")
     assert(type(store.rebuildCanonicalForIntegrity) == "function", "bonds historical canonical hook missing")
 
-    -- 中文维护测试：2026-09-15 已上线的旧债券存档 schema=1 不含 continentOrder。
+    -- 2026-09-15 已上线的旧债券存档 schema=1 不含 continentOrder。
     -- 新版 NormalizeBondState 默认补 west_first 后会改变 canonical 指纹；恢复桥必须只复原
     -- 这个旧逻辑形状，并由旧 stamped fingerprint 精确认证，不能放宽未知 mismatch。
     local legacyDomain = {
@@ -227,10 +220,8 @@ Test("B1c: Persistence LoadStore accepts exact pre-continentOrder envelope and s
     local store = assert(S.Persistence:GetStore("v3.life.bonds"), "bonds store missing")
     local key = assert(S.Persistence:ResolveStoreKey(store), "bonds store key unavailable")
 
-    -- 中文维护测试（2026-09-15，真实 LoadStore 冷路径）：B1b 证明 Store hook 本身，
-    -- 本用例继续把一个当前合法 envelope 改造成“旧 schema=1 / 无 continentOrder / 旧 canonical stamp”，
-    -- 再走 Persistence 的 Envelope Seal -> current mismatch -> historical exact Hash -> current restamp 全链路。
-    -- 这样可防止出现“hook 单测通过、实际 Fresh Reload 仍因 Core 调用形状不同而写保护”的回归。
+    -- 去掉 continentOrder 并按 schema1 盖章，再走完整加载链，
+    -- 检查旧指纹识别和重新盖章能在冷启动生效，而不只是恢复钩子的单测通过。
     Bonds.State.sortMode = "quantity"
     Bonds.State.continentOrder = "west_first"
     Bonds.State.dailyDateKey = "2026-09-15"
@@ -620,7 +611,7 @@ Test("B13: Bonds floating table exposes material name column", function()
 end)
 
 Test("B14: West and East daily snapshots coexist and sorting never drops a mainland", function()
-    -- 中文维护注释（2026-09-15，西东大陆同日缓存回归）：模拟玩家先在西大陆读取，再移动到
+    -- 模拟玩家先在西大陆读取，再移动到
     -- 东大陆读取。Authority 必须保留两份同日快照并统一投影；默认“全部显示”时即使两大陆
     -- 出现同材料同数量，也必须同时存在。排序只能调整顺序，不能承担去重副作用。
     Bonds.State.dailySnapshots = {}
@@ -695,7 +686,7 @@ Test("B14: West and East daily snapshots coexist and sorting never drops a mainl
 end)
 
 Test("B15: Bonds page and floating widget expose unambiguous mainland controls", function()
-    -- 中文维护注释：Presentation 只消费 detached Projection/Commands；这些静态契约断言防止后续
+    -- Presentation 只消费 detached Projection/Commands；这些静态契约断言防止后续
     -- UI 重构重新出现“去重/优先西/按大陆排序”这种会把排序与数据隐藏混在一起的模糊文案。
     local pageFile = assert(io.open("presentation/v3/pages/rs_v3_life_m16_pages.lua", "rb"))
     local pageText = pageFile:read("*a"); pageFile:close()
@@ -712,16 +703,15 @@ Test("B15: Bonds page and floating widget expose unambiguous mainland controls",
     local widgetFile = assert(io.open("presentation/v3/widgets/rs_v3_life_economy_widgets.lua", "rb"))
     local widgetText = widgetFile:read("*a"); widgetFile:close()
     assert(widgetText:find('SetDisplayOrder', 1, true) ~= nil and widgetText:find('SetFilterMask', 1, true) ~= nil and widgetText:find('SetDuplicateMode', 1, true) ~= nil, "floating Bonds settings menu must dispatch atomic feature commands")
-    assert(widgetText:find('bondSettingsDropdown', 1, true) ~= nil and widgetText:find('placeholder = "设置"', 1, true) ~= nil, "floating Bonds must expose the single settings dropdown")
-    assert(widgetText:find('kind = "header"', 1, true) ~= nil and widgetText:find('text = "排序"', 1, true) ~= nil
-        and widgetText:find('text = "显示范围"', 1, true) ~= nil and widgetText:find('text = "重复材料"', 1, true) ~= nil, "floating Bonds settings menu must group the three configuration domains")
+    assert(widgetText:find('bondScopeDropdown', 1, true) ~= nil and widgetText:find('bondOrderDropdown', 1, true) ~= nil
+        and widgetText:find('bondDuplicateDropdown', 1, true) ~= nil, "floating Bonds must expose three independent dropdowns")
     assert(widgetText:find('{ id = "continent", title = "大陆"', 1, true) ~= nil, "floating Bonds table must have a continent column")
     assert(widgetText:find('bondsDropdownControlsContractVersion = 3', 1, true) ~= nil
         and widgetText:find('bondsFloatingSettingsMenuContractVersion = 1', 1, true) ~= nil, "floating Bonds compact settings-menu contract missing")
 end)
 
 Test("B16: Unknown Auroria zone is discovered from ResidentBoard family even with mainland cache", function()
-    -- 中文维护测试：用户已缓存西大陆后移动到静态 zone 表未收录的原大陆区域；旧逻辑会因为
+    -- 用户已缓存西大陆后移动到静态 zone 表未收录的原大陆区域；旧逻辑会因为
     -- next(dailySnapshots) ~= nil 而完全跳过 ResidentBoard。显式刷新必须探测 5/6 并新增 auroria 快照。
     Bonds.State.dailySnapshots = {
         west = { continentKey = "west", faction = "Nuia", boards = {
@@ -794,7 +784,7 @@ end)
 
 
 Test("B19: Auroria daily snapshot merges board families instead of replacing the continent", function()
-    -- 中文维护测试（18.302）：原大陆不同区域可能只提供 5/6/7 中一部分有效内容；同日 auroria
+    -- 原大陆不同区域可能只提供 5/6/7 中一部分有效内容；同日 auroria
     -- 必须按 board index 增量合并，不能因为 auroria key 已存在就让 zone-boundary/manual probe 白读。
     Bonds.State.dailySnapshots = {}
     SetMockUnit({ GetCurrentZoneGroup = function(_) return 777 end })
@@ -842,7 +832,7 @@ Test("B20: Auroria fallback identity scans all numbers, not only the first numbe
 end)
 
 Test("B21: RU Ancestor coinpurse wording resolves the ambiguous 20 requirement", function()
-    -- 中文维护测试（18.302 RU 本地化）：当前俄服数据把 Ancestor's Coinpurse 写作“Котомка эфенского странника”。
+    -- 当前俄服数据把 Ancestor's Coinpurse 写作“Котомка эфенского странника”。
     -- 20 同时也是 ancestor crate 的大额数量，仅靠数量无法裁决；必须识别俄语“Котомка”词根，避免小额钱袋行变 UNKNOWN。
     Bonds.State.dailySnapshots = {}
     SetMockUnit({ GetCurrentZoneGroup = function(_) return 777 end })

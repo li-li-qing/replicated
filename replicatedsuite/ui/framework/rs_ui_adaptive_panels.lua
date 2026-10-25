@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 自适应组合布局
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 基于 rs_ui_panels.lua 的 UMG 风格组合布局，仅布局/事件驱动，各面板不持有 Tick 回调。
 -- RU 限制：ScrollBox 使用安全条目吸附视口显隐，不假设未文档化通用裁切矩形；视口外子节点必须隐藏以免绘到邻近 UI。Native EnableScroll 仅用于滚轮事件支持。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -51,9 +48,7 @@ local function RecordOverflow(panel, amount)
     return amount
 end
 
-------------------------------------------------------------------------
 -- UniformGrid 均匀网格。
-------------------------------------------------------------------------
 RSUI:RegisterType("UniformGrid", function(spec)
     local c, err = Host("UniformGrid", spec)
     if c == nil then return nil, err end
@@ -158,9 +153,7 @@ RSUI:RegisterType("UniformGrid", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- WrapBox 自动换行布局。
-------------------------------------------------------------------------
 RSUI:RegisterType("WrapBox", function(spec)
     local c, err = Host("WrapBox", spec)
     if c == nil then return nil, err end
@@ -254,9 +247,7 @@ RSUI:RegisterType("WrapBox", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- WidgetSwitcher 页面切换容器。
-------------------------------------------------------------------------
 RSUI.WidgetSwitcherContractVersion = 2
 RSUI:RegisterType("WidgetSwitcher", function(spec)
     local c, err = Host("WidgetSwitcher", spec)
@@ -345,11 +336,8 @@ RSUI:RegisterType("WidgetSwitcher", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- ResponsiveInspector 响应式检查面板。
---
 -- 稳定宿主响应式组合：内容与检查面板仅创建一次且共享原生 RSUI 宿主，宽度变化仅改几何/视口显隐；不运行时换父，RU 未验证该能力且会割裂逻辑/原生所有权。
-------------------------------------------------------------------------
 RSUI.ResponsiveInspectorContractVersion = 1
 RSUI:RegisterType("ResponsiveInspector", function(spec)
     local c, err = Host("ResponsiveInspector", spec)
@@ -503,9 +491,7 @@ RSUI:RegisterType("ResponsiveInspector", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- ScaleBox 缩放布局。
-------------------------------------------------------------------------
 RSUI:RegisterType("ScaleBox", function(spec)
     local c, err = Host("ScaleBox", spec)
     if c == nil then return nil, err end
@@ -588,9 +574,7 @@ RSUI:RegisterType("ScaleBox", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
 -- SplitView 主从分栏与事件驱动分隔条。
-------------------------------------------------------------------------
 -- 运行布局和序列测试共享纯策略，无 Native 副作用，小窗口行为确定且可独立验证；仅遵循显式 max，不补造上限。
 RSUI.SplitViewPolicy = RSUI.SplitViewPolicy or { version = 1 }
 function RSUI.SplitViewPolicy:Resolve(primaryAvail, dividerSize, minPrimary, minSecondary, requested, maxPrimary, maxSecondary)
@@ -856,9 +840,7 @@ function RSUI:SplitView(spec)
     return self:Create("SplitView", spec)
 end
 
-------------------------------------------------------------------------
 -- ScrollBox 安全条目吸附视口。
-------------------------------------------------------------------------
 RSUI:RegisterType("ScrollBox", function(spec)
     local c, err = Host("ScrollBox", spec)
     if c == nil then return nil, err end
@@ -1057,7 +1039,7 @@ RSUI:RegisterType("ScrollBox", function(spec)
                 break
             end
         end
-        -- 约束（2026-10-10）：先计算最终可见区，再一次提交显隐。旧版每次排版先全隐藏再显示，
+        -- 先计算最终可见区，再一次提交显隐。旧版每次排版先全隐藏再显示，
         -- 战斗刷新会隐藏正在按下的按钮祖先，导致 Native 取消点击；留在视口的控件必须持续可见。
         for index, entry in ipairs(entries) do
             SetViewport(entry.child, index >= self.visibleStart and index <= self.visibleEnd)

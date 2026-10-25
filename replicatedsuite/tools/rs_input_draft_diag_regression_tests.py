@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-# ---------------------------------------------------------------------
 # Replicated Suite · 输入草稿诊断回归测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]

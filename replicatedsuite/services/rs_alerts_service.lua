@@ -1,15 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享屏幕告警
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 共享全屏通知通道：S.Services.Alerts:Push({text, style, durationMs, sound}) 为唯一入口，战斗告警、事件
--- screen 提醒及钓鱼/贸易反馈可共用而不重复宿主。只响应 Push，不轮询；Push 显示、单个 Scheduler 任务隐藏。替
--- 换项拥有自身期限，同 key 重复可续期，因此生产者须去重施法片段。相同文本覆盖并重新计时，不堆叠；countdown
--- 使用同一 tick 显示 text N 剩余秒，bigtext 显示普通文本。anchorMode/fontSize/width/带符号偏移是表现选项，
--- Feature 拥有持久配置，Presenter 拥有宿主。显式布局编辑通过共享 Windowing 租用鼠标；正常告警穿透点击，服务
--- 不拥有原生 Widget。
-------------------------------------------------------------------------
+-- Push 共用一条屏幕提示；相同文本重新计时，不堆叠。同 key 可续期，生产者须自行去重施法片段。
+-- countdown 显示剩余秒，bigtext 显示普通文本；Scheduler 管收回时间，Presenter 管原生宿主。
+-- 配置由 Feature 保存，校准用 Windowing 鼠标租约，普通提示穿透点击。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -36,8 +30,7 @@ local MAX_DURATION_MS = 15000
 
 local Trim = S.Reuse.Text.Trim
 
--- 表现由宿主侧 Presenter 注入；Service 只拥有告警状态和计时，不创建或修改 Native UI。依赖倒置使旧及 V3
--- Presenter 可共用服务，而服务不依赖任何表现栈。
+-- Presenter 注入显示接口；服务只保存告警状态和计时，不直接操作 Native UI。
 function A:SetPresenter(presenter)
     if presenter ~= nil and type(presenter) ~= "table" then return false end
     if self.presenter ~= nil and self.presenter ~= presenter and type(self.presenter.Hide) == "function" then
@@ -53,8 +46,7 @@ function A:_Present(method, ...)
     if type(fn) ~= "function" then return false end
     local ok, result, detail = pcall(fn, presenter, ...)
     if not ok or result == false then
-        -- 原来 Native 写入拒绝被 Presenter 吞掉后仍记作成功；
-        -- 统一保留拒绝证据，不依赖游戏内用户抢在冻结前复制。固定计数，不累积无限日志。
+        -- Presenter 拒写也须留失败计数，不能吞掉后仍报告成功。
         self.presentationFailures = self.presentationFailures + 1
         self.lastPresentationError = tostring(ok and (detail or "presenter_rejected") or result)
         self.lastPresentationMethod = tostring(method)
@@ -89,8 +81,7 @@ function A:Push(payload)
         labelText = string.format("%s  %d", text, math.max(1, math.ceil(remainingMs / 1000)))
     end
 
-    -- 校验真实调度任务而非仅信任 tickTask 布尔值；被维护工具清掉任务后
-    -- 新提示必须重新注册。服务仍是唯一计时 Authority；不让页面 OnUpdate 自建第二个时钟。
+    -- 检查任务实例，不能只信 tickTask 标志；任务被清除后新 Push 须重建计时器。
     local scheduled, created = self:EnsureTimer(true)
     if scheduled ~= true then return false, created end
     if self:_Present("Show", labelText, cfg) ~= true then

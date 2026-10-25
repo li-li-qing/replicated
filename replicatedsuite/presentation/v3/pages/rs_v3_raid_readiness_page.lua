@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队准备检查页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
--- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
-------------------------------------------------------------------------
+-- 总开关复用 PageHost 的按钮，刷新时不能改父级或重复绑定 OnClick。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -57,19 +53,18 @@ local function BuildPage(parent, route)
     local root, rootErr = D:PageRoot(parent, "v3_page_raid_readiness")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
     root.consumerHeld = false
-    -- 约束（2026-09-25，feature-profile-lifecycle-1）：战备页 lease 跟随当前页面，而不是功能方案
-    -- 的生命周期 Authority。Disable 已由 Feature 清空 Demand；页面只同步事实，Enable 后再按当前可见性恢复。
+    -- Disable 已由 Feature 清空 Demand，页面只同步 lease；Enable 后按可见性恢复。
     local consumerBinding = { feature = Feature, featureId = "combat_raid_readiness", token = "page:raid_readiness",
         refresh = function(page) return page:Refresh() end }
 
-    -- 团队中心已删除；历史战备路由只保留本页名称，不重新创建聚合子导航。
+    -- 扫描按需触发，不能因页面调整改成后台常驻检查。
     D:PageHeader(root, "v3_raid_readiness_header", "团队战备检查", "按需检查团队准备状态。")
 
-    RSUI:Text({ id = "v3_raid_readiness_section_title", parent = root, text = "战备检查", -- 在共享“团队中心”标题下继续标明当前子功能，避免视觉归属修复后丢失功能名称。
-        fontSize = 12, tone = "accent", slot = { size = "fixed", height = 24, hAlign = "fill" } }) -- 标题固定小高度，仅承担信息层级，不抢占战备表格空间。
-    RSUI:Text({ id = "v3_raid_readiness_section_hint", parent = root, -- 紧随子标题说明扫描触发条件，帮助用户理解该页不会常驻读取 Buff。
-        text = "按需检查当前团队的装分、职责与关键增益；只有主动运行检查时才读取增益。", -- 保留 on-demand-scan 产品语义，禁止未来因 UI 合并而改成后台常驻检查。
-        fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18, hAlign = "fill" } }) -- 单行提示使用省略布局，保持页面紧凑且不影响低分辨率。
+    RSUI:Text({ id = "v3_raid_readiness_section_title", parent = root, text = "战备检查",
+        fontSize = 12, tone = "accent", slot = { size = "fixed", height = 24, hAlign = "fill" } })
+    RSUI:Text({ id = "v3_raid_readiness_section_hint", parent = root,
+        text = "按需检查当前团队的装分、职责与关键增益；只有主动运行检查时才读取增益。",
+        fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18, hAlign = "fill" } })
 
     local summaryCard = D:InfoCard(root, {
         id = "v3_raid_readiness_summary", title = "检查状态", value = "尚未检查",

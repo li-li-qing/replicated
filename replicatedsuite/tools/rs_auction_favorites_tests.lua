@@ -1,17 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖收藏测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 覆盖 AuctionFavorites、AuctionQueryV3 和 AuctionSurfaceV3，
 -- 包括有界收藏修改、九参数搜索、itemGrade 提取，
 -- 分页、显式 PriceQuoteQueueV3 询价和伴随浮窗生命周期，
 -- 并核对 FoundationGate 和验收契约条款。
-------------------------------------------------------------------------
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -196,15 +189,15 @@ S.Services.DailyAuctionMaterialsV3 = {
 }
 
 -- 业务桥接定义 tools_auction 和 tools_market_analysis。
--- 中文维护注释（2026-09-28，Phase 1 Batch A）：bridge 现在依赖 toc.g 中先加载的通用装配骨架，
+-- bridge 现在依赖 toc.g 中先加载的通用装配骨架，
 -- 离线宿主必须复现同一加载顺序，否则 FeatureRuntime/Store 注册路径与真实运行时不一致。
 dofile("features/shared/rs_feature_slice_factory.lua")
 dofile("features/shared/rs_shared_bounds.lua")
 dofile("features/tools/auction/rs_auction_read_model.lua")
--- 中文维护注释（2026-09-28，Phase 1 Batch E）：bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
+-- bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
 dofile("features/tools/market_analysis/rs_market_analysis_feature.lua")
 dofile("features/tools/auction/rs_auction_feature.lua")
--- 中文维护注释（2026-09-28，Phase 1 Batch A/D）：tools_market_analysis 与 tools_auction 已从 bridge 拆出，
+-- tools_market_analysis 与 tools_auction 已从 bridge 拆出，
 -- 本套件同时覆盖两者，因此必须按 toc.g 顺序把它们也加载进来。
 
 -- 伴随浮窗使用 UI 框架及 WidgetHost。
@@ -312,7 +305,7 @@ Test("T1: Feature registry metadata & contracts", function()
     assert(reg.category == "tools", "category mismatch")
     assert(reg.authority == "v3.auction", "authority mismatch")
     assert(reg.widgetCapable == true, "tools_auction must advertise its native-surface Sidecar capability")
-    -- 中文维护注释（2026-09-15，拍卖收藏完成态回归）：用户已确认该功能进入完成区。
+    -- 用户已确认该功能进入完成区。
     -- 这里同时钉住导航完成态与 Registry 产品状态，防止后续残留的 pending/partial 元数据把它
     -- 再次下沉到“未完成”区。该断言只验证展示/产品元数据，不参与 AuctionQuery/Sidecar Authority。
     assert(reg.navigationDevelopmentState == "complete" and reg.navigationIncomplete ~= true, "tools_auction must be marked complete in navigation")
@@ -727,8 +720,8 @@ Test("T7: Explicit lowest-price quote via PriceQuoteQueueV3", function()
     local taskKey = QuoteQueue.taskId or QuoteQueue.taskName
     assert(S.Scheduler.tasks[taskKey] ~= nil, "Quote task must be scheduled")
     local quoteTask = S.Scheduler.tasks[taskKey]
-    -- 维护（auction-full-lane-safety-1）：显式“报价”也不能侵占已打开的原生拍卖行。
-    -- 原测试在 visible=true 时要求请求成功，漏掉了本轮整条协议的资源边界。
+    -- 显式“报价”也不能侵占已打开的原生拍卖行。
+    -- 可见窗口也可能因资源占用拒绝请求，不能只看 visible。
     quoteTask.callback()
     assert(QuoteQueue:GetActivitySnapshot().paused == true, "Quote must pause while native auction is visible")
     assert(QuoteQueue:GetSnapshot("tools_auction").status ~= "ready", "Visible native auction cannot admit a quote")

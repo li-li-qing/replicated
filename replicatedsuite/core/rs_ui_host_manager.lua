@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 表现宿主管理
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 表现宿主管理器隔离可替换 Presentation；Core/Services/Module 适配器不依赖具体窗口或页面。旧 UI 与 V3 UI 分
--- 别登记宿主，Runtime 和语义导航只与本层通信。
-------------------------------------------------------------------------
+-- 统一登记表现宿主，Runtime 和导航通过本层调用，不依赖具体页面。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -189,8 +185,7 @@ function H:Toggle(id)
     return self:Open(host.id)
 end
 
--- 语义导航权威：调用者描述要打开什么，具体宿主决定如何映射到页面或 Presenter。兜底宿主须由迁移代码显式选择
--- ，V3 不能静默泄回旧表现层。
+-- 调用方给语义目标，宿主映射页面；兜底宿主须显式选择，V3 不能自动回到旧 UI。
 function H:Navigate(routeId, context, options)
     routeId = NormalizeRoute(routeId)
     if routeId == "" then return false, "route required" end
@@ -203,8 +198,7 @@ function H:Navigate(routeId, context, options)
         if type(host.spec.navigate) ~= "function" then return false, "host navigation unavailable" end
         local switched, switchErr = self:SetActive(host.id, options.closePrevious ~= false)
         if switched ~= true then return false, switchErr end
-        -- 路由所有权包含可见性；设置路由可只打开独立 Presenter，普通页面路由可先显示外壳，HostManager 不猜
-        -- 测。特殊流程仍可显式请求打开外壳。
+        -- 宿主决定路由是否显示主外壳；独立设置 Presenter 可只打开自身。
         if options.openHost == true then
             local opened, openErr = Call(host, "open")
             if opened ~= true then return false, openErr or "host open failed" end

@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 任务与活动详情弹窗
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 仅负责表现。详情数据由 QuestProgressService V3 投影；
--- 本弹窗不直接调用 X2Quest/X2BattleField，也不恢复旧 QuestService/QuestDetailWindow。
-------------------------------------------------------------------------
+-- 详情读取 QuestProgressService V3 投影，不在弹窗里查询任务 API。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -120,7 +116,7 @@ function M:Open(scope, key, sourceRow)
     if type(service) ~= "table" or type(service.GetGroupDetail) ~= "function" then
         return NotifyUnavailable("新版任务进度服务不可用。")
     end
-    -- 维护：仅显式打开详情读取日志目标，平时活动/任务表格刷新不会触发。
+    -- 仅显式打开详情读取日志目标，平时活动/任务表格刷新不会触发。
     -- Service 验证 活跃下标 与 questId，目标不计入主任务分母。
     local detail = service:GetGroupDetail(scope, key, { journal = true })
     if type(detail) ~= "table" then

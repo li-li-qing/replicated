@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 人员备注功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 人员备注拥有独立账号 Store；精确完整名字是唯一键，绝不折叠同名跨服身份。
 -- 只在页面持有 Demand 时复用 TeamRoster，退出即释放；无窗口枚举、io.open 或自己的轮询。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S, TOKEN = ReplicatedSuite, "player_notes:roster"
 local Factory = S.FeatureSliceFactory

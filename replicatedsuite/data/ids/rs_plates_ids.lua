@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 头顶状态身份注册
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 保留 Plates 现有迁移来源，不把兼容 ID 升格为数据库已验证事实。Registry 拥有共享 ID 集合；Plates 继续拥有运行时策略和实时 API 读取。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Registry = S.GameDataRegistry

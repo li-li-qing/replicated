@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 钓鱼测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 钓鱼和自动 R 回归，覆盖 RU 已证明的钓鱼动作 Buff 映射及可撤销热键事务。
 -- 原生替身按生产能力参数形状模拟，不能视为 RU 客户端测试。
-------------------------------------------------------------------------
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -172,7 +169,7 @@ assert(type(S.Services and S.Services.FishingHotkeyV3) == "table", "FishingHotke
 
 dofile("features/life/shared/rs_life_slice_factory.lua")
 
--- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役删除。
+-- life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役删除。
 dofile("features/life/trade/rs_trade_feature.lua")
 
 dofile("features/life/fishing/rs_fishing_feature.lua")
@@ -1086,7 +1083,7 @@ end)
 Test("T12: Fishing Hotkey v3 transaction is owned by the Feature acceptance, not the Foundation gate", function()
     local gate = ReadText("core/rs_foundation_gate.lua")
     assert(gate:find("life_fishing:auto_r_runtime_block", 1, true) == nil, "old runtime-block gate must be removed")
-    -- 中文维护注释（Phase 3 Batch F，2026-09-29，core-feature-decoupling-1）：该契约的 Authority 已从
+    -- 该契约的 Authority 已从
     -- Foundation 搬到 Feature 自己的 acceptance。断言强度不变，只是换成"Foundation 不得再拥有它，
     -- 而 acceptance 必须拥有它"——原来只证明契约存在，现在同时证明 Core 不再认识这个业务 Feature。
     assert(gate:find("life_fishing:auto_r_transaction", 1, true) == nil,

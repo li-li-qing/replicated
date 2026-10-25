@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 主窗口外观存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 主菜单外观（2026-10-07）：仅保存主菜单三个 alpha 通道和局部字号。
--- 复用 Persistence；旧 v3.shell/v3.workspace canonical 不变，几何与主题仍由原 Store 所有。
--- 预览不写盘；明确提交通过 MutateStore 单次保存并读回，失败由 Shell 撤回预览。
-------------------------------------------------------------------------
+-- 只保存主菜单三个 alpha 通道和局部字号，几何与主题仍在原 Store。
+-- 预览不写盘，显式提交经 MutateStore 保存并回读，失败由 Shell 撤回预览。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S,P=ReplicatedSuite,ReplicatedSuite.Persistence
 if type(P)~="table" then return end

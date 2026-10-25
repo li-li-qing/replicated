@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 模块诊断窗口测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 共享模块诊断悬浮窗契约：验证单实例、显式采集、固定分页和 CopyBox 生命周期。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local forbiddenFocusReads=0
 local function Test(name,fn)local ok,err=pcall(fn);if ok and forbiddenFocusReads>0 then ok=false;err='not_allowed focus getter was invoked'end;if ok then passed=passed+1;print('PASS module-diag-window '..name)else failed=failed+1;print('FAIL module-diag-window '..name..': '..tostring(err))end end

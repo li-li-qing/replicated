@@ -1,21 +1,16 @@
-------------------------------------------------------------------------
 -- Replicated Suite · API 能力登记与门禁
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- API 能力登记表。静态覆盖来源：z_api_functions/api_capabilities_ru_20260828.lua。静态、官方与运行证据分别
--- 保存；运行探测须显式触发且仅限无副作用 getter。2026-08-28 对账确认 api_functions.lua（RU 客户端导出清单，
--- 也是官方 Allowed 清单）中 61 个 Unknown 项存在，已标为 OfficialEnabled；仅社区全局函数 WorldToScreen 保持
--- Unknown，它不是游戏 API。合并必须先检查冲突标记、完整 toc.g 和 Lua 语法，再做运行验收；不得通过清配置、跳
--- 过加载或恢复 Legacy 绕过错误，Authority、数据流及存档协议由各自实现负责。
-------------------------------------------------------------------------
+-- 静态覆盖来源：z_api_functions/api_capabilities_ru_20260828.lua；静态、官方和运行证据分开保存。
+-- 探测仅限显式触发的无副作用 getter。2026-08-28 已按 RU Allowed 导出清单核实 61 个 Unknown 项。
+-- 社区函数 WorldToScreen 不是游戏 API，仍标为 Unknown。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.ApiCapabilities = {
     records = {},
     aliases = {},
-    updated = "2026-10-07", -- 用户删除快捷键方案，撤下其独用目录探测登记；共享键位能力保留战斗写限制。
+    updated = "2026-10-07",
     server = "ArcheRage RU",
 }
 local R = S.ApiCapabilities
@@ -27,7 +22,6 @@ end
 local Copy = S.Reuse.Table.DeepCopy
 
 local function ResolveHost(namespace)
-    -- 全局函数不登记命名空间，直接在 _G 中解析。
     if namespace == nil then return _G end
     if namespace == "ADDON" then return ADDON end
     if namespace == "UI" then return UI end
@@ -115,14 +109,12 @@ function R:ProbeGetter(name, ...)
     return true, a, nil, b, c, d
 end
 
--- 这里只精选项目关键能力，不照搬 z_api_functions 的全部函数。
 local CAPABILITIES = {
     ["ADDON:LoadData"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["ADDON:SaveData"] = { OfficialState="OfficialEnabled", Risk="write" },
     ["ADDON:ClearData"] = { OfficialState="OfficialEnabled", Risk="destructive" },
-    -- SetClipboardText 位于 ADDON 的 Available/not allowed 区段，不能因全局函数存在就调用或探测。显式禁止记
-    -- 录依据随包参考区段，不代表新的服务端公告。报告通过已验证 UI 输入框由用户 Ctrl+C 复制，不用未验证
-    -- Message 或系统接口绕过门禁。
+    -- SetClipboardText 在随包参考的 Available/not allowed 区段，不能因符号存在而调用或探测。
+    -- 报告使用已验证的输入框，由用户 Ctrl+C 复制。
     ["ADDON:SetClipboardText"] = { OfficialState="OfficialDisabled", Risk="write", SideEffectFree=false,
         Source="z_api_functions/api_functions.lua ADDON Available/not allowed functions",
         Notes="not permitted by bundled manifest; never probe or call for report copy" },
@@ -172,9 +164,8 @@ local CAPABILITIES = {
     ["X2Team:RaidApplicantReject"] = { OfficialState="OfficialEnabled", Since="2026-07-07", Cooldown=1000, Risk="write" },
     ["X2Team:MakeTeamOwner"] = { OfficialState="OfficialEnabled", Since="2026-07-14", Cooldown=5000, Risk="write" },
     ["X2Team:InviteToTeam"] = { OfficialState="OfficialEnabled", Since="2026-07-21", Cooldown=1000, Risk="write" },
-    -- IsTeamOwner 位于静态 API 的 "Available/not allowed" 区段；实机能力门禁于 2026-08-22 拒绝读取。必须持
-    -- 续失败封闭：禁止探测翻转，禁止替代权限 getter；没有合法权限 getter 时 MoveTeamMember 不得有可达生产路
-    -- 径，保留禁止记录以防重新接入。
+    -- IsTeamOwner 在 Available/not allowed 区段，且 2026-08-22 实机拒读；保留禁止记录，不能靠探测解除。
+    -- 缺少合法权限 getter 时，MoveTeamMember 必须保持不可调用。
     ["X2Team:IsTeamOwner"] = {
         OfficialState = "OfficialDisabled",
         StaticState = "NotAllowed",
@@ -190,19 +181,17 @@ local CAPABILITIES = {
     ["X2Auction:GetLowestPrice"] = { OfficialState="OfficialEnabled", Since="2025-08-12", Cooldown=500, Risk="server_query", Notes="stable itemType/itemGrade auction lookup; call only from explicit user quote flow" },
     ["X2Auction:AskMarketPrice"] = { OfficialState="OfficialEnabled", Since="2025-08-12", Cooldown=500, Risk="server_query", Notes="explicit market-price request paired with paced GetLowestPrice readback; askMarketPriceUi=false for addon quotes; never background-poll" },
     ["X2Quest:IsReadyForCompleteQuest"] = { OfficialState="OfficialEnabled", Since="2026-03-31", SideEffectFree=true },
-    -- 副本入口 UI 只读接口（RU 2026-05-19）用于红龙巢穴、血之使者卡杜姆活动行；账号进入次数 "1/1" 由
-    -- GetDetailInstanceInfo 提供，不来自任务。四个 getter 均无副作用；instanceType 是服务器数据，运行时按本
-    -- 地化副本名匹配，并在会话内缓存解析 ID。
+    -- 副本入口只读接口（RU 2026-05-19）。红龙巢穴、卡杜姆的账号次数来自 GetDetailInstanceInfo，不来自任务。
+    -- instanceType 由服务器提供，按本地化名称解析并在会话内缓存。
     ["X2BattleField:GetInstanceUiKindList"] = { OfficialState="OfficialEnabled", Since="2026-05-19", SideEffectFree=true },
     ["X2BattleField:GetInstanceListByKind"] = { OfficialState="OfficialEnabled", Since="2026-05-19", SideEffectFree=true },
     ["X2BattleField:GetDetailInstanceInfo"] = { OfficialState="OfficialEnabled", Since="2026-05-19", SideEffectFree=true },
     ["X2BattleField:GetInstanceName"] = { OfficialState="OfficialEnabled", Since="2026-05-19", SideEffectFree=true },
 
-    -- 预留 V3 功能能力先在中央登记，避免后续实现绕过门禁。登记本身不会启动轮询或启用计划中的功能。
     ["X2Friend:IsMyFriend"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
     ["X2Friend:GetFriendList"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
-    -- （2026-10-13）本地Allowed清单及RU 2026-04-28公告已开放此getter；只读成员名单，
-    -- 返回字段仍由消费者保守校验，nil/拒读必须降级不可用，不能据此开放Family写接口。
+    -- 本地 Allowed 清单及 RU 2026-04-28 公告已开放此名单 getter。
+    -- 消费者仍须校验字段，nil/拒读时按不可用处理；这不代表 Family 写接口开放。
     ["X2Family:GetMemberList"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
     ["X2Friend:GetBlockList"] = { OfficialState="OfficialEnabled", Since="2026-08-05", SideEffectFree=true },
     ["X2Friend:BlockUser"] = { OfficialState="OfficialEnabled", Since="2026-08-05", Cooldown=1000, Risk="write" },
@@ -217,26 +206,23 @@ local CAPABILITIES = {
     ["X2EquipSlotReinforce:GetReinforceInfo"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
     ["X2EquipSlotReinforce:GetAppliedAllSetEffect"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
     ["X2EquipSlotReinforce:GetTotalReinforceLevel"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
-    -- 强化分析消费的其余 X2EquipSlotReinforce getter，依据 2026-09-03 RU 导出清单对账（
-    -- api_functions.lua:1855-1878，"Allowed functions"）；全部为 SideEffectFree 查询。StartReinforceAddExp
-    -- / StartReinforceLevelup / ChangeLevelEffect / EnableLevelUp 位于 "Available/not allowed"，不予登记，
-    -- 使写路径在门禁处不可达，而非只靠调用者约定。
+    -- 只读 getter 已按 2026-09-03 RU 导出清单核实（api_functions.lua:1855-1878）。
+    -- StartReinforceAddExp / StartReinforceLevelup / ChangeLevelEffect / EnableLevelUp 属于 Available/not allowed，不登记写能力。
     ["X2EquipSlotReinforce:GetAttributeTotalLevel"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2EquipSlotReinforce:GetNextSetApplyLevel"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2EquipSlotReinforce:HasNextSetEffect"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2EquipSlotReinforce:SuitableLevelForEquipSlotReinforce"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="equipSlotIndex legal range still RU-unverified; read-only analysis probes a bounded range" },
     ["X2EquipSlotReinforce:GetBundleEffectTopLevel"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
 
-    -- 随包静态 API 中存在、RU 官方覆盖未单独重述的 Suite 能力，已在 2026-08-28 对照 api_functions.lua 导出
-    -- 清单核实。清单就是官方 Allowed 列表，其中导出的下列接口标为 OfficialEnabled；功能边界仍检查静态存在性
-    -- ，绝不自动探测写入或服务器动作。WorldToScreen 仅为社区全局函数，仍保持 Unknown。
+    -- 以下接口已于 2026-08-28 按 api_functions.lua 的 Allowed 清单核实，标为 OfficialEnabled。
+    -- 调用时仍检查符号存在；不能自动探测写入或服务器动作。
     ["X2Hotkey:GetOptionBinding"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     -- RU 2025-08-20 开放的宠物按钮读写；能力登记保留官方事实，不会自动调用接口。
     -- 官方按钮 setter 文档漏列 index；原生设置页使用第三参 manager 1/2，所有写入仍须非战斗+读回。
     ["X2Hotkey:GetOptionBindingButton"] = { OfficialState="OfficialEnabled", Since="2025-08-20", SideEffectFree=true },
     ["X2Hotkey:SetOptionBindingButtonWithIndex"] = { OfficialState="OfficialEnabled", Since="2025-08-20", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction; third manager argument follows native UI, requires full readback" },
-    -- 下面两个 getter 只用于显式用户操作前的白名单安全预检；
-    -- Authority 仍在 Feature 事务层，绝不能拿它们去循环猜 action 名、建立后台枚举或绕过战斗写限制。
+    -- 只用于用户操作前的白名单预检；事务仍由 Feature 执行。
+    -- 不能枚举猜测 action 名，也不能借此绕过战斗写限制。
     ["X2Hotkey:IsValidActionName"] = { OfficialState="OfficialEnabled", Since="2025-08-20", SideEffectFree=true, Notes="RU official hotkey action validation; used only for explicit bounded whitelist preflight" },
     ["X2Hotkey:IsOverridableAction"] = { OfficialState="OfficialEnabled", Since="2025-08-20", SideEffectFree=true, Notes="RU official hotkey override validation; used only for explicit bounded whitelist preflight" },
     ["X2Hotkey:BindingToOption"] = { OfficialState="OfficialEnabled", Since="2025-10-08", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
@@ -268,30 +254,26 @@ local CAPABILITIES = {
     ["X2Unit:GetCurrentZoneGroup"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Unit:UnitName"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Unit:GetUnitWorldPositionByTarget"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
-    -- 全局函数（api_functions.lua:5377）显式登记 Method，使 ResolveHost(nil)->_G 能解析；不登记 X2Unit 命名空间。
+    -- 全局函数（api_functions.lua:5377）从 _G 解析，不挂到 X2Unit 命名空间。
     ["ConvertWorldToScreen"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Method="ConvertWorldToScreen", Source="api_functions.lua:5377 global function", Note="Projection fallback for plate anchoring; runtime verification pending" },
     ["UIParent:GetViewCameraPos"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:351", Notes="camera projection fallback only; no polling outside active visual consumers" },
     ["UIParent:GetViewCameraDir"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:352", Notes="camera projection fallback only; no polling outside active visual consumers" },
     ["UIParent:GetViewCameraFov"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:361", Notes="camera projection fallback only; RangeAssist requires a verified FOV; legacy projection keeps its default fallback" },
-    -- 社区 WorldToScreen（globals/WorldToScreen.lua，easypull 依赖）是自定义摄像机投影辅助函数，不是游戏
-    -- API。Suite 不依赖该全局符号；ScreenProjectionV3 提供使用相同 UIParent 摄像机数学的 EasyPull 兼容私有
-    -- 兜底。这里只登记事实以避免误用。
+    -- WorldToScreen 来自社区 globals/WorldToScreen.lua，不是游戏 API。
+    -- Suite 使用 ScreenProjectionV3 内的兼容实现，不依赖这个全局符号。
     ["WorldToScreen"] = { OfficialState="Unknown", SideEffectFree=true, Method="WorldToScreen", Source="community globals/WorldToScreen.lua (NOT a game API)", Notes="custom camera projection; Suite 自有投影逻辑 (旧 rp_api 已删除), does not call this global" },
     ["X2Unit:GetTargetAbilityTemplates"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Unit:GetUnitScreenPosition"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
     ["X2Option:GetConsoleVariable"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Option:SetConsoleVariable"] = { OfficialState="OfficialEnabled", Risk="write", Notes="Suite recovery path may use this before the registry loads; normal services must query the registry" },
-    -- 个人传送门选项读写（RU 2026-08-23），官方 Allowed 证据位于 api_functions.lua:3887/3889；在实机传送门
-    -- 旁完成切换前 RuntimeState 保持 Unknown。这是普通游戏选项，不是控制台变量，因此不适用控制台变量限制。
+    -- 传送门选项读写已在 RU 2026-08-23 开放（api_functions.lua:3887/3889）。
+    -- 实机传送门旁验证切换前，RuntimeState 保持 Unknown；它是游戏选项，不是控制台变量。
     ["X2Option:GetOptionItemValue"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="personal portal option read; candidate registration P2" },
     ["X2Option:SetItemFloatValue"] = { OfficialState="OfficialEnabled", Risk="write", Notes="personal portal option write; candidate registration P2" },
     ["X2Map:GetZoneStateInfoByZoneId"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
-    -- （2026-09-19，寻宝原生地图定位）RU 2025-11 后 ShowWorldmapLocation 的首参明确为 zoneGroupId，后接全局
-    -- x/y/z。
-    -- 参考 TreasureMapHunter 的实际调用也是 targetZone,targetX,targetY,0；禁止再把首参当成固定 MapContext
-    -- 魔数。这里仍只登记显式用户点击触发的 UI 定位动作，
-    -- 不允许 Scheduler/Tick 自动调用；250ms 冷却防止双击/连点反复打开地图。Treasure Feature 经
-    -- ActionCapability fail-closed，地图定位失败不会污染持久化 Authority。
+    -- ShowWorldmapLocation 自 RU 2025-11 起首参为 zoneGroupId，随后为全局 x/y/z。
+    -- TreasureMapHunter 也使用 targetZone,targetX,targetY,0，首参不能填固定 MapContext。
+    -- 仅响应用户点击，并保留 250ms 冷却；定位失败不能改动寻宝存档。
     ["X2Map:ShowWorldmapLocation"] = { OfficialState="OfficialEnabled", Cooldown=250, Risk="write", SideEffectFree=false,
         Source="user-supplied TreasureMapHunter RU addon + bundled api_functions.lua Allowed list", Notes="explicit treasure-map world-map location only" },
     ["X2Quest:GetActiveQuestListCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
@@ -314,16 +296,12 @@ local CAPABILITIES = {
     ["X2Ability:GetAllMyActabilityInfos"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Ability:GetBuffTooltip"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="expensive", Notes="buff-id -> icon/name resolution fallback, cached" },
     ["X2Skill:GetCooldown"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="skill cooldown query; reserved for cooldown display features" },
-    -- （2026-09-19，坐骑/战斗宠物 CD）RU 官方 2025-09 已开放 GetMateCooldown。
-    -- Authority/数据流：只允许 CooldownObservationV3 对用户已追踪 ID 读取本机 Native CD；COMBAT_MSG 仅使用
-    -- self 快路，
-    -- 500ms 有界 round-robin 补 mate/无战斗事件/重载中途覆盖，不扫描未追踪库，也不为 CD 开启全场战斗事件。
-    -- mateType：1 表示骑乘，2 表示战斗。
-    -- 它是只读本地事实，不代表远端玩家状态，也禁止静态 expectedSec 伪造。
+    -- GetMateCooldown 已在 RU 2025-09 开放；mateType：1 骑乘，2 战斗。
+    -- CooldownObservationV3 只读用户追踪的本机 ID：self 走 COMBAT_MSG，mate 等由 500ms 轮转补读。
+    -- 不扫描未追踪库，不为 CD 订阅全场战斗事件，也不把本机读数或静态 expectedSec 当成远端状态。
     ["X2Skill:GetMateCooldown"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Since="2025-09-16", Notes="mate cooldown query; mateType 1=ride, 2=battle; local cooldown authority only" },
-    -- （2026-09-25，equipment-slot-namespace-1）该 API 的参数名 equipSlot 指实际 ES_* 槽位编号，
-    -- 返回值才是装备物品 ItemType。EST_* 是 Equip Slot Type 命名空间，不能直接作为 locator；18.307 跑商
-    -- 曾因此把 EST_BACKPACK 当背包槽读取并稳定得到空值。所有新消费者必须优先 ES_*，缺失时只能使用已验证槽号。
+    -- equipSlot 参数使用 ES_* 实际槽号，返回值才是物品 ItemType。
+    -- EST_* 表示槽类型，曾因误传 EST_BACKPACK 而持续读空；缺少 ES_* 时只用已验证槽号。
     ["X2Equipment:GetEquippedItemType"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="actual equipment slot index (ES_*) -> equipped itemType; do not pass EST_* slot-type constants" },
     ["X2Mate:IsPlayerPetExists"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="pet/mate existence; reserved for healer summon handling" },
     ["X2Store:GetSpecialtyRatioBetween"] = { OfficialState="OfficialEnabled", Risk="server_query" },

@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-# ---------------------------------------------------------------------
 # Replicated Suite · 状态重构测试运行器
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
-# 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
-# 数据归属、调用链和存档协议由原实现管理，
-# 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
-# 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 """开发期离线回归；不进入 toc.g，不模拟已通过 RU 实机验收。
 优先使用系统 Lua 5.1；无 CLI 时仅以 liblua5.4 + 兼容垫片运行纯逻辑测试。
 """
@@ -38,18 +32,15 @@ UNFINISHED_CLOSURE_TESTS = [
     "tools/rs_navigation_status_acceptance_tests.lua",
 ]
 
-# Phase 1 源码故障域拆分的契约回归（2026-09-28，Batch A）。
-# 每个被拆出的 Feature 都必须在这里证明：Feature ID / Store ID / UpdateTopic / Demand owner /
-# Commands / Projection shape / ApiDependencies 与拆分前一致，而且只注册一次。
-# 中文维护注释：该清单属于默认全量门禁，不并入 UNFINISHED_CLOSURE_TESTS，
-# 避免把“拆分契约”与“未完成能力收口”两种语义混在同一个计数里。
+# 检查拆分后的功能仍保持原接口、存档身份和需求归属，且只注册一次。
+# 这组检查属于默认门禁，与未完成功能的收口清单分开计数。
 FEATURE_SPLIT_TESTS = [
     "tools/rs_feature_slice_split_tests.lua",
 ]
 
-# Phase 3 源码契约收口的契约回归（2026-09-29，Batch A）。
+# 源码结构与依赖边界回归。
 # 每个批次把 Foundation 里“点名具体业务 Feature”的硬编码门禁搬回 Feature 自己的 acceptance 文件，
-# 这里证明搬迁是**无损且严格加强**的：逐条触发搬迁过程中补齐的强度点，并静态断言 core/*.lua
+# 这里证明搬迁是无损且严格加强的：逐条触发搬迁过程中补齐的强度点，并静态断言 core/*.lua
 # 不再出现该 Feature 的硬编码访问。与 FEATURE_SPLIT_TESTS 分开计数，语义不同。
 CORE_FEATURE_DECOUPLING_TESTS = [
     "tools/rs_core_feature_decoupling_tests.lua",
@@ -58,7 +49,7 @@ CORE_FEATURE_DECOUPLING_TESTS = [
     "tools/rs_live_contract_state_tests.lua",
 ]
 
-# 维护：事件快照、需求回滚/重入、失败启动清理和关闭失败传播共用真实生产生命周期边界。
+# 事件快照、需求回滚/重入、失败启动清理和关闭失败传播共用真实生产生命周期边界。
 # 各套件须隔离进程，避免宿主替身互相污染；本地通过不等同 RU 退出/重登录验收。
 FOUNDATION_LIFECYCLE_TESTS = [
     "tools/rs_foundation_lifecycle_tests.lua",
@@ -77,7 +68,7 @@ WINDOW_POSITION_TESTS = [
     "tools/rs_window_viewport_tests.lua",
     "tools/rs_window_reload_position_tests.lua",
     "tools/rs_feature_profiles_quick_geometry_tests.lua",
-    "tools/rs_floating_relog_tests.lua",  # 维护：真实 Store 的锁定/折叠冷启和拒写回滚必须覆盖，不能靠退出 Flush 掩盖延迟保存。
+    "tools/rs_floating_relog_tests.lua",  # 真实 Store 的锁定/折叠冷启和拒写回滚必须覆盖，不能靠退出 Flush 掩盖延迟保存。
 ]
 
 
@@ -88,7 +79,7 @@ BONDS_CROSS_CONTINENT_TESTS = ["tools/rs_bonds_cross_continent_tests.lua"]
 AUCTION_USER_PRIORITY_TESTS = [
     "tools/rs_auction_user_priority_tests.lua",
     "tools/rs_auction_user_priority_trade_tests.lua",
-    # 维护（2026-10-01）：整条原生询价保护、SWR 阻断与后台需求释放必须进入默认门禁。
+    # 整条原生询价保护、SWR 阻断与后台需求释放必须进入默认门禁。
     "tools/rs_auction_full_lane_safety_tests.lua",
     "tools/rs_auction_full_lane_trade_tests.lua",
 ]
@@ -113,7 +104,7 @@ TRADE_COPY_EVIDENCE_TESTS = [
 ]
 
 
-# 维护（2026-09-30，feature-profile-failure-evidence-1）：坏业务索引不得假恢复；
+# 坏业务索引不得假恢复；
 # 功能方案失败证据与死亡记录事务回读必须进入默认门禁，而不是只保留可选脚本。
 FEATURE_PROFILE_FAILURE_TESTS = [
     "tools/rs_feature_profiles_tests.lua",
@@ -125,7 +116,7 @@ FEATURE_PROFILE_FAILURE_TESTS = [
 ]
 
 
-# 维护（2026-09-30，range-continuity-1）：低帧率刷新、总点预算和只读诊断进入默认门禁。
+# 低帧率刷新、总点预算和只读诊断进入默认门禁。
 RANGE_CONTINUITY_TESTS = [
     "tools/rs_range_assist_continuity_tests.lua",
     "tools/rs_range_metric_calibration_tests.lua",
@@ -163,10 +154,10 @@ TRADE_REQUOTE_TESTS = [
 # 不能被通过的旧测试组掩盖而悄然消失。
 # 原生边界是模型，本门禁不认证 RU 实机行为。
 RELEASE_READINESS_TESTS = [
-    "tools/rs_auction_paging_tests.lua", # 中文维护：真实分页/Native 行复用及删除询价选择边界。
-    "tools/rs_list_refresh_regressions_tests.lua", # 中文维护：治疗同数量编辑与债券行激活契约。
-    "tools/rs_treasure_map_cooldown_tests.lua", # 中文维护：真实 Capability/Scheduler 的55ms定位冷却反例。
-    "tools/rs_position_lock_store_tests.lua", # 中文维护：Launcher/方案/换装锁偏好的真实存档往返。
+    "tools/rs_auction_paging_tests.lua", # 真实分页/Native 行复用及删除询价选择边界。
+    "tools/rs_list_refresh_regressions_tests.lua", # 治疗同数量编辑与债券行激活契约。
+    "tools/rs_treasure_map_cooldown_tests.lua", # 真实 Capability/Scheduler 的55ms定位冷却反例。
+    "tools/rs_position_lock_store_tests.lua", # Launcher/方案/换装锁偏好的真实存档往返。
     "tools/rs_treasure_double_click_tests.lua",
     "tools/rs_buff_tracking_ux_tests.lua",
     "tools/rs_status_tracking_grid_tests.lua",
@@ -174,9 +165,9 @@ RELEASE_READINESS_TESTS = [
     "tools/rs_batch_import_authority_tests.lua",
     "tools/rs_draft_session_v2_tests.lua", # 无焦点getter/无OnClick的Native缓冲交接，普通标签/外owner保留严格门禁。
     "tools/rs_signed_readback_tests.lua",
-    "tools/rs_persistence_scope_replacement_tests.lua", # 中文维护：角色/owner/未来契约拒写，同归属内容损坏才允许显式耐久替换。
-    "tools/rs_persistence_character_scope_tests.lua", # 中文维护：真实Core+内存Native验证有损姓名隔离、可信旧键只读迁移和身份未就绪；绝不访问/写入实机UDF。
-    "tools/rs_character_feature_binding_tests.lua", # 维护：角色消费者不得沿用旧loaded、目录选择及余额回执基线。
+    "tools/rs_persistence_scope_replacement_tests.lua", # 角色/owner/未来契约拒写，同归属内容损坏才允许显式耐久替换。
+    "tools/rs_persistence_character_scope_tests.lua", # 真实Core+内存Native验证有损姓名隔离、可信旧键只读迁移和身份未就绪；绝不访问/写入实机UDF。
+    "tools/rs_character_feature_binding_tests.lua", # 角色消费者不得沿用旧loaded、目录选择及余额回执基线。
     "tools/rs_transport4_dual_loss_recovery_tests.lua",
     "tools/rs_cooldown_auto_discovery_tests.lua",
     "tools/rs_cooldown_hud_pipeline_tests.lua",
@@ -186,20 +177,31 @@ RELEASE_READINESS_TESTS = [
     "tools/rs_combat_history_integrity_tests.lua",
     "tools/rs_combat_history_transfer_tests.lua",  # 历史导出首段回读、无损重分页及失败进入模块TXT，不能只验Store完整性。
     "tools/rs_combat_kill_diagnostics_tests.lua",
-    # 维护：只用明确原生归属验证私有/全局低频回退、来源留证、去重和关闭释放；不将缺通知猜成击杀。
+    # 只用明确原生归属验证私有/全局低频回退、来源留证、去重和关闭释放；不将缺通知猜成击杀。
     "tools/rs_combat_kill_ingress_tests.lua",
-    # 维护：用真实热路核对有界缓存、借用事实隔离和名单复用；CPU 数字只作离线基准，门禁不承诺 RU FPS。
+    # 用真实热路核对有界缓存、借用事实隔离和名单复用；CPU 数字只作离线基准，门禁不承诺 RU FPS。
     "tools/rs_combat_dispatch_performance_tests.lua",
     "tools/rs_dps_projection_performance_tests.lua",
     "tools/rs_healer_roster_performance_tests.lua",
-    # 维护：Aura 临时闭包、四池纯布局及逐行点样式优化保留事实时效、Native 拒写重试和旧公开方法。
+    # Aura 临时闭包、四池纯布局及逐行点样式优化保留事实时效、Native 拒写重试和旧公开方法。
     "tools/rs_aura_hotpath_performance_tests.lua",
     "tools/rs_buff_layout_performance_tests.lua",
     "tools/rs_visual_guides_performance_tests.lua",
-    # 维护：轻量团队人数、总线借用帧与治疗规则热路须保持实时事实、重入和快照隔离。
+    # 轻量团队人数、总线借用帧与治疗规则热路须保持实时事实、重入和快照隔离。
     "tools/rs_combat_health_performance_tests.lua",
     "tools/rs_combat_bus_performance_tests.lua",
     "tools/rs_healer_rule_performance_tests.lua",
+    # 名单版本与击杀指标版本独立失效；缓存命中必须保持公开快照隔离与新事实即时更新。
+    "tools/rs_healer_cycle_performance_tests.lua",
+    "tools/rs_kill_projection_performance_tests.lua",
+    # Aura 合并读取须保持 TTL、Native 次数、未知状态、目标重入和旧接口隔离语义。
+    "tools/rs_aura_normalized_read_performance_tests.lua",
+    "tools/rs_buff_normalized_read_performance_tests.lua",
+    # 维护：PVP 几何/网格只缓存纯计算；确定事件免撤销账本，未知事件仍完整重放。
+    "tools/rs_range_hotpath_performance_tests.lua",
+    "tools/rs_unit_lines_hotpath_performance_tests.lua",
+    "tools/rs_buff_projection_hotpath_performance_tests.lua",
+    "tools/rs_dps_ingest_performance_tests.lua",
     "tools/rs_combat_statistics_layout_tests.lua",
     "tools/rs_hud_all_preview_tests.lua",
     "tools/rs_buff_hud_colors_tests.lua",  # 任意RGB、双HUD独立、交换、校准取消与失败回滚。
@@ -267,7 +269,7 @@ def lua_dofiles(paths: list[str]) -> str:
 
 
 def run_lua_files_isolated(paths: list[str], prelude: str) -> None:
-    # 维护（test-isolation-1）：B1~B11 套件会安装 Native/全局替身；每份测试必须使用独立 Lua state，
+    # B1~B11 套件会安装 Native/全局替身；每份测试必须使用独立 Lua state，
     # 否则前一套的 X2Bag/FeatureRuntime mock 会污染后一套并制造“单跑绿、统一入口红”的假故障。
     for path in paths:
         print(f"[ISOLATED] {path}")
@@ -372,19 +374,19 @@ def main() -> int:
         print(f"WINDOW_POSITION PASS: {len(WINDOW_POSITION_TESTS)} suite(s)")
         return 0
     elif "--window-viewport" in sys.argv:
-        # 维护：独立 Native 窗口模型执行真实 Api/Layout/Windowing/Shell/Surface 与完整 viewport 矩阵。
+        # 独立 Native 窗口模型执行真实 Api/Layout/Windowing/Shell/Surface 与完整 viewport 矩阵。
         # 不替换缺失历史夹具，不改变默认全量的 BLOCKED 判据；通过不等同 RU Native/OnScale 验收。
         required = ["tools/rs_window_viewport_test_host.lua", "tools/rs_window_viewport_tests.lua"]
         if not require_test_files(required): return 2
         source = prelude + lua_dofiles(required[1:])
     elif "--activity-layout" in sys.argv:
-        # 维护（activity-section-pack-1）：真实 ActivityLists 分区器 + 受控 TableView 几何替身；
+        # 真实 ActivityLists 分区器 + 受控 TableView 几何替身；
         # 覆盖特定窗口高度的中段空白、极小高度降级与混合计数矩阵，不等同 RU Native 渲染验收。
         required = ["tools/rs_activity_lists_layout_tests.lua"]
         if not require_test_files(required): return 2
         source = prelude + lua_dofiles(required)
     elif "--foundation-lifecycle" in sys.argv:
-        # 维护（foundation-lifecycle-1）：真实事件/调度/刷新链路，独立 Native/时钟故障模型。
+        # 真实事件/调度/刷新链路，独立 Native/时钟故障模型。
         # 不依赖缺失历史 UI host，不改变默认全量的 BLOCKED 判据，不把兼容 Lua 运行算作 RU 验收。
         if not require_test_files(FOUNDATION_LIFECYCLE_TESTS): return 2
         if not require_transitive_test_dependencies(FOUNDATION_LIFECYCLE_TESTS): return 2
@@ -398,41 +400,41 @@ def main() -> int:
     elif "--fixed-hud" in sys.argv:
         source = prelude + 'dofile("tools/rs_fixed_status_hud_tests.lua"); dofile("tools/rs_component_placement_tests.lua"); dofile("tools/rs_component_placement_page_tests.lua"); dofile("tools/rs_component_placement_renderer_tests.lua")'
     elif "--hud-defaults" in sys.argv:
-        # 维护：用户完整11行模板、真实Store/校准/复制往返及旧schema4/5/6指纹；只替换Native/磁盘。
+        # 用户完整11行模板、真实Store/校准/复制往返及旧schema4/5/6指纹；只替换Native/磁盘。
         # 此独立入口不进入toc.g；新默认不等同强制迁移已有布局，也不等同RU实机验收。
         source = prelude + 'dofile("tools/rs_hud_default_template_tests.lua")'
     elif "--hud-template-copy" in sys.argv:
-        # 维护（hud-template-copy-2）：实际Draft/Store/公共分页器；Native容量/聊天/选区是可控模型。
+        # 实际Draft/Store/公共分页器；Native容量/聊天/选区是可控模型。
         # 独立入口保留原V1纯生成器测试；不把模型通过当作RU剪贴板或聊天渲染验收。
         source = prelude + 'dofile("tools/rs_hud_template_copy_tests.lua")'
     elif "--hud-template" in sys.argv:
-        # 维护：真实校准入口/Draft/V1模板和Store只读边界；Native控件、聊天仍为替身。
+        # 真实校准入口/Draft/V1模板和Store只读边界；Native控件、聊天仍为替身。
         # 独立入口不改变历史默认分组，不接入toc.g；输出完整性不等于RU实机聊天容量/复制验收。
         source = prelude + 'dofile("tools/rs_hud_template_tests.lua")'
     elif "--pvp-hud" in sys.argv:
-        # 维护：实际事件合并/调度/FrameBudget/Renderer/校准/存档，另测实际RSUI纹理提交。
+        # 实际事件合并/调度/FrameBudget/Renderer/校准/存档，另测实际RSUI纹理提交。
         # Native/磁盘/屏幕仍是替身；1ms请求代表每渲染帧，不代表实机1000Hz或网络延迟上界。
         source = prelude + 'dofile("tools/rs_pvp_hud_tests.lua"); dofile("tools/rs_pvp_hud_contract_tests.lua"); dofile("tools/rs_hud_info_split_tests.lua"); dofile("tools/rs_gear_score_format_tests.lua")'
     elif "--enemy-boss" in sys.argv:
-        # 维护：目标类型事实、实际头顶Renderer、实际计时driver/告警Presenter/Windowing；仅Native/时钟为替身。
+        # 目标类型事实、实际头顶Renderer、实际计时driver/告警Presenter/Windowing；仅Native/时钟为替身。
         # 独立入口不改变历史分组；Lua5.4兼容垫片测试不能冒充RU Lua5.1/屏幕实测。
         source = prelude + 'dofile("tools/rs_enemy_loadout_tests.lua"); dofile("tools/rs_loadout_hud_ui_tests.lua"); dofile("tools/rs_boss_hud_tests.lua")'
     elif "--random-shop" in sys.argv:
         # 2026-10-06 用户删除随机商店计数；旧快捷入口改为验证功能退役，而非装载已删除源码。
         source = prelude + 'dofile("tools/rs_feature_retirement_tests.lua")'
     elif "--persistence-copy" in sys.argv:
-        # 维护：真实Core负坐标传输/耐久失败只读取证和诊断页输入生命周期；独立Native模型，非RU实机。
+        # 真实Core负坐标传输/耐久失败只读取证和诊断页输入生命周期；独立Native模型，非RU实机。
         # 此入口不改变默认历史分组，不写用户存档；测试夹具/临时产物不得放入运行时TOC或补丁。
         source = prelude + 'dofile("tools/rs_signed_readback_tests.lua"); dofile("tools/rs_persistence_gate_current_health_tests.lua"); dofile("tools/rs_report_selection_tests.lua")'
     elif "--buff-cap" in sys.argv:
-        # 中文维护：计数/会话峰值/个人提醒/耐久保存和真实RSUI；Native与磁盘为替身，不证明RU容量或实机通过。
-        # 仅新增独立入口，保持其它分组/默认调用次序；本轮测试文件不进入游戏TOC。
+        # 计数/会话峰值/个人提醒/耐久保存和真实RSUI；Native与磁盘为替身，不证明RU容量或实机通过。
+        # 离线测试独立运行，不加入游戏 TOC。
         source = prelude + 'dofile("tools/rs_buff_cap_regression_tests.lua"); dofile("tools/rs_buff_cap_ui_tests.lua")'
     elif "--boss-alerts" in sys.argv:
-        # 中文维护：首领规则/耐久回读/真实RSUI选择与布局；Native、磁盘和Presenter为替身，非RU验收。
+        # 首领规则/耐久回读/真实RSUI选择与布局；Native、磁盘和Presenter为替身，非RU验收。
         source = prelude + 'dofile("tools/rs_boss_alerts_regression_tests.lua"); dofile("tools/rs_boss_alerts_ui_tests.lua")'
     elif "--unfinished-closure" in sys.argv:
-        # 维护（unfinished-closure-1）：B1~B11 与钓鱼 Hotkey v3 专项必须进入统一入口；implemented_pending_ru 仍属待 RU 验收，
+        # B1~B11 与钓鱼 Hotkey v3 专项必须进入统一入口；implemented_pending_ru 仍属待 RU 验收，
         # 本地 PASS 只能证明离线契约，不得把导航状态提升为 complete。
         if not require_test_files(UNFINISHED_CLOSURE_TESTS): return 2
         if not require_transitive_test_dependencies(UNFINISHED_CLOSURE_TESTS): return 2
@@ -459,22 +461,22 @@ def main() -> int:
         if not require_test_files(required): return 2
         source = prelude + lua_dofiles(required)
     elif "--gear-page" in sys.argv:
-        # 维护：真实RSUI布局/表单/虚拟表格/EventBus/ActionRunner/Gear存档；Native为模拟。
+        # 真实RSUI布局/表单/虚拟表格/EventBus/ActionRunner/Gear存档；Native为模拟。
         source = prelude + 'dofile("tools/rs_gear_page_regression_tests.lua")'
     elif "--cooldown" in sys.argv:
         # CooldownObservationV3 V4 仅以 Skill ID 为键，冷却来自独立于事件的原生事实；覆盖有界 READY 探测和全部需求释放，原生传输为模型。
         source = prelude + 'dofile("tools/rs_cooldown_observation_tests.lua")'
     elif "--library-runtime" in sys.argv:
-        # 维护：真实EventBus owner-first / Scheduler / Api / Store与Button逻辑；Native仍为模拟。
+        # 真实EventBus owner-first / Scheduler / Api / Store与Button逻辑；Native仍为模拟。
         source = prelude + 'dofile("tools/rs_library_runtime_contract_tests.lua")'
     elif "--capture-library" in sys.argv:
         # 使用真实状态 Feature、Store、UI 绑定和有界元数据及留存策略，不能视为 RU 实机验证。
         source = prelude + 'dofile("tools/rs_tracking_scope_tests.lua"); dofile("tools/rs_tracking_scope_ui_tests.lua"); dofile("tools/rs_status_capture_library_tests.lua")'
     elif "--unit-lines" in sys.argv:
-        # 维护：真实Service/Feature/Presenter回归；Native、坐标和调度驱动为模拟，不代表RU实机。
+        # 真实Service/Feature/Presenter回归；Native、坐标和调度驱动为模拟，不代表RU实机。
         source = prelude + 'dofile("tools/rs_unit_lines_regression_tests.lua")'
     elif "--colorfield" in sys.argv:
-        # 维护：共享 ColorField V2 的布局/事务/Popup 坐标契约；Native 顶层 Window 行为仍需 RU 实机确认。
+        # 共享 ColorField V2 的布局/事务/Popup 坐标契约；Native 顶层 Window 行为仍需 RU 实机确认。
         source = prelude + 'dofile("tools/rs_colorfield_v2_tests.lua"); dofile("tools/rs_colorfield_popup_positioning_tests.lua")'
     elif "--paged" in sys.argv:
         # 显式 UI 导航和不可变报告不能隐式推进到下一条输出。
@@ -483,28 +485,28 @@ def main() -> int:
         # 验证从 UDF 归纳的投影机制，使用不含个人标识的构造数据，不能作为原生验收。
         source = prelude + 'dofile("tools/rs_udf_numeric_regression_tests.lua")'
     elif "--f2-page" in sys.argv:
-        # 维护：真实Core/Store/PageHost的构建前隔离；不是F2实际旧档已恢复的证明。
+        # 真实Core/Store/PageHost的构建前隔离；不是F2实际旧档已恢复的证明。
         source = prelude + 'dofile("tools/rs_f2_protected_page_tests.lua")'
     elif "--window-numeric" in sys.argv:
-        # 维护：共享Floating单轴旧精度桥、schema5/6和codec1边界；数据为合成，非F2原档。
+        # 共享Floating单轴旧精度桥、schema5/6和codec1边界；数据为合成，非F2原档。
         source = prelude + 'dofile("tools/rs_window_numeric_recovery_tests.lua")'
     elif "--native-numeric" in sys.argv:
-        # 维护：真实跑商取证/有界精度恢复/新旧物理传输；Native 为独立数值损失模型。
+        # 真实跑商取证/有界精度恢复/新旧物理传输；Native 为独立数值损失模型。
         source = prelude + 'dofile("tools/rs_native_numeric_transport_tests.lua")'
     elif "--focus" in sys.argv:
-        # 维护：旧聚焦报告兼容入口；当前默认完整故障报告使用--paged回归。
+        # 旧聚焦报告兼容入口；当前默认完整故障报告使用--paged回归。
         source = prelude + 'dofile("tools/rs_focus_report_tests.lua")'
     elif "--self-check" in sys.argv:
-        # 维护：统一报告/两按钮交互/剪贴板和只读取证，不替代原存档完整性回归。
+        # 统一报告/两按钮交互/剪贴板和只读取证，不替代原存档完整性回归。
         source = prelude + 'dofile("tools/rs_self_check_report_tests.lua")'
     elif "--delivery" in sys.argv:
-        # 维护：报告交付/无损复制包，Native 接收端模拟，不替代客户端验收。
+        # 报告交付/无损复制包，Native 接收端模拟，不替代客户端验收。
         source = prelude + 'dofile("tools/rs_self_check_report_tests.lua"); dofile("tools/rs_report_delivery_tests.lua")'
     elif "--pipeline" in sys.argv:
-        # 维护：独立复查三个 Store 的真实 API/能力门/存档链路，Native 仅用合成内存盘。
+        # 独立复查三个 Store 的真实 API/能力门/存档链路，Native 仅用合成内存盘。
         source = prelude + 'dofile("tools/rs_persistence_pipeline_audit.lua")'
     elif "--feature-split" in sys.argv:
-        # Phase 1 Batch A：只跑“源码故障域拆分契约”。每个 Feature 独立进程，
+        # 只跑“源码故障域拆分契约”。每个 Feature 独立进程，
         # 避免上一个套件的 Store/FeatureRuntime 替身污染下一个 Feature 的契约断言。
         if not require_test_files(FEATURE_SPLIT_TESTS): return 2
         if not require_transitive_test_dependencies(FEATURE_SPLIT_TESTS): return 2
@@ -566,7 +568,7 @@ def main() -> int:
         print(f"FEATURE_PROFILE_FAILURE PASS: {len(FEATURE_PROFILE_FAILURE_TESTS)} suite(s)")
         return 0
     elif "--core-feature-decoupling" in sys.argv:
-        # Phase 3 Batch A：只跑“Core 不再硬编码认识业务 Feature”的搬迁契约。独立进程，
+        # 只跑“Core 不再硬编码认识业务 Feature”的搬迁契约。独立进程，
         # 避免上一个套件的 ReplicatedSuite 替身污染本套件的最小离线宿主。
         if not require_test_files(CORE_FEATURE_DECOUPLING_TESTS): return 2
         if not require_transitive_test_dependencies(CORE_FEATURE_DECOUPLING_TESTS): return 2
@@ -578,7 +580,7 @@ def main() -> int:
         print(f"CORE_FEATURE_DECOUPLING PASS: {len(CORE_FEATURE_DECOUPLING_TESTS)} suite(s)")
         return 0
     else:
-        # 维护（full-runner-proof-1）：默认入口先确认所有声明为“全量”所依赖的测试文件真实存在。
+        # 默认入口先确认所有声明为“全量”所依赖的测试文件真实存在。
         # 缺历史夹具时明确 BLOCKED 并非零退出；禁止跳过缺失文件后仍宣称“全量全绿”。B1~B11 与钓鱼 Hotkey v3 专项同时纳入默认集合。
         legacy = [
             "tools/rs_status_refactor_tests.lua", "tools/rs_tracking_scope_tests.lua", "tools/rs_tracking_scope_ui_tests.lua", "tools/rs_persistence_pipeline_audit.lua", "tools/rs_self_check_report_tests.lua",

@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 交易收益证据测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 使用生产 Trade 投影及未启动模块的诊断报告；报价为构造的边界数据，不代表 RU 实际价格或用户预期利润。
-------------------------------------------------------------------------
 dofile("tools/rs_trade_tests.lua")
 local S = ReplicatedSuite
 local Trade, TA = S.Features.Trade, S.Features.Trade.Authority

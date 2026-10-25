@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 称号效果归属测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- GearV3 配装方案只管理称号效果。
 -- 存档中的 showing/name 只是历史快照，不能重新应用；ChangeAppellation 的 nameType=0 合法表示不显示称号。
-------------------------------------------------------------------------
 local servicePath = (arg and arg[1]) or 'services/rs_gear_service_v3.lua'
 
 ReplicatedSuite = {
@@ -44,7 +41,7 @@ function X2Player:ChangeAppellation(nameType, effectType)
     lastNameType, lastEffectType = nameType, effectType
     -- 故意拒绝保存时的过期显示称号；当前角色不显示称号，
     -- 由合法选择器 0 表示。
-    -- 维护（2026-09-30）：每个场景允许“当前”展示名，包括后续456；拒绝保存时12345。
+    -- 每个场景允许“当前”展示名，包括后续456；拒绝保存时12345。
     -- 原替身硬编码只接受0，第二场景实际上拒绝了动作，却被生产层忽略false掩盖。
     local expectedNameType = type(currentShowingRaw) == "table" and tonumber(currentShowingRaw[1]) or 0
     if tonumber(nameType) ~= expectedNameType then return false end

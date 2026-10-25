@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享复用原语
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 共享复用原语不依赖 State/Storage；专业插件嵌入时可使用全局发布的原语，辅助函数也适用于独立运行体。
-------------------------------------------------------------------------
+-- 这些原语不依赖 State/Storage，可供嵌入或独立运行体共用。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -236,7 +233,7 @@ function OwnerScope.Release(scope, owner, moduleId)
     return released
 end
 
--- Suite 工具面是普通模块的标准便利 API；旧调用点保持兼容，新代码不要私建 Clamp/UTF-8 辅助函数。
+-- 旧工具入口保留兼容；Clamp/UTF-8 等共用这里的实现。
 S.Utils.Clamp = Value.Clamp
 S.Utils.NormalizeValue = Value.Normalize
 S.Utils.FormatValue = Value.Format

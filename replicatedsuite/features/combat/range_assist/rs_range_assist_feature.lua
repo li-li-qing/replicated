@@ -1,15 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 范围辅助功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
--- rs_business_bridge.lua 至此退役）。只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、
--- UpdateTopic、Demand所有者、Commands、Projection结构、ApiDependencies、
--- Scheduler task name（v3_business_range_assist_refresh，16ms）与九个契约版本号全部逐字一致。
--- Authority 边界：圆几何只做本地数学（圆心/半径/点密度），世界距离标定来自
--- ScreenProjectionV3 的 metric calibration；本文件不做单位枚举、不做写操作。
-------------------------------------------------------------------------
+-- 本地圆几何与配置归此 Feature，米数标定由 ScreenProjectionV3 提供；不枚举单位或写游戏状态。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory
@@ -20,15 +12,8 @@ local UnitApi = rawget(_G, "X2Unit")
 
 local RANGE_ASSIST_TASK = "v3_business_range_assist_refresh"
 local RANGE_ASSIST_REFRESH_MS = 16
--- rs_business_bridge.lua 是 Lua 5.1 单一主 chunk，
--- 原文件已经长期接近 200 个活跃顶层 local 的硬上限。本次多圆不能把常量/Normalize/Find 等辅助项
--- 继续声明在主 chunk，否则整个 business bridge 会在编译期失败，范围辅助、背包、拍卖、制造、团队等
--- 同文件 Feature 会一起“implementation unavailable”。因此多圆内部 Authority/迁移/命令辅助全部封进
--- 这个 IIFE 的子函数作用域；主 chunk 只增加/保留 RangeAssist 一个引用。数据流仍是
--- Persistence -> Feature.State.circles -> Authority rows -> Presenter rangePools，不改变任何其它业务 Feature。
--- 后续维护若要增加多圆 helper，也必须放在此内部作用域或对象字段，禁止再消耗主 chunk local 预算。
--- 诊断文字只在完整页面投影被显式读取时格式化。
--- 只使用本模块保存的批次/标定事实，不触发Native、Refresh或Consumer，不进入绘制热路径。
+-- 辅助项放入子函数作用域，避免触及 Lua 5.1 每函数 200 local 上限。
+-- 诊断只格式化已有批次/标定事实，不触发 Native、Refresh 或 Consumer，也不进入绘制热路径。
 local function RangeAssistDescribeFrame(feature)
     local batch = type(feature.RangeLastBatch)=="table" and feature.RangeLastBatch or {}
     local metricCalibration = type(feature.RangeMetricFacts)=="table" and feature.RangeMetricFacts or {}
@@ -157,21 +142,14 @@ local function RangeAssistLegacyCircleId(feature)
     return tonumber(first.id)
 end
 
--- 范围圆以前固定 50ms（20Hz）刷新，镜头旋转时即使
--- 投影坐标本身正确，也会表现为每 3 帧左右跳一次。Scheduler 仍只保留一个 16ms 高频任务，真正
--- Authority 刷新根据本次启用点总量自适应：常规 <=48 点跟随帧级；中等密度 32ms；高密度 48ms。
--- 16ms 是调度下限，不保证回调间隔；低帧率时
--- Scheduler 每个游戏帧最多回调一次。32/48ms 档必须按经过时间控制，不能再按回调次数除以 2/3。
--- 数据流：Demand Consumer -> 单 Scheduler task -> Authority Refresh；关闭/无 Consumer 仍释放任务。
--- 这里只控制会话刷新节奏，不改 circle.pointCount 持久配置，也不在循环内做额外 Static/API 查找。
+-- 共用一个 16ms Scheduler 任务，按启用点数适配刷新：<=48 点跟帧，中密度 32ms，高密度 48ms。
+-- 低帧率每帧最多回调一次，档位须按经过时间判断，不能按回调数除频；无 Consumer 即释放。
 local function RangeAssistRefreshInterval(feature)
     -- 用户显式绘制间隔优先；旧档缺值保留原密度自适应节奏，不扩大实际 Native 点预算。
     local configured=tonumber(feature.State.refreshMs)
     if configured and configured>=1 then return configured end
     local total = 0
-    -- 热路径只读已经由 Apply/Commands 归一化的 State，不再调用 RangeAssistResolveCircles。
-    -- ResolveCircles 会复制整个 circles 数组并回写 state；放在 16ms cadence gate 会制造持续分配、
-    -- GC 压力和无意义的配置表替换。损坏/旧状态在加载和显式配置事务边界统一归一化即可。
+    -- 16ms 门只读已归一化 State；ResolveCircles 会复制数组并回写，放此处会持续分配。加载/配置事务边界再归一化。
     local circles = feature and type(feature.State) == "table" and feature.State.circles or nil
     if type(circles) == "table" then
         for _, circle in ipairs(circles) do
@@ -186,9 +164,7 @@ local function RangeAssistRefreshInterval(feature)
 end
 
 
--- 缓存只包含拓扑、单位方向和世界点工作区，不保存跨帧屏幕事实。
--- 配置替换/增删/启停/点数变化时重建；半径/圆心/米标定仍在每次 read 时重新应用。
--- 最后一个 Consumer 释放后清理缓存，不改任何持久配置，不新增 Scheduler 或 Native 依赖。
+-- 缓存拓扑/方向/半径偏移及世界点工作区，不跨帧缓存位置或屏幕事实；配置变化重建，最后 Consumer 释放清理。
 local function RangeAssistGeometry(feature, circles)
     local cached = feature.RangeGeometry
     local valid = type(cached) == "table" and cached.circles == circles and #cached.sources == #circles
@@ -201,7 +177,7 @@ local function RangeAssistGeometry(feature, circles)
         end
     end
     if valid then return cached end
-    cached = { circles=circles, sources={}, plans={}, worldPoints={}, totalRequested=0, budgetLimitedCircles=0 }
+    cached = { circles=circles, sources={}, plans={}, worldPoints={}, offsetX={}, offsetY={}, totalRequested=0, budgetLimitedCircles=0 }
     local eligibleCount, extraDemand = 0, 0
     local circleBudget = math.floor(RANGE_ASSIST_TOTAL_POINT_BUDGET / RANGE_ASSIST_POINT_HARD_MIN)
     for index, circle in ipairs(circles) do
@@ -338,9 +314,7 @@ return NewFeature("combat_range_assist", {
     apply = function(value, state)
         value = type(value) == "table" and value or {}
         state.refreshMs = tonumber(value.refreshMs) and math.max(1,math.min(60000,math.floor(tonumber(value.refreshMs)))) or nil
-        -- 默认空 circles 才符合“新用户不送圆”的产品要求；
-        -- 但老版本只存一组 radius/pointCount/...，这里要做单次兼容迁移，避免已有玩家的半径/颜色设置在升级后丢失。
-        -- Authority 仍是 feature.State.circles；Persistence 只负责把旧单圆快照转为新数组快照，不自动为真正新用户造圆。
+        -- 新安装 circles 为空；旧单圆配置只迁移一次，保留半径/颜色，不能给新用户自动造圆。
         if type(value.circles) == "table" then
             state.circles = RangeAssistResolveCircles({ circles = value.circles, nextCircleId = value.nextCircleId })
             state.nextCircleId = math.max(1, math.floor(tonumber(value.nextCircleId) or 1))
@@ -419,25 +393,26 @@ return NewFeature("combat_range_assist", {
         if type(projection) ~= "table" or type(projection.GetUnitWorldPosition) ~= "function" or type(projection.ProjectWorldBatch) ~= "function" then
             return RangeAssistFrameResult(feature, {}, "unavailable", "ScreenProjectionV3 不可用")
         end
-        -- 高频路径只比较拓扑快照，不逐帧归一化/回写配置或重算 sin/cos。
+        -- 高频路径只比较拓扑快照，不逐帧归一化/回写配置或逐点重算 sin/cos。
         local circles = type(feature.State) == "table" and type(feature.State.circles) == "table" and feature.State.circles or {}
         local geometry = RangeAssistGeometry(feature, circles)
         if #geometry.plans <= 0 then return RangeAssistFrameResult(feature, {}, "ready", "no_enabled_circle") end
-        local px,py,pz,posErr = projection:GetUnitWorldPosition("player", true)
+        local px,py,pz,posErr,angle = projection:GetUnitWorldPosition("player", true)
         if px == nil then return RangeAssistFrameResult(feature, {}, "unavailable", "自身世界坐标不可读：" .. tostring(posErr or "unknown")) end
-        -- 配置里的 circle.radius 永远保存“游戏米”，
-        -- 不把历史用户配置迁移成世界单位。真正绘制前才向 ScreenProjectionV3 请求受控标定：
-        -- UnitDistance(target) 是米数 Authority，player/target world delta 只计算 worldUnitsPerMeter；
-        -- Camera fallback 的 screen scale 也是 Session-only 校准。无目标/样本不可信时保留已核验值，
-        -- 从未校准时才使用 1:1；镜头 FOV 在当帧透视处理，不再重置这一坐标比例。
-        local metricCalibration = { worldUnitsPerMeter=1, projectionScale=1, worldScaleStatus="default", projectionScaleStatus="default",
-            worldSampleCount=0, projectionSampleCount=0 }
+        -- radius 始终存游戏米，绘制前向 ScreenProjectionV3 取 worldUnitsPerMeter。
+        -- UnitDistance 是米数来源；无可信目标保留已核实比例，从未标定才用 1:1，FOV 只影响当帧透视。
+        local metricCalibration
         if type(projection.GetRangeMetricCalibration) == "function" then
             local okMetric, measured = pcall(projection.GetRangeMetricCalibration, projection, {
                 anchorUnit="player", targetUnit="target", anchorWorld={x=px,y=py,z=pz}, worldZOffset=0.25,
                 intervalMs=RANGE_ASSIST_METRIC_CALIBRATION_MS, aspectSafeCamera=true,
             })
             if okMetric == true and type(measured) == "table" then metricCalibration = measured end
+        end
+        -- 正常标定每次都返回独立事实；只有能力缺失/异常时才创建默认值，避免每帧立即丢弃一张表。
+        if metricCalibration == nil then
+            metricCalibration = { worldUnitsPerMeter=1, projectionScale=1, worldScaleStatus="default", projectionScaleStatus="default",
+                worldSampleCount=0, projectionSampleCount=0 }
         end
         feature.RangeMetricFacts=metricCalibration
         local worldUnitsPerMeter = tonumber(metricCalibration.worldUnitsPerMeter) or 1
@@ -446,21 +421,34 @@ return NewFeature("combat_range_assist", {
         if metricScreenScale <= 0 or metricScreenScale ~= metricScreenScale then metricScreenScale = 1 end
         local rows, partialCount = {}, 0
         local plans, allWorldPoints = geometry.plans, geometry.worldPoints
+        local offsetX, offsetY = geometry.offsetX, geometry.offsetY
+        local worldZ = pz + 0.25
+        local facingX, facingY
         for _, plan in ipairs(plans) do
             local worldRadius = plan.circle.radius * worldUnitsPerMeter
-            plan.worldRadius = worldRadius
-            for index, direction in ipairs(plan.directions) do
-                local world = allWorldPoints[plan.firstIndex + index - 1]
-                world.x, world.y, world.z = px + direction.x * worldRadius, py + direction.y * worldRadius, pz + 0.25
+            -- 半径、米标定或角色朝向变化时重算偏移，方向不变的移动仍复用缓存。
+            -- 不缓存圆心、镜头或投影；所有圆共用本帧朝向，不增加 Native 读取。
+            if plan.worldRadius ~= worldRadius or plan.facingAngle ~= angle then
+                if angle ~= nil and facingX == nil then facingX, facingY = math.cos(angle), math.sin(angle) end
+                for index, direction in ipairs(plan.directions) do
+                    local worldIndex = plan.firstIndex + index - 1
+                    local dx, dy = direction.x * worldRadius, direction.y * worldRadius
+                    -- 缺朝向时保留原有世界轴向圆，半径仍有效，也不沿用上一帧朝向。
+                    if facingX ~= nil then dx, dy = facingX * dx - facingY * dy, facingY * dx + facingX * dy end
+                    offsetX[worldIndex], offsetY[worldIndex] = dx, dy
+                end
             end
+            plan.worldRadius, plan.facingAngle = worldRadius, angle
+        end
+        -- 扁平数值循环只读私有偏移数组；每点不再查方向表、圆首索引或调用 ipairs 迭代器。
+        -- 只把原有 worldPoints 传给投影服务，服务即使保留/改写输入点，也拿不到偏移缓存。
+        for index = 1, #offsetX do
+            local world = allWorldPoints[index]
+            world.x, world.y, world.z = px + offsetX[index], py + offsetY[index], worldZ
         end
 
-        -- 所有启用圆在同一次 Authority 刷新中必须共享
-        -- 同一个 Camera frame / Native-anchor 校准。旧实现“每个圆各投影一次”，旋转镜头时多个圆可能
-        -- 分别采到不同相机姿态；同时逐点 Native->Camera fallback 还会让单个圆内部混用两套坐标。
-        -- 现在最多 192 个点整批投影一次，ScreenProjectionV3 的 rigidBatch 在 Native 任一点失败时
-        -- 整批回退到单 Camera frame，并对 player 锚点平移差做会话稳定化。这样既减少 Native/Camera
-        -- 调用次数，又避免点/圆之间的相对抽动；半径与世界坐标 Authority 完全不变。
+        -- 所有圆最多 192 点整批投影，共用一个相机帧。Native 任一点失败时 rigidBatch 整批回退 Camera，再稳定 player 锚点差。
+        -- 避免不同圆/点混用相机姿态或坐标来源，半径与世界坐标含义不变。
         local projected, batchSource, ringBatch = projection:ProjectWorldBatch(allWorldPoints, {
             easyPullCompat = true, rigidBatch = true, stabilizeAnchor = true, aspectSafeCamera = true,
             anchorUnit = "player", anchorWorld = { x = px, y = py, z = pz + 0.25 },
@@ -469,25 +457,30 @@ return NewFeature("combat_range_assist", {
         projected = type(projected) == "table" and projected or {}
         local batch = type(ringBatch) == "table" and ringBatch or {}
 
+        -- 一次整批投影共用同一标定事实，批次判定无需按圆重复转换与比较。
+        local meterVerified = tostring(metricCalibration.worldScaleStatus or "") == "calibrated"
+        local cameraCount = tonumber(batch.camera) or 0
+        local screenVerified = cameraCount <= 0 or tostring(batch.metricScreenScaleStatus or "") == "applied"
+            or tostring(batch.metricScreenScaleStatus or "") == "identity"
+        local metricVerified = meterVerified and screenVerified
         for _, plan in ipairs(plans) do
             local circle=plan.circle
             local points={}
             local lastIndex=plan.firstIndex+plan.renderCount-1
             for index=plan.firstIndex,lastIndex do
                 local screenPoint=projected[index]
-                if type(screenPoint)=="table" and tonumber(screenPoint.x)~=nil and tonumber(screenPoint.y)~=nil
-                    and screenPoint.visible~=false and tonumber(screenPoint.depth)~=nil and tonumber(screenPoint.depth)>0 then
-                    -- 本次batch的新点由Authority持有，不再多分配一份x/y点表。
-                    -- 外部读取仍走独立快照，禁止把这些点暴露给Presentation反向写入。
-                    points[#points+1]=screenPoint
+                if type(screenPoint)=="table" then
+                    -- 本批普通数据表的深度只转换一次；仍保留原始点，数值字符串/不可见/非正深度的契约不变。
+                    local depth = tonumber(screenPoint.depth)
+                    if tonumber(screenPoint.x)~=nil and tonumber(screenPoint.y)~=nil and screenPoint.visible~=false
+                        and depth~=nil and depth>0 then
+                        -- 本次batch的新点由Authority持有，不再多分配一份x/y点表。
+                        -- 外部读取仍走独立快照，禁止把这些点暴露给Presentation反向写入。
+                        points[#points+1]=screenPoint
+                    end
                 end
             end
             if #points < 3 then partialCount = partialCount + 1 end
-            local meterVerified = tostring(metricCalibration.worldScaleStatus or "") == "calibrated"
-            local cameraCount = tonumber(batch.camera) or 0
-            local screenVerified = cameraCount <= 0 or tostring(batch.metricScreenScaleStatus or "") == "applied"
-                or tostring(batch.metricScreenScaleStatus or "") == "identity"
-            local metricVerified = meterVerified and screenVerified
             rows[#rows + 1] = {
                 key = "self_radius_" .. tostring(circle.id), circleId = circle.id, circleKey = "circle_" .. tostring(circle.id),
                 name = tostring(circle.name or ("范围圆 " .. tostring(circle.id))),

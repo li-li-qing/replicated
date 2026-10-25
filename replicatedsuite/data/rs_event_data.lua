@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动日程数据
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 活动名称沿用 Suite/任务现有称谓；响应式控件仅在狭窄宽度使用人工整理的 short/micro 别名。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}
@@ -30,7 +27,7 @@ local function Add(fullName, shortName, entries, questKey, options)
     for _, item in ipairs(entries) do
         item.name = fullName
         item.fullName = fullName
-        -- 响应式活动控件在 full / short / micro 名称间选择；语义别名留在数据层，禁止截断渲染文字，保证窄布局可辨认且不侵入倒计时。
+        -- 窄布局选 full/short/micro 数据别名，避免直接截字挤占倒计时。
         item.shortName = shortName or fullName
         item.microName = options.microName or shortName or fullName
         item.questScope = questKey and "event" or nil
@@ -39,7 +36,7 @@ local function Add(fullName, shortName, entries, questKey, options)
         item.activeFrom = options.activeFrom
         item.activeUntil = options.activeUntil
         -- 证据等级仅供显示/诊断；不改 fullName/key 或旧关注配置。
-        -- 两份第三方表一致也不等于当前官方核验，计划时长不能作为首领存活 Authority。
+        -- 第三方表一致不等于官方核验；计划时长不能证明首领存活。
         item.scheduleConfidence = options.scheduleConfidence
         item.scheduleEvidence = options.scheduleEvidence
         E[#E + 1] = item
@@ -108,8 +105,7 @@ S.Data.ZoneStateWatch = {
     -- 短名称仅在响应式布局变窄时使用。
     { zoneId = 20,  name = O.CINDERSTONE or "十字星平原", fullName = O.CINDERSTONE or "十字星平原", stripName = "十字星", sourceName = "Cinderstone Moor", questScope = "event", questKey = "cinderstone_purify" },
     { zoneId = 17,  name = O.YNYSTERE or "伊尼斯泰尔", fullName = O.YNYSTERE or "伊尼斯泰尔", stripName = "伊尼斯", sourceName = "Ynystere", questScope = "event", questKey = "ynystere_purify" },
-    -- 鲸鱼歌湾与海之烛台补齐 questScope/questKey 显式绑定，与下文 DynamicEventZones 保持一致；
-    -- 确保 BuildZoneRows 生成的实时行能正确经 AttachProgress 挂接阶段任务进度，并在用户点击时调起 3 阶段任务详情悬浮窗。
+    -- 显式 questScope/questKey 将鲸鱼歌湾、海之烛台实时行接到阶段进度和三阶段详情。
     { zoneId = 103, name = O.WHALESONG or "鲸鱼歌湾", fullName = O.WHALESONG or "鲸鱼歌湾", stripName = "鲸鱼", sourceName = "Whalesong Harbor", questScope = "event", questKey = "whalesong" },
     -- 神盾岛与鲸歌港属于同类实时地区，所有阶段保持可见；只有额外任务倒计时和状态随阶段变化。
     { zoneId = 102, name = O.AEGIS or "海之烛台", fullName = O.AEGIS or "海之烛台", stripName = "烛台", sourceName = "Aegis Island", questScope = "event", questKey = "aegis" },
@@ -127,11 +123,8 @@ S.Data.DynamicEventZones = {
     [133] = {
         name = "庭院Boss", fullName = "庭院Boss", shortName = "庭院", microName = "庭院",
         sourceName = "Garden of the Gods",
-        -- 庭院战争/Boss 时间事实仍由 zone 133
-        -- 的 Native 状态独占；但玩家在同一庭院活动期间实际追踪的刷分任务是“精灵的委托”(10056)。
-        -- 因此这里只建立 Presentation 关联：点击庭院活动时打开 garden_fairy 任务详情，并在活动行显示
-        -- 该任务的未接/进行中/可交付/已完成状态。禁止把 Quest 状态反向当成战争/Boss 存活 Authority。
-        -- QuestProgressV3 会在详情中读取原生 Journal Objective；未验证结构化分数前不解析本地积分阈值。
+        -- 庭院战争/Boss 时间只取 zone133 Native 状态；活动行另外关联精灵的委托 10056，供点击详情和显示任务状态。
+        -- 任务状态不能证明战争或 Boss 存活；积分先展示原生 Journal，未核实结构化数值前不猜阈值。
         questScope = "event", questKey = "garden_fairy",
         -- 当前 RU 规则在 War 前保留 10 分钟 Conflict；Peace 期间可用权威 Peace 剩余时间加这段提前量推导下次首领窗口。
         conflictLeadMinutes = 10,
@@ -140,19 +133,18 @@ S.Data.DynamicEventZones = {
         name = O.AEGIS or "海之烛台", fullName = O.AEGIS or "海之烛台",
         questScope = "event", questKey = "aegis", sourceName = "Aegis",
         inlineOnly = true,
-        -- 神盾岛任务仅在战争开场有意义，实时War初始90分钟；只在前20分钟remain>70m显示进行中。其后行仍展示普通War阶段信息，不能宣称活动仍在运行。
+        -- RU 实机以战争剩余 1h24m 为出怪点；出怪后保留 10 分钟提示，剩余 1h14m 时移除活动行。
+        -- 纷争倒计时还须加上开战后的 6 分钟；实时区域行继续展示原生战争状态。
         warTotalMinutes = 90,
-        activeWarMinutes = 20,
+        spawnWarRemainMinutes = 84,
+        spawnDisplayMinutes = 10,
     },
     [103] = {
         name = O.WHALESONG or "鲸鱼歌湾", fullName = O.WHALESONG or "鲸鱼歌湾",
         questScope = "event", questKey = "whalesong", sourceName = "Whalesong",
         inlineOnly = true,
-        -- RU 实机再次观测证明旧 76m
-        -- 触发点晚约 1 分钟；继续把 X2Map.remainTime 作为唯一 Authority，只校正数据阈值，
-        -- 不从本地观察时刻制造 Boss 时间。Boss 刷新点改为战争剩余 1h17m。
-        -- 兼容边界：这不是 Store/用户配置，不迁移旧存档；后续若服务器规则再次变化，
-        -- 只改此数据 Authority 与对应回归测试，禁止在 Presentation 中加减补偿秒数。
+        -- RU 实机刷新点为战争剩余 1h17m，旧 76m 晚约一分钟；仍直接用 X2Map.remainTime。
+        -- 规则变化只改数据与回归，表现层不能另补秒数。
         bossWarRemainMinutes = 77,
         -- 保持原先约 1 分钟的“已到刷新时间”窗口，因此结束阈值同步前移到 1h16m。
         -- 这里表示推导窗口，不声称 Boss 实际存活到该秒。

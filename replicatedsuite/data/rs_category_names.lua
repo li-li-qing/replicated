@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 物品分类名称
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 来源：pocketsorter（Wyatt LW）社区表blacklist_ui.lua:7-131。仅供背包整理黑名单分类显示，用可读中文名代替裸ID，例如206→车辆装备；物品自身名称仍直接读取RU实时API。
 -- 静态数据不持久化，可用数值key；Name()将输入tostring，使数值/字符串输入都能命中。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}

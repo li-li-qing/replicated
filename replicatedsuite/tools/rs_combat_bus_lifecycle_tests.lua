@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗总线租约与订阅同步回归
--- 维护：真实 Demand / Events / CombatBus；Native 宿主仅提供受控释放失败。
+-- 真实 Demand / Events / CombatBus；Native 宿主仅提供受控释放失败。
 -- 强制静默撤销的是旧订阅执行权，后来消费者重启总线不能唤醒旧回调；不读写玩家 UDF。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

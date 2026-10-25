@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗指标共享工具
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 各指标插件共享的有界容器与投影助手。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}

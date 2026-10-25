@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 死亡复盘布局测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实死亡回顾 Page/WidgetHost/Widget/Windowing/Shell/Surface/Layout；仅控件叶节点和存档边界采用模型。
-------------------------------------------------------------------------
 local NewHost = dofile('tools/rs_window_viewport_test_host.lua')
 local function Copy(t)
     if type(t) ~= 'table' then return t end

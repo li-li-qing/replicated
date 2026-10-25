@@ -1,14 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 应用工作台
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 个人工作台：仅拥有表现偏好与只读投影。
--- 导航、首页及列表选择共用可恢复的偏好。权威归属：启停仍属
--- FeatureRuntime，窗口仍属 WidgetHost，关注仍属业务 Store。本 Store 不保存
--- Enabled/进度/几何，不调用游戏 API；失败保留原存档写保护，不猜指纹、不重置业务。
--- 所有投影有界，只有显式操作耐久写入；不新增 Tick/扫描/全量诊断。
-------------------------------------------------------------------------
+-- 保存导航、首页和列表偏好；启停、窗口、关注仍由 Runtime、WidgetHost 和业务 Store 管理。
+-- 读失败保留写保护，显式操作才保存，不重置业务或猜指纹。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.UIV3 = S.UIV3 or {}
@@ -177,8 +171,7 @@ end
 function W:SetCardVisible(id,value)
  local known=false;for _,r in ipairs(CARDS)do if r.id==id then known=true end end;if not known then return false,'未知卡片'end
  return self:Change('home',function()
-  -- 约束（2026-10-04）：今日收获进入卡片网格，但沿用 schema1 的 home.stats 开关，
-  -- 不迁移/清理用户旧排序与隐藏偏好，不扩张 canonical 形状或改变旧存档指纹。
+  -- 收获卡沿用 schema1 的 home.stats 开关，保留旧排序、隐藏偏好和 canonical 形状。
   if id=='stats'then self.state.home.stats=value==true;self.state.home.hidden.stats=nil
   else self.state.home.hidden[id]=value~=true or nil end;return true
  end)
@@ -208,7 +201,7 @@ function W:ToggleListPin(id,key)
  if not self.state.lists[id] or not Key(key)then return false,'未知列表条目'end
  return self:Change('lists',function()local p=self.state.lists[id].pinned;p[key]=not p[key] or nil;return true end)
 end
--- 维护（活动分区）：分区由 Authority/目录的显式字段决定，不从活动名称猜测。
+-- 分区由 Authority/目录的显式字段决定，不从活动名称猜测。
 -- Workspace 只管理分区内部个人顺序；旧 order/pinned 键完整保留，不迁移业务数据。
 local function ListSection(id,row)
  if id~='activities'then return 'list'end

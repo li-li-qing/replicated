@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 临时通知宿主
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 有界应用级临时通知复用固定三个 RSUI 槽与单一 Suite Scheduler；通知不创建私人 OnUpdate/Tick，业务 Feature 不持有全局外框。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

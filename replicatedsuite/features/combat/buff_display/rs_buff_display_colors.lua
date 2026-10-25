@@ -1,9 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态显示自定义配色
 -- 作者：Replicated
 -- QQ群：1104129461
 -- 颜色有独立小存档；历史布局/追踪canonical不变。任意24位RGB，方案只用于显式快捷填充。
-------------------------------------------------------------------------
 if not ReplicatedSuite or ReplicatedSuite.BootError then return end
 local S=ReplicatedSuite
 local F,P=S.Features and S.Features.BuffDisplay,S.Persistence

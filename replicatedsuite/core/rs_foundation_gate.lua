@@ -1,24 +1,17 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 基础设施就绪门禁
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- Foundation 就绪门禁按需提供可复制的基础设施判定，不轮询、不启动功能模块；旧表现层债务须显式报告，不能用绿
--- 色 UI 截图掩盖。合并须先检查冲突标记、完整 toc.g 与 Lua 语法，再运行验收；不得清配置、跳过加载或恢复
--- Legacy 绕过错误，Authority、数据流及存档协议仍归各自实现。
-------------------------------------------------------------------------
+-- 按需检查基础设施并生成可复制结果，不加载 Store、获取消费者或写 Native。
+-- rs_architecture_audit 也扫描注释，避免在 Core 注释中写具体业务表的点号字段访问。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 147, -- .18.225 在 v6 持久化发布门中区分当前失败与历史 incident；.18.197 把 Persistence
-                   -- Transport v2/readback divergence、Activities 精确恢复桥、团队默认开启与新布局全部提升
-                   -- 为发布 Blocker；Gate 只验证契约存在，不主动 Load Store、启动 Consumer 或触发 Native 写
-                   -- 入。
+    version = 147,
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
-    runtimeCases = {}, -- 只保存同一 case 的只读资格，不建立第二份业务判定。
+    runtimeCases = {},
 }
 local G = S.FoundationGate
 
@@ -38,9 +31,8 @@ local function Join(values, maxItems)
     return table.concat(out, ",")
 end
 
--- 玩家诊断 skipSequences=true 会跳过普通序列，只有 Feature 显式声明 runtime=true 的 case
--- 可进入只读通道。传 true 时必须跳过恢复 probe、Consumer、刷新和状态修改；未声明的旧序列不能在
--- 玩家诊断执行，避免清空战斗统计或改写用户配置。
+-- skipSequences=true 时仅运行显式声明 runtime=true 的只读 case。
+-- 这些 case 必须跳过恢复探针、消费者和状态修改，避免玩家诊断清空统计或改写配置。
 function G:RegisterSequenceCase(id, fn, options)
     id = tostring(id or "")
     if id == "" or type(fn) ~= "function" then return false end
@@ -57,7 +49,7 @@ function G:RunRuntimeContracts(report)
             result.total = result.total + 1
             -- Lua 5.1 的 xpcall 不转发附加参数，必须用闭包传只读模式。
             local ok, value, detail = xpcall(function() return self.sequenceCases[id](true) end, S.SafeTraceback)
-            local passed = ok and value == true -- nil/异常不能伪装成健康。
+            local passed = ok and value == true
             local reason = ok and tostring(detail or (passed and "readonly_contract_ok" or "returned_non_true")) or tostring(value)
             if passed then result.passed = result.passed + 1
             else
@@ -88,12 +80,9 @@ function G:RunSequences()
     return result
 end
 
--- durableVerifyFailures/readbackVerifyFailures 是本次加载以来累计 incident，耐久重试成功不清零，不能用累计
--- 次数为零判断当前发布健康。Persistence:Describe() 通过 GetStoreFailureKind 汇总 currentFailures；
--- Foundation 只判断当前故障 Store 及 Envelope/Scope/Decode 结构失败。历史 incident 仍由
--- persistence_reliability_incidents warning 报告，不清计数、不 Save/Load/Retry。缺
--- currentFailureSummaryContractVersion 的旧 Persistence 继续失败封闭，unknown 不当 healthy。此函数纯只读，
--- 不启动 Feature/Consumer。
+-- durableVerifyFailures/readbackVerifyFailures 是本次加载以来的历史计数，重试成功也不清零。
+-- 当前健康按 Describe 的 currentFailures 及结构失败判断，历史事件另报 warning。
+-- 旧 Persistence 缺少当前故障汇总能力时按不可用处理；这里只读，不重试保存或加载。
 function G:EvaluatePersistenceReliabilityV6(persistence)
     persistence = type(persistence) == "table" and persistence or nil
     local stats = persistence and type(persistence.stats) == "table" and persistence.stats or {}
@@ -130,19 +119,14 @@ function G:EvaluatePersistenceReliabilityV6(persistence)
 end
 
 
--- 背包动作门禁必须独立解析本作用域的依赖，并返回准确的缺失 token。不能引用 businessPagesContract 等其他词法
--- 块的局部变量，否则 Lua 会将其视为 nil 全局，错误阻断健康的 InventorySnapshotV3；无关门禁故障不能折成泛化
--- 的“InventorySnapshotV3 不可用”。
+-- 依赖须在本作用域独立解析；引用其它词法块的局部变量会退化为 nil 全局，误报背包服务不可用。
 function G:EvaluateBagActionContract()
     local missing = {}
     local function Require(ok, token)
         if ok ~= true then missing[#missing + 1] = tostring(token) end
     end
 
-    -- 背包动作的 Feature 契约版本与命令面由 features/tools/bag/rs_bag_acceptance.lua 的
-    -- v3_tools_bag_action_contract 唯一负责；此处仅保留
-    -- InventorySnapshotV3/BagQuickOverlay/BusinessPagesContract 等 Service/UIV3 契约。Core 注释也不写带点号
-    -- 的表名+字段，rs_architecture_audit 行正则不跳过注释。
+    -- 背包动作由 features/tools/bag/rs_bag_acceptance.lua 检查；此处只验共享服务和 UI 契约。
     local inventorySnapshot = S.Services and S.Services.InventorySnapshotV3 or nil
     local bagQuickPresenter = S.UIV3 and S.UIV3.BagQuickOverlay or nil
     local bagSettingsPresenter = S.UIV3 and S.UIV3.BagSettingsFloatingV3 or nil
@@ -262,32 +246,27 @@ function G:Run(options)
     local startupFirst = runtimeInfo and type(runtimeInfo.startupWarnings) == "table" and runtimeInfo.startupWarnings[1] or nil
     local startupFirstText = startupFirst and (tostring(startupFirst.stage or "unknown") .. ":" .. tostring(startupFirst.detail or "degraded")) or "none"
     if #startupFirstText > 180 then startupFirstText = startupFirstText:sub(1, 180) .. "..." end
-    -- `.18.198` 把完整性恢复探针**前置注入摘要第一个未通过项**。实测三次证明：摘要后段的
-    -- 「恢复探针」/「存档故障」行在聊天复制时被截断，永远到不了维护者手里；而第一个未通过项每次都能
-    -- 完整到达。因此这里主动收集写保护 Store 的 probe（字段名/候选计数/真实 schema-fw-tv 元数据，
-    -- 无玩家名、伤害、技能或自由文本配置），保证诊断证据与摘要同生共死。
+    -- 聊天会截断摘要后半段，因此把写保护 Store 的恢复探针放进第一个失败项。
+    -- 只带字段名、候选数和 schema/framework/transport 元数据，不含玩家或业务内容。
     local startupProbeParts, startupTraceParts = {}, {}
     do
         local persistenceDescribe = S.Persistence ~= nil and type(S.Persistence.Describe) == "function" and S.Persistence:Describe() or nil
         for _, probeRow in ipairs(persistenceDescribe and persistenceDescribe.rows or {}) do
             if probeRow.writeFenced == true and probeRow.integrityRecoveryTrace ~= nil then
                 local trace = tostring(probeRow.integrityRecoveryTrace):gsub("[\r\n]+", " ")
-                if #trace > 150 then trace = trace:sub(1, 147) .. "..." end -- 状态机轨迹优先于长 Store probe，最多保留足够识别
-                                                                            -- iv/fw/schema/tv/hist/known 的前段。
+                if #trace > 150 then trace = trace:sub(1, 147) .. "..." end
                 startupTraceParts[#startupTraceParts + 1] = tostring(probeRow.id or "?") .. ":" .. trace
                 if #startupTraceParts >= 2 then break end
             end
         end
         for _, probeRow in ipairs(persistenceDescribe and persistenceDescribe.rows or {}) do
-            if probeRow.writeFenced == true and probeRow.historicalRecoveryProbe ~= nil then -- 字段名必须是 Describe() 行的 historicalRecoveryProbe（勿改回
-                                                                                             -- store 原生名）。
+            if probeRow.writeFenced == true and probeRow.historicalRecoveryProbe ~= nil then
                 startupProbeParts[#startupProbeParts + 1] = tostring(probeRow.id or "?") .. ":" .. tostring(probeRow.historicalRecoveryProbe):gsub("[\r\n]+", " ")
-                if #startupProbeParts >= 2 then break end -- 最多 2 个 Store，控制第一段长度，避免把真正要复制的指纹挤出
-                                                          -- 聊天框。
+                if #startupProbeParts >= 2 then break end -- 给完整指纹留出聊天长度。
             end
         end
     end
-    local startupTraceSuffix = #startupTraceParts > 0 and ("/itrace=" .. table.concat(startupTraceParts, " ;; ")) or "" -- .18.200 第一优先证据，直接表明 Core 恢复状态机走到哪一层。
+    local startupTraceSuffix = #startupTraceParts > 0 and ("/itrace=" .. table.concat(startupTraceParts, " ;; ")) or ""
     local startupProbeSuffix = #startupProbeParts > 0 and ("/probe=" .. table.concat(startupProbeParts, " ;; ")) or "" -- 用 ;; 分隔多 Store，避免与既有 | 字段分隔符混淆。
     AddCheck(report, "runtime_startup_degradation", runtimeInfo == nil or runtimeInfo.startupDegraded ~= true,
         "warning", runtimeInfo and ("degraded=" .. tostring(runtimeInfo.startupDegraded == true)
@@ -405,8 +384,7 @@ function G:Run(options)
                 and (tonumber(shell.StateMutationTransactionContractVersion) or 0) >= 1
                 and type(controller.SetLocked) == "function" and type(controller.SetResizeEnabled) == "function" and type(controller.IsInteracting) == "function"
                 and type(controller.PulseLiveGeometry) == "function" and type(windowing.Detach) == "function"
-                -- （2026-09-16）Windowing committed rect 必须能直接进入 Layout 持久化，
-                -- 禁止 Foundation 回退到“提交后重新读取 Native”的漂移路径。
+                -- Windowing 提交的矩形直接用于保存；提交后重读 Native 曾导致坐标漂移。
                 and S.Layout ~= nil and type(S.Layout.ResolvePlacement) == "function" and type(S.Layout.StorePlacementRect) == "function"
                 and tostring(S.Layout.defaultFloatingBoundary or "") == "free" and tostring(controller.boundaryMode or "") == "free"
                 and type(ui.BeginNativeGeometryLease) == "function" and type(ui.EndNativeGeometryLease) == "function",
@@ -447,49 +425,39 @@ function G:Run(options)
 
         local popupPositioning = S.RSUI and S.RSUI.PopupPositioning or nil
         AddCheck(report, "v3_popup_coordinate_contract", type(S.Layout) == "table"
-                and (tonumber(S.Layout.ViewportLogicalRectContractVersion) or 0) >= 1 -- 保留外部原生控件的 viewport logical 归一契约。
-                and (tonumber(S.Layout.EffectiveGeometryCalibrationContractVersion) or 0) >= 1 -- 外部 Native Trigger 仍需要 bounded Effective Geometry 校准。
-                and (tonumber(S.Layout.SuiteOwnedViewportAnchorContractVersion) or 0) >= 1 -- Suite-owned Popup 必须具备完整 Diff cache 父链 Authority，防
-                                                                                           -- 止 .18.189 实机再次漂移。
-                and type(S.Layout.ResolveViewportLogicalRect) == "function" -- 要求外部原生几何解析入口仍然存在。
-                and type(S.Layout.ResolveSuiteOwnedViewportLogicalRect) == "function" -- 要求 Suite-owned cache-first 锚点解析入口存在。
-                and type(popupPositioning) == "table" -- PopupPositioning 仍是 detached Popup 的唯一 Presentation
-                                                      -- 状态管理者。
-                and (tonumber(S.RSUI.PopupPositioningContractVersion) or 0) >= 4 -- PopupPositioning v4 同时维护 native-relative 与
-                                                                                 -- viewport-resolved 两条已验证车道；禁止再把某一条车道强制套给
-                                                                                 -- 所有 detached Popup。
-                and (tonumber(S.RSUI.PopupNativeRelativeAnchorContractVersion) or 0) >= 1 -- Dropdown/Tooltip/ContextMenu 仍要求 Native-relative Anchor
-                                                                                          -- 契约。
-                and (tonumber(S.RSUI.PopupViewportResolvedAnchorContractVersion) or 0) >= 1 -- ColorField V2 必须具备 resolved viewport→UIParent 专用车道，
-                                                                                            -- 禁止顶层 Window 跨层级锚到 Button。
-                and (tonumber(S.RSUI.ColorFieldContractVersion) or 0) >= 2 -- 颜色选择器必须具备 Draft/Apply/Cancel/0..255/显式布局 V2 契
-                                                                           -- 约。
-                and (tonumber(S.RSUI.PopupSuiteAnchorAuthorityContractVersion) or 0) >= 1 -- 强制声明 .18.190 的 Suite anchor authority 契约。
-                and (tonumber(S.RSUI.PopupCoordinateSpaceContractVersion) or 0) >= 1 -- 最终坐标空间仍必须是 viewport-logical-v1。
-                and (tonumber(S.RSUI.PopupCoordinateConsumerContractVersion) or 0) >= 3 -- Controls consumer v3 证明 Dropdown 与 ColorField 已按控件类
-                                                                                        -- 型选择各自安全最终 Anchor 车道。
-                and (tonumber(S.RSUI.InteractionPopupCoordinateConsumerContractVersion) or 0) >= 2 -- Interactions consumer v2 证明目标型 Tooltip/ContextMenu 已迁
-                                                                                                   -- 移，显式 point lane 仍保持独立。
-                and type(popupPositioning.ApplyNativeRelativePopup) == "function" -- Native-relative 消费者公共入口仍需存在。
-                and type(popupPositioning.ApplyResolvedViewportPopup) == "function" -- ColorField V2 的 viewport-resolved 顶层 Popup 提交入口必须存
-                                                                                    -- 在。
-                and type(popupPositioning.CorrectNativePopupToScreen) == "function" -- 屏幕边缘修正必须统一走 RU UIBounds:CorrectOffsetByScreen 封
-                                                                                    -- 装，业务 Consumer 禁止自己加固定分辨率偏移。
-                and type(S.DiagnosticsManager) == "table" and type(S.DiagnosticsManager.BuildPopupPositioningReport) == "function" -- .18.190 缺少用户可复制的专项报告入口，因此 .18.191 把可观测
-                                                                                                                                   -- 性提升为 Popup 发布契约。
+                and (tonumber(S.Layout.ViewportLogicalRectContractVersion) or 0) >= 1 -- 外部控件需校准 Effective Geometry；Suite 控件使用完整父链缓存，最终统一为 viewport-logical-v1。
+                -- Dropdown/Tooltip/ContextMenu 走 Native-relative；ColorField 顶层窗口走 viewport-resolved，不能跨层锚到 Button。
+                -- 屏幕边缘修正统一经 UIBounds:CorrectOffsetByScreen；专项复制报告也是发布所需接口。
+                and (tonumber(S.Layout.EffectiveGeometryCalibrationContractVersion) or 0) >= 1
+                and (tonumber(S.Layout.SuiteOwnedViewportAnchorContractVersion) or 0) >= 1
+                and type(S.Layout.ResolveViewportLogicalRect) == "function"
+                and type(S.Layout.ResolveSuiteOwnedViewportLogicalRect) == "function"
+                and type(popupPositioning) == "table"
+                and (tonumber(S.RSUI.PopupPositioningContractVersion) or 0) >= 4
+                and (tonumber(S.RSUI.PopupNativeRelativeAnchorContractVersion) or 0) >= 1
+                and (tonumber(S.RSUI.PopupViewportResolvedAnchorContractVersion) or 0) >= 1
+                and (tonumber(S.RSUI.ColorFieldContractVersion) or 0) >= 2
+                and (tonumber(S.RSUI.PopupSuiteAnchorAuthorityContractVersion) or 0) >= 1
+                and (tonumber(S.RSUI.PopupCoordinateSpaceContractVersion) or 0) >= 1
+                and (tonumber(S.RSUI.PopupCoordinateConsumerContractVersion) or 0) >= 3
+                and (tonumber(S.RSUI.InteractionPopupCoordinateConsumerContractVersion) or 0) >= 2
+                and type(popupPositioning.ApplyNativeRelativePopup) == "function"
+                and type(popupPositioning.ApplyResolvedViewportPopup) == "function"
+                and type(popupPositioning.CorrectNativePopupToScreen) == "function"
+                and type(S.DiagnosticsManager) == "table" and type(S.DiagnosticsManager.BuildPopupPositioningReport) == "function"
                 and type(popupPositioning.ResolveAnchorRect) == "function"
                 and type(popupPositioning.ResolveAnchored) == "function"
                 and type(popupPositioning.ResolveDropdown) == "function"
                 and type(popupPositioning.ResolvePoint) == "function",
             "blocker", "layoutRect=" .. tostring(S.Layout and S.Layout.ViewportLogicalRectContractVersion or 0)
-                .. "/calibration=" .. tostring(S.Layout and S.Layout.EffectiveGeometryCalibrationContractVersion or 0) -- 诊断输出外部 Native Effective Geometry 校准版本。
-                .. "/suiteAnchor=" .. tostring(S.Layout and S.Layout.SuiteOwnedViewportAnchorContractVersion or 0) -- 诊断输出 Suite-owned cache 父链版本。
-                .. "/positioning=" .. tostring(S.RSUI and S.RSUI.PopupPositioningContractVersion or 0) -- 诊断输出 PopupPositioning 主契约版本。
-                .. "/nativeRelative=" .. tostring(S.RSUI and S.RSUI.PopupNativeRelativeAnchorContractVersion or 0) -- 诊断输出 Native-relative 契约版本。
-                .. "/viewportResolved=" .. tostring(S.RSUI and S.RSUI.PopupViewportResolvedAnchorContractVersion or 0) -- 诊断输出 ColorField V2 resolved→UIParent 车道版本。
-                .. "/colorField=" .. tostring(S.RSUI and S.RSUI.ColorFieldContractVersion or 0) -- 诊断输出共享颜色选择器契约版本。
-                .. "/suitePopup=" .. tostring(S.RSUI and S.RSUI.PopupSuiteAnchorAuthorityContractVersion or 0) -- 诊断输出 Popup suite-anchor Authority 版本。
-                .. "/space=" .. tostring(S.RSUI and S.RSUI.PopupCoordinateSpaceContractVersion or 0) -- 诊断输出最终坐标空间契约版本。
+                .. "/calibration=" .. tostring(S.Layout and S.Layout.EffectiveGeometryCalibrationContractVersion or 0)
+                .. "/suiteAnchor=" .. tostring(S.Layout and S.Layout.SuiteOwnedViewportAnchorContractVersion or 0)
+                .. "/positioning=" .. tostring(S.RSUI and S.RSUI.PopupPositioningContractVersion or 0)
+                .. "/nativeRelative=" .. tostring(S.RSUI and S.RSUI.PopupNativeRelativeAnchorContractVersion or 0)
+                .. "/viewportResolved=" .. tostring(S.RSUI and S.RSUI.PopupViewportResolvedAnchorContractVersion or 0)
+                .. "/colorField=" .. tostring(S.RSUI and S.RSUI.ColorFieldContractVersion or 0)
+                .. "/suitePopup=" .. tostring(S.RSUI and S.RSUI.PopupSuiteAnchorAuthorityContractVersion or 0)
+                .. "/space=" .. tostring(S.RSUI and S.RSUI.PopupCoordinateSpaceContractVersion or 0)
                 .. "/controls=" .. tostring(S.RSUI and S.RSUI.PopupCoordinateConsumerContractVersion or 0)
                 .. "/interactions=" .. tostring(S.RSUI and S.RSUI.InteractionPopupCoordinateConsumerContractVersion or 0))
 
@@ -726,8 +694,8 @@ function G:Run(options)
                 and (tonumber(rsui.SettingsCompactToggleContractVersion) or 0) >= 1
                 and (tonumber(rsui.SettingsScrollSafeCardContractVersion) or 0) >= 2
                 and (tonumber(rsui.SettingsSectionHierarchyContractVersion) or 0) >= 1
-                -- Numeric Range v2 是 Foundation 要求：min/max 为表现软边界，已接受的精确输入通过
-                -- NumericRangeStore 扩展范围。拒绝混合 v1/v2 启动，避免升级后页面范围和 Domain 夹紧不一致。
+                -- min/max 是显示软范围，合法精确输入可经 NumericRangeStore 扩展。
+                -- v1/v2 混装会使页面范围与 Domain 夹紧不一致，须阻止启动。
                 and (tonumber(rsui.SettingsNumericSliderContractVersion) or 0) >= 2
                 and (tonumber(rsui.FormRowResponsiveContractVersion) or 0) >= 1
                 and (tonumber(rsui.NumericResponsiveStackContractVersion) or 0) >= 1
@@ -950,9 +918,7 @@ function G:Run(options)
                 .. "/treeExpandBound=" .. tostring(rsui and rsui.TreeExpansionStateBoundContractVersion or 0)
                 .. "/composite=" .. tostring(compositeFoundation and compositeFoundation.version or 0))
 
-        -- 退役 UI 层的运行隔离：静态审计证明打包时文件缺失且无引用，运行门禁还须检查已被客户端加载的旧
-        -- reflow。退役组件若仍可达会重新分裂 Presentation 权威，必须阻断而非警告。RSUI 是唯一 UI 权威，只允
-        -- 许一个组件面、一个弹窗登记表和一个容器面所有者。
+        -- 打包已删除的旧 UI 仍可能驻留客户端；若旧 reflow 可达，必须阻断，避免与 RSUI 同时管理组件和弹窗。
         local retiredUiAdapter = S.UI
         local retiredNames = { "CreateCardV2", "CreateSectionV2", "CreateFormRowV2",
                                "CreateChoiceFieldV2", "CreateToggleFieldV2", "CreateNumericFieldV2" }
@@ -1271,11 +1237,8 @@ function G:Run(options)
                 .. "/failFast=" .. tostring(rsui and rsui.StrictBuildFailFastContractVersion or 0)
                 .. "/businessIds=" .. tostring(businessPagesContract and businessPagesContract.componentIdContractVersion or 0)) or "missing")
 
-        -- （2026-09-18，module-diagnostics-gate-1）模块诊断横跨 Core/RSUI/
-        -- PageHost/Design/Presentation 五层，用户只覆盖部分文件时最危险的表现不是直接报错，而是页面
-        -- 出现“诊断”按钮却没有可用 CopyBox/窗口，或 buildContext 串到错误 Feature。Foundation 必须
-        -- 将整套契约视为一个不可拆分单元；这里只检查接口版本和 Aux policy，不创建窗口、不运行
-        -- Provider、不启动 Feature，因此仍保持 Gate 的只读/无 Tick 边界。
+        -- 模块诊断跨 Core/RSUI/PageHost/Design/Presentation，需整套接口匹配，避免有按钮却无 CopyBox，或归属到错误 Feature。
+        -- 这里只验版本和 Aux policy，不创建窗口或调用 Provider。
         local moduleDiagnosticsHub = S.ModuleDiagnosticsHub
         local moduleDiagnosticsWindow = S.UIV3 and S.UIV3.ModuleDiagnosticsWindowV3 or nil
         local moduleDiagnosticsPolicy = type(auxWindowStore) == "table" and type(auxWindowStore.GetPolicy) == "function"
@@ -1307,12 +1270,8 @@ function G:Run(options)
                 .. "/policy=" .. tostring(type(moduleDiagnosticsPolicy) == "table")
                 .. "/registryAlias=" .. tostring(moduleDiagnosticsRegistryAlias))
 
-        -- 业务表现命令检查由 features/life/tasks/rs_task_acceptance.lua 的 presentation_command_contract、
-        -- features/life/activities/rs_activity_acceptance.lua 的同类检查及
-        -- features/combat/gear/rs_gear_acceptance.lua 的 quick_button_snap_settings_contract 覆盖，判定为原
-        -- 检查的严格超集。sequence_harness case 失败同样阻断；Core 不点名访问业务实现。注释也不能使用带点号
-        -- 的表名+字段，rs_architecture_audit 行正则不跳过注释。Gear quick-startup-intent 仍由独立
-        -- v3_quick_surface_reload_reconcile_contract 负责，不扩大移除范围。
+        -- 业务表现命令分别由 tasks、activities、gear 的 acceptance 检查，sequence 失败同样阻断。
+        -- Gear 的快速启动意图仍由独立 v3_quick_surface_reload_reconcile_contract 检查。
         local gearService = S.Services and S.Services.GearV3 or nil
         AddCheck(report, "gear_partial_apply_contract", type(gearService) == "table" and (tonumber(gearService.version) or 0) >= 5
                 and (tonumber(gearService.PartialApplyContractVersion) or 0) >= 1
@@ -1340,19 +1299,15 @@ function G:Run(options)
             "blocker", "Design v4: page roots accept id/spec and settings/forms can scroll at minimum viewport")
 
         local navEntries = shell and shell.navScroll and shell.navScroll.GetScrollableEntries and shell.navScroll:GetScrollableEntries() or {}
-        local router = S.UIV3 and S.UIV3.Router or nil -- Router 只在运行时门禁读取展示契约，不启动任何 Feature；完成
-                                                       -- 度事实仍由 FeatureRegistry 注册时确定。
+        local router = S.UIV3 and S.UIV3.Router or nil
         AddCheck(report, "v3_navigation_critical_access", shell ~= nil and shell.navScroll ~= nil and #navEntries >= 12
                 and (tonumber(shell.NavigationCallbackCaptureContractVersion) or 0) >= 1
-                and (tonumber(shell.DevelopmentNavigationPresentationContractVersion) or 0) >= 1 -- Shell 必须使用专用 navigationTitle，防止“未完成”污染页面
-                                                                                                 -- title 字段。
-                and type(router) == "table" and (tonumber(router.DevelopmentOrderContractVersion) or 0) >= 1 -- Router 必须保持完成优先排序契约；仅检查元数据，不触碰页面生
-                                                                                                             -- 命周期。
+                and (tonumber(shell.DevelopmentNavigationPresentationContractVersion) or 0) >= 1 -- navigationTitle 独立于页面 title，避免“未完成”标记污染页标题。
+                and type(router) == "table" and (tonumber(router.DevelopmentOrderContractVersion) or 0) >= 1
                 and shell.navButtons ~= nil and shell.navButtons["system.settings"] ~= nil
                 and shell.navButtons["system.diagnostics"] ~= nil and shell.reloadButton ~= nil,
             "blocker", "entries=" .. tostring(#navEntries) .. "/capture=" .. tostring(shell and shell.NavigationCallbackCaptureContractVersion or 0)
-                .. "/devNav=" .. tostring(shell and shell.DevelopmentNavigationPresentationContractVersion or 0) .. "/" .. tostring(router and router.DevelopmentOrderContractVersion or 0) -- 诊断摘要同时输出 Shell/Router 两端契约版本，便于 RU 用户截图
-                                                                                                                                                                                            -- 判断是否混装旧文件。
+                .. "/devNav=" .. tostring(shell and shell.DevelopmentNavigationPresentationContractVersion or 0) .. "/" .. tostring(router and router.DevelopmentOrderContractVersion or 0)
                 .. "/settings=" .. tostring(shell and shell.navButtons and shell.navButtons["system.settings"] ~= nil)
                 .. "/diagnostics=" .. tostring(shell and shell.navButtons and shell.navButtons["system.diagnostics"] ~= nil)
                 .. "/reload=" .. tostring(shell and shell.reloadButton ~= nil))
@@ -1522,9 +1477,7 @@ function G:Run(options)
             .. "/cache=" .. tostring(auraHealth.cache or 0)
             .. "/native=" .. tostring(auraHealth.nativeReads or 0)) or "missing")
 
-    -- 健康数据通过 buff_display_health provider，契约版本通过 buff_display_contract_versions provider 实时
-    -- 读取，登记归 Feature。Core 不认识业务实现，诊断 detail 可观测性保持一致；注释也避免带点号的表名+字段
-    -- ，以免 rs_architecture_audit 行正则计 CORE_FEATURE 债务。
+    -- 健康与版本分别由 buff_display_health、buff_display_contract_versions provider 提供。
     local buffDisplayHealth = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("buff_display_health") or nil
     local buffDisplayContracts = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("buff_display_contract_versions") or nil
     local function BuffContract(name)
@@ -1539,52 +1492,27 @@ function G:Run(options)
         and buffDisplayPageHost.factories["combat.buff_display"] or nil
     local buffDisplayWidget = type(buffDisplayWidgetHost) == "table" and type(buffDisplayWidgetHost.GetSpec) == "function"
         and buffDisplayWidgetHost:GetSpec("combat.buff_display") or nil
-    -- 字体契约须在当前 BuildReport 作用域绑定已加载 UIV3 模块，避免未绑定局部退化为 nil 全局而误报 font=0。
-    -- 只读 Presentation 权威，不创建 Widget、不取得 Consumer、不访问 Store，不影响 HUD 或 50ms 热路径。
-    -- 每次构建读取当前 S.UIV3，不能跨重载缓存引用，使契约诊断对应真实模块。
+    -- 每次 BuildReport 读取当前已加载 UIV3，避免局部未绑定或跨重载旧引用误报 font=0。
     local buffHeadMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 or nil
     local buffHudCalibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 or nil
-    -- （状态显示 HUD 校准验收，2026-09-11）.18.206 后 Foundation 除双 profile
-    -- 与独立校准器外，还必须证明：统一屏幕Y语义、标题栏拖动、上下文参数、全局位置预览、正式
-    -- Renderer 校准抑制，以及 HUD 布局页正确的 Border Measure 契约。Authority：这些版本号只描述
-    -- Presentation 能力；Store schema5 与业务数据仍是正式 Authority。数据流：启动报告只读取已加载
-    -- 模块字段 -> AddCheck，不创建 UI、不取得/释放 Consumer、不写 Draft。兼容边界：热重载残留旧
-    -- 校准器/旧页面必须 fail-closed，避免用户把错误几何再次保存。
-    -- .18.207 新增 equipLocal/template 契约：装备 x/y 只能是各自局部微调，模板快照只从 Draft
-    -- 读取并输出；二者都不改变 schema5/Persistence Authority。
-    -- .18.208 再要求 targetTpl/gearApi/gearParse：目标发行默认只作用 fresh/reset，已有
-    -- targetLayout 仍由 Store Authority 持有；装分 API 读取必须遵守 UnitGearScore(unit, comma=false)，
-    -- 数字格式只由 Utils 共享 parser 规范化。Gate 仅读版本字段，不在启动验收里调用 Native API。
+    -- 校准契约需同时覆盖屏幕 Y、标题栏拖动、上下文、全局预览、正式渲染抑制与 Border Measure，防止旧页面保存错误几何。
+    -- 装备 x/y 仅作局部微调，模板只读 Draft；目标默认布局仅用于新档/重置，不覆盖已有布局。
+    -- 装分读取保持 UnitGearScore(unit, comma=false)，数字经 Utils parser 归一化。Gate 只验版本，不调用 Native。
     AddCheck(report, "buff_display_v3_statusmap_contract", S.FeatureRuntime ~= nil
             and S.FeatureRuntime:IsImplemented("combat_buff_display") == true
-            -- 状态追踪已升级 schema8 六通道；Gate 只验声明，不触发状态扫描/写入。
-            -- 旧 schema7 与文本 v2 模块若半覆盖残留必须 fail-closed。
+            -- 只验 schema8 六通道声明；混入 schema7 或文本 v2 时阻断，不触发扫描或写入。
             and buffDisplayStore ~= nil and tonumber(buffDisplayStore.schemaVersion) == 8
             and tonumber(buffDisplayStore.transportVersion) == 5
             and type(buffDisplayStore.repairPhysicalTransport) == "function"
-            -- HUD layout 是独立小 Store Authority；半覆盖旧 Store/新 Feature
-            -- 会重新把校准保存写回追踪大表，因此 Foundation 必须 fail-closed。这里仅读注册元数据。
+            -- 布局使用独立小 Store；混入旧 Store 会把校准写回追踪大表。这里只读注册元数据并阻断混装。
             and buffDisplayLayoutStore ~= nil
             and tostring(buffDisplayLayoutStore.owner or "") == "v3.buff_display.layout"
             and tonumber(buffDisplayLayoutStore.schemaVersion) == 1
             and tonumber(buffDisplayLayoutStore.transportVersion) == 3
-            -- .240 的 SaveData
-            -- 已可能把主 Store distance.x=-1 省略成默认 0 后留在磁盘。新布局小 Store 只能阻止
-            -- 后续再发生，不能让已经损坏的主 Store跨过 Reload。此契约只声明 Store 拥有
-            -- schema8/tv5 + 单字段 omitted + 全 Store 旧章唯一命中的 bounded scalar proof；Gate
-            -- 不枚举数值、不读 Store。半覆盖时必须 fail-closed，禁止把“拆 Store”误报成已可升级。
-            -- 实机已连续证明 marker/count 可被省略，
-            -- `chunks` 作为普通 map 残留，且最后幸存 chunk 既可能在完整 token 边界截断，也可能直接在
-            -- 十进制 ID 的数字中间截断。Store 只能把它当“严格字节前缀候选”，最终仍由整 Store 旧章精确验真。
-            -- Gate 只验证能力版本，不读取/修复 Store；半覆盖旧 Store 必须 fail-closed，避免又退回
-            -- `player.auto:invalid_index` 或有人把 byte-prefix 误改成任意 substring/近似匹配。
-            -- .234 实机进一步证明“健康 twin”可能因 schema8 合法 scope 分叉
-            -- 生成可解码但业务指纹错误的候选。本契约要求 Store 具备“twin primary + 旧指纹精确 Catalog fallback”
-            -- 能力；Catalog 仍只能修 missing/count-truncated 且必须命中旧章，Core 再做统一
-            -- Envelope/fingerprint 验真。
-            -- 半覆盖旧 Store/新 Gate 必须 fail-closed，禁止退回“完整 twin 就默认正确”或“最像 Catalog 即恢复”。
-            -- 已知事故恢复必须是 Store-owned exact pair gate；Foundation
-            -- 只验能力声明，不执行恢复、不读取/改写业务表。半覆盖旧 Store 必须 fail-closed。
+            -- 小布局 Store 无法修复主 Store 已被 SaveData 省略的 distance.x=-1；恢复仍需 schema8/tv5、单字段省略和整 Store 旧指纹唯一命中。
+            -- marker/count 可能被省略，chunks 也可能在 token 边界或十进制 ID 中间截断，只允许严格字节前缀候选，不能作 substring 或近似匹配。
+            -- 可解码 twin 仍可能落到错误 scope；先验 twin，再以旧指纹精确匹配 Catalog，最后由 Core 验 Envelope/fingerprint。
+            -- 已知事故恢复须由 Store 的 exact-pair hook 处理。这里只验能力版本，不读取或修复 Store；缺版本则阻断。
             and type(S.Data and S.Data.StatusTrackingCatalogV3) == "table"
             and type(buffDisplayStore.rebuildCanonicalForIntegrity) == "function"
             and type(buffDisplayStore.recoverKnownLegacyCanonical) == "function"
@@ -1661,9 +1589,7 @@ function G:Run(options)
             .. "/page=" .. tostring(buffDisplayPage ~= nil and 1 or 0)
             .. "/widget=" .. tostring(type(buffDisplayWidget) == "table" and 1 or 0)
             .. "/meta=" .. tostring(buffDisplayMeta ~= nil and 1 or 0)) or "missing")
-    -- runtime scope 判定改为读取 Feature 自注册的 health 投影
-    -- （与搬迁前逐条等价：consumers 与 auraHeld/taskActive 的一致性规则原样保留）。
-    -- 注意 taskActive 在 GetHealth 的返回里并不存在（搬迁前就是 nil），本批保持等价、不顺手改语义。
+    -- 运行状态取 Feature 的 health 投影。taskActive 当前不在 GetHealth 返回值中，不能据此推断任务正常。
     AddCheck(report, "buff_display_v3_runtime_scope", buffDisplayHealth ~= nil
             and (((tonumber(buffDisplayHealth.consumers) or 0) > 0
                     and buffDisplayHealth.auraHeld == true and buffDisplayHealth.taskActive == true)
@@ -1674,13 +1600,8 @@ function G:Run(options)
             .. "/aura=" .. tostring(buffDisplayHealth.auraHeld == true)
             .. "/task=" .. tostring(buffDisplayHealth.taskActive == true)) or "missing")
 
-    -- 团队就绪唯一契约在 features/combat/raid_readiness/rs_raid_readiness_acceptance.lua 的
-    -- v3_m16_14_raid_readiness_contract，涵盖 TeamRosterV3/AuraObservationV3 版本及函数、Store
-    -- owner/scope/schemaVersion、Native id/nativeName=="X2Team"、dormant 的 rosterHeld/scanning 租约及依赖
-    -- 顺序；实现缺失须 Fail("implementation_not_registered")。sequence_harness case 失败阻断，不能降低门槛
-    -- 。Healer/HealerAuraBridge 的 health 由 Feature 自行注册 provider，契约归
-    -- features/combat/healer/rs_healer_aura_acceptance.lua。Core 不访问具体业务实现，注释也避免带点表名+字
-    -- 段，rs_architecture_audit 不跳过注释。
+    -- 团队就绪和治疗 Aura 分别由 raid_readiness、healer 的 acceptance 检查；健康状态由 Feature 注册 provider。
+    -- 实现缺失或 sequence 失败必须阻断，共享服务版本、Store、Native 宿主和休眠租约仍由各自 case 校验。
     local healerHealth = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("healer_health") or nil
     -- 运行期健康子表仍由上面的 health 投影派生 —— 删掉它会让下面 detail 的 task 观测永远退化成 false。
     local healerRuntimeHealth = healerHealth and healerHealth.runtime or nil
@@ -1755,13 +1676,9 @@ function G:Run(options)
             .. "/units=" .. tostring(relationHealth.units or 0)
             .. "/rosterHeld=" .. tostring(relationHealth.rosterHeld == true)) or "missing")
 
-    -- 死亡复盘唯一契约归 features/combat/death_review/rs_death_review_acceptance.lua 的
-    -- v3_m15_2h_death_review_contract：覆盖七项 Persistence 版本、两个 Core recovery 版本、Store
-    -- migrate/rebuildCanonicalForIntegrity/recoverKnownLegacyCanonical、窗口策略及 lifetime，并验证实际归一
-    -- 化结果（470x330/透明度/锁定/最小化）、Framework2/schema2 零值省略恢复 probe、record/index 预算。缺实
-    -- 现须 Fail("implementation_not_registered")，sequence case 失败阻断。DPS health/运行态走 Feature 注册
-    -- provider，契约归 features/combat/dps/rs_dps_acceptance.lua，命令面完整且 Domain 版本下限为 7。Core 和
-    -- 注释不直接访问带点号业务实现，避免 rs_architecture_audit 债务。
+    -- 死亡复盘的存档、窗口、预算及零值省略恢复由 features/combat/death_review/rs_death_review_acceptance.lua 检查。
+    -- DPS 的版本和命令由 features/combat/dps/rs_dps_acceptance.lua 检查，健康状态经 provider 读取。
+    -- 实现缺失或 sequence 失败均须阻断。
     local dpsMeta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_stats") or nil
     local dpsPage = S.UIV3 and S.UIV3.PageHost and S.UIV3.PageHost.factories and S.UIV3.PageHost.factories["combat.stats"] or nil
     local dpsWidget = S.UIV3 and S.UIV3.WidgetHost and type(S.UIV3.WidgetHost.GetSpec) == "function" and S.UIV3.WidgetHost:GetSpec("combat.dps") or nil
@@ -1909,13 +1826,10 @@ function G:Run(options)
             and type(S.Persistence.EncodePhysicalEnvelope) == "function" and type(S.Persistence.DecodePhysicalEnvelope) == "function"
             and type(S.Persistence.RebuildFramework2SerializerOmissions) == "function"
             and (tonumber(S.Persistence.FrameworkVersion) or 0) >= 3
-            and (tonumber(S.Persistence.TransportContractVersion) or 0) >= 2 -- .18.197 新写必须使用 Transport v2，保护 false/空表之外的 0/
-                                                                             -- 空字符串；v1 只保留 Load 兼容，不能再作为发布级写入契约。
-            and (tonumber(S.Persistence.ReadbackDivergenceDiagnosticsContractVersion) or 0) >= 1 and type(S.Persistence.DescribeCanonicalDivergence) == "function" -- 任何未来 readback Hash mismatch 必须能给出首个字段差异证据；
-                                                                                                                                                                   -- 该 helper 仅失败冷路径 bounded 执行，不得被 Feature 热路径调
-                                                                                                                                                                   -- 用。
-            and (tonumber(S.Persistence.IntegrityRecoveryTraceContractVersion) or 0) >= 1 -- .18.200 要求 fingerprint mismatch 必须暴露 bounded 状态机轨
-                                                                                          -- 迹，禁止未来重构又退回只有 old>new Hash 的不可诊断状态。
+            and (tonumber(S.Persistence.TransportContractVersion) or 0) >= 2 -- 新写使用 Transport v2，保护 false、空表、0 和空字符串；v1 仅保留加载兼容。
+            -- 回读指纹不符时须报告首个字段差异及状态机轨迹；差异比较只在失败路径执行。
+            and (tonumber(S.Persistence.ReadbackDivergenceDiagnosticsContractVersion) or 0) >= 1 and type(S.Persistence.DescribeCanonicalDivergence) == "function"
+            and (tonumber(S.Persistence.IntegrityRecoveryTraceContractVersion) or 0) >= 1
             and (tonumber(S.Persistence.ReliabilityContractVersion) or 0) >= 6
             and (tonumber(S.Persistence.IntegrityContractVersion) or 0) >= 1
             and (tonumber(S.Persistence.EnvelopeIntegrityContractVersion) or 0) >= 1
@@ -1925,9 +1839,8 @@ function G:Run(options)
         "blocker", "v3 owner/scope/domain+envelope budgets + Framework3 physical transport + exact Framework2 serializer-omission recovery + transactional load-before-write + post-write verify + persisted cross-reload integrity + runtime acceptance diagnostics")
     local featurePreferenceStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function"
         and S.Persistence:GetStore("v3.features") or nil
-    -- 功能总开关是动态 key map，default={}，无法依赖 Core 的 fixed-shape
-    -- Framework2 恢复。这里仅验证 Store 已挂接自己的 exact-fingerprint recovery hook，
-    -- 不主动 LoadStore/读盘，因此 Foundation Gate 不会破坏按需加载或增加启动 SaveData I/O。
+    -- 功能开关是动态 key map，default={} 不能用 Core 的固定形状恢复。
+    -- 只验 Store 已挂接精确指纹恢复 hook，不加载 Store。
     AddCheck(report, "feature_preference_persistence_recovery_contract",
         type(featurePreferenceStore) == "table"
             and type(featurePreferenceStore.rebuildCanonicalForIntegrity) == "function",
@@ -2009,9 +1922,8 @@ function G:Run(options)
             .. "/encodedLoadReject=" .. tostring(persistenceStats.encodedLoadRejects or 0)
             .. "/replacementRecover=" .. tostring(persistenceStats.verifiedReplacementRecoveries or 0)) or "missing")
 
-    -- 外壳持久化演进须要求 schema 7、精确历史重建及仅针对已知 stamp 的严格白名单桥接。不可原地修改
-    -- canonical 代际，也不可用通用不匹配绕过取代失败封闭恢复；schema-6 扩展曾造成实机旧 stamp 故障，边界必
-    -- 须可验证。
+    -- schema-6 扩展曾导致旧 stamp 失配；外壳现要求 schema7、精确历史重建和已知 stamp 白名单桥。
+    -- 不能原地改变 canonical 代际，也不能放行所有指纹不符的值。
     local shellStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.shell") or nil
     local shellUi = S.UIV3
     AddCheck(report, "v3_shell_persistence_schema_contract",
@@ -2190,7 +2102,7 @@ function G:Run(options)
         combat_boss_alerts = "migrated_partial", combat_buff_cap = "migrated_partial", combat_team_tools = "migrated_partial",
         combat_unit_lines = "migrated_partial", combat_range_assist = "migrated_partial",
         combat_raid_recruitment = "migrated_partial", life_trade = "migrated_partial", life_fishing = "migrated_partial",
-        -- （2026-09-15）life_craft_planner 已按用户要求移除，Foundation 真值表不得再把“缺失”视为 blocker。
+        -- life_craft_planner 已移除，不再将缺失视为阻断。
         tools_bag = "migrated_partial", tools_auction = "migrated_m1", tools_market_analysis = "migrated_partial", tools_craft = "migrated_partial",
     }
     local truthFailures = {}
@@ -2198,12 +2110,8 @@ function G:Run(options)
         local row = S.FeatureRegistry and S.FeatureRegistry:Get(id) or nil
         if row == nil or tostring(row.status or "") ~= expected then truthFailures[#truthFailures + 1] = id .. ":" .. tostring(row and row.status or "missing") end
     end
-    -- 钓鱼 Auto-R 事务契约归 features/life/fishing/rs_fishing_acceptance.lua 的
-    -- v3_life_fishing_auto_r_transaction_contract（不硬阻断 Auto-R、热键 v3、事务服务 v3）；强化 slot-probe
-    -- 硬阻断声明归 features/tools/reinforce_analysis/rs_reinforce_analysis_acceptance.lua 的
-    -- v3_tools_reinforce_analysis_runtime_block_contract。检查只证明契约存在，不执行 Native 热键读写；
-    -- sequence case 失败仍阻断，Registry 真值循环独立保留。Core 和注释不使用具体业务实现的带点表名+字段，避
-    -- 免 rs_architecture_audit 行正则计入 CORE_FEATURE 债务。
+    -- Auto-R 事务由 fishing acceptance 检查，强化 slot-probe 阻断由 reinforce_analysis acceptance 检查。
+    -- 这里只验声明，不执行 Native 热键读写；sequence 失败仍阻断，Registry 检查独立保留。
     table.sort(truthFailures)
     AddCheck(report, "v3_feature_truth_contract", #truthFailures == 0, "blocker", #truthFailures == 0 and "partial capabilities labeled honestly; risky Native transactions fail closed" or ("invalid=" .. Join(truthFailures, 8)))
 
@@ -2212,13 +2120,8 @@ function G:Run(options)
     AddCheck(report, "api_capability_cooldown_contract", apiCooldownOk, "blocker",
         apiCooldownOk and "registered capability cooldowns enforced centrally" or "central capability cooldown fence unavailable")
 
-    -- 目标探测、Buff 上限、寻宝、钓鱼的观察契约分别归
-    -- features/combat/target_monitor/rs_target_monitor_acceptance.lua、
-    -- features/combat/buff_cap/rs_buff_cap_acceptance.lua、
-    -- features/life/treasure/rs_treasure_acceptance.lua、features/life/fishing/rs_fishing_acceptance.lua。
-    -- 须验证版本>=1、非空字符串 topic、Demand 及 Acquire/Release 生命周期；缺实现不能静默返回，sequence
-    -- case 失败阻断。Core 不硬编码业务实现，注释也避免带点表名+字段，因为 rs_architecture_audit 正则不跳过
-    -- 注释。
+    -- 目标探测、Buff 上限、寻宝和钓鱼由各自 acceptance 检查观察契约。
+    -- 须覆盖版本、topic、Demand 及 Acquire/Release；缺实现或 sequence 失败不能静默通过。
 
     local usabilityFailures = {}
     local screenProjection = S.Services and S.Services.ScreenProjectionV3 or nil
@@ -2227,10 +2130,8 @@ function G:Run(options)
     local visualGuides = S.UIV3 and S.UIV3.CombatVisualGuidesV3 or nil
     local lifeWidgets = S.UIV3 and S.UIV3.LifeEconomyWidgetsV3 or nil
     local widgetHost = S.UIV3 and S.UIV3.WidgetHost or nil
-    -- 首领、单位连线、范围辅助、Buff 显示的可用性契约由各自 features/combat/*/rs_*_acceptance.lua 负责，其
-    -- 中 BuffDisplay 包含 observation case。本段只验证 Service/UIV3 契约；Core 注释避免带点表名+字段，
-    -- rs_architecture_audit 不跳过注释。投影/米数契约仅门禁，不在 Foundation 自检读 target；真实
-    -- UnitDistance 样本只由 RangeAssist Demand 在运行期按需采集。
+    -- 首领、连线、范围和 Buff 显示由各自 acceptance 检查；此处只验共享 Service/UIV3。
+    -- Foundation 不读 target；UnitDistance 样本由 RangeAssist 在持有 Demand 时采集。
     if type(screenProjection) ~= "table" or (tonumber(screenProjection.version) or 0) < 15 or tostring(screenProjection.presentationBoundary or "") ~= "service_only"
         or type(screenProjection.ProjectUnitFlexible) ~= "function" or type(screenProjection.ProjectUnitBatch) ~= "function"
         or (tonumber(screenProjection.FrontHemisphereBatchContractVersion) or 0) < 1
@@ -2253,9 +2154,8 @@ function G:Run(options)
     if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 15
         or (tonumber(visualGuides.UiEnvironmentStyleRecoveryContractVersion) or 0) < 1
         or (tonumber(visualGuides.ManualPointTypographyContractVersion) or 0) < 1
-        -- （2026-09-24，visual-guide-resolution-style-recovery-1）VisualGuide 点字体由
-        -- Presenter 独占，Layout 必须提供 UI 环境 revision，Theme 必须尊重 manual typography。
-        -- 这是混载门禁：缺任一契约时宁可启动验收阻断，也不要在切画质后静默缩成小点。
+        -- 点字体由 Presenter 管理，Layout 提供 UI 环境 revision，Theme 保留手动字号。
+        -- 任一契约缺失时阻断，防止切画质后点静默缩小。
         or type(S.Layout) ~= "table" or (tonumber(S.Layout.UiEnvironmentRevisionContractVersion) or 0) < 1
         or type(S.Layout.GetUiEnvironmentRevision) ~= "function"
         or type(S.Theme) ~= "table" or (tonumber(S.Theme.ManualTypographyOwnershipContractVersion) or 0) < 1
@@ -2268,16 +2168,13 @@ function G:Run(options)
         or (tonumber(visualGuides.UnitLineRawProjectedAnchorContractVersion) or 0) < 2
         or (tonumber(visualGuides.ScreenToOverlayHostContractVersion) or 0) < 1
         or (tonumber(visualGuides.ResolutionIndependentOverlayContractVersion) or 0) < 1
-        -- （2026-09-17）VisualGuide 的 Native host 必须具备 world-HUD game-layer 契约。
-        -- 这是 Foundation 对“点不遮挡原生窗口”的启动门禁，只读契约版本，不创建窗口、不触发 Native 调用。
-        -- 数据流/所有权仍为 Presenter -> UI Primitive；若版本缺失则明确降级，而不是让 system 层问题静默复发。
+        -- VisualGuide 需 world-HUD game-layer 宿主，避免点覆盖原生窗口。这里只读版本，不创建窗口或调用 Native。
         or (tonumber(S.UI and S.UI.WorldHudNativeLayerContractVersion) or 0) < 1
         or type(visualGuides.BuildUnitLineSamplePlan) ~= "function" then usabilityFailures[#usabilityFailures + 1] = "visual_guides" end
     local tradeWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.trade") or nil
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
-    -- Bonds 表现/领域混载门禁要求 v9 同时具备多大陆 v3 与浮窗单入口设置菜单 v1，只核对静态契约，不读取
-    -- ResidentBoard/背包。Feature 契约唯一归 features/life/bonds/rs_bonds_acceptance.lua 的 v3_m1_bonds，
-    -- DropdownPresentationContractVersion 要求 >=2；sequence_harness case 失败同样阻断。
+    -- Bonds 的多大陆与浮窗菜单版本需匹配；这里只验声明，不读 ResidentBoard/背包。
+    -- Feature 检查由 features/life/bonds/rs_bonds_acceptance.lua 负责，sequence 失败同样阻断。
     if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 9
         or (tonumber(lifeWidgets.bondsMultiContinentContractVersion) or 0) < 3
         or (tonumber(lifeWidgets.bondsDropdownControlsContractVersion) or 0) < 3
@@ -2286,10 +2183,7 @@ function G:Run(options)
         or type(tradeWidget) ~= "table" or type(bondsWidget) ~= "table" then
         usabilityFailures[#usabilityFailures + 1] = "life_widgets"
     end
-    -- Trade Feature 自身版本、命令及读取面由 features/life/trade/rs_trade_acceptance.lua 的
-    -- v3_life_trade_detail_favorites_contract 唯一负责。
-    -- TradePayoutV3/MaterialPriceServiceV3/PriceQuoteQueueV3/TradeDetailFloatingV3/LifeM16PagesContract 等
-    -- Service/UIV3 契约仍归 Foundation。注释避免带点表名+字段，rs_architecture_audit 行正则不跳过注释。
+    -- Trade 的业务版本和命令由 features/life/trade/rs_trade_acceptance.lua 检查；共享报价与 UI 契约仍在此检查。
     local tradePayout = S.Services and S.Services.TradePayoutV3 or nil
     local tradeDetail = S.UIV3 and S.UIV3.TradeDetailFloatingV3 or nil
     local tradeDetailOk = type(tradePayout) == "table" and (tonumber(tradePayout.PriceFormulaContractVersion) or 0) >= 3
@@ -2297,9 +2191,8 @@ function G:Run(options)
         and (tonumber(tradePayout.StaticPriceKeyResolverContractVersion) or 0) >= 2
         and (tonumber(tradePayout.CommerceMultiplierContractVersion) or 0) >= 1
         and (tonumber(tradePayout.PackCategoryMultiplierContractVersion) or 0) >= 3
-        -- （2026-09-25，trade-multi-row-quote-mixed-package-gate-1）多 RowJob 只在 Feature/页面层并存；
-        -- PriceQuoteQueueV3 必须仍是单 Native Authority 且按稳定 itemType+grade 去重。任何一侧漏更新都应在启动门禁
-        -- 阻断，而不是等用户连续双击两个货物后才暴露“上一任务被取消/重复查询”这种隐蔽回归。
+        -- 多个 RowJob 可并存，但 PriceQuoteQueueV3 仍须串行访问 Native，并按 itemType+grade 去重。
+        -- 版本不匹配时先阻断，避免连续查询两个货物时取消上一任务或重复查价。
         and type(S.Services and S.Services.MaterialPriceServiceV3) == "table"
         and (tonumber(S.Services.MaterialPriceServiceV3.ContractVersion) or 0) >= 1
         and (tonumber(S.Services.MaterialPriceServiceV3.FreshnessContractVersion) or 0) >= 1
@@ -2316,8 +2209,7 @@ function G:Run(options)
         and type(tradeDetail.Open) == "function" and type(tradeDetail.Close) == "function"
     AddCheck(report, "v3_trade_detail_favorites_contract", tradeDetailOk, "blocker",
         tradeDetailOk and "TradePayoutV3 + durable material-price SWR + economics revisions + multi-row quote jobs present" or "trade payout/material-price/economics/multi-row quote contract unavailable")
-    -- Buff 显示健康及观察版本契约唯一归 features/combat/buff_display/rs_buff_display_acceptance.lua 的
-    -- v3_combat_buff_display_observation_contract。
+    -- Buff 显示的健康与观察契约由 features/combat/buff_display/rs_buff_display_acceptance.lua 检查。
     local healerFloatingSpec = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("combat.healer") or nil
     if healerFloatingSpec ~= nil then usabilityFailures[#usabilityFailures + 1] = "healer_recommendation_widget" end
     AddCheck(report, "v3_combat_life_usability_contract", #usabilityFailures == 0, "blocker",
@@ -2325,18 +2217,14 @@ function G:Run(options)
 
     local bagContractOk, bagContractDetail = self:EvaluateBagActionContract()
     AddCheck(report, "v3_bag_action_contract", bagContractOk, "blocker", bagContractDetail)
-    -- Gear 快速启动意图版本及三个函数由 features/combat/gear/rs_gear_acceptance.lua 的
-    -- v3_m4_gear_quick_startup_intent_contract 唯一验证；此处只保留 Core FeatureRuntime 启动意图框架契约。
-    -- 注释不写带点业务表名+字段，rs_architecture_audit 不跳过注释。
+    -- Gear 快速启动意图由 features/combat/gear/rs_gear_acceptance.lua 检查；此处只验 FeatureRuntime 公共接口。
     local startupIntentOk = type(S.FeatureRuntime) == "table" and (tonumber(S.FeatureRuntime.StartupEnableIntentContractVersion) or 0) >= 1
     AddCheck(report, "v3_quick_surface_reload_reconcile_contract", startupIntentOk, "blocker",
         startupIntentOk and "Gear legacy quick intent is one-time repaired and persistent quick visibility remains preference-authoritative"
             or "quick-surface reload reconcile contract unavailable")
 
     local auctionQuery = S.Services and S.Services.AuctionQueryV3 or nil
-    -- 拍卖/市场分析 Feature 实现检查分别归 features/tools/auction/rs_auction_acceptance.lua 和
-    -- features/tools/market_analysis/rs_market_analysis_acceptance.lua；此处只保留 AuctionQueryV3 Service
-    -- 契约。注释也避免带点表名+字段，rs_architecture_audit 行正则不跳过注释。
+    -- 拍卖和市场分析的实现由各自 acceptance 检查；此处只验 AuctionQueryV3。
     local auctionQueryOk = type(auctionQuery) == "table" and (tonumber(auctionQuery.version) or 0) >= 2
         and (tonumber(auctionQuery.EventAuthorityContractVersion) or 0) >= 1
         and tostring(auctionQuery.presentationBoundary or "") == "service_only" and type(auctionQuery.Search) == "function" and type(auctionQuery.GetSnapshot) == "function"
@@ -2353,10 +2241,8 @@ function G:Run(options)
     AddCheck(report, "v3_auction_sidecar_contract", auctionSidecarOk, "blocker",
         auctionSidecarOk and "native-auction observer + persistent user-controlled sidecar lifecycle present" or "auction sidecar control contract unavailable")
 
-    -- （2026-09-14，拍卖工作区 Gate）Sidecar 的三页签不是第二业务 Authority；收藏继续
-    -- 由 tools_auction Store 持久化，今日任务只读 QuestProgress/静态配方，临时清单明确无 Store。这里阻断的
-    -- 是这些稳定接口是否存在，而不是当前玩家今天是否有任务。Native 搜索框同步属于增强能力，失败时仍能
-    -- 经 AuctionQueryV3 查询，所以单独只报 warning，绝不能把 RU 原生 EditBox 差异升级成启动 blocker。
+    -- Sidecar 收藏由 tools_auction 保存，今日任务只读 QuestProgress/配方，临时清单不存档。这里只验接口，不要求玩家当天有任务。
+    -- Native 搜索框同步失败仅报 warning：仍可经 AuctionQueryV3 查询，不能因 RU EditBox 差异阻断启动。
     local auctionSession = S.Services and S.Services.AuctionSessionListV3 or nil
     local auctionDaily = S.Services and S.Services.DailyAuctionMaterialsV3 or nil
     local questProgress = S.Services and S.Services.QuestProgressV3 or nil
@@ -2379,14 +2265,12 @@ function G:Run(options)
         nativeSyncEnhancementOk and "verified native EditBox sync bridge present; runtime candidate failure safely falls back to AuctionQueryV3"
             or "native search-box synchronization enhancement unavailable; direct AuctionQueryV3 remains authoritative")
 
-    -- 制作 Foundation blocker 仅覆盖仍在产品中的 tools_craft，不保留 v3_craft_plan_contract 空壳，否则会永
-    -- 久阻断并迫使 Runtime 注册无用 Store。用户选择契约归 features/tools/craft/rs_craft_acceptance.lua 的
-    -- v3_tools_craft_contract，Core 不点名访问业务实现。
+    -- 只检查现有 tools_craft；保留已移除的 craft_plan 空壳会永久阻断并迫使注册无用 Store。
+    -- 业务契约由 features/tools/craft/rs_craft_acceptance.lua 检查。
 
     local craftSurface = S.Services and S.Services.CraftSurfaceV3 or nil
     local craftSidecar = S.UIV3 and S.UIV3.CraftSidecar or nil
-    -- 制作助手侧的契约（侧车契约版本 + 自动侧车命令）已收敛到
-    -- features/tools/craft/rs_craft_acceptance.lua；本判定只保留 Service / UIV3 侧。
+    -- 制作侧车由 craft acceptance 检查；此处只验 Service/UIV3。
     local craftSidecarOk = type(craftSurface) == "table" and (tonumber(craftSurface.version) or 0) >= 1
         and (tonumber(craftSurface.VisibilityContractVersion) or 0) >= 1
         and type(craftSurface.GetSnapshot) == "function" and type(craftSurface.Start) == "function" and type(craftSurface.Stop) == "function"
@@ -2394,18 +2278,15 @@ function G:Run(options)
     AddCheck(report, "v3_craft_sidecar_contract", craftSidecarOk, "blocker",
         craftSidecarOk and "bounded native-craft observer + shared-authority sidecar present" or "craft sidecar contract unavailable")
 
-    -- 团队工具版本和命令面归 features/combat/team_tools/rs_team_tools_acceptance.lua 的两个 case；此处仅验
-    -- 证 Service/Data/UIV3：TeamRosterV3 团队边沿稳定、静态职责目录及两个已确认职业组合、TeamSacOverlay 表
-    -- 现。注释不使用带点业务表名+字段，rs_architecture_audit 不跳过注释。
+    -- 团队版本和命令由 team_tools acceptance 检查；此处只验团队边沿、静态职责目录和叠层 UI。
     local teamRoster = S.Services and S.Services.TeamRosterV3 or nil
     local teamRoleCatalog = S.Data and S.Data.TeamAutoRoleCatalog or nil
     local archerRole = type(teamRoleCatalog) == "table" and type(teamRoleCatalog.byClassKey) == "table"
         and teamRoleCatalog.byClassKey["name_6_8_9"] or nil
     local dancerHealerRole = type(teamRoleCatalog) == "table" and type(teamRoleCatalog.byClassKey) == "table"
         and teamRoleCatalog.byClassKey["name_8_9_14"] or nil
-    -- 团队职责门禁验证两个用户已确认职业组合、TeamRoster 租约及团队边沿稳定契约。
-    -- 只读声明和静态目录，不触发 X2Team 写入或名单扫描；关闭页面后的入团监听须遵守服务生命周期。
-    -- 自动职责本体版本和 SetRole 命令归 team_tools acceptance，此处仅保留 TeamRoster 与静态目录检查。
+    -- 只验两个已确认职业组合、TeamRoster 租约和团队边沿声明，不扫描名单或调用 X2Team 写接口。
+    -- 页面关闭后的入团监听仍须随服务生命周期释放。
     local teamRoleOk = type(teamRoster) == "table" and (tonumber(teamRoster.TeamEdgeSettleContractVersion) or 0) >= 1
         and type(teamRoleCatalog) == "table" and (tonumber(teamRoleCatalog.version) or 0) >= 3
         and type(archerRole) == "table" and tostring(archerRole.role or "") == "ranged"
@@ -2414,27 +2295,20 @@ function G:Run(options)
         teamRoleOk and "independent roster lease + bounded team-edge settle + ranged/healer exact class-role semantics present" or "team role/catalog lifecycle contract unavailable")
 
     local teamSacOverlay = S.UIV3 and S.UIV3.TeamSacOverlay or nil
-    -- 标记/牺牲之舞/自动职责默认开启这一组 Feature 契约与四条命令
-    -- 已搬到 team_tools 的 acceptance；这里只保留 UIV3 侧呈现契约。
+    -- 默认开启和业务命令由 team_tools acceptance 检查；此处只验 UIV3。
     local teamVisualOk = type(teamSacOverlay) == "table" and (tonumber(teamSacOverlay.TeamSacPresentationContractVersion) or 0) >= 1
     AddCheck(report, "v3_team_visual_marker_contract", teamVisualOk, "blocker",
         teamVisualOk and "bounded Sac overlay + persistent marker snapshot/verified serial restore present" or "team visual/marker contract unavailable")
 
-    -- 活动 Feature 持久化的排序分带、schema8、历史 canonical 恢复、Transport v1 零值恢复归
-    -- features/life/activities/rs_activity_acceptance.lua 的 store_contract，
-    -- KnownLegacyCanonicalRecoveryContractVersion 下限为 3。此处只保留 Store schemaVersion/恢复 hook/完整性
-    -- 升级许可，这些是 Core Persistence 边界，不能一起移走。
-    local activityStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.activities") or nil -- 只读取已注册 Store spec，不触发 LoadData；用于证明 .18.197
-                                                                                                                                                 -- 的 schema8 exact-pair 恢复桥实际挂在 Store Authority 上。
+    -- 活动业务存档由 activities acceptance 检查；此处仍须验证注册 Store 的 schema、恢复 hook 和完整性升级许可。
+    -- 只读 spec，确认 exact-pair 桥已挂接，不触发 LoadData。
+    local activityStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.activities") or nil
     local activityRecoveryOk = type(activityStore) == "table" and tonumber(activityStore.schemaVersion) == 8
-        and type(activityStore.recoverKnownLegacyCanonical) == "function" and activityStore.allowIntegrityUpgrade == true -- 恢复资格必须由 Store-owned hook + Core exact fingerprint 验
-                                                                                                                          -- 真组合完成，Feature/UI 不得直接放行。
+        and type(activityStore.recoverKnownLegacyCanonical) == "function" and activityStore.allowIntegrityUpgrade == true -- 恢复须同时通过 Store hook 和 Core 精确指纹验证，Feature/UI 不能直接放行。
     AddCheck(report, "v3_activity_persistence_recovery_contract", activityRecoveryOk, "blocker",
         activityRecoveryOk and "schema8 exact canonical/Transport-v1 incident recovery + Transport v2 rewrite present" or "activity persistence recovery contract unavailable")
 
-    -- 活动 persistence_mutation 归 features/life/activities/rs_activity_acceptance.lua；任务修改及稳定
-    -- codec 归 features/life/tasks/rs_task_acceptance.lua 的 v3_life_tasks_persistence_contract。Core 不访
-    -- 问具体业务实现；这些 case 须显式声明只读运行资格，否则玩家诊断会跳过。
+    -- 活动和任务的存档 case 须显式声明只读运行资格，否则玩家诊断会跳过。
 
     AddCheck(report, "diagnostics", S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Snapshot) == "function", "blocker", "structured diagnostics")
 
@@ -2574,9 +2448,7 @@ function G:BuildCopyText(runNow)
         end
     end
     if #persistenceIncidents > 0 then parts[#parts+1] = "存档故障 " .. table.concat(persistenceIncidents, " | ") end
-    -- 把 Core 完整性恢复状态机独立成段，先于 Store historical probe 输出。
-    -- 该证据只含契约版本/世代/分支/Hash 结果，用户即使只复制摘要前半段，也能判断失败发生在 Core gate 还是
-    -- Store 恢复钩子。
+    -- Core 状态机轨迹先于 Store 恢复探针输出，便于摘要被截断时仍能定位失败阶段。
     do
         local traceParts = {}
         for _, row in ipairs(persistence and persistence.rows or {}) do
@@ -2587,15 +2459,12 @@ function G:BuildCopyText(runNow)
         end
         if #traceParts > 0 then parts[#parts+1] = "完整性轨迹 " .. table.concat(traceParts, " | ") end
     end
-    -- `.18.198` 把完整性恢复探针单独成行。此前 probe 以 `|historical_probe=` 后缀挂在
-    -- 很长的"存档故障"行尾，实机摘要会被 UI 截断，导致最关键的定位证据（分支是否触发、缺哪些字段）
-    -- 恰好在复制时丢失。这里只输出**写保护中**的 Store 的 probe——字段名、候选计数与真实
-    -- schema/framework/transport 元数据，不含玩家名、伤害、技能或任何自由文本用户配置。
+    -- 恢复探针单独成行，避免挂在长行尾部被 UI 截断。
+    -- 只输出写保护 Store 的字段名、候选数和版本元数据。
     do
         local probeParts, seenProbe = {}, {}
         for _, row in ipairs(persistence and persistence.rows or {}) do
-            -- 字段名必须是 `historicalRecoveryProbe`（rs_persistence.lua Describe() 输出的行字段），
-            -- 不是 store 原生字段名 `lastHistoricalRecoveryProbe`——写错会导致本段永远为空、诊断信息静默丢失。
+            -- 读取 Describe 的 historicalRecoveryProbe；Store 内部名 lastHistoricalRecoveryProbe 在此无效。
             if row.writeFenced == true and row.historicalRecoveryProbe ~= nil then
                 local item = tostring(row.id or "?") .. ":" .. tostring(row.historicalRecoveryProbe):gsub("[\r\n]+", " ")
                 if seenProbe[item] ~= true then
@@ -2607,9 +2476,7 @@ function G:BuildCopyText(runNow)
         end
         if #probeParts > 0 then parts[#parts+1] = "恢复探针 " .. table.concat(probeParts, " | ") end
     end
-    -- `.18.198` 新增「功能诊断」段——汇总诊断管理器功能状态行里所有非 OK 项
-    --（含数据驱动的「存档·XX」写保护行）。它把"功能坏了"与"为什么坏"放进同一段可复制文本，
-    -- 避免用户只看到第一段的启动降级却不知道具体哪个功能受影响。仅取前 3 条防刷屏。
+    -- 汇总功能诊断的非 OK 项，含 Store 写保护行；最多取前三条，并带出原因。
     do
         local diag = S.DiagnosticsManager
         local featureRows = diag ~= nil and type(diag.BuildFeatureStatusRows) == "function" and diag:BuildFeatureStatusRows() or nil

@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 选择几何与对齐引导
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 共享编辑数学只推导位置和把手/引导；SelectionModel 仍是选中逻辑 key 的唯一权威。
 -- 继承 S.Layout 坐标：左上原点，+X 向右、+Y 向下，上移始终负 Y。
 -- 无 Tick/永久 OnUpdate；选择几何仅明确请求解析，候选默认 256、硬上限 1024，把手/吸附数学 O(selected + 有界候选)。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -84,9 +81,7 @@ function SelectionGeometry:UnionRects(rects, maxRects)
     return bounds, nil, scanned
 end
 
-------------------------------------------------------------------------
 -- 八向编辑把手几何。
-------------------------------------------------------------------------
 local HANDLE_POINTS = {
     top_left = function(r) return r.x, r.y end,
     top = function(r) return r.centerX, r.y end,
@@ -138,9 +133,7 @@ function SelectionGeometry:HitTestHandle(x, y, rect, options)
     return nil, nil
 end
 
-------------------------------------------------------------------------
 -- SelectionGeometryModel 从 SelectionModel 推导几何，不持有 key。
-------------------------------------------------------------------------
 local SelectionGeometryModel = {}
 SelectionGeometryModel.__index = SelectionGeometryModel
 
@@ -245,11 +238,8 @@ end
 
 RSUI.SelectionGeometryModel = SelectionGeometryModel
 
-------------------------------------------------------------------------
 -- LayoutGuideResolver 引导解析器。
---
 -- 调用方先用 RectTransformTransaction 等计算建议 rect，再解析活跃移动/缩放锚的对齐；返回新 rect 与最多各一条 X/Y 引导，不修改控件。
-------------------------------------------------------------------------
 local GuideResolver = { version = 1 }
 RSUI.LayoutGuideResolver = GuideResolver
 
@@ -497,11 +487,8 @@ function SelectionGeometry:GetSnapshot()
     }
 end
 
-------------------------------------------------------------------------
 -- 选择/引导视觉表面。
---
 -- 仅表现并暴露原生移动/缩放命中目标，不持拖动捕获/变换事务；LayoutEditorGestureController 经已验证 StartMoving/OnDragStart 绑定。
-------------------------------------------------------------------------
 RSUI.SelectionOverlayContractVersion = 1
 RSUI.LayoutGuideOverlayContractVersion = 1
 

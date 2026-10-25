@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 交易成本重试测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 缓存优先契约测试运行真实 MaterialPrice 和 TradeQuote 服务；金额样本为构造的边界输入，不是实时市场证据。
-------------------------------------------------------------------------
 dofile('tools/rs_trade_tests.lua')
 local baseS=ReplicatedSuite
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')
@@ -15,7 +12,7 @@ local function Test(name,fn)
 end
 local function Fixture(candidate,missing)
  local h=Boot(baseS);local S=h.S;local T=S.Features.Trade;local TA=T.Authority;local m=h:loadMaterialPrices()
- -- 中文维护（发布审查）：真实材料身份服务使用已核 Native 品质：香辛料0、樱桃3；
+ -- 真实材料身份服务使用已核 Native 品质：香辛料0、樱桃3；
  -- 旧测试统一写品质1只会缓存另一身份，不能为了命中旧 fixture 改生产成本或默认品质。
  if not missing then
   assert(m:ObserveConfirmedPrice(30901,0,559,'market_price:0'))

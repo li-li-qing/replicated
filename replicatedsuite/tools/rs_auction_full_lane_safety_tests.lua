@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖完整通道安全测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 维护（2026-10-01，auction-full-lane-safety-1）：实际加载服务，Native/时钟/持久化使用既有边界宿主。
--- 复现本轮全 nil 可见性、前半段市场价仍发包、SWR 周期复活和后台需求未释放；不证明 RU 实机验收。
-------------------------------------------------------------------------
+-- 实际加载服务，Native/时钟/持久化使用既有边界宿主。
+-- 覆盖可见性全 nil、市场价违规发包、SWR 任务复活和后台需求未释放；客户端行为仍需实机核对。
 local Boot = dofile('tools/rs_trade_requote_test_host.lua')
 local passed,total=0,0
 local function Eq(a,b,m) assert(a==b,(m or 'value')..': expected='..tostring(b)..' actual='..tostring(a)) end
@@ -14,7 +11,7 @@ local function Test(name,fn) total=total+1;local ok,e=xpcall(fn,debug.traceback)
 local function Unknown(h)
  h.content=nil
  ADDON.GetContentMainScriptPosVis=function()h.visibilityReads=h.visibilityReads+1;return nil,nil,nil,nil,nil end
- -- 中文维护注释（2026-10-02）：成功返回 nil 是实机关闭形态；unknown 用确实失败的内容读取证明。
+ -- 成功返回 nil 是实机关闭形态；unknown 用确实失败的内容读取证明。
  ADDON.GetContent=function()error('native_content_unreadable')end
 end
 local function NoRequests(h)
@@ -100,7 +97,7 @@ Test('new diagnostics only read cached guard facts',function()
  Eq(h.visibilityReads,reads);Eq(#h.calls,calls)
  Eq(q.nativeInteractionPatch,'auction-full-lane-safety-1')
 end)
--- 维护（auction-full-lane-safety-1）：协议探针和恢复诊断也必须遵守同一边界。
+-- 协议探针和恢复诊断也必须遵守同一边界。
 Test('closed admission returns no contradictory blocked reason',function()
  local h=Boot();local allowed,reason=h.queue:CanNativeQuote()
  Eq(allowed,true);Eq(reason,nil);Eq(h.queue:Describe().nativeAdmission.reason,nil)

@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 布局编辑覆盖层
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 画布侧编辑组合，不新增输入、变换或持久权威，仅连接已审查基础：
--- SelectionModel -> LayoutEditorPreviewAdapter（单/多选事务桥）-> SelectionOverlay/LayoutGuideOverlay（表现）-> LayoutEditorGestureController v2（有限 Native 捕获）-> AnchorPivot/MultiSelectionTransform/RectTransform/Snap resolver。
--- 调用方通过 onPreview/onCommit/onCancel 持有 Feature 投影/持久化；源 rect 与指针必须共用声明编辑空间，不能猜 viewport/local 转换。
--- 无永久 Tick；关闭对齐吸附不扫描候选，每手势一次冻结且上游硬限制候选；选择刷新仅事件/明确调用。
-------------------------------------------------------------------------
+-- 组合选择、预览适配器、引导和手势控制器；onPreview/onCommit/onCancel 由调用方处理。
+-- 源 rect 和指针须处在声明的编辑空间，不能猜转换。候选每手势冻结一次且有上限，关吸附时不扫描。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

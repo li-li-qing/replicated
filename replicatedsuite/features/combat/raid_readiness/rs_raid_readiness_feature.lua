@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队准备检查功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 页面可见只持有轻量 TeamRoster 消费端；昂贵 Aura 观察仅在显式扫描时获取，完成/取消立即释放，关页后无高频观察残留。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Runtime = S.FeatureRuntime

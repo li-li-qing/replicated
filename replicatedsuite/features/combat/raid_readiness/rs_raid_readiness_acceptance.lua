@@ -1,23 +1,17 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队准备检查契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅静态/非破坏契约检查。团队运行时检查必须由用户发起，Foundation 诊断禁止启动它。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 本文件是 RaidReadiness 的
--- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
--- 独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败 ——
--- 否则搬迁之后“Feature 加载失败”会从 blocker 静默退化成“没有检查”。
+-- 即使 Feature 缺失也注册 case 并明确失败，不能把加载错误退化成未检查。
 local F = S.Features and S.Features.RaidReadiness or nil
 
 local function Fail(message) return false, tostring(message or "raid_readiness_acceptance_failed") end
 
--- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 运行时只做只读诊断；完整序列测试仅离线执行。
 G:RegisterSequenceCase("v3_m16_14_raid_readiness_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_raid_readiness") or nil

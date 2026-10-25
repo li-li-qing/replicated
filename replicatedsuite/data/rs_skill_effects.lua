@@ -1,34 +1,13 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 技能效果关系数据
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}
 
---[[ 技能到Buff/Debuff的效果关系库
--- 仅收录已核实数据；未经实测的推断项保持未知，待游戏内证据补全。
---
--- 【准确数据】来源: wiki.archerage.to/ru-cn 技能库 (已逐页核对)
---   * 技能 ID + 中文名
---   * 每个技能「直接施加」的 buff/debuff 的 ID + 中文名 (取自该 buff 自身页面, 权威)
---   * buff 索引: ID + 中文名
---
--- 【已清空 / 待游戏内补全】(wiki 不区分 Buff/Debuff, 也无连锁 ID, 无法自动获取):
---   * kind  (buff / debuff): 自动生成基础表仍为 "unknown"；用户实测/明确确认项在下方维护块覆盖
---   * target(self / enemy): 当前全部为 "unknown", 需进游戏确认后填入
---   * 连锁反应 (A 触发 B): wiki 无结构化数据, 需游戏内记录后补 chains 字段
---
--- 数据结构：
---   S.Data.SkillEffects.trees[slug] = {
---     name_cn = "中文天赋名",
---     skills = { [skillId] = { name="技能名", effects={ {buffId,name,target,kind}, ... } } }
---   }
---   S.Data.SkillEffects.buffs[buffId] = { name="buff名", kind="unknown" }
---
---   已知缺口: 欢乐(joy, 计算器 key 14) 在 wiki 无对应技能库页, 保留空结构待补。
---]]
+-- 技能与直接施加的 Buff/Debuff ID、中文名来自 wiki.archerage.to/ru-cn 技能库。
+-- Wiki 不可靠区分正负效果，也无结构化连锁数据；kind/target 未经实机确认时保留 unknown，连锁待补 chains。
+-- trees 按天赋 slug 保存技能与 effects，buffs 按效果 ID 索引。欢乐（joy，计算器 key14）无 Wiki 页面，暂留空。
 S.Data.SkillEffects = {
     version = 3,
     trees = {},
@@ -409,10 +388,8 @@ do
 end
 
 do
-    -- 游戏内实测补充 (2026-08-25)：用户手动采集的真实 buff ID，已用 wiki 查中文名。
-    -- 极性(kind) 暂置 "unknown"：wiki 的 Buff/Debuff 标签极性不可靠（如 5935 骨牢标 Buff 实为定身减益，
-    -- 23360/23357 减少受到的治愈量、23216 石化、23642 枪刺、93 冻结 等同理），待用户在游戏内确认
-    -- 目标/自身 与 buff/debuff 后填入。导入时仍按名字关键词启发式分列，故部分减益可能暂落在 Buff 列。
+    -- 2026-08-25 用户实机采集 ID，Wiki 补中文名。Wiki 极性不可靠（如 5935 骨牢、23360/23357、23216、23642、93），
+    -- 未实机确认前 kind 保留 unknown；名称启发式分列可能把减益放进 Buff 列。
     local B = S.Data.SkillEffects.buffs
     B[23360] = { name = "减少受到的治愈量", kind = "unknown" }
     B[16498] = { name = "痛苦折磨", kind = "unknown" }
@@ -437,27 +414,14 @@ do
 end
 
 do
-    ------------------------------------------------------------------------
-    --
-    -- 原因：自动技能库只保证“ID/名称存在”，kind 长期为 unknown；本批 ID 已由用户明确
-    -- 确认 Buff/Debuff 极性。控制免疫补充来自 ArcheRage 4.5 的重复控制规则与当前 Wiki
-    -- 的 Buff ID 清单，只收录能明确核对到名称的免疫状态，不把 NPC/装备专属的一次性免疫
-    -- 或无法核到 ID 的“石化免疫”猜进来。
-    -- 权威边界：这里仍只是 Data 静态身份/默认分类 Authority；用户实际追踪选择仍由
-    -- BuffDisplay Feature/Store Authority 持有，禁止把选择状态反写到 Data。
-    -- 数据流：SkillEffects.buffs -> StatusTrackingCatalogV3（TOC 一次编译） -> 管理页面；
-    -- ImportBuiltinPack 会分别写入 player/target，因此这里绝不按“自身/目标”复制两份 ID。
-    -- 兼容/性能：只做加载期 O(N) 静态表登记，不新增 Native 调用、Timer、Tick 或名称 Tag 扫描。
-    -- 17385 暂无可靠 Buff 名称证据，保留数字名；运行时 BuffMetadataV3 观察到该 ID 后可用
-    -- 客户端元数据补本地化名称与图标，避免把同号 NPC 名称误写成 Buff 名称。
-    ------------------------------------------------------------------------
+    -- 下列极性由用户确认；控制免疫只收录官方 4.5 重复控制规则和 Wiki 能核实名称的 ID，不猜 NPC/装备专属状态。
+    -- 这里只存身份和默认分类，用户选择由 Feature/Store 保存；加载时编入目录，导入时再分别写 player/target。
+    -- 17385 暂无可靠 Buff 名称，保留数字，待 BuffMetadataV3 观察补全，不能误用同号 NPC 名称。
     local B = S.Data.SkillEffects.buffs
 
     -- 用户明确确认（Buff / Debuff）。
-    -- 853 由用户再次实机确认为 Debuff，继续作为
-    -- 静态分类 Authority 收录；“睿明祝福”旧的 2956/7661/13790 及技能 16004 已从
-    -- SkillEffects 数据源删除，避免 recommended/all 与爱天赋包继续把过期 ID 导入用户追踪。
-    -- 该删除只影响内置目录，不主动清理用户已经手工保存的 tracked ID，保持升级兼容边界。
+    -- 853 再次经实机确认为 Debuff；过期睿明祝福效果 2956/7661/13790 及技能 16004 已移出内置库。
+    -- 不主动删除用户已经保存的 tracked ID。
     B[18] = { name = "Breakthrough Shock", kind = "debuff" }
     B[138] = { name = "倒地", kind = "debuff" }
     B[495] = { name = "Zeal", kind = "buff" }
@@ -478,7 +442,7 @@ do
     B[24061] = { name = "Discord", kind = "debuff" }
     B[27128] = { name = "Immortal Warden's Shield Immunity", kind = "buff" }
     B[27701] = { name = "Steady Shooting", kind = "buff" }
-    -- 28597 已在基础索引中存在；上方原条目已直接校正为 buff，避免双重 Authority。
+    -- 28597 在基础索引中已校正为 buff，不重复登记。
     B[28660] = { name = "Freeze!", kind = "buff" }
     B[28674] = { name = "Tired Snowflake", kind = "debuff" }
     B[29300] = { name = "Room Sweeper", kind = "buff" }
@@ -486,9 +450,8 @@ do
     B[8000503] = { name = "Cat Nap", kind = "debuff" }
     B[8000546] = { name = "Specter Spectacular", kind = "buff" }
 
-    -- 控制免疫：官方 4.5 规则确认重复 Debuff 到 Rank 4 会进入免疫；Wiki 可明确核到
-    -- 下列控制免疫 Buff ID。这里把它们加入“内置库”，但不声称每个 ID 都是所有场景下
-    -- Rank-4 机制唯一的运行时标记；实战观察仍以 AuraObservationV3 为事实来源。
+    -- 官方 4.5 重复 Debuff 到 Rank4 后免疫；下列 ID 名称可由 Wiki 核实。
+    -- 它们不一定是所有场景唯一的 Rank4 标记，实时状态仍取 AuraObservationV3。
     B[417] = { name = "沉默免疫", kind = "buff" }
     B[602] = { name = "睡眠免疫", kind = "buff" }
     B[2160] = { name = "水之禁锢免疫", kind = "buff" }

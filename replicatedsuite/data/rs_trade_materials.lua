@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 贸易材料与配方数据
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 来源：用户提供的货率2.5材料表。本文件仅数据，禁止API调用、定时器或全局可变状态。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}

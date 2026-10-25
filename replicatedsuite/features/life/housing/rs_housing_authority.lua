@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 住宅信息业务权威
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- RU 客户端四个住宅 getter 均无参数；返回形态不稳定，Authority 将结果转为独立有界投影，禁止 Presentation 直接处理。无轮询或写 API。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local A = { version = 1, revision = 0, snapshot = nil, metrics = { refreshes = 0, failures = 0 } }

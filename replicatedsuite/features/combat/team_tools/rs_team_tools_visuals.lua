@@ -1,13 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队牺牲之舞与标记
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 牺牲之舞独立于职责Feature，保留原视觉Store身份/schema，不复制Aura/团队事实，职责开关不能控制视觉消费者。
 -- 永久子Store仅含用户选择与稳定标记身份，名单/Aura/Native窗口事实临时。
 -- 候选发现靠名单边沿与10s安全扫描，仅Spelldance候选读共享AuraObservationV3；Domain无Tick/逐帧Native。屏幕投影归rs_v3_team_sac_overlay.lua。
 -- 标记恢复为有界1.1s串行队列，遵守X2Unit:SetOverHeadMarker官方1000ms冷却，每次写后验证再下一次。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence

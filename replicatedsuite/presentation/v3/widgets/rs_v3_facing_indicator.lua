@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 朝向提示组件
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（2026-10-09）：正背面 Presenter 只渲染 Feature 当前帧，不拥有 Native 观测或第二套 Tick。
+-- 正背面 Presenter 只渲染 Feature 当前帧，不拥有 Native 观测或第二套 Tick。
 -- 两个 17 点弧和两个文字的池固定有界；透明窗口/点/文字均不抢输入，统一沿用 game overlay 层。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local F=S.Features and S.Features.combat_facing_indicator
@@ -78,7 +75,7 @@ function P:Place(item,point,size,opacity,color,ox,oy,isText,viewportW,viewportH)
     return Visible(item,true)
 end
 function P:Render()
-    -- 约束（facing-render-evidence-1）：仅记录本次既有渲染的阶段与拒写，不为诊断额外调用 Native。
+    -- 仅记录本次既有渲染的阶段与拒写，不为诊断额外调用 Native。
     -- 实机报告出现 ready/36 个投影点却零显示，旧报告缺少创建/回调失败原因，不能据此改投影倍数。
     self.renderCalls=(self.renderCalls or 0)+1
     self.renderStage="projection"
@@ -97,9 +94,8 @@ function P:Render()
     -- 分辨率/画质改变时失效两层位置/样式缓存，保持字体和弧点尺寸；复用原池不造新任务。
     local revision=S.Layout and tonumber(S.Layout.metricsRevision) or 0
     if S.Layout and type(S.Layout.GetUiEnvironmentRevision)=="function" then
-        -- 约束（facing-revision-return-1）：Layout 返回 revision,reason 两个值，Lua 的末位函数
-        -- 实参会展开全部返回；直接 tonumber(Get...) 会把 reason 当进制而报错，整帧在创建弧点前中断。
-        -- 先以单变量接收首值，保留 Layout 的双返回契约，不改变环境失效/字体恢复/采样频率。
+        -- Layout 返回 revision,reason；末位函数实参会展开，直接 tonumber(Get...) 会把 reason 当进制而报错。
+        -- 先用单变量接首值，再做转换。
         local environmentRevision=S.Layout:GetUiEnvironmentRevision()
         revision=tonumber(environmentRevision) or 0
     end
@@ -153,7 +149,7 @@ local function WantsVisuals()
     return front or back
 end
 function P:Reconcile()
-    -- 约束（facing-independent-sides-1）：总开关不被两侧偏好改写；两侧隐藏时只撤销本 Presenter
+    -- 总开关不被两侧偏好改写；两侧隐藏时只撤销本 Presenter
     -- 租约，由现有 Demand 清任务/事件。任一侧重新显示则恢复同一租约，不建立第二个刷新器。
     if not WantsVisuals() then
         local hidden,hideErr=self:Hide()
@@ -181,9 +177,8 @@ function P:ConvergeTick()
     if not wanted and self.hidePending then return self:Invoke("Hide") end -- 仅重试UI隐藏，不领取租约/采样目标。
     return true
 end
--- 原来的 Report(P:Render()) 会先求值 Render；异常越过 Report 后仅留在总线的
--- LastInternalEventError，模块报告因而显示零错误。这里包住实际调用，保留阶段/堆栈并限速归属本模块。
--- 出错先隐藏旧帧，保留 Consumer 和原任务供下帧恢复，不新增定时器、不取消保护边界。
+-- Report(P:Render()) 的参数求值异常会绕过 Report，模块报告便显示零错误。
+-- 须包住实际渲染调用，限速记录阶段和堆栈；失败隐藏旧帧，保留需求供下帧重试。
 function P:Invoke(method)
     local called,result,err=xpcall(function()return self[method](self)end,S.SafeTraceback or tostring)
     local failure

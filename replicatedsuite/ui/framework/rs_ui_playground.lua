@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 组件展示与压力工具
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 仅开发者明确入口；正常启动/Tick 不创建控件、扫描组件或执行压力工作。
--- 用途：证明原语/面板可组合复杂 UI；不触碰业务验证分辨率安全布局；大逻辑数据压力检查 ListView/TileView 虚拟化；提供可复用组合示例，不新增业务权威。
-------------------------------------------------------------------------
+-- 仅显式运行组件组合、分辨率布局和虚拟列表压力示例；正常启动不创建控件或扫描。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -20,11 +16,8 @@ local function Token(path, fallback)
     return fallback
 end
 
-------------------------------------------------------------------------
 -- 组合示例。
---
 -- 使用现有原语而不 RegisterType，展示 UMG 组合模型并保持标准类型表小且稳定。
-------------------------------------------------------------------------
 function RSUI.Composite.StatusCard(parent, spec)
     spec = type(spec) == "table" and spec or {}
     local id = tostring(spec.id or "status_card")
@@ -68,9 +61,7 @@ function RSUI.Composite.AuraSlot(parent, spec)
     return root
 end
 
-------------------------------------------------------------------------
 -- Playground 展示。
-------------------------------------------------------------------------
 function Playground:Build(parent, spec)
     if parent == nil then return nil, "parent_required" end
     spec = type(spec) == "table" and spec or {}
@@ -134,9 +125,7 @@ function Playground:Build(parent, spec)
     return root
 end
 
-------------------------------------------------------------------------
 -- 明确调用的虚拟化压力工具。
-------------------------------------------------------------------------
 function Playground:RunStress(parent, spec)
     if parent == nil then return nil, "parent_required" end
     spec = type(spec) == "table" and spec or {}

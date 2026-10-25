@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 任务追踪业务权威
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 为人工整理日常/周常组提供表现投影；不拥有 Gameplay 事实。QuestProgressService 是唯一任务状态读取者，Task Store 拥有用户追踪选择。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}

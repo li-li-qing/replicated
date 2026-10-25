@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗分析契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 战斗分析契约验收。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local G=S.FoundationGate

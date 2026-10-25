@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 工作区提醒测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实业务 Commands/Store；Native 时钟/区域读取被设为错误，确保关闭时编辑只是偏好写入。
-------------------------------------------------------------------------
 local function Boot()
  local h=dofile('tools/rs_gear_page_test_host.lua')();local S=h.S
  S.UI.CreateWindowShell=function()return {}end

@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 寻宝坐标库存与逐箱登记
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 同一 Treasure Feature 的库存组件：只用现有 Snapshot/Persistence/Scheduler。
 -- 按开箱交互生成本轮记录号；同次打开重复识别更新记录，不以内容相同冒充物理箱身份。
 -- 旧寻宝 Store 不增字段；角色级快照分块保存，移动意图先耐久落盘，确认后替换。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local F = S.Features and S.Features.Treasure
@@ -78,7 +75,7 @@ local function Normalize(value)
 end
 local store,storeErr=P:RegisterV3Store({id=I.storeId,owner="v3.life.treasure",scope=P.Scope.Character,lifetime=P.Lifetime.Permanent,
     schemaVersion=1,legacySchemaVersion=0,key=P.V3KeyPrefix.."v3_life_treasure_inventory",
-    nativeByteBudget=14336, -- 真实UDF本轮截在16383字节；复用Core物理预算，在写入前拒绝超限，不能只限制单个chunk。
+    nativeByteBudget=14336, -- 实测 UDF 在 16383 字节截断；写入前按 Core 的整份存档预算检查，不能只限制单块。
     recoverableReplacement=true, -- 仅显式“重新统计”可替换损坏的可再生箱记录；普通登记仍须PrepareWrite和完整校验。
     budget={maxDepth=6,maxNodes=12000,maxEntriesPerTable=8192,maxStringBytes=1048576},
     default=function()return Normalize(nil)end,get=function()return Copy(I.State)end,
@@ -364,10 +361,8 @@ function I:ResetCofferRound()
             state.boxes={};state.pendingCoffer=nil;state.scanRound=true
         end)
     else
-        -- 重载后被隔离的截断快照不能按“已读”使用，也不能自动清空。仅用户点击清空时完整替换此组件自己的Store；
-        -- 归属/版本/故障类型只由 Core 授权，禁止 UI 用宽泛 envelope 前缀把身份不符误认作可丢弃损坏。
-        -- 同一角色有完整 metadata 证据的内容损坏可重建；另一角色、未知归属、未来格式和暂时读失败继续拒绝。
-        -- 查询不读盘不清隔离；实际 SaveValue 仍重新检查当前 scope、预算和授权，并立即回读，成功才应用新轮。
+        -- 隔离的截断快照不能算已读或自动清空；显式清空也须由 Core 根据归属/版本/故障类型授权，不能只看 envelope 前缀。
+        -- 仅同角色完整 metadata 的内容损坏可重建，未知归属/未来格式/暂时读失败仍拒绝。SaveValue 重新校验并立即回读，成功才应用新轮。
         local replaceable,replaceErr=P:CanReplaceCorrupt(self.storeId)
         if replaceable~=true then return false,replaceErr or self.lastError or "箱子记录尚不可安全重置" end
         local fresh=Normalize(nil);fresh.scanRound=true
@@ -499,7 +494,7 @@ function I:Decorate(p)
         end
     end
     if #p.rows>0 and p.status=="empty" then p.status="ready" end
-    if p.selected and p.selected.kind~="ships" and p.selected.kind~="seabugs" then
+    if p.selected and p.selected.kind~="ships" and p.selected.kind~="seabugs" and p.selected.kind~="custom" then
         local key=Key(p.selected);p.selected.key=key;p.selected.groupKey=key
         local group=self.byKey[key];if group then p.selected.count=group.count;p.selected.continent=group.continent;p.selected.boxes=Copy(group.boxes)end
     end
@@ -524,6 +519,7 @@ function F:Select(key)
     local group=I.byKey[key];if not group then return select(self,key)end
     if not self.enabled then return false,"寻宝功能已关闭" end
     for _,map in ipairs(A.maps)do if Key(map)==key then return select(self,map.key)end end
+    local released,why=self:ReleasePointTracking();if released~=true then return false,why end
     self:CancelPendingMapAction();A.selected=Copy(group);A.selected.kind="catalog";A.stopped=false;A.status="ready"
     A:UpdatePosition();Publish("treasure_catalog_select");return true
 end

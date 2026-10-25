@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗分析热路分配与隔离回归
--- 维护：真实 Demand / Analytics，原生订阅为替身；只测 Lua 分配与事实隔离，不推断 RU 帧率。
+-- 真实 Demand / Analytics，原生订阅为替身；只测 Lua 分配与事实隔离，不推断 RU 帧率。
 -- 不进 TOC、不读取玩家存档；允许用固定小空间复用临时工作区，但不能保留事实引用或改变统计口径。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Copy(value)
     if type(value) ~= 'table' then return value end

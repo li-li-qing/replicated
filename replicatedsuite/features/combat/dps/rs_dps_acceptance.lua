@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 伤害与治疗统计契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- DPS 契约验收。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate

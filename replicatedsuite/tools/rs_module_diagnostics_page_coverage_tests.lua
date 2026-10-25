@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 模块诊断页面覆盖测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 每个页面必须提供共享模块诊断入口：标准页由 D:PageHeader 注入，自定义页头放置 D:ModuleDiagnosticsButton，不能自行实现点击逻辑。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS module-diag-coverage '..name)else failed=failed+1;print('FAIL module-diag-coverage '..name..': '..tostring(err))end end
 local function Read(path)local f=assert(io.open(path,'rb'));local s=f:read('*a');f:close();return s end

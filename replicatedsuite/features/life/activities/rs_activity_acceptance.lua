@@ -1,17 +1,12 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动追踪契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 有界活动序列探测不建第二事件权威、不拥有表现；Activity 已启用且空闲时临时获取一个模拟消费端，验证投影身份/生命周期，返回前释放。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 本文件是 life_activities 的
--- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
--- 独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败。
+-- 验收必须注册；实现缺失时明确失败，不能静默跳过。
 local F = S.Features and S.Features.Activities or nil
 
 local function Fail(message) return false, tostring(message or "activity_acceptance_failed") end
@@ -37,12 +32,8 @@ G:RegisterSequenceCase("v3_m1_activities", function(runtimeOnly)
         or type(store.rebuildCanonicalForIntegrity) ~= "function" -- schema7 历史 canonical 必须先走 exact Hash 重建，known-pair 只能作为其后的最后恢复边界。
         or type(store.recoverKnownLegacyCanonical) ~= "function" then -- 实机 6271E40B→7E85D975 必须由 Store-owned hook 验证，Persistence Core 不增加通用 bypass。
         return Fail("store_contract") -- 任何契约缺失都阻断发布，避免下一轮再次把持久化 Fence 表现误诊成页面/Toggle 故障。
-    end -- 结束活动 schema8 + canonical recovery Acceptance 门禁。
-    -- 以下四项原先由
-    -- core/rs_foundation_gate.lua 的 v3_activity_persistence_recovery_contract / 以及
-    -- v3_feature_persistence_mutation_contract 里的活动侧条件直接点名实现表检查，现搬到这里。
-    -- 判定逐条等价（下限照搬）。**Store 侧的 activityStore 契约仍留在 Foundation** ——
-    -- 那是 Core 的 Persistence 边界，不是 Feature 债（本文件不重复声明它）。
+    end
+    -- 这里只检查活动 Feature 的持久化恢复/变更契约；Store 注册契约仍由 Foundation 检查，避免重复。
     if (tonumber(F.Authority.PriorityStageSortContractVersion) or 0) < 1 then
         -- 鲸鱼/烛台阶段的 3h 排序分带必须随 Authority 一起存在；只查声明，不改变 Store/排序数据。
         return Fail("activity_priority_stage_sort_contract_version")

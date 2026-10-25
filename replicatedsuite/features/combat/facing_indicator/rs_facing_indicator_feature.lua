@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 朝向指示功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 当前目标正面/背面可视提示的独立 Feature。
 -- Native 坐标/角度/深度归属 ScreenProjectionV3，几何与配置归属本 Feature，UI 只消费 detached 帧。
 -- 仅观察 target，不枚举附近单位、不推断技能背击范围；存档不包含目标、角度或投影结果。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Factory = S.FeatureSliceFactory

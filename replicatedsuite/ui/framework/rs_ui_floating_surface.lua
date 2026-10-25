@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 悬浮窗口状态绑定
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- WindowShellV3/Windowing 上的轻量状态与持久化绑定，不新增窗口权威。WindowShell 负责外框，Windowing 负责原生拖动/缩放；
 -- FloatingSurface 仅映射位置、大小、最小化、锁定、透明度、字体倍率到 Feature 持久表。
 -- 无永久 Tick/OnUpdate；屏幕吸附可选，仅原生拖动提交时判断。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -125,9 +122,8 @@ function F:NormalizeState(value, policy)
     }
 end
 
--- 维护（viewport-recovery-1）：NormalizeState 是现有持久化指纹契约，保持原函数不变。
--- UI 只读必须用分离副本；原 Read 在没有 setter 时直接补齐 Store，可能污染验签/默认 intent。
--- 以下仅用于运行时：过滤异常数、兼容未带 userMoved 的早期 xy/edge，不保存任何新字段。
+-- NormalizeState 参与持久化指纹，不能随 UI 需求改形状。
+-- 运行时读取使用副本，过滤异常并兼容早期 xy/edge；直接给 Store 补字段会污染验签和默认位置意图。
 function F:ReadRuntimeState(value, policy)
     value = type(value) == "table" and value or {}
     local copy = {}
@@ -158,16 +154,12 @@ function F:ResetState(target, policy, options)
     return true, target
 end
 
--- 维护：这些原因只来自外观最终 setter；拖动预览由 NumericField.onPreview 直接写 Native，不进入 Store。
+-- 这些原因只来自外观最终 setter；拖动预览由 NumericField.onPreview 直接写 Native，不进入 Store。
 local APPEARANCE_REASONS = { overall_opacity=true, background_opacity=true, text_opacity=true, font_scale=true }
 local function PersistSpec(spec, reason)
     F.metrics.stateWrites = (tonumber(F.metrics.stateWrites) or 0) + 1
-    -- 维护（2026-09-16，geometry-edge-durability-1）：拖动/缩放结束属于低频用户事务边沿。
-    -- 位置若仍等默认 250ms Dirty 窗口，紧接退出客户端时可能只移动了 Native 却没来得及进入
-    -- 持久化调度。geometry 传入 delay=0，但真正耐久由所属 Feature/Aux Store 在 geometry/
-    -- layout_reset/minimized 边沿 SaveStore + 回读完成；MarkDirty(0) 本身不会写盘。
-    -- 透明度/字体的连续 Native 预览零 IO；进入本函数的最终提交同样不能依赖后续心跳。
-    -- 维护：锁定/解锁也是已经完成的低频用户事务，必须由原 Owner 当场耐久保存，不能等下次心跳或退出 Flush。
+    -- 拖动、缩放、锁定和最终外观提交都须由 Owner 当场保存并回读。
+    -- MarkDirty(0) 只排期，仍可能在立即退出时丢值；连续预览不写盘。
     local immediate=reason=="geometry" or reason=="minimized" or reason=="locked" or reason=="lock" or APPEARANCE_REASONS[reason]==true
     local delay = immediate and 0 or math.max(0, tonumber(spec.persistDelayMs) or 250)
     local ok, err = SafeCall(spec.persist, tostring(reason or "state"), delay)
@@ -190,7 +182,7 @@ function F:CreateStateAdapter(spec)
 
     local function Commit(value, reason)
         if type(value) ~= "table" then return false, "floating surface state unavailable" end
-        -- 维护：只读不再原地归一化；显式 mutation 才将副本提交回 Feature-owned Store。
+        -- 只读不再原地归一化；显式 mutation 才将副本提交回 Feature-owned Store。
         if type(spec.setState) ~= "function" then
             local target=type(spec.getState)=="function" and spec.getState() or spec.state
             return F:ApplyNormalizedState(target,F:NormalizeState(value,policy))
@@ -203,7 +195,7 @@ function F:CreateStateAdapter(spec)
         return true
     end
 
-    -- 维护：Adapter 与已创建 Surface 采用同样的原始快照回滚；失败不能补默认键改变 fingerprint。
+    -- Adapter 与已创建 Surface 采用同样的原始快照回滚；失败不能补默认键改变 fingerprint。
     local function RawSnapshot()
         local raw=type(spec.getState)=="function" and spec.getState() or spec.state
         local before={};if type(raw)=="table" then for _,key in ipairs(STATE_KEYS)do before[key]=raw[key] end end
@@ -219,7 +211,7 @@ function F:CreateStateAdapter(spec)
         return Read()
     end
 
-    -- 维护：未创建窗口的设置 Adapter 也可能先 Stage 再 final；回滚基线必须是首个预览前原始字段。
+    -- 未创建窗口的设置 Adapter 也可能先 Stage 再 final；回滚基线必须是首个预览前原始字段。
     local stagedAppearance
     local function Mutate(reason, fn, persist)
         local state = State()
@@ -352,13 +344,13 @@ function F:Create(spec)
         return F:ReadRuntimeState(target, policy)
     end
 
-    -- 维护：公开 persist=false 外观 API 会暂存 Domain；保存首个草稿前的原始字段（含缺失键），
+    -- 公开 persist=false 外观 API 会暂存 Domain；保存首个草稿前的原始字段（含缺失键），
     -- 同值最终提交仍须保存，失败不能把最后一个预览值冒充为已提交值；任一成功持久提交会消费全部草稿。
     local stagedAppearance
     local function CommitState(reason, candidate, persist)
         local rawState = type(spec.getState) == "function" and spec.getState() or spec.state
         if type(rawState) ~= "table" then return false, "floating surface state unavailable" end
-        -- 维护：失败回滚保留原始字段/缺失键；不能用补默认后的副本覆盖旧 Store。
+        -- 失败回滚保留原始字段/缺失键；不能用补默认后的副本覆盖旧 Store。
         local previous = {}
         for _,key in ipairs(STATE_KEYS) do previous[key]=rawState[key] end
         local rollbackState = persist ~= false and stagedAppearance or previous -- 草稿只覆盖回滚基线，不创建第二份持久化 Authority。
@@ -474,7 +466,7 @@ function F:Create(spec)
             local target = F:NormalizeState(current, policy)
             local reason = tostring(snapshot and snapshot.reason or "state")
             if reason=="minimize" then reason="minimized" end
-            -- 维护：标题按钮与公开 Surface/Adapter API 共用 locked 原因，避免 Owner 只认其中一个入口而漏存小锁。
+            -- 标题按钮与公开 Surface/Adapter API 共用 locked 原因，避免 Owner 只认其中一个入口而漏存小锁。
             if reason=="lock" then reason="locked" end
             if reason=="opacity" then reason="overall_opacity" end -- 标题整体透明度与公开 Surface API 共用同一最终提交原因。
             target.minimized = snapshot.minimized == true
@@ -485,10 +477,8 @@ function F:Create(spec)
             target.fontScale = Clamp(snapshot.fontScale, policy.minFontScale, policy.maxFontScale, FirstNonNil(target.fontScale, policy.defaultFontScale))
 
             if reason == "geometry" or reason == "minimized" then
-                -- 维护（2026-09-16，floating-committed-geometry-1）：WindowShell 传入的 snapshot
-                -- 是 Windowing 事务提交后的唯一几何事实。旧代码在这里再次 GetLogicalRect，正是钓鱼
-                -- 等悬浮窗重登漂移的来源。若启用吸附，CommitScreenSnap 也消费同一矩形并把解析后的
-                -- x/y 返回，再以 StorePlacementRect 写入原 Feature-owned widgetWindow。没有新增坐标 Store。
+                -- snapshot 已是 Windowing 提交的最终矩形，不能再 GetLogicalRect；重复读取曾造成重登漂移。
+                -- 吸附也消费同一矩形，再由 StorePlacementRect 写入原 widgetWindow。
                 local placementX = tonumber(snapshot.x) or 0
                 local placementY = tonumber(snapshot.y) or 0
                 local placementW = math.max(1, tonumber(snapshot.width) or tonumber(snapshot.normalWidth) or width)
@@ -508,7 +498,7 @@ function F:Create(spec)
                         gap = tonumber(spec.snapGap),
                         x = placementX, y = placementY, width = placementW, height = placementH,
                     })
-                    -- 维护：拒绝的吸附事务不得保存成成功几何；原 Store 仍是 authoritative intent。
+                    -- 拒绝的吸附事务不得保存成成功几何；原 Store 仍是 authoritative intent。
                     if committed ~= true then return false,"snap_geometry_rejected" end
                     if committed == true then
                         placementX = tonumber(resolvedX) or placementX
@@ -518,7 +508,7 @@ function F:Create(spec)
                 end
                 local liveContext = S.Layout:GetContext()
                 local liveScale = spec.scaleWithAddon == false and 1 or math.max(0.01, tonumber(liveContext.addonScale) or 1)
-                -- 维护：拖动 compact/低分辨率拟合窗只更新位置，不永久缩小 preferred size。
+                -- 拖动 compact/低分辨率拟合窗只更新位置，不永久缩小 preferred size。
                 -- addonScale 只在设计尺寸入/出边界一次；uiScale 不参与本次已校准逻辑坐标。
                 if tostring(snapshot.geometryKind) == "resize" then
                     target.width = math.max(policy.minWidth, (tonumber(snapshot.normalWidth) or placementW) / liveScale)
@@ -536,11 +526,11 @@ function F:Create(spec)
                 F.metrics.geometryCommits = (tonumber(F.metrics.geometryCommits) or 0) + 1
             end
             local saved = Save(reason, target)
-            -- 维护：用户提交后的元数据立即进入冷诊断快照；不能等下次重排仍报告上次保存的中心。
+            -- 用户提交后的元数据立即进入冷诊断快照；不能等下次重排仍报告上次保存的中心。
             -- 只复制标量，不追加历史，不读取磁盘；迁移本身仍不会触发 Save。
             if saved==true and reason=="geometry" and surface.shell and surface.shell.placementInfo then
                 local info=surface.shell.placementInfo
-                -- 维护（ui-position-reload-1）：只更新诊断镜像；真实 x/y 已由原 StorePlacementRect 提交。
+                -- 只更新诊断镜像；真实 x/y 已由原 StorePlacementRect 提交。
                 info.savedX,info.savedY=target.x,target.y
                 for _,key in ipairs({"savedUiScale","savedLogicalWidth","savedLogicalHeight","normalizedCenterX","normalizedCenterY"})do info[key]=target[key] end
                 info.lastUserGeometryKind=tostring(snapshot.geometryKind or "")
@@ -590,7 +580,7 @@ function F:Create(spec)
         local target = stateOverride or CurrentState()
         if target == nil or self.shell == nil then return false end
         if self.windowController ~= nil and self.windowController:IsInteracting() == true then
-            -- 维护：普通内容重排可能来自高频刷新，不得取消手势或采样 metrics。
+            -- 普通内容重排可能来自高频刷新，不得取消手势或采样 metrics。
             if fromMetricsChange == true then self.windowController.pendingPlacement=true end
             return true
         end
@@ -633,7 +623,7 @@ function F:Create(spec)
 
     function surface:Show(visible)
         local desired = visible ~= false
-        -- 维护：Shell Show 调 placementDelegate，一次 fresh sample 即可，不重复采样/重放。
+        -- Shell Show 调 placementDelegate，一次 fresh sample 即可，不重复采样/重放。
         local shown, showErr = self.shell:Show(desired)
         if shown ~= true then return false, showErr end
         self.visible = desired
@@ -648,7 +638,7 @@ function F:Create(spec)
         local shellOk, shellErr = self.shell:SetLocked(nextValue, false)
         if shellOk ~= true then return false, shellErr end
         local candidate = F:NormalizeState(target, policy); candidate.locked = nextValue
-        -- 维护：不能用 and/or 模拟分支；Save 拒绝必须保留 false 并回滚 Native，不得转入 Stage 后报成功。
+        -- 不能用 and/or 模拟分支；Save 拒绝必须保留 false 并回滚 Native，不得转入 Stage 后报成功。
         local stateOk, stateErr
         if persist ~= false then stateOk, stateErr = Save("locked", candidate) else stateOk, stateErr = Stage("locked", candidate) end
         if stateOk ~= true then self.shell:SetLocked(previous, false); return false, stateErr end
@@ -685,7 +675,7 @@ function F:Create(spec)
         local shellOk, shellErr = self.shell:SetOverallOpacity(nextValue, false)
         if shellOk ~= true then return false, shellErr end
         local candidate = F:NormalizeState(target, policy); candidate.overallOpacity = nextValue
-        -- 维护：持久化失败保持拒绝，预览仅在调用者显式 persist=false 时进入 Stage。
+        -- 持久化失败保持拒绝，预览仅在调用者显式 persist=false 时进入 Stage。
         local stateOk, stateErr
         if persist ~= false then stateOk, stateErr = Save("overall_opacity", candidate) else stateOk, stateErr = Stage("overall_opacity", candidate) end
         if stateOk ~= true then self:ApplyLayout(false, "appearance_rollback"); return false, stateErr end -- 恢复 Authority 快照，不能退回上一帧草稿。
@@ -705,7 +695,7 @@ function F:Create(spec)
         local shellOk, shellErr = self.shell:SetBackgroundOpacity(nextValue, false)
         if shellOk ~= true then return false, shellErr end
         local candidate = F:NormalizeState(target, policy); candidate.backgroundOpacity = nextValue
-        -- 维护：预览不写盘，最终提交由原 Owner 同步耐久；拒绝不能隐式降级为成功预览。
+        -- 预览不写盘，最终提交由原 Owner 同步耐久；拒绝不能隐式降级为成功预览。
         local stateOk, stateErr
         if persist ~= false then stateOk, stateErr = Save("background_opacity", candidate) else stateOk, stateErr = Stage("background_opacity", candidate) end
         if stateOk ~= true then self:ApplyLayout(false, "appearance_rollback"); return false, stateErr end -- 多通道草稿需一并撤销到真实提交值。
@@ -723,7 +713,7 @@ function F:Create(spec)
         local shellOk, shellErr = self.shell:SetTextOpacity(nextValue, false)
         if shellOk ~= true then return false, shellErr end
         local candidate = F:NormalizeState(target, policy); candidate.textOpacity = nextValue
-        -- 维护：保留 Save 的失败结果，让既有 Native/Store 回滚生效。
+        -- 保留 Save 的失败结果，让既有 Native/Store 回滚生效。
         local stateOk, stateErr
         if persist ~= false then stateOk, stateErr = Save("text_opacity", candidate) else stateOk, stateErr = Stage("text_opacity", candidate) end
         if stateOk ~= true then self:ApplyLayout(false, "appearance_rollback"); return false, stateErr end -- Native 与 Domain 使用相同回滚快照。
@@ -742,7 +732,7 @@ function F:Create(spec)
         local shellOk, shellErr = self.shell:SetFontScale(nextValue, false)
         if shellOk ~= true then return false, shellErr end
         local candidate = F:NormalizeState(target, policy); candidate.fontScale = nextValue
-        -- 维护：字体提交失败不能被 Stage 覆盖，否则 UI 看似成功但下次冷启动恢复旧值。
+        -- 字体提交失败不能被 Stage 覆盖，否则 UI 看似成功但下次冷启动恢复旧值。
         local stateOk, stateErr
         if persist ~= false then stateOk, stateErr = Save("font_scale", candidate) else stateOk, stateErr = Stage("font_scale", candidate) end
         if stateOk ~= true then self:ApplyLayout(false, "appearance_rollback"); return false, stateErr end -- 字号布局按已恢复的 Authority 重新应用。
@@ -790,7 +780,7 @@ function F:Create(spec)
 
     function surface:ResetLayout(persist)
         local target = CurrentState(); if target == nil then return false end
-        -- 维护：硬恢复先 Native 再持久化；清除 placement intent 的完整字段和 minimized，
+        -- 硬恢复先 Native 再持久化；清除 placement intent 的完整字段和 minimized，
         -- 当前 viewport 下重算默认。异常旧 xy/metadata 无法通过缓存再次把窗口拖回屏幕外。
         -- 失败不改变 Store；仅用户明确 Reset 才正常提交 schema 原有字段。
         S.Layout:GetContext(true)

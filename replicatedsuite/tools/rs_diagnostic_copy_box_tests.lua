@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 诊断复制框测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 诊断专用复制框契约：验证它不复用普通 Draft/Input LostFocus 生命周期；离线模型不声称 RU 剪贴板 API 存在。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local forbiddenFocusReads=0
 local function Test(name,fn)local ok,err=pcall(fn);if ok and forbiddenFocusReads>0 then ok=false;err='not_allowed focus getter was invoked'end;if ok then passed=passed+1;print('PASS diagnostic-copy-box '..name)else failed=failed+1;print('FAIL diagnostic-copy-box '..name..': '..tostring(err))end end

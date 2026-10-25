@@ -1,15 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态重构测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 中文维护注释：仅开发期执行的真实 Lua 模块回归，不进入 TOC。
+-- 仅开发期执行的真实 Lua 模块回归，不进入 TOC。
 -- Native 游戏事实由合成样本注入；不把此结果当作 RU 返回形态/布局实机证明。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, run)
     local ok, err = pcall(run)
@@ -198,7 +191,7 @@ Test('v3 rejects malformed input and retains scoped auto in text round-trip',fun
     local before=store.get();local ok=F:ImportAll(bad.data,'merge')
     assert(not ok and Equal(before,store.get()))
 end)
--- 中文维护注释：以下反例保护覆盖导入、UI 事件与管理/HUD 边界，不用成功样本掩盖拒绝路径。
+-- 以下反例保护覆盖导入、UI 事件与管理/HUD 边界，不用成功样本掩盖拒绝路径。
 Test('metadata-only and unknown-only imports cannot clear selections',function()
     Reset();assert(F:SetTrackedId(21,'auto',true))
     for _,text in ipairs({'FORMAT=replicatedsuite.buff_display.v2','FUTURE_FIELD=1','# comment only'}) do
@@ -256,7 +249,7 @@ Test('management health exposes schema catalog and cooldown runtime state',funct
     -- 旧的事件耦合 native_v1/v2/v3 不再属于当前契约。
     assert(health.management.cooldownRuntime=='unavailable' or health.management.cooldownRuntime=='native_v4')
 end)
--- 中文维护注释：以下使用真实 Persistence 的元数据封印、物理传输、LoadStore/SaveStore 链。
+-- 以下使用真实 Persistence 的元数据封印、物理传输、LoadStore/SaveStore 链。
 -- 合成 schema5 样本的 canonical/hash 来自未修改 .208，不等同真实玩家存档采集。
 local function Envelope(fixture)
     local P=S.Persistence
@@ -289,12 +282,8 @@ Test('unknown old fingerprint fails closed and protects original disk bytes',fun
     disk[key]=Envelope(fixture);local original=Copy(disk[key])
     local ok,_,err=P:LoadStore(store.id,{discardDirty=true,discardUnverified=true,revalidateTerminal=true})
     assert(not ok and store.writeFenced==true,tostring(err))
-    -- 中文维护注释（2026-09-28，Phase 0 测试基线校正，对应 .18.243 收口）：
-    -- 旧断言 `assert(not F:ImportBuiltinPack('all',false))` 已随架构正式失效。旧 `v3.buff_display` 被
-    -- 永久降级为 LegacyMigrationSourceOnly：manifest 已建立后，启动与 tracking 写入都不再经过该 Store
-    -- （Authority 见 rs_buff_display_store.lua:2857 的 .18.243 Runtime Authority 注释与 README §3.7）。
-    -- 因此“旧大 Store 被写保护 ⇒ 追踪导入必须失败”不再是当前契约，而旧 key 损坏只作为证据保留。
-    -- 但“写保护不得被绕过”仍是红线，所以改为在真正的写入 Authority —— tracking manifest 提交点 —— 上验证。
+    -- 追踪写入已由 manifest 提交；旧大 Store 的写保护不应影响导入。
+    -- 这里把写保护加在真正的提交点上，检查它仍然有效。
     local manifestStore=P:GetStore(F.TrackingManifestStoreId);assert(manifestStore,'tracking manifest store unavailable')
     local manifestFenceBefore={manifestStore.writeFenced,manifestStore.writeFenceReason}
     manifestStore.writeFenced,manifestStore.writeFenceReason=true,'phase0_test_fence'
@@ -359,7 +348,7 @@ Test('page builds four tabs and browses inactive tracked entries',function()
     -- 当前默认推荐并集包含隐藏/特殊状态；旧all包仍单独保持393职业效果兼容。
     assert(#uiHost.widgets.v3_buff_library_table.items==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries)
     assert(uiHost.widgets.v3_buff_library_pack.spec.set('all'))
-    -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：393 是 .18.2xx 之前旧目录 all 包的效果数，
+    -- 393 是 .18.2xx 之前旧目录 all 包的效果数，
     -- 已失效。当前 Authority（data/rs_status_tracking_catalog.lua，version 2）all 包为 425 effects，
     -- 与本文件上方的 result.total==850（425 通道 × player/target 两 scope）一致。这里同时保留
     -- “表格行数 == Authority 包条目数”的机械契约与一个显式 pin，防止目录被无意改动。
@@ -372,10 +361,8 @@ Test('simple text import commits exactly one tracking generation on its first cl
     Reset();local page=assert(uiHost:Build());local before=writes
     uiHost.edit.text='AUTO=21'
     assert(uiHost.widgets.v3_buff_display_transfer_import.onClick())
-    -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：旧断言 `writes==before+1` 属于 .18.243 拆分前的
-    -- 单 Store 写入模型。当前 Tracking 一次提交 = inactive player/target/meta 三次 durable 写 + manifest
-    -- 一次提交，共 4 次（与本文件顶部 'builtin import uses four-write generation transaction' 的契约一致）。
-    -- 这里断言“恰好一个 tracking generation”，而不是旧的物理写次数。
+    -- 一次追踪提交包含 inactive player、target、meta 和 manifest 共四次写入。
+    -- 这里检查只提交一个 generation，不再沿用旧单 Store 的写次数。
     local delta=writes-before
     assert(delta==4 and F:IsTrackedId(21),'single import did not commit exactly one tracking generation: delta='..tostring(delta)..' tracked='..tostring(F:IsTrackedId(21)))
 end)
@@ -385,9 +372,9 @@ Test('unavailable multiline input disables all text actions',function()
         assert(uiHost.widgets[id].enabled==false,id..' left active')
     end
 end)
--- 中文维护注释：补充真实持久化/页面构建边界回归，不改变上述原有验收。
+-- 补充真实持久化/页面构建边界回归，不改变上述原有验收。
 dofile('tools/rs_persistence_integrity_regressions.lua')({S=S,Test=Test,Copy=Copy,Equal=Equal,F=F,store=store,disk=disk})
--- 维护：只读故障取证与摘要分段回归；不能把它们当作存档恢复验收。
+-- 只读故障取证与摘要分段回归；不能把它们当作存档恢复验收。
 dofile('tools/rs_persistence_evidence_tests.lua')({S=S,Test=Test,Copy=Copy,Equal=Equal,store=store,disk=disk})
 print(string.format('RESULT %d passed / %d failed (%s)',passed,failed,_VERSION))
 if failed>0 then error('regression suite failed') end

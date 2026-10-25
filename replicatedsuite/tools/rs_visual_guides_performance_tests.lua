@@ -1,7 +1,5 @@
-------------------------------------------------------------------------
 -- 战斗视觉引导性能契约：真实 Feature/Service/Presenter；仅 Native/UI/时钟由宿主替换。
 -- 不进 toc，不访问 UDF。操作计数检查每行样式解析，不把离线耗时当成 RU 帧率。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

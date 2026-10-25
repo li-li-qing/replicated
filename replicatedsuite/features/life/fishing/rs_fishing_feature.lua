@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 钓鱼助手功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元保留Feature ID、v3.life.fishing Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection与ApiDependencies契约。
--- Auto-R热键事务和恢复契约必须保持；共享装配来自features/life/shared/rs_life_slice_factory.lua，由toc.g保证先加载。
-------------------------------------------------------------------------
+-- 观察目标鱼动作，Auto-R 通过可恢复热键事务执行；共享生活装配须先由 toc.g 加载。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P, Runtime, Demand = S.Persistence, S.FeatureRuntime, S.Demand
@@ -18,7 +14,7 @@ local Number, Text = LF.Number, LF.Text
 local InstallLifeWidgetContract, PublishFeatureUpdate = LF.InstallLifeWidgetContract, LF.PublishFeatureUpdate
 local RegisterStore, LoadStore = LF.RegisterStore, LF.LoadStore
 
--- 钓鱼：Demand 范围观察与可回滚 Auto-R 热键事务。
+
 local Fishing = { Id = "life_fishing", storeId = "v3.life.fishing", enabled = false, storeLoaded = false, autoArmed = false, autoLeaseHeld = false, recoveryNativeRestored = false } -- Fishing Feature 继续拥有业务生命周期；Auto-R 会话状态只在本模块存活，持久恢复证据进入 v3.life.fishing Store。
 S.Features.Fishing = Fishing -- 保持现有 FeatureRuntime/Presentation Authority 名称，用户升级无需迁移导航或 Consumer token。
 Fishing.Patch = "fishing-slot-anchor-21571-1" -- 以钓鱼21571在第1/2格判定0/1偏移，不再依赖多变的放生ID；热键恢复契约不变。
@@ -148,8 +144,7 @@ function Fishing:RefreshAutoAvailability() -- 按钮可用性来自当前 Capabi
     local supported, supportErr = false, "FishingHotkeyV3 服务不可用"
     if type(FishingHotkey) == "table" and type(FishingHotkey.IsSupported) == "function" then supported, supportErr = FishingHotkey:IsSupported() end
     local invalidRecovery = type(self.State.recovery) == "table" and not HasValidFishingRecovery(self.State.recovery)
-    -- Lua 的 `a and b or true` 会在 b=false 时重新落到 true；此前因此把“未战斗”也判成战斗中，Auto-R UI 永远不可用。
-    -- 权威边界：战斗状态只由 FishingHotkeyV3 的 capability-gated PlayerInCombat 读取；服务缺失时才 fail-closed 为 true。
+    -- 不能用 a and b or true 表示战斗状态：b=false 会被改成 true。只读 FishingHotkeyV3 的受门控结果，服务缺失才按战斗中拒绝。
     local inCombat = true
     if type(FishingHotkey) == "table" and type(FishingHotkey.InCombat) == "function" then
         inCombat = FishingHotkey:InCombat() == true

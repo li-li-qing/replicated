@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 稳定身份选择与高亮
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- ListView/TileView/TableView 共用 key 选择权威，排序/重排不能把选择静默迁到其它条目。
 -- 无 Tick 或数据集扫描；多选仅存已选 key，O(selected) 而非 O(data)，View 负责下标映射稳定 key。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -26,11 +23,8 @@ local function NormalizeKey(value)
 end
 
 
-------------------------------------------------------------------------
 -- 共享选择表现。
-------------------------------------------------------------------------
 -- SelectionModel 决定哪些 key 选中，SelectionVisual 统一各 DataView 的呈现；业务页不能自建标记/颜色，未实现 SetSelected() 的自定义列表/图块也受覆盖。
---
 -- 每池行/图块一次分配，仅选择变化切换；无 Tick、轮询或数据扫描。
 local SelectionVisual = { version = 1 }
 

@@ -1,13 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 背包与容器快照
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 共享只读背包/容器快照只拥有观察和归一化；黑名单、移动方向、用户上限和 UI 状态归消费 Feature。没有
--- Tick/OnUpdate 轮询，仅显式请求全扫描。物理槽沿用已验证 GearV3：优先 bagId=1，仅无可读物品时有界兜底 0。原
--- 生表立即拆为分离基础值，调度步骤间不保留原生返回表。单次扫描同时建立身份/类别索引，避免重复检查物品存在。
--- 槽号只定位，稳定身份优先 itemType，RU 省略时保守使用 name+grade+category。
-------------------------------------------------------------------------
+-- 显式请求时扫描并建身份/类别索引，不轮询；黑名单、方向和数量限制由 Feature 决定。
+-- 物理背包优先 bagId=1，无可读物品才回退 0。Native 表立即拆成基础值，不跨调度步骤保留。
+-- 槽号仅用于定位，身份优先 itemType，缺失时保守用 name+grade+category。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -246,8 +242,7 @@ function I:BuildSnapshot(scope, options)
 
     local preferredId = math.floor(tonumber(options.bagId) or self.PreferredBagId)
     local preferred, preferredErr = self:_BuildScopeWithBagId("bag", preferredId, requestedMax)
-    -- （2026-10-09）消费者已在本次会话确认物理背包时，可以显式锁定视图。
-    -- 成功的空结果也是事实，不能切到 bagId=0 缓存把消耗的物品复活；默认策略仍为首次探测提供兼容回退。
+    -- 消费者确认物理视图后可锁定；此后读空也是事实，不能回退旧缓存让已消耗物品复活。
     if options.allowBagFallback == false then
         if preferred ~= nil then preferred.fallbackUsed = preferredId ~= self.PreferredBagId end
         return preferred, preferredErr
@@ -298,9 +293,7 @@ function I:FindLiveRow(scope, matcher, options)
     end
 
     local readErrors = 0
-    -- （2026-10-04）队列下一组的旧槽提示可能因上一项移动而整体偏移。
-    -- 先核对刚腾出的实际槽，再按原提示有界查找；提示只优化读取，matcher
-    -- 仍负责身份/黑名单，不能把旧槽号当作身份或无条件移动。
+    -- 前项移动可能让旧槽提示整体偏移；先查刚腾出的槽，再按提示有限查找，身份/黑名单仍由 matcher 校验。
     local alternateSlot = tonumber(options.alternateSlot)
     if alternateSlot ~= nil and alternateSlot == math.floor(alternateSlot)
         and alternateSlot >= 1 and alternateSlot <= scanSlots and alternateSlot ~= startSlot then

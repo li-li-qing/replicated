@@ -1,14 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 布局编辑投影适配器
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 稳定 key SelectionModel 与编辑变换基础间的协调桥，不持有 Feature Store 持久化；调用方提供自身投影/持久边界的 onPreview/onCommit/onCancel。
--- 职责：当前选择保留统一 working rect 投影；单选用 AnchorPivotModel，多选用 MultiSelectionTransformModel/投影会话；
--- 向 TransformInspector 暴露统一 rect 接口；手势中拒绝 selection revision 变化；预览可逆，外部 Commit 接受后才完成本地状态。
--- 所有输入 rect 必须已在同一声明的编辑坐标空间，适配器不猜 viewport/canvas 转换。
--- 无 Tick/轮询，仅明确 Sync/Preview/Commit 执行 O(selected)。
-------------------------------------------------------------------------
+-- 协调稳定 key 选择与单、多选变换，保存和预览由调用方回调负责。
+-- 手势期间拒绝选择 revision 变化，外部 Commit 接受后才完成本地提交。
+-- 所有 rect 必须已在同一编辑空间，适配器不猜 viewport/local 转换。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

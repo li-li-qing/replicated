@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享滚动条
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- ScrollBox/ListView/TileView 共用滚动条契约；RSUI 持有可见滑块几何，透明 Native 代理仅持输入捕获，StartMoving 不能成为视觉几何权威。
 -- 无永久 OnUpdate/Tick；拖动借 Scheduler:AddInteractiveTask（约 16 ms），缺失/拒绝时在专用代理手势期 OnUpdate 兜底。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -115,15 +112,13 @@ function Scrollbar:Attach(host, spec)
         end
     end
 
-    -- 约束（2026-10-05）：ChangeColor1/2/3 只接收 RGB，不能传第四参设置 alpha；
-    -- 原实现也在渐变 factory 返回 nil 时跳过实色回退，导致只见黑轨道。所有滚动容器
-    -- 统一采用已在原生 Slider 验证的 ColorDrawable，双锚点随滑块实际尺寸变化。
-    -- 绘制不跟随输入代理移动，不在 Layout/拖动中反复分配 Drawable。
+    -- ChangeColor1/2/3 只接 RGB，第四参不能设置 alpha；渐变 factory 返回 nil 时旧代码又漏了回退，曾只剩黑轨道。
+    -- 改用已验证的 ColorDrawable，双锚随滑块尺寸变化，布局和拖动不重复分配。
     local palette = S.UITokens and S.UITokens.scrollbar or {}
     local trackDrawable = ColorFill(track, palette.track or {0.015, 0.035, 0.042, 1}, 'background')
     local thumbDrawable = ColorFill(thumb, palette.thumb or {0.065, 0.090, 0.102, 1}, 'artwork')
     if S.Theme and S.Theme.BindColorDrawable then
-        -- 约束（2026-10-08）：轨道/滑块的绘制仍锚定原 Native，外观绑定交给 RSUI 宿主 root。
+        -- 轨道/滑块的绘制仍锚定原 Native，外观绑定交给 RSUI 宿主 root。
         -- 宿主在悬浮框组件树内，背景透明度、晚创建及主题切换都走同一通道；拖动代理保持独立可用。
         S.Theme:BindColorDrawable(host.root,trackDrawable,'scrollbar.track',nil,'background')
         S.Theme:BindColorDrawable(host.root,thumbDrawable,'scrollbar.thumb',nil,'background')

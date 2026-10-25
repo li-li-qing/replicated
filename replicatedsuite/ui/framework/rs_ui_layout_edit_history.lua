@@ -1,14 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 布局编辑撤销历史
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 布局编辑提交的共享可撤销命令权威层。
--- 仅记录成功 COMMIT，预览/拖动不入历史；命令基于稳定 key，前后 key 集必须一致；默认 64、硬上限 256，丢最旧项。
--- Undo/Redo 外部 apply 成功才移游标，拒绝/失败尽力回滚且历史不变。模型不持 Feature Store/Native，调用方提供 apply/rollback；
--- Anchor/Pivot 等可选非 Rect 状态为有界深拷贝，不能引用实时表。
--- 无 Tick/轮询，仅 Record/Undo/Redo 执行 O(selected) 工作。
-------------------------------------------------------------------------
+-- 只记成功提交，默认 64 条、最多 256，溢出丢最旧项；稳定 key 的前后集合须一致。
+-- Undo/Redo 等外部 apply 成功才移游标，失败尽力 rollback 且历史不变。
+-- 可选 Anchor/Pivot 状态有界深拷贝，不能留实时表引用。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

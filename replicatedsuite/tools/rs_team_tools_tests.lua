@@ -1,18 +1,11 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队工具测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
 -- 覆盖 combat_team_tools 和 TeamRole 只读投影，
 -- 玩家自身职责写入、自动职责目录解析及成员移动安全拒绝，
 -- Spelldance 牺牲舞蹈候选发现和 Aura 追踪，
 -- 团队标记快照保存、数量上限，以及 1100ms 节奏的串行恢复
 -- 和回读确认、表现覆盖层、基础门禁契约。
-------------------------------------------------------------------------
 unpack = unpack or table.unpack
 if not math.frexp then math.frexp = function(x) if x == 0 then return 0, 0 end local e = math.floor(math.log(math.abs(x)) / math.log(2)) + 1 return x / (2^e), e end end
 if not math.ldexp then math.ldexp = function(m, e) return m * (2^e) end end
@@ -162,13 +155,13 @@ dofile("services/rs_aura_observation_v3.lua")
 dofile("services/rs_screen_projection_v3.lua")
 
 -- 加载业务桥接和团队表现扩展。
--- 中文维护注释（2026-09-28，Phase 1 Batch A）：复现 toc.g 顺序，先加载通用装配骨架。
+-- 复现 toc.g 顺序，先加载通用装配骨架。
 dofile("features/shared/rs_feature_slice_factory.lua")
 dofile("features/shared/rs_shared_bounds.lua")
 dofile("features/tools/auction/rs_auction_read_model.lua")
--- 中文维护注释（2026-09-28，Phase 1 Batch E）：bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
+-- bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
 dofile("features/combat/team_tools/rs_team_tools_feature.lua")
--- 中文维护注释（2026-09-28，Phase 1 Batch D）：combat_team_tools 已从 bridge 拆出；按 toc.g 顺序加载它。
+-- combat_team_tools 已从 bridge 拆出；按 toc.g 顺序加载它。
 dofile("features/combat/team_tools/rs_team_tools_visuals.lua")
 
 -- 加载表现控件和页面。
@@ -339,7 +332,7 @@ Test("T4: Auto-role catalog resolution & automatic application", function()
     assert(Feature.AutoRoleClassKey == "name_6_8_9", "AutoRoleClassKey mismatch")
     assert(Feature.AutoRoleLabel == "远程输出", "AutoRoleLabel mismatch")
 
-    -- 中文维护测试（2026-09-16）：欢乐(14)+暗杀(8)+吟游(9) 是用户确认的治疗职责。
+    -- 欢乐(14)+暗杀(8)+吟游(9) 是用户确认的治疗职责。
     -- 测试必须钉死业务目录 Authority，防止 classType=Dancer 被误解成 tank。
     mockUnit.abilityTemplates["player"] = {
         { index = 14 }, { index = 8 }, { index = 9 }
@@ -379,7 +372,7 @@ end)
 
 -- 测试 4B：自动职责功能自行持有 TeamRoster 需求租约，不依赖表现层。
 Test("T4B: Auto-role owns roster lease and toggle lifecycle", function()
-    -- 中文维护测试（2026-09-16）：自动职责是独立低开销 Feature 行为，不能依赖团队页面/悬浮窗 Consumer。
+    -- 自动职责是独立低开销 Feature 行为，不能依赖团队页面/悬浮窗 Consumer。
     -- 当 UI Consumer 为 0 时，只要 Feature 已启用且 autoRoleEnabled=true，TeamRosterV3 仍必须由自动职责自己的 token 保持运行。
     assert(Feature.enabled == true, "team tools must be enabled for auto-role lifecycle test")
     assert(Feature.State.autoRoleEnabled == true, "auto-role must start enabled in this fixture")
@@ -822,7 +815,7 @@ Test("T16: roster to aura event to visible overlay, then buff removal hides it",
     assert(next(Visuals.lastMatched)==nil,"roster changes retained unbounded old identities")
 end)
 
--- 中文维护（2026-10-03）：真机报告已命中技能，却因相机世界空间 forward=-2026.44 被隐藏；复现“相机接口存在”而非此前的缺相机回退路径。
+-- 真机报告已命中技能，却因相机世界空间 forward=-2026.44 被隐藏；复现“相机接口存在”而非此前的缺相机回退路径。
 Test("T17: valid native player/raid points survive mismatched camera space", function()
     local originalPos,originalDir,originalFov=UIParent.GetViewCameraPos,UIParent.GetViewCameraDir,UIParent.GetViewCameraFov
     local originalScreen=mockUnit.GetUnitScreenPosition

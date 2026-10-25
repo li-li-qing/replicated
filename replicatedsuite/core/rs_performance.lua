@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 性能采样与遥测
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 低开销性能遥测不持久化数据，不用 Suite 模拟 OnUpdate 时钟充当执行计时器。帧采样始终可用；回调计时由用户选
--- 择，且仅当客户端 Lua 环境确实具有单调本地计时器时启用。
-------------------------------------------------------------------------
+-- 帧采样始终可用；回调耗时仅在用户开启且客户端有单调本地时钟时记录，不能用模拟 OnUpdate 时钟计时。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -15,8 +11,7 @@ local MAX_FRAME_LABELS = 12
 local MAX_LABELS = 128
 local JANK_MS = 50
 local CLOCK_GAP_TOLERANCE_MS = 25
--- 持续采集属于现有 Monitor；内存历史固定 30 个分钟窗口，
--- 会话累计只保留有界标签/模块统计。无新 Tick、无后台写盘、无业务开关或刷新参数改动。
+-- Monitor 的内存历史固定 30 个分钟窗口，会话标签和模块统计也有界，不保存到磁盘。
 local WINDOW_MS, WINDOW_LIMIT = 60000, 30
 
 local function Finite(value)
@@ -101,8 +96,7 @@ function P:_Stats(label, detailed)
     label = NormalizeLabel(label)
     local container = detailed and self.capture and self.capture.labels or self.labels
     if container == nil then return nil, label end
-    -- 此处不能使用 a and b or fallback；详细项首次调用尚为 nil，会错误选择常驻聚合表，使已有有效采样的完成
-    -- 捕获仍为空。
+    -- 首次详细采集表为 nil，不能用 a and b or fallback，否则会误写常驻聚合表。
     local stats = container[label]
     if stats ~= nil then return stats, label end
     local count = 0
@@ -175,8 +169,7 @@ function P:_CopyCompletedFrame()
     if previous.valid ~= true then return end
     for index, label in ipairs(current.labels) do previous.labels[index] = label end
     for index, moduleId in ipairs(current.modules) do previous.modules[index] = moduleId end
-    -- 上次 Scheduler EndFrame 后执行的原生宿主属于当前结束的区间；须在评估本次 OnUpdate delta 前合入，再延
-    -- 后一帧会使诊断产生假的因果时间偏移。
+    -- EndFrame 后的原生宿主耗时归当前结束区间，须在评估本次 delta 前合入，避免归因错后一帧。
     for _, label in ipairs(outside.labels) do AppendUnique(previous.labels, label) end
     for _, moduleId in ipairs(outside.modules) do AppendUnique(previous.modules, moduleId) end
     for key in pairs(outside.seen) do outside.seen[key] = nil end
@@ -397,7 +390,7 @@ function P:StopCapture()
 end
 
 function P:ClearCapture()
-    if self.capture and not self.capture.finished then return false, "请先停止诊断再清空" end -- 用户不能误清仍在记录的证据。
+    if self.capture and not self.capture.finished then return false, "请先停止诊断再清空" end
     self.capture = nil
     return true
 end
@@ -491,7 +484,7 @@ function P:Snapshot()
             continuous=capture.continuous==true,startedAt=capture.startedAt,
             secondsRemaining = not capture.continuous and math.max(0, math.ceil(((capture.endsAt or 0) - (S.NowMs and S.NowMs() or 0)) / 1000)) or nil,
             durationSeconds = capture.durationSeconds } or nil,
-        monitoring=self:GetMonitoringSnapshot(), -- 系统完整报告沿用 Snapshot 即可携带同一份持续记录。
+        monitoring=self:GetMonitoringSnapshot(),
         top = self:GetTop(6), topModules = self:GetTopModules(6), worstJank = self:GetWorstJank(3), startup = self:GetStartup(),
     }
 end
@@ -514,8 +507,7 @@ function P:BuildSummary()
 end
 
 function P:BuildReport()
-    -- 专用性能导出每次读取新快照，不能复用诊断页之前冻结的自检原文；不运行 Gate、
-    -- 不查询世界、不启停采样、不 Apply Store。序列化/传输继续使用既有 DiagnosticDetail/Persistence。
+    -- 性能导出每次取新快照，不复用诊断页旧报告；经 DiagnosticDetail/Persistence 输出，不重跑 Gate 或启停采样。
     if not self.capture then return nil,"请先开始持续诊断并复现卡顿" end
     if not S.DiagnosticDetail or type(S.DiagnosticDetail.New)~="function" then return nil,"性能报告格式器不可用" end
     self.reportSequence=(self.reportSequence or 0)+1

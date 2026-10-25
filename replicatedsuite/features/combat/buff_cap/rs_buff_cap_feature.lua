@@ -1,13 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态数量提醒功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
--- （v3_business_buff_cap_refresh / v3_business_buff_cap_poll）全部与被搬迁前逐字一致。
--- Authority 边界：本文件只拥有自身两种计数与用户阈值，不推断 RU 的 Buff 总容量、
--- 普通/隐藏是否共享槽位或顶替顺序，也不扫描 Aura 明细。
-------------------------------------------------------------------------
+-- 只观察自身两种状态计数和用户阈值，不扫描 Aura 明细，也不推断 RU 总容量、共享槽位或顶替顺序。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory

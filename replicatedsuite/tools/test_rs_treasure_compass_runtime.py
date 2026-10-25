@@ -1,8 +1,6 @@
-# ---------------------------------------------------------------------
 # Replicated Suite · 宝藏罗盘运行时测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 """Lua 5.1 执行真实寻宝/Theme；Native 替身只证明离线契约，不代表 RU 像素验收。"""
 from pathlib import Path
 import unittest
@@ -188,7 +186,7 @@ class TreasureCompassRuntimeTests(unittest.TestCase):
         ''')
 
     def test_presenter_reuses_pool_hides_consumed_target_and_retries_rejected_anchor(self):
-        # 中文维护：执行真实 Presenter；UI 替身记录接受/拒写，禁止把点池数量与离线显示状态当成 RU 像素证据。
+        # 执行真实 Presenter；UI 替身记录接受/拒写，禁止把点池数量与离线显示状态当成 RU 像素证据。
         lua = self.boot()
         lua.execute(UI_HOST)
         lua.execute((ROOT / "presentation/v3/widgets/rs_v3_treasure_compass.lua").read_text(encoding="utf-8-sig"))
@@ -208,13 +206,13 @@ class TreasureCompassRuntimeTests(unittest.TestCase):
         ''')
 
     def test_real_scheduler_preserves_visual_interval(self):
-        # 中文维护：使用真实调度器证明视觉通道保留 33ms，普通 AddTask 的 50ms 下限不能被桩漏掉。
+        # 使用真实调度器证明视觉通道保留 33ms，普通 AddTask 的 50ms 下限不能被桩漏掉。
         lua = self.boot()
         lua.execute((ROOT / "core/rs_scheduler.lua").read_text(encoding="utf-8-sig"))
         lua.execute("H.Start();assert(ReplicatedSuite.Scheduler.tasks.v3_life_treasure_compass.intervalMs==33,'visual interval clamped')")
 
     def test_real_inventory_does_not_resurrect_consumed_map_from_other_view(self):
-        # 中文维护：真实共享服务的兼容视图保留旧值，物理视图成功为空时必须清目标。
+        # 真实共享服务的兼容视图保留旧值，物理视图成功为空时必须清目标。
         lua = self.boot()
         lua.execute('''
         X2Bag={};H.physical=true;H.legacy=true
@@ -232,7 +230,7 @@ class TreasureCompassRuntimeTests(unittest.TestCase):
         ''')
 
     def test_initial_compatibility_view_still_works_and_is_then_locked(self):
-        # 中文维护：锁视图只影响已证明的会话，不能破坏最初 bag1 无数据而 bag0 可读的 RU 兼容路径。
+        # 锁视图只影响已证明的会话，不能破坏最初 bag1 无数据而 bag0 可读的 RU 兼容路径。
         lua = self.boot()
         lua.execute('''
         X2Bag={};H.legacy=true

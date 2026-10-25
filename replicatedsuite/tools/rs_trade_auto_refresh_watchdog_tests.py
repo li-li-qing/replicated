@@ -1,16 +1,14 @@
-# ---------------------------------------------------------------------
 # Replicated Suite · 交易自动刷新监控测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已搬到独立源码单元。
+# life_trade 已搬到独立源码单元。
 BUNDLE = (ROOT / "features/life/trade/rs_trade_feature.lua").read_text(encoding="utf-8")
 PAGE = (ROOT / "presentation/v3/pages/rs_v3_life_m16_pages.lua").read_text(encoding="utf-8")
 ACCEPTANCE = (ROOT / "presentation/v3/rs_v3_acceptance.lua").read_text(encoding="utf-8")
-# 维护（2026-09-30）：业务判定迁至 Feature acceptance；保留 live gate 接线断言，不删门禁。
+# 业务判定迁至 Feature acceptance；保留 live gate 接线断言，不删门禁。
 FEATURE_ACCEPTANCE = (ROOT / "features/life/trade/rs_trade_acceptance.lua").read_text(encoding="utf-8")
 FOUNDATION = (ROOT / "core/rs_foundation_gate.lua").read_text(encoding="utf-8")
 

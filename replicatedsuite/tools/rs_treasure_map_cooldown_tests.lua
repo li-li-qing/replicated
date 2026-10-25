@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 宝藏地图冷却测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实寻宝 Command、Capability cooldown、Scheduler；仅 Native 地图与存档是宿主替身。
-------------------------------------------------------------------------
 local NewHost=dofile('tools/rs_gear_page_test_host.lua')
 local TASK='v3_life_treasure_map_request'
 local passed=0

@@ -1,18 +1,13 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态分类
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 纯状态分类权威：category=buff/debuff/unknown，hidden/special_rule 为来源。保留旧接口，未知不默认正面 Buff
--- ，分类顺序由下方契约说明。
-------------------------------------------------------------------------
+-- category 取 buff/debuff/unknown，hidden/special_rule 仅表示来源。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
 
--- 资源类型不能证明正面 Buff 极性。纯服务拥有分类权威，Native 事实来自 Aura，用户 override 来自 Feature
--- Store。优先级：用户 > Native 无冲突通道 > 明确静态极性 > 特殊规则 > unknown。Hidden 只说明探测来源，计时
--- 修正不证明负面；不调用 Native、不持久化事实，不按名称/ID 规律推断，保留 ClassifyId/override 兼容。
+-- 优先级：用户修正 > 无冲突 Native 通道 > 明确静态极性 > 特殊规则 > unknown。
+-- 资源类型、hidden 来源或计时修正都不能证明正负效果；不按名称/ID 规律猜，也不调用 Native。
 local Classification = {
     version = 2, presentationBoundary = "service_only", registry = {}, overrides = {}, seedCount = 0,
     hits = { user=0, native=0, verified_static=0, special_rule=0, unknown=0 }, conflicts = 0,

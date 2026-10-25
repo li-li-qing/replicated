@@ -1,9 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖侧窗位置与缩小状态回读测试（Lua 5.1）
 -- 作者：Replicated
 -- QQ群：1104129461
 -- 真实 Sidecar 创建参数/回调、Floating/Shell/Layout/Persistence；仅隔离业务内容与 Native。
-------------------------------------------------------------------------
 local ViewportBoot=dofile('tools/rs_window_viewport_test_host.lua')
 local pass,fail=0,0
 local function Copy(v)if type(v)~='table'then return v end;local o={};for k,x in pairs(v)do o[k]=Copy(x)end;return o end
@@ -88,7 +86,7 @@ Test('rejected minimize save restores actual and stored expanded rectangle',func
     assert(not s.shell.minimized and not h.sidecarSpec.getState().minimized)
     Eq(s.window.x,x);Eq(s.window.y,y);Eq(s.window.w,w);Eq(s.window.h,hh)
 end)
--- 维护：小锁只在原 Position Store 中持有 true，解锁缺键必须保留旧 canonical，冷启不依赖 Scheduler/退出 Flush。
+-- 小锁只在原 Position Store 中持有 true，解锁缺键必须保留旧 canonical，冷启不依赖 Scheduler/退出 Flush。
 Test('lock and unlock survive immediate reload and unlocked canonical omits the new key',function()
     local h=Boot();local s=h:CreateSidecar();assert(s.shell.lockButton.spec.onClick());assert(h.controller.positionState.locked==true)
     local cold=Boot(Copy(h.disk));local restored=cold:CreateSidecar();assert(restored:IsLocked(),'title lock lost on cold creation')
@@ -97,7 +95,7 @@ Test('lock and unlock survive immediate reload and unlocked canonical omits the 
     local again=Boot(Copy(cold.disk));assert(again:CreateSidecar():IsLocked()==false,'unlock lost on cold creation')
     assert(again.S.Persistence:GetStore(STORE).lastIntegrityStatus=='verified_canonical')
 end)
--- 维护：拒写必须沿 Floating/Shell 的原回滚链恢复位置档与 Native 小锁；显式预览继续不产生存档写入。
+-- 拒写必须沿 Floating/Shell 的原回滚链恢复位置档与 Native 小锁；显式预览继续不产生存档写入。
 Test('lock save rejection restores Native and position state while preview remains memory only',function()
     local h=Boot();local s=h:CreateSidecar();Drag(s,440,280);h.failSave=true
     assert(s:SetLocked(true,true)==false,'failed lock persistence reported success')

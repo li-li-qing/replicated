@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 启动器位置存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 启动 R 入口早于 Persistence 创建；V3 Foundation 就绪后位置归普通账户级 V3 Store。启动失败时启动器仍应可用，持久化是能力升级，不能成为恢复路径的前提。
-------------------------------------------------------------------------
+-- R 入口早于 Persistence 创建；Foundation 就绪后再接账户 Store，启动失败时仍须可用。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence
@@ -99,13 +96,14 @@ end
 
 function V3:MarkLauncherStoreDirty(delayMs, reason)
     if self.LauncherStoreSessionFallback == true then return true, "session_fallback_no_persist" end
-    -- 中文维护：R 入口的拖动结束、锁定与显式恢复都是用户已完成的提交边沿；MarkDirty(0) 仍须等心跳，立即退出时会丢失。
-    -- 中文维护：耐久性归共享 Persistence，返回前写盘并回读；拒写沿原命令事务回滚 Native 与 LauncherState，不改 schema/canonical。
-    if reason == "launcher_drag" or reason == "launcher_lock" or reason == "launcher_reset" then return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason }) end -- 中文维护：仅低频显式提交同步保存，普通显示/视口重排不得产生写入。
+    -- 拖动结束、锁定和恢复须在返回前写盘并回读；MarkDirty(0) 仍等下一帧，立即退出可能丢值。
+    -- 拒写时回滚 Native 与 LauncherState；普通显示和视口重排不写盘。
+
+    if reason == "launcher_drag" or reason == "launcher_lock" or reason == "launcher_reset" then return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason }) end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 250, reason or "launcher_changed")
 end
 
--- 维护：R 是独立屏幕按钮，不是内容窗口；只由 Layout 解析 logical 坐标，Windowing 提交 Native。
+-- R 是独立屏幕按钮，不是内容窗口；只由 Layout 解析 logical 坐标，Windowing 提交 Native。
 -- 空/未拖动 Store 必须传默认 intent，旧 ApplyPlacement({userMoved=false}) 会误落入 LEFT/TOP=0。
 -- UI Scale 不再乘除 x/y，30 是 logical 尺寸；创建/明确恢复才补采样，metrics 回调复用当前 context。
 local function ApplyLauncherRect(state, reason, fresh)
@@ -142,7 +140,7 @@ function V3:ApplyLauncherPlacement()
     if S.Layout and type(S.Layout.RegisterFloating)=="function" and S.RecoveryEntry then
         S.Layout:RegisterFloating("v3_launcher",S.RecoveryEntry,{
             ensureNow=false,onlyWhenVisible=true,
-            -- 维护（ui-position-reload-1）：R 入口复用全局有界恢复，但绝不接管原生拖动。
+            -- R 入口复用全局有界恢复，但绝不接管原生拖动。
             positionOwner="v3:launcher",
             isPositionInteracting=function()return S.RecoveryEntry.rsMoving==true end,
             getPlacementDiagnostics=function()return V3.LauncherPlacementInfo end,
@@ -175,7 +173,7 @@ end
 function V3:ResetLauncherPlacement(persist)
     local state,button=self.LauncherState,S.RecoveryEntry
     if type(state)~="table" or button==nil then return false,"launcher_unavailable" end
-    -- 维护：显式 Reset 先撤销手势资格，Native 接受后才改 Store；旧 metadata 不参与默认解析。
+    -- 显式 Reset 先撤销手势资格，Native 接受后才改 Store；旧 metadata 不参与默认解析。
     -- 不在普通 Show/metrics 写入，失败保留原始缺失键；schema/Normalize 完全不变。
     if button.rsMoving and type(button.StopMovingOrSizing)=="function" then pcall(button.StopMovingOrSizing,button) end
     button.rsMoving,button.rsIgnoreClick=false,false

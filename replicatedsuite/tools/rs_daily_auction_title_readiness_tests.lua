@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 每日拍卖称号就绪测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅供开发期使用，不进入 toc.g；运行真实 Demand、QuestProgress、DailyAuctionMaterials 和静态配方解析器。
 -- 仅模拟 RU 原生宿主、事件传递及时钟和调度边界；990011/990012 是构造的测试 ID，不能加入游戏数据。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -248,7 +245,7 @@ Test('unresolved count is total, not truncated sample length', function()
     Eq(diag.knownActiveCount, 0, 'unresolved placeholders must not count as known quest mapping')
 end)
 
--- 中文维护注释（2026-10-02）：地区名称必须按同一个 CraftId 对照 RU 中英文数据库，
+-- 地区名称必须按同一个 CraftId 对照 RU 中英文数据库，
 -- 不能从待测 Zone.nameZh 反造标题，否则错误别名也会获得绿灯。
 -- 参考来源：https://wiki.archerage.to/ru-cn/db/crafts/commerce-vocation
 -- 参考来源：https://wiki.archerage.to/ru-en/db/crafts/commerce-vocation
@@ -297,7 +294,7 @@ for _, region in ipairs(REGION_CASES) do
 end
 Test('user screenshot and independently verified neighboring recipes retain exact material counts', function()
     local h = Boot(); h.ids = {}; h.titles = {}
-    -- 中文维护注释：数量直接来自截图与官方 RU Craft 6245/6244/9336/9340/9332/6243，
+    -- 数量直接来自截图与官方 RU Craft 6245/6244/9336/9340/9332/6243，
     -- 翡翠谷保存特产按用户本次实机反馈固定为干净的肉脯 ×200、百合 ×5。
     -- 不从当前材料表生成期望，才能发现“名字和材料一起串到邻区”的问题。
     local cases = {

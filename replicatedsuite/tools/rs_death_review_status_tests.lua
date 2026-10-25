@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 死亡复盘状态测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实 Authority/Aura 投影/Store/Core；Native 读取、时钟和调度边界采用明确模型。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Copy(v) if type(v)~='table' then return v end local o={};for k,x in pairs(v) do o[k]=Copy(x) end;return o end
 local function Test(name,fn) local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS death-status '..name) else failed=failed+1;print('FAIL death-status '..name..': '..tostring(err)) end end

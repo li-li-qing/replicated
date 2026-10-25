@@ -1,19 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态追踪与显示设置页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 四个页面面向不同读模型；显示内容与HUD调整共用入口。
--- 四个表现页面：
--- 1) 状态追踪：当前事实、保存选择、记录状态、本机 CD。
--- 2) 显示内容：分作用域显隐、显示策略及游戏画面 HUD 校准。
--- 校准器持有分离的玩家/目标草稿，只有“保存并退出”才越过持久化边界。
--- 3) 导入导出：一次完整导出与一次校验后的耐久导入。
--- 4) 内置库：可见预设组、一次耐久分组操作与行内开关。
--- 表现层只消费 BuffDisplay 的投影与命令；必须先加载 Store 再构造可编辑控件，防止停用的 Feature 用默认值覆盖尚未读取的存档。
--- 约束（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
--- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
-------------------------------------------------------------------------
+-- 页面分为状态追踪、显示内容、导入导出和内置库。
+-- 先加载 Store 再创建编辑控件，避免停用的 Feature 用默认值覆盖未读存档。
+-- HUD 校准分别持有玩家和目标草稿，只有“保存并退出”才写入。
+-- 总开关复用 PageHost 的按钮，刷新时不能改父级或重复绑定 OnClick。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -49,10 +40,9 @@ local function WriteNativeText(widget, text)
     return true
 end
 
--- 约束（只读取证 UI）：旧 Hash 和 sequence=unchanged 不能还原字段，必须取得真实
--- LoadData 输入。用户明确选择并点击后才读取；不绑定 Store，不调用 Feature Commands 或 Save。
--- Native 输入框只是可复制的临时文本；可能包含玩家名/状态 ID，禁止自动发送聊天或上传。
--- 故障页不能因可选文本控件失败再次触发构建隔离；隐藏页面即清缓存，分页不再次读磁盘。
+-- Hash 和 sequence=unchanged 不能还原原档，须在用户点击后读取真实 LoadData 输入。
+-- 取证文本不绑定 Store，也不触发保存；可能含玩家名和状态 ID，不自动发送。
+-- 可选复制框失败不应隔离故障页；隐藏时清缓存，翻页不重读磁盘。
 local function AttachEvidenceReader(root)
     local diagnostics = S.DiagnosticsManager
     local choices = type(diagnostics) == "table" and type(diagnostics.GetPersistenceFailureChoices) == "function"
@@ -133,8 +123,7 @@ local function AttachEvidenceReader(root)
     return function(visible)
         if not visible then
             Clear()
-            -- 维护：隐藏不是销毁。通过共享输入生命周期释放焦点/键盘，避免取证框继续吞游戏按键；
-            -- 不 Retire，重新打开后仍由显式点击激活，不改变其它页面/聊天的焦点 Authority。
+            -- 隐藏时释放焦点和键盘，避免继续吞游戏按键；不销毁控件，重开仍须点击激活。
             if editor and type(S.UI.DeactivateInputWidget)=="function" then
                 pcall(S.UI.DeactivateInputWidget,S.UI,editor,host.owner,"evidence_page_hidden")
             end
@@ -144,12 +133,11 @@ local function AttachEvidenceReader(root)
     end
 end
 
--- 存档拒绝是业务故障，不是控件构造异常。原先 return nil 让 PageHost
--- 叠加 rollback/quarantine；现在只展示读取失败，不套默认值、不清 fence、不建配置 Binding
--- 或 Consumer；取证复制框不绑定业务配置。真正构造失败仍报错，恢复使用“重新加载文件”。
+-- 存档拒绝只显示读取失败，不应让 PageHost 再把整页当作构建失败隔离。
+-- 此分支不套默认值、不清 fence、不建 Binding 或 Consumer；复制框只读原档。
+-- 控件构建异常仍正常报错，恢复须重新加载文件。
 local function BuildPersistenceUnavailablePage(parent, route, reason)
-    -- 维护：取证说明/分页增加纵向内容，固定 PageRoot 在 768 高度可能裁掉复制控件。
-    -- 复用 Foundation 滚动布局，禁止添加另一套坐标/滚轮 Authority；不修改正常四页签。
+    -- 取证说明和分页会增加高度；使用共享滚动布局，避免 768 高度裁掉复制框。
     local createRoot = D.ScrollablePageRoot or D.PageRoot
     local root, err = createRoot(D, parent, "v3_page_buff_display")
     if root == nil then return nil, err or "状态显示错误页面创建失败" end
@@ -159,8 +147,7 @@ local function BuildPersistenceUnavailablePage(parent, route, reason)
     RSUI:Text({ id="v3_buff_persistence_error", parent=root,
         text="读取失败：" .. tostring(reason or "未知错误"), fontSize=10, tone="warn",
         overflow="wrap", maxLines=6, slot={size="auto", minHeight=72, hAlign="fill"} })
-    -- 维护（module-controls-diag-2）：主诊断入口由宿主左上角提供；完整原档只读取证仍保留，
-    -- 不以普通错误摘要替代故障UDF，也不清除fence/回写默认值。
+    -- 宿主提供诊断入口；这里保留完整原档，不能用错误摘要替代或清除写保护。
     RSUI:Text({ id="v3_buff_persistence_hint", parent=root,
         text="请先从左上角诊断复制模块报告。请保留旧存档；完整原始字段仍可从下方只读取证框获取。",
         fontSize=10, tone="muted", overflow="wrap", maxLines=3,
@@ -203,8 +190,8 @@ local function BuildPage(parent, route)
     local function ApplyComponentSetting(componentKey, field, value)
         local ok, err = Feature.Commands:SetComponentField(componentKey, field, value)
         if ok == true then
-            -- SetComponentField 负责 HUD 布局的耐久持久化。点击是显式低频操作，通道协调后可立即执行一次有界装备刷新，避免等待 200ms 兜底，且不在页面 Refresh/Tick 添加扫描；
-            -- 没有 Consumer 时 EquipmentTick 不执行工作，保持原生命周期契约。
+            -- 布局由 SetComponentField 保存。显式点击后立即做一次有界装备刷新，避免等待 200ms。
+            -- 没有 Consumer 时 EquipmentTick 不工作；页面刷新不补扫描。
             if type(Feature.ReconcileLanes) == "function" then Feature:ReconcileLanes() end
             if type(Feature.EquipmentTick) == "function" then Feature:EquipmentTick(true) end
             root:Refresh()
@@ -235,9 +222,6 @@ local function BuildPage(parent, route)
     if tabSelector == nil then error("状态显示页签选择器创建失败：" .. tostring(tabSelectorErr or "unknown")) end
     switcher = RSUI:WidgetSwitcher({ id = "v3_buff_display_tab_switcher", parent = root, activeIndex = 1, measureMode = "active", slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
 
-    ------------------------------------------------------------------
-    -- 紧凑追踪页：一个来源入口，状态四通道与本机 CD 都在当前行操作。
-    ------------------------------------------------------------------
     local tabTrack=RSUI:VerticalBox({id="v3_buff_display_tab_track",parent=switcher,gap=4,slot={hAlign="fill",vAlign="fill"}})
     local sourceNames={live="当前状态",tracked="已追踪",frozen="状态记录",cooldowns="技能 CD"}
     local toolbar=RSUI:HorizontalBox({id="v3_buff_manage_views",parent=tabTrack,gap=5,slot={size="fixed",height=28,hAlign="fill"}})
@@ -409,9 +393,7 @@ local function BuildPage(parent, route)
     end
     searchClear.onClick=function()root.filterText="";if searchInput then searchInput:SetValue("",false,"search_clear")end;return root:Refresh()end
 
-    ------------------------------------------------------------------
-    -- 显隐设置是现有作用域布局上的低频命令入口，不创建几何草稿、不修改追踪、不扫描 Native，也不持有页面任务。
-    ------------------------------------------------------------------
+    -- 显隐设置直接提交作用域布局命令，不创建校准草稿或扫描任务。
     local tabVisibility = RSUI:VerticalBox({ id="v3_buff_display_tab_visibility", parent=switcher, gap=5,
         slot={hAlign="fill",vAlign="fill"} })
     local contentActions=RSUI:HorizontalBox({id="v3_buff_display_content_actions",parent=tabVisibility,gap=8,
@@ -556,9 +538,6 @@ local function BuildPage(parent, route)
         fontSize=9,tone="muted",overflow="wrap",maxLines=2,slot={size="auto",minHeight=26,hAlign="fill"} })
     root:RefreshVisibilityControls()
 
-    ------------------------------------------------------------------
-    -- 合并显示策略；真实画面校准仍持有独立草稿，只有保存并退出才写入。
-    ------------------------------------------------------------------
     -- Border自身minHeight与slot下限同时声明，防止Native控件高度大于卡片Measure而重叠。
     local policyCard = RSUI:Border({ id = "v3_buff_display_layout_policy_card", parent = contentScroll, padding = 8, variant = "card",
         minHeight = 128, slot = { size = "auto", minHeight = 128, hAlign = "fill" } })
@@ -597,16 +576,14 @@ local function BuildPage(parent, route)
     end
     RSUI:Text({ id = "v3_buff_display_layout_policy_hint", parent = policyStack, text = "“全部”开启时显示所有已识别状态；关闭时按追踪清单显示。", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
 
-    -- 约束（2026-09-27，target-alias-hud-2）：目标自定义名字的编辑与几何调整已全部
-    -- 收敛到“调整 HUD → 目标 HUD → 自定义名字”。显示内容页仅复用同一显隐 Command；
-    -- 不复制备注编辑器、几何草稿或 Alias Store，目标切换事件仍由原生命周期按需消费。
+    -- 名字和几何统一在目标 HUD 校准器编辑；此页只复用显隐命令，不另建别名草稿。
 
     local refreshCard = RSUI:Border({ id = "v3_buff_display_layout_refresh_card", parent = contentScroll, padding = 8, variant = "card",
         minHeight = 104, slot = { size = "auto", minHeight = 104, hAlign = "fill" } })
     local refreshStack = RSUI:VerticalBox({ id = "v3_buff_display_layout_refresh_stack", parent = refreshCard, gap = 5, slot = { hAlign = "fill" } })
     RSUI:Text({ id = "v3_buff_display_layout_refresh_title", parent = refreshStack, text = "刷新设置", fontSize = 11, tone = "strong", slot = { size = "fixed", height = 20 } })
     local refreshGrid = RSUI:UniformGrid({ id = "v3_buff_display_layout_refresh_grid", parent = refreshStack, minCellWidth = 320, minCellHeight = 34, maxColumns = 1, gap = 4, slot = { size = "auto", hAlign = "fill" } })
-    -- 维护（pvp-hud-1）：位置已独立逐帧跟随；旧headRefreshMs继续控制距离/读条，不能仍标成全HUD刷新。
+    -- 位置已独立逐帧跟随；旧headRefreshMs继续控制距离/读条，不能仍标成全HUD刷新。
     local refreshField = D:CompactNumericSetting(refreshGrid, {
         -- 仅距离/读条表现滑块提速，Aura事实采样仍由原观察通道决定，不能混作每帧全量Buff扫描。
         id = "v3_buff_display_layout_refresh", label = "距离/读条刷新", min = 1, max = 100, fixedSliderRange = true, hardMin = 1, hardMax = 2000, step = 1, integer = true, unit = "ms", slider = true,
@@ -642,9 +619,6 @@ local function BuildPage(parent, route)
     end
     root:RefreshLayoutControls()
 
-    ------------------------------------------------------------------
-    -- 页签 3：导入与导出。
-    ------------------------------------------------------------------
     local tabTransfer = RSUI:VerticalBox({ id = "v3_buff_display_tab_transfer", parent = switcher, gap = 6, slot = { hAlign = "fill", vAlign = "fill" } })
     RSUI:Text({id="v3_buff_display_transfer_help",parent=tabTransfer,
         text="导出后全选复制，发给其他人；收到分享后粘贴到下方，再点导入。包含追踪、显示设置和 HUD 布局。",
@@ -684,10 +658,7 @@ local function BuildPage(parent, route)
         transferStatus:SetText(root.transferFeedback);exportBtn:SetEnabled(false);importTextBtn:SetEnabled(false)
     end
 
-    ------------------------------------------------------------------
-    -- 内置库：给不想逐个查状态的用户一个可见、独立的一键分组入口。
-    -- 复用原 ImportBuiltinPack / 行内四列 / 元数据队列；不复制目录或追踪 Authority。
-    ------------------------------------------------------------------
+    -- 内置库复用 ImportBuiltinPack 和元数据队列，不另存追踪目录。
     local tabLibrary=RSUI:VerticalBox({id="v3_buff_display_tab_library",parent=switcher,gap=4,slot={hAlign="fill",vAlign="fill"}})
     RSUI:Text({id="v3_buff_library_intro",parent=tabLibrary,text="选择分组，点击“追踪本组”，无需等待这些状态出现在身上。",
         fontSize=10,tone="strong",overflow="wrap",maxLines=2,slot={size="auto",minHeight=28,hAlign="fill"}})
@@ -736,9 +707,6 @@ local function BuildPage(parent, route)
         return root:RefreshLibrary()
     end
 
-    ------------------------------------------------------------------
-    -- 刷新与页签切换。
-    ------------------------------------------------------------------
     function root:RefreshTransferStatus()
         transferStatus:SetText(self.transferFeedback or "导入会加入分享的追踪，并应用其中的显示设置与 HUD 布局。")
         return true
@@ -808,7 +776,7 @@ local function BuildPage(parent, route)
         if RSUI.PopupCoordinator and type(RSUI.PopupCoordinator.CloseAll)=="function" then RSUI.PopupCoordinator:CloseAll()end
         local index = 1
         for i, key in ipairs(TAB_KEYS) do if key == value then index = i break end end
-        -- 页签 Authority 同步模型和 switcher；程序化导航不能只换 Native 可见页。
+        -- 切页同时更新模型和 switcher，程序化导航不能只改变 Native 可见页。
         self.activeTab=TAB_KEYS[index]
         value=self.activeTab
         -- 页面离开目录/管理表即取消图标队列；不影响Feature采集和留存。
@@ -824,9 +792,8 @@ local function BuildPage(parent, route)
         return true
     end
 
-    -- 约束（2026-10-07，release-metadata-lifecycle）：页面只在可见期间订阅生命周期。
-    -- Feature 停用释放 Aura/CD 业务 Demand；仍可见的管理/内置库只保留静态名称图标补全，
-    -- 不会隐式启用 Feature。离开页面的 OnDeactivated 统一取消该元数据需求与 one-shot。
+    -- 只在页面可见时订阅生命周期。Feature 停用后释放 Aura/CD Demand，
+    -- 管理页和内置库仍可补全静态名称、图标；离页时统一取消元数据需求和 one-shot。
     local consumerBinding = {
         feature = Feature, featureId = "combat_buff_display", token = "page:buff_display",
         onDisabled = function(page)
@@ -842,16 +809,15 @@ local function BuildPage(parent, route)
         refresh = function(page) return page:Refresh() end,
     }
 
-    -- 维护：图标补全属于页面读操作，功能关闭仍需刷新内置库。事件订阅独立于战斗Consumer；
-    -- 页面隐藏时整体退订，布局/导入页不被Aura节拍重绘。只响应自己Feature的统一更新事件。
+    -- 图标补全独立于战斗 Consumer，功能关闭仍可更新内置库；页面隐藏时退订。
+    -- 只响应本 Feature 的更新，布局和导入页不跟随 Aura 节拍重绘。
     local function SubscribePageUpdates()
         if S.Events == nil or type(S.Events.UnsubscribeInternalOwner) ~= "function" or type(S.Events.SubscribeInternal) ~= "function" then
             return false, "内部事件总线不可用"
         end
         S.Events:UnsubscribeInternalOwner(root)
-        -- 维护（library-eventbus-2，真实总线回归）：Events:Publish先传owner、再传业务参数。
-        -- 旧function(reason)把root当reason，图标和追踪更新永远不进入library分支；mock漏传owner掩盖错误。
-        -- 库页面只按缓存revision刷新：Aura新学到的图标也可显示，但无变更时不重建397行/不查Native。
+        -- Events:Publish 先传 owner 再传业务参数；漏掉 owner 曾让 library 分支无法进入。
+        -- 库页面只在缓存 revision 变化时刷新，避免反复重建 397 行。
         if S.Events:SubscribeInternal("v3.buff_display.updated",root,function(_owner,_reason)
             if root.activeTab=="track" then root:Refresh()
             elseif root.activeTab=="library" then root:RefreshLibrary() end
@@ -866,9 +832,7 @@ local function BuildPage(parent, route)
         return true
     end
 
-    ------------------------------------------------------------------
     -- 事件处理。
-    ------------------------------------------------------------------
     featureButton.onClick = function()
         local enabled = S.FeatureRuntime:IsEnabled("combat_buff_display") == true
         local target = not enabled
@@ -902,8 +866,8 @@ local function BuildPage(parent, route)
         TransferFeedback("已导出。点击下方文本框，全选复制后即可发给其他人。")
         return true
     end
-    -- 简单分享只有一次显式导入；仍先走原严格解析/容量检查，再走原耐久复合事务。
-    -- 固定merge保留用户其它追踪，导出包中的显示策略和双HUD布局由原ImportAll应用。
+    -- 导入先做严格解析和容量检查，再走原子保存。固定 merge 保留其它追踪，
+    -- 显示策略和双 HUD 布局仍由 ImportAll 应用。
     importTextBtn.onClick=function()
         if transferEditAvailable~=true then TransferFeedback("导入失败：文本框不可用。");return false,"文本框不可用"end
         local text=ReadNativeText(transferEdit)
@@ -922,9 +886,7 @@ local function BuildPage(parent, route)
         return true
     end
 
-    ------------------------------------------------------------------
     -- 生命周期：HUD 校准草稿归独立覆盖层持有；页面导航不会提交或重放几何。
-    ------------------------------------------------------------------
     function root:OnActivated()
         self:ResetClearTrackingConfirmation()
         local loaded, loadErr = Feature:EnsureStoreLoaded()
@@ -946,8 +908,7 @@ local function BuildPage(parent, route)
         if type(Feature.SetCooldownManagementActive)=="function" then Feature:SetCooldownManagementActive(false) end
         if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
         local released, releaseErr = PageHost:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
-        -- 校准器若仍开启，Shell 已被临时最小化，因此正常页面导航不会走到这里；
-        -- 即使页面被宿主回收，Detached Draft 仍不会越过 Persistence boundary。
+        -- 校准时 Shell 临时最小化；即使页面被回收，独立草稿也不会自动保存。
         return released, releaseErr
     end
     function root:RefreshData() return self:Refresh() end
@@ -955,9 +916,8 @@ local function BuildPage(parent, route)
     return root
 end
 
--- 约束（页面 Measure 契约）：v1 证明 HUD 布局三卡片把 minHeight 写入组件 spec，
--- 而不是只写父 slot。Foundation/Acceptance 只读该声明来阻止热重载残留 .205 页面继续运行；
--- 不创建额外 UI、不改变 Store Authority。
+-- 验收要求三张 HUD 布局卡片把 minHeight 写入组件 spec，仅写父 slot 不够。
+-- 该标记用于拦住热重载残留的旧页面。
 Feature.HudLayoutPageMeasureContractVersion = 1
 Feature.HudVisibilityPageContractVersion = 1
 Feature.TargetAliasPageContractVersion = 2 -- 主页面不再单独编辑别名，入口统一收敛到目标 HUD 校准器。

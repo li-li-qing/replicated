@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 辅助窗口存储完整性恢复测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 离线 Persistence v4 回归：schema1 原先只归一化当时已有的辅助窗口类型。
 -- 后来加入 quest_detail 却未升级结构版本，改变规范数据后可能对健康存档触发写保护。
 -- 测试先写入发布过的旧结构，再启动当前 schema2 Store，验证按历史规则精确认证并重新盖章。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -28,7 +25,7 @@ local function Boot(disk)
         ClearData = function() error("aux recovery test must not clear saves") end,
     }
     ReplicatedSuite = {
-        -- 中文维护注释（2026-10-02）：校验的就是 Floating 的生产 canonical，禁止测试替身复制
+        -- 校验的就是 Floating 的生产 canonical，禁止测试替身复制
         -- NormalizeState；只隔离 Native 创建窗口，Persistence/Transport/Floating/Aux 全部加载真实实现。
         Features = {}, Services = {}, UI = { CreateWindowShell=function() error("storage test must not create Native windows") end }, UIV3 = {}, RSUI = {},
         NowMs = function() return 1000 end,
@@ -128,7 +125,7 @@ Test("late schema1 already containing quest_detail migrates without historical r
     assert(S.UIV3.AuxWindowStoreV3.state.quest_detail.width == 610, "late schema1 quest detail geometry lost")
 end)
 
--- 中文维护注释（2026-10-02）：真实报告 RS-20261002-195813-365029-1.2.txt 中的 Aux 快照；
+-- 真实报告 RS-20261002-195813-365029-1.2.txt 中的 Aux 快照；
 -- 原文件 SHA256=8c87537f0f1ce83b31249b0243fa2ad4aec42d291d5c4927b8a8f57c4263d302。
 -- 用受限 T/S/D/B 数据语法解码，未执行报告文本；原始 metadata、Transport3 数字字符串与两份指纹保持原样。
 local REPORT_SCHEMA1 = {

@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能方案页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅作为表现代理，通过 FeatureProfiles.Commands 编辑方案意图；FeatureRuntime 仍是唯一生命周期写入者。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -14,10 +11,8 @@ if type(RSUI) ~= "table" or type(D) ~= "table" or type(PageHost) ~= "table" or t
 
 local ROUTE = "tools.feature_profiles"
 
--- 约束（2026-09-25，feature-profile-input-action-1）：Native EditBox 的 OnLostFocus
--- 可能晚于“新建/改名”按钮 OnClick。这里读取 TextInput 的 action draft，而不是只读已提交
--- Binding；否则用户已经看到并输入名称，命令仍会收到空字符串。Presentation 只读取草稿并
--- 提交给 Feature Commands，Store/方案 Authority 仍完全属于 FeatureProfiles。
+-- Native OnLostFocus 可能晚于新建、改名按钮的 OnClick，因此须读 TextInput 的
+-- action draft；只读已提交 Binding 会漏掉用户尚未失焦的名称。草稿仍经 Feature Commands 提交。
 local function ReadActionText(input)
     if input == nil then return "" end
     if type(input.GetActionValue) == "function" then return tostring(input:GetActionValue() or "") end
@@ -44,9 +39,7 @@ local function BuildPage(parent, route)
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
     })
 
-    ------------------------------------------------------------------------
     -- 左侧：方案库与方案级命令。
-    ------------------------------------------------------------------------
     local left = RSUI:Border({
         id = "v3_feature_profiles_left", parent = body, variant = "card", gradient = true, padding = 6,
         slot = { size = "fixed", width = 330, minWidth = 286, hAlign = "fill", vAlign = "fill" },
@@ -127,9 +120,7 @@ local function BuildPage(parent, route)
     local statusText = RSUI:Text({ id = "v3_feature_profiles_status", parent = leftStack, text = "请选择或新建方案。", fontSize = 8, tone = "muted",
         overflow = "wrap", maxLines = 4, slot = { size = "fill", fill = 1, minHeight = 38, hAlign = "fill", vAlign = "fill" } })
 
-    ------------------------------------------------------------------------
     -- 右侧：所选方案的完整功能目标状态。
-    ------------------------------------------------------------------------
     local right = RSUI:Border({
         id = "v3_feature_profiles_right", parent = body, variant = "card", gradient = true, padding = 6,
         slot = { size = "fill", fill = 1, minWidth = 360, hAlign = "fill", vAlign = "fill" },

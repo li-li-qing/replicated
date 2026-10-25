@@ -2,13 +2,16 @@
 local previous = LCotPotionSignal -- 中文维护：重载先让旧代次失效，防止旧 OnUpdate/事件继续显示 Ready。
 if previous and type(previous.Shutdown) == "function" then pcall(previous.Shutdown, previous) end -- 中文维护：旧窗口和回调清理失败也不能阻止代次切换。
 LCotPotionSignal = { generation = (previous and previous.generation or 0) + 1, widgets = {}, rows = {}, now = 0, enabled = false, running = true, error = nil } -- 中文维护：冷启动默认暂停，用户尚未核对药品和 CD 时不得发出颜色。
-LCotPotionSignal.previousUsage = previous and { now = previous.now, usage = previous.usage } or nil -- 中文维护：只传递同一Lua会话的保守用药限制；重载不能消除刚使用药品的关联限制，不传递Ready或启用状态。
+LCotPotionSignal.previousUsage = previous and { now = previous.now, usage = previous.usage, reviveResumeAt = previous.reviveResumeAt } or nil -- 中文维护：同会话用药限制与死亡20秒期限沿原单调时钟继承，重载不延长兜底等待；不传递Ready或启用状态。
 LCotPotionSignal.escButtonRegistered = previous and previous.escButtonRegistered == true or false -- 中文维护：同一Lua会话复用稳定菜单按钮身份；热重载只更新内容窗口和回调，不累积多个入口。
 local P = LCotPotionSignal -- 中文维护：后续闭包只拥有本代次。
+P.reviveProtected = previous and previous.reviveProtected == true or false -- 中文维护：同Lua会话重载不能遗忘刚发生的死亡/复活保护；只沿用保守否决，不持久化角色死亡、启用或Ready。
+P.reviveAliveSeen = P.reviveProtected and previous.reviveAliveSeen == true or false -- 中文维护：只继承保护期内是否已实读存活，用于识别下一次真实死亡；重复零血量/同次死亡通知不能不断延长20秒期限。
 local allowed = { -- 中文维护：按2026-09本地白名单及RU官方更新核对；只登记本功能需要的公开读取，不借导出可见性放开其它API。
     X2Unit = { UnitHealth = true, UnitMaxHealth = true, UnitName = true }, -- 中文维护：只读取 player，本插件不监控其他玩家。
     X2Bag = { GetBagItemInfo = true, ItemStack = true, Capacity = true }, -- 中文维护：GetBagCooldown、X2Item:Cooldown、X2Action 冷却不可调用。
     X2Skill = { GetCooldown = true }, -- 中文维护：仅查用户手动用药观测到且明确选择的技能编号，禁止枚举猜 ID。
+    X2Player = { PlayerInCombat = true }, -- 中文维护：RU 2026-06-09公告与本机Gear服务已核对的只读战斗状态，仅用于复活保护解除，不使用受限UnitIsDead/UnitCombatState。
 } -- 中文维护：本插件自身不使用 UseItem、技能释放、热键修改或文件系统 API。
 function P:IsCurrent() return LCotPotionSignal == self and self.running end -- 中文维护：所有 Native 回调与控件操作先检查代次。
 function P:Read(namespace, method, ...) -- 中文维护：统一公开读取边界，未知、抛错和逻辑返回分别由调用方处理。
@@ -57,6 +60,7 @@ for _, id in ipairs({ 5, 35, 42 }) do -- 中文维护：ABI来自本机rs_native
     local ok, result = pcall(ADDON.ImportAPI, ADDON, id) -- 中文维护：只导入声明过的三种公开读取对象。
     if not ok or result == false then P.error = "读取接口导入失败：" .. tostring(id) end -- 中文维护：导入失败是未知，不能继续发Ready。
 end -- 中文维护：不因一次失败重试其它数字编号。
+local combatImported, combatResult = pcall(ADDON.ImportAPI, ADDON, 32); P.playerCombatAvailable = combatImported and combatResult ~= false -- 中文维护：PLAYER=32来自NativeContract；可选读取失败仍可由回血、死亡20秒兜底或用户明确重启解除保护，不阻断原有药品读取与界面加载。
 for _, id in ipairs({ 0, 1, 2, 6, 7, 13 }) do -- 中文维护：本机NativeContract核实的WINDOW/LABEL/BUTTON/DRAWABLE/COLOR_DRAWABLE/TEXT_STYLE；不依赖共享OBJECT_TYPE。
     local ok, result = pcall(ADDON.ImportObject, ADDON, id) -- 中文维护：只导入当前界面实际需要的对象。
     if not ok or result == false then P.error = "界面对象导入失败：" .. tostring(id) end -- 中文维护：失败保留诊断原因，禁止继续发色。

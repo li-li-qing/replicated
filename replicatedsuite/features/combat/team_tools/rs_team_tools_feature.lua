@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队职责工具功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 独立源码单元必须保持 Feature ID、Store ID/Schema、UpdateTopic、Demand所有者、Commands、Projection 与 ApiDependencies 的契约；禁止重复注册业务实现。
--- Authority 边界：成员/职责事实来自 TeamRosterV3 与 X2Team 只读接口；本文件拥有“本 Feature 的
+
+-- 成员/职责事实来自 TeamRosterV3 与 X2Team 只读接口；本文件拥有“本 Feature 的
 -- 角色写入与自动职责观察”，但不复制团队快照，也不为其它 Feature 保留团队缓存。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local FSF = S.FeatureSliceFactory
@@ -30,9 +27,7 @@ end
 local TEAM_ROLE_MAX_TEAMS, TEAM_ROLE_MAX_MEMBERS = 2, 50
 local TEAM_ROLE_MAX_ROWS = TEAM_ROLE_MAX_TEAMS * TEAM_ROLE_MAX_MEMBERS
 local TEAM_ROLE_ROSTER_TOKEN = "combat_team_tools:roster"
--- 自动职责 roster token 使用稳定字面量
--- "combat_team_tools:auto_role_roster"，不再新增顶层 local。该文件已接近 Lua 5.1 每函数 200 local 上限；
--- 资源身份仍由 Demand token 保证唯一，避免为了可读性增加顶层 local 导致整个 business bridge 无法加载。
+-- auto_role_roster 用稳定 token，避免再增加顶层 local；Lua 5.1 每函数上限为 200。
 
 local function TeamRosterV3()
     return S.Services and S.Services.TeamRosterV3 or nil
@@ -270,7 +265,7 @@ local function NormalizeTeamRole(value)
 end
 
 local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:GetRole", "X2Team:SetRole", "X2Unit:GetTargetAbilityTemplates", "X2Unit:UnitName" },
-    -- autoRoleEnabled 早已属于 default，因此 NewFeature 的持久化白名单事实上会保存它；这里把它同时写入 explicit persistentKeys，目的是把“新安装默认 true、旧用户显式 false 必须保留”变成可读且可测试的 Store 契约。Authority 仍是 TeamTools.State，UI 只通过 SetAutoRoleEnabled -> PersistStateMutation 修改；不会在 Reload/Enable 时强制把旧 false 改 true，也不会增加新的轮询任务。
+    -- autoRoleEnabled 显式进入持久字段白名单：新用户默认 true，旧用户 false 保留；不能在 Enable/重载时强制打开。
     state = { role = nil, autoRoleEnabled = true }, default = { role = nil, autoRoleEnabled = true }, persistentKeys = { "role", "autoRoleEnabled" },
     reconcileDemand = AcquireTeamRoleRoster,
     onDisable = ReleaseTeamRoleRoster,
@@ -286,10 +281,7 @@ local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:
             local enabled = value == true
             local ok, err = PersistStateMutation(feature, "team_auto_role", function(state) state.autoRoleEnabled = enabled; return true end)
             if ok ~= true then return false, err end
-            -- 旧实现只改 Store，false 时不释放观察，且若 Feature 启动时 Store=false，
-            -- 后续切回 true 只 Schedule 一次 Apply，并不会重新订阅 ABILITY/roster 事件。Authority 仍是 TeamTools.State，Command 负责把用户意图同步到运行时资源。
-            -- 数据流：SetAutoRoleEnabled -> Start/StopAutoRoleObservation -> 独立 TeamRoster lease + 独立 Event owner；Presentation 不直接订阅 Native。
-            -- 兼容边界：先提交用户配置，再调整本会话资源；若运行时资源建立失败，保留用户 true 意图并返回错误，下一次 Enable/重载仍会重试，不静默改回 false。
+            -- 先提交 autoRoleEnabled，再启停独立 roster lease/事件 owner；建立资源失败保留 true 意图并报错，下次 Enable/重载重试。
             if feature.enabled == true then
                 if enabled then
                     local started, startErr = feature:StartAutoRoleObservation()
@@ -361,10 +353,8 @@ local function FindPlayerRoleSlot()
         local memberName=string.lower(tostring(member.name or ""))
         if member.unitToken=="player" or memberName==wanted then -- 共享名单的 player token 已证明本地身份；显示名可能带 @World，不能让显示文本差异阻断已确认槽位。
             local teamIndex,memberIndex=tonumber(member.teamIndex),tonumber(member.memberIndex)
-            -- TeamRosterV3 总会先以 player/0/0 种下本地身份，0/0 只证明“玩家存在”，
-            -- 不能证明 native team slot 已稳定。旧代码把 0/0 当有效槽位，可能在 TEAM_MEMBERS_CHANGED 过早到达时调用 GetRole(0,0)/SetRole，
-            -- RU 侧拒绝后又没有后续边沿，于是表现为“有时进团不改职责”。这里只接受 >0 的真实团队槽位；晚到槽位由 TeamRoster 的有界 settle refresh 补齐。
-            -- 数据流仍只消费 TeamRosterV3 公共 Snapshot，不读取其私有 map；大小写归一化只用于当前玩家同名匹配，不建立第二份缓存。
+            -- TeamRoster 的 player/0/0 仅表示玩家存在，不能拿去 GetRole/SetRole；只接受 >0 的真实槽位，晚到槽位由有界 settle 补齐。
+            -- 只读公共 Snapshot，不另建身份缓存。
             if teamIndex~=nil and teamIndex>0 and memberIndex~=nil and memberIndex>0 then return teamIndex,memberIndex,nil end
             return nil,nil,"当前玩家团队槽位尚未就绪"
         end
@@ -459,9 +449,8 @@ function TeamTools:StartAutoRoleObservation()
     local rosterOk, rosterErr = self:AcquireAutoRoleRoster()
     if rosterOk ~= true then return false, rosterErr end
     local owner = self.AutoRoleEventOwner
-    -- 自动职责不能借 combat_team_tools 页面 Demand 持有 TeamRoster，也不能用 Feature 本体
-    -- 作为 Event owner 后再 UnsubscribeOwner(self)，否则关闭自动职责会顺带删除页面只读职责订阅。这里把 Native ability 事件和内部 roster 事件都绑定到专属 owner。
-    -- 生命周期：Feature Enabled + autoRoleEnabled=true 才持有；关闭设置/Feature Disable 时 RemoveTask + Unsubscribe + ReleaseConsumer 全部释放。无 Tick、无常驻扫描。
+    -- 自动职责使用独立事件 owner/roster lease，避免关闭设置时误删页面订阅。
+    -- 仅 Feature 启用且 autoRoleEnabled 时持有；关闭需释放任务、事件和 Consumer。
     S.Events:BindOwner(owner,self.Id)
     local ok1=S.Events:SubscribeOptional("ABILITY_SET_CHANGED",owner,function() TeamTools:ScheduleAutoRole("ability_set",150) end)
     local ok2=S.Events:SubscribeOptional("ABILITY_CHANGED",owner,function() TeamTools:ScheduleAutoRole("ability",150) end)

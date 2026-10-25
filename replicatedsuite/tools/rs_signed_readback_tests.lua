@@ -1,16 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 签名回读测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护（signed-readback-1）：真实 Core/Store/诊断；只将 Native 存盘替换为内存盘。
+-- 真实 Core/Store/诊断；只将 Native 存盘替换为内存盘。
 -- 用户报告只证明 canonical buffs.y=-2 -> 0；以下负数省略/置零是独立故障模型，
 -- 不声称已取得用户原档或确定了 RU serializer 的内部实现。测试不加载进游戏 TOC。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, run)
     local ok, err = pcall(run)
@@ -90,7 +83,7 @@ for _,version in ipairs({3,4,5}) do
 end
 Test('real HUD apply keeps negative player and target offsets after new generation',function()
     local _,P,F,io=Boot({loss='omit'});assert(F:EnsureStoreLoaded())
-    -- 中文维护（2026-10-07）：fresh startup 先建立 split Authority；HUD 本次仍只增加一次 layout 写。
+    -- fresh startup 先建立 split Authority；HUD 本次仍只增加一次 layout 写。
     local writes=io.writes
     local snapshot=F:GetHudCalibrationSnapshot()
     snapshot.player.components.buffs.y=-2;snapshot.player.components.buffs.x=-21
@@ -283,7 +276,7 @@ Test('corrupted layout negative field is not guessed back from checksum',functio
     local _,fresh,freshF,fio=Boot({disk=io.disk});assert(not freshF:EnsureStoreLoaded())
     assert(fresh:GetStore(st.id).writeFenced and fio.writes==0 and fio.clears==0)
 end)
--- 维护：成功重新读取合法存档可清除当前错误，但历史连续计数/lastVerify未必归零；
+-- 成功重新读取合法存档可清除当前错误，但历史连续计数/lastVerify未必归零；
 -- 不允许仅凭历史计数越过“只导出当前失败”隐私边界。使用真实Save/Load而非直接清故障标志。
 Test('successful verified load suppresses historical save counters from current failure exports',function()
     -- 真实 HUD 保存/回读故障只作用于 layout Store，历史计数不能扩张当前导出范围。

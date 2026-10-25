@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 主外壳可见性测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 主窗口显示边沿回归：真实 Shell/Adapter/Diff/Windowing，Native Show 模拟引擎出生定位。
 -- 不进入 toc.g；离线通过不等于 RU 客户端实测。
-------------------------------------------------------------------------
 local Boot = dofile('tools/rs_window_viewport_test_host.lua')
 local passed, failed = 0, 0
 local function Test(name, fn)
@@ -126,7 +123,7 @@ Test('rejected visibility rollback remains observable',function()
     assert(ok==false and err:find('visibility_rollback_rejected',1,true),'rollback rejection was hidden')
     assert(main.window.visible and h.writes==0)
 end)
--- 维护：原可见性模型将 MarkShellStoreDirty 直接当成成功写盘，无法暴露立即退出时的位置丢失。
+-- 原可见性模型将 MarkShellStoreDirty 直接当成成功写盘，无法暴露立即退出时的位置丢失。
 -- 这里加载真实 ShellStore/Persistence/Transport，仅 Native 读写使用内存磁盘，不操作用户存档。
 local function PersistentMain(disk)
     local h,main,state=Main(1);h.disk=disk or {};h.diskWrites=0

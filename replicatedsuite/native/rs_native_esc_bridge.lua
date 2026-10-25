@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生 ESC 注册桥
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 代际内的 Suite 自有 Proxy 对接文档规定的 ADDON content/ESC；只拥有注册传输和幂等性，V3 UIHostManager 仍是
--- 可见性权威。
-------------------------------------------------------------------------
+-- 代际内共用一个 Proxy，处理 ADDON content/ESC 注册和幂等；可见性仍由 UIHostManager 管理。
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite
 

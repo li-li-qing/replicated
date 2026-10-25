@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能生命周期管理
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 功能生命周期权威：未实现的计划功能可存在于 FeatureRegistry，但保持不可用且零运行工作量；本管理器禁止启动旧 ModuleManager 条目。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Registry = S.FeatureRegistry
@@ -79,13 +76,8 @@ local function ApplyPreferences(value)
     F.preferences = NormalizePreferences(value)
 end
 
--- `v3.features` 是动态 key map，Store
--- default 必须保持空表，因此 Core 无法从 default 推导“哪个 feature=false 被 RU 吞掉”。
--- 对默认开启 Feature，这个 false 会改变下一次登录的真实生命周期，必须单独恢复。
--- 这里最多枚举当前 Registry 中 defaultEnabled=true 且磁盘缺失的子集；候选只有在
--- **完全复现旧 stamped fingerprint** 时才返回给 Persistence。没有精确命中就继续
--- fail-closed，绝不把“缺失”直接猜成 false。当前默认开启项很少，且本函数只在旧
--- Framework2 + Integrity mismatch 冷路径运行，不增加任何 Feature Tick/事件成本。
+-- v3.features 是动态 map，default 必须为空，Core 无法由默认值知道哪个 false 被 RU 省略。
+-- 仅旧 Framework2 mismatch 时枚举 Registry 中 defaultEnabled=true 且磁盘缺失的有限子集，完整复现旧指纹才返回，不能直接猜 false。
 local function RebuildFeaturePreferenceCanonical(decoded, stampedFingerprint, _, raw)
     if type(raw) ~= "table" or type(raw.__rsmeta) ~= "table" then return nil end
     local framework = tonumber(raw.__rsmeta.framework) or 0
@@ -239,12 +231,8 @@ function F:SetPreferredEnabled(id, enabled, reason)
     return Rejected("persist_rejected", persistErr or "feature preference persistence failed")
 end
 
--- 功能方案需要一次切换多个
--- Feature。逐项调用 SetPreferredEnabled 会在中途失败时留下“前半已经保存、后半未执行”的混合状态，
--- 也会把恢复动作拆成多次磁盘提交。这里由 FeatureRuntime（唯一生命周期 Authority）提供受控批量事务：
--- 先验证全部目标 -> 仅改变 Runtime 生命周期 -> 单次 durable 保存 v3.features；任一步失败都按反向顺序
--- 恢复已经发生的生命周期变化。Persistence.MutateStore 自己负责 preferences RAM/dirty metadata 回滚。
--- 该接口只接受明确 boolean target；调用者决定哪些业务 Feature 参与，Runtime 不推断“生活/战斗”等语义。
+-- 批量先验证全部布尔目标，再切运行生命周期，最后一次耐久保存 v3.features；任一步失败反序回滚生命周期。
+-- Persistence 负责偏好内存/dirty 元数据回滚；Runtime 不推断生活/战斗等业务分组。
 function F:ApplyPreferenceTargets(targets, reason)
     -- 前两个返回值保持兼容；第三值
     -- 提供真实失败阶段/目标/回滚结果。调用者不得解析本地化错误文本判断失败模块，
@@ -389,7 +377,7 @@ function F:RegisterImplementation(featureId, impl)
         if type(impl[method]) ~= "function" then return false, "feature requires " .. method .. "(): " .. id end
     end
     self.implementations[id] = impl
-    -- 维护：cleanupPending 独立于两个 enabled 标志；Enable/Disable 中途失败可能已清局部标志，
+    -- cleanupPending 独立于两个 enabled 标志；Enable/Disable 中途失败可能已清局部标志，
     -- 仍必须保留实现清理入口，不能把“投影已关闭”当成“下游已释放”。此状态只属本代生命周期。
     self.state[id] = { initialized = false, enabled = false, faulted = false, lastError = nil, generation = 0, cleanupPending = false }
     self.order[#self.order + 1] = id
@@ -439,7 +427,7 @@ function F:Enable(id, reason)
     if Registry:IsAccessible(id) ~= true then return false, "功能未在手动配置中开放：" .. id end
     local impl, row = self.implementations[id], self.state[id]
     if impl == nil or row == nil then return false, "feature not implemented" end
-    -- 维护：上次启动/关闭的清理未完成时，先重试 Disable；禁止把新的启动叠到未知 Native/服务状态上。
+    -- 上次启动/关闭的清理未完成时，先重试 Disable；禁止把新的启动叠到未知 Native/服务状态上。
     if row.cleanupPending == true then
         local cleaned, cleanupErr = self:Disable(id, "startup_failure")
         if cleaned ~= true then return false, cleanupErr end
@@ -449,7 +437,7 @@ function F:Enable(id, reason)
     if initialized ~= true then return false, initErr end
     local ok, err = Invoke(id, impl, "Enable", reason or "user")
     if ok ~= true then
-        -- 维护：Invoke 只隔离异常，无法撤销 Enable 已启动的服务；失败必须经过同一实现的 Disable。
+        -- Invoke 只隔离异常，无法撤销 Enable 已启动的服务；失败必须经过同一实现的 Disable。
         -- 使用既有 startup_failure 原因，避免今日账本等把失败清理误当用户禁用并修改持久意图。
         row.cleanupPending = true
         local cleaned, cleanupErr = self:Disable(id, "startup_failure")
@@ -474,14 +462,14 @@ function F:Disable(id, reason)
     if row.enabled ~= true and impl.enabled ~= true and row.cleanupPending ~= true
         and not (lease and lease.needsQuiesce == true) then return true end
     local ok, err = Invoke(id, impl, "Disable", reason or "user")
-    -- 维护：部分实现启动失败后已自行清 enabled，Disable 会提前成功；Core 仍须消费失败回滚凭证。
+    -- 部分实现启动失败后已自行清 enabled，Disable 会提前成功；Core 仍须消费失败回滚凭证。
     -- 不强清健康租约，正常停止/回滚语义仍归 Feature；只有不确定副作用使用已注册的 quiesce。
     if ok == true and lease and lease.needsQuiesce == true then
         if type(lease.ForceQuiesce) == "function" then ok, err = lease:ForceQuiesce(reason or "user", row.lastError)
         else ok, err = false, "demand quiesce unavailable" end
     end
     if ok ~= true then
-        -- 维护：实现可能清标志后才释放失败；保留可重试凭证，DisableAll 与再次启用均能看到它。
+        -- 实现可能清标志后才释放失败；保留可重试凭证，DisableAll 与再次启用均能看到它。
         row.cleanupPending, row.faulted, row.lastError = true, true, tostring(err)
         return false, err
     end
@@ -496,7 +484,7 @@ local function ForceFeatureDemand(id, reason, cause)
     local demand = S.Demand
     if type(demand) ~= "table" or type(demand.Get) ~= "function" then return true, nil, false end
     local lease = demand:Get("feature:" .. tostring(id))
-    -- 维护：回滚失败后消费者快照可已归零，needsQuiesce 才是下游副作用仍不确定的凭证。
+    -- 回滚失败后消费者快照可已归零，needsQuiesce 才是下游副作用仍不确定的凭证。
     if type(lease) ~= "table" or ((tonumber(lease.count) or 0) <= 0 and lease.needsQuiesce ~= true)
         or type(lease.ForceQuiesce) ~= "function" then return true, nil, false end
     local ok, err = lease:ForceQuiesce(reason or "feature_shutdown", cause)

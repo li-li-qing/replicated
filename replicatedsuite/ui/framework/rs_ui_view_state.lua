@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 数据视图状态
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 业务负责加载/错误/不可用原因，此层统一视觉；无 Tick/OnUpdate，状态明确变化，布局复用所属 DataView 轮次。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -100,7 +97,7 @@ function V:Create(view, spec)
         options = type(options) == "table" and options or {}
         state = NormalizeState(state)
         local defaults = DEFAULTS[state] or DEFAULTS.ready
-        -- 约束（performance-cache-1）：同一状态/文案/重试权限不能反复使整张列表布局失效。
+        -- 同一状态/文案/重试权限不能反复使整张列表布局失效。
         -- 比较最终值而非 options 表身份；同值仍走 Setter 的 Native 拒绝重试/读回修复，
         -- 只有连续两轮显隐都被原生接受才省去额外的整表布局失效。
         local title = tostring(options.title ~= nil and options.title or defaults.title or "")

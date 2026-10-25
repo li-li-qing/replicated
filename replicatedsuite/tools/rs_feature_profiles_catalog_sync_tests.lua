@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能预设目录同步测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 使用当前 Registry、Router、Workspace、Feature 及真实 Persistence；运行时启用事实为受控输入，功能预设不调用游戏热键 API。
-------------------------------------------------------------------------
 local h=dofile('tools/rs_gear_page_test_host.lua')();local S=h.S
 local enabled={life_tasks=true,combat_buff_cap=true,combat_stats=true}
 local targets

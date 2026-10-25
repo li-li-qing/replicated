@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 装备方案快捷按钮
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 每个配置方案对应一个紧凑可拖动按钮，不使用共享 HUD 框；控件小且直接、位置独立，单一管理器持有生命周期/处理器，物理按钮 ID 不得改用于另一方案。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI = S.UI
@@ -19,7 +16,7 @@ local function Clamp01(value, fallback)
     return math.max(0, math.min(1, tonumber(value) or tonumber(fallback) or 1))
 end
 
--- 维护：屏幕按钮的有效坐标返回单位由 Layout 校准；手势开始冻结单位，结束只换算一次。
+-- 屏幕按钮的有效坐标返回单位由 Layout 校准；手势开始冻结单位，结束只换算一次。
 -- Gear 只映射自己的 quick* 存档字段，不再私设屏幕边界/二次除 uiScale。
 local function LogicalRect(widget, pinnedScale)
     if S.Layout and type(S.Layout.GetWindowLogicalRect)=="function" then
@@ -45,7 +42,7 @@ end
 
 local function BuildEdgePlacement(x,y,width,height)
     if not (S.Layout and type(S.Layout.StorePlacementRect)=="function") then return nil end
-    -- 维护：这是 RAM 中的 edge intent 捕获，不是 Store 写入；保留既有 quick edge schema。
+    -- 这是 RAM 中的 edge intent 捕获，不是 Store 写入；保留既有 quick edge schema。
     local placement={}
     local px,py=S.Layout:StorePlacementRect(placement,x,y,width,height,{mode="strict"})
     return placement,px,py
@@ -100,7 +97,7 @@ local function CreateGearQuickWidget()
         local customized=meta.quickPositionCustomized==true
         local placement=customized and (PlacementFromMeta(meta) or (record and record.legacyPlacement)
             or {x=meta.quickX,y=meta.quickY,userMoved=true,coordinateSpace="logical-free-v2"}) or nil
-        -- 维护：持久屏幕按钮要求完整可见；solver 承担旧值/NaN/超大尺寸恢复，Feature 不判断分辨率。
+        -- 持久屏幕按钮要求完整可见；solver 承担旧值/NaN/超大尺寸恢复，Feature 不判断分辨率。
         if S.Layout and type(S.Layout.ResolvePlacement)=="function" then
             local x,y,w,h,info=S.Layout:ResolvePlacement(placement,width,height,dx,dy,{mode="strict",topLevel=true,topReachHeight=height})
             return x,y,customized,w,h,info
@@ -129,7 +126,7 @@ local function CreateGearQuickWidget()
         if snapId == "" then return false end
         local options = {
             ensureNow = false,
-            -- 维护（ui-position-reload-1）：仅恢复已有 Native 按钮；不读取方案、不刷新装备。
+            -- 仅恢复已有 Native 按钮；不读取方案、不刷新装备。
             positionOwner = "v3:gear_quick_buttons",
             isPositionInteracting = function() return record.dragging == true end,
             getPlacementDiagnostics = function() return record.placementInfo end,
@@ -200,7 +197,7 @@ local function CreateGearQuickWidget()
             if instance.visible ~= true or instance:GetState().locked == true then return false end
             local moving = UI:TryInteractionCall(button, "StartMoving")
             if moving ~= true then return false end
-            -- 维护：开始时缓存与 Native 尺寸一致，冻结单位；拖动后的旧锚点不能重新参与单位猜测。
+            -- 开始时缓存与 Native 尺寸一致，冻结单位；拖动后的旧锚点不能重新参与单位猜测。
             -- 同源修复——以实际 Native 起点区分 Gear 点击与真实位移，不因空拖动吃掉按钮。
             local startX,startY,_,_,unit=LogicalRect(button)
             record.dragStartX,record.dragStartY=startX,startY
@@ -234,7 +231,7 @@ local function CreateGearQuickWidget()
                     enabled=snap.enabled==true,group="screen_buttons",kind="button",distance=tonumber(snap.distance) or 16,gap=tonumber(snap.gap) or 0})
                 if snapped then x,y=sx,sy end
             end
-            -- 维护：使用同一冻结矩形捕获 edge intent，不再 StorePlacement 再读 Native 导致二次缩放。
+            -- 使用同一冻结矩形捕获 edge intent，不再 StorePlacement 再读 Native 导致二次缩放。
             local placement;placement,x,y=BuildEdgePlacement(x,y,w,h)
             local windowing=S.RSUI and S.RSUI.Windowing
             if not placement or not windowing then return false,"gear_drag_commit_unavailable" end
@@ -368,7 +365,7 @@ local function CreateGearQuickWidget()
     end
 
     function instance:Show()
-        -- 维护：显示是允许的低频采样边沿，普通业务 Refresh 不采样 metrics。
+        -- 显示是允许的低频采样边沿，普通业务 Refresh 不采样 metrics。
         if S.Layout then S.Layout:GetContext(true) end
         self.visible = true
         local subscribed, subscribeErr = self:Subscribe()
@@ -424,7 +421,7 @@ local function CreateGearQuickWidget()
     function instance:GetTextOpacity() return Clamp01(self:GetState().textOpacity, 1) end
 
     function instance:ResetLayout()
-        -- 维护：取消旧原生手势，刷新 viewport 后让统一 solver 解析默认位置；不保留旧 RAM edge intent。
+        -- 取消旧原生手势，刷新 viewport 后让统一 solver 解析默认位置；不保留旧 RAM edge intent。
         if S.Layout then S.Layout:GetContext(true) end
         for _,record in pairs(self.buttons)do
             if record.dragging and type(record.button.StopMovingOrSizing)=="function" then pcall(record.button.StopMovingOrSizing,record.button) end
@@ -438,7 +435,7 @@ local function CreateGearQuickWidget()
     end
 
     function instance:ApplyLayout(fromMetrics)
-        -- 维护：分辨率边沿只重排已创建按钮和缓存 rows，不读取装备/称号/投影，不重新订阅事件。
+        -- 分辨率边沿只重排已创建按钮和缓存 rows，不读取装备/称号/投影，不重新订阅事件。
         for index,meta in ipairs(self.rows)do
             local record=self.buttons[tostring(meta.id)]
             if record then
@@ -495,11 +492,8 @@ local ok, err = Host:Register(WIDGET_ID, {
 })
 if ok ~= true then error(err) end
 
-------------------------------------------------------------------------
 -- 由表现层负责可见性响应。
---
 -- Domain 发布 `v3.gear.quick.visibility`/`v3.feature.lifecycle` 并持有服务租约；仅本文件操作 WidgetHost 可见性。
-------------------------------------------------------------------------
 if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
     local Reaction = { id = "v3:gear_quick:host_reaction" }
     local function Sync(reason, desired)

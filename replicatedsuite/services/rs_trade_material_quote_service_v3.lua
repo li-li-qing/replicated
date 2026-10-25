@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 贸易材料报价
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 跑商材料报价 V3：每次操作只查缺失身份一次；缓存/SWR 与前台有界任务分离。
 -- 不拥有配方数量、售价或毛利算法；不直接调用 Native；不新增周期 Scheduler lane。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -37,8 +34,7 @@ end
 local function Notify(op)
     if type(op.callback) == 'function' then pcall(op.callback, Snapshot(op)) end
 end
--- （2026-10-02）TXT 须能解释“再次点击为何没有再发包”。只读现有操作与
--- 失败缓存的身份/时间/结果，不清过期项、不延长 TTL、不触发重试，也不暴露 callback。
+-- TXT 只读操作与失败缓存的身份、时间和结果，解释为何未再发包；不清 TTL、重试或暴露 callback。
 function T:DescribeDiagnostics()
     local operations = {}
     for requester, op in pairs(self.operations) do
@@ -134,9 +130,8 @@ local function NextMissing(op)
     if failure and Now() >= failure.at and Now()-failure.at < T.failureTtlMs then
         AddResult(op,material,failure.result);Notify(op);return NextMissing(op)
     end
-    -- 整张配方不能从点击时共享五秒总预算，否则相邻货物排队就耗尽期限。
-    -- 每个有限材料阶段独立有界：前方最多 Queue.maxQueue 个槽，每槽按原 Query 隔离上限加 lane
-    -- 间隔预算，外加本材料五秒响应期。不加查询/重试、不缩短原生隔离，也不扫描 Native。
+    -- 每个材料的排队与响应分阶段限时，不能从整配方点击起共用五秒。
+    -- 本地最多 Queue.maxQueue 个隔离槽，各按原 Query 上限及 lane 间隔预算，再加五秒响应；不缩短 Native 隔离。
     local queue=S.Services.PriceQuoteQueueV3
     local query=S.Services.AuctionQueryV3
     local depth=queue and (#(queue.queue or {})+#(queue.admissionWaiting or {})+(queue.pending and 1 or 0)) or 0

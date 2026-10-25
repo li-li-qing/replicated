@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态显示设置存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 仅持久显示策略；Aura事实是AuraObservationV3会话数据，启用/禁用归FeatureRuntime。
--- schema5兼容：player沿用历史平面布局，targetLayout独立持久；schema4单HUD先用精确旧canonicalizer重建，再迁移并立即重盖指纹，禁止丢用户布局。
--- schema4继承契约：tracked按buff/debuff分桶，hidden为检测来源；classification保存显式极性覆盖。十组件各有enabled/x/y/size/fontSize/alpha，刷新下限1ms不向上钳制；headShowAll显式开启，新默认仅追踪。
--- schema1/2/3迁移必须由共享分类服务无损分配每个旧ID。合并后先查冲突标记、toc.g完整性及Lua语法；不能清配置、跳加载或恢复Legacy绕过原协议。
-------------------------------------------------------------------------
+-- 只保存显示策略，Aura 会话事实归 AuraObservationV3。旧存档须先按对应 schema 的 canonical 验真，再迁移。
+-- player 沿用历史布局字段，targetLayout 独立保存；hidden 是检测来源，分类覆盖与追踪选择分开。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence
@@ -61,8 +56,8 @@ if type(Floating) ~= "table" or type(Floating.NormalizeState) ~= "function" then
 
 local COMPONENT_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
 
--- 紧凑预设相对血条代理矩形，所有 x/y 都是局部微调，禁止当作屏幕坐标。默认 0 由布局函数放置：Buff 上方、Debuff 下方、装备两侧、信息顶部。
--- enabled 默认差异有意义：ranged 默认关闭，wings 默认开启于右侧。尺寸为原基线 1.2 倍，图标24→29、装备22→26。
+-- x/y 是相对血条代理矩形的局部偏移；0 由布局函数安排 Buff、Debuff、装备和信息的位置。
+-- ranged 默认关闭，wings 默认开启；此处保留图标 24→29、装备 22→26 的历史预设。
 local COMPONENT_DEFAULTS = {
     buffs     = { enabled = true,  x = 0, y = 0, size = 29, fontSize = 11, alpha = 1.0, spacing = 2, maxPerRow = 8, maxRows = 2 },
     debuffs   = { enabled = true,  x = 0, y = 0, size = 29, fontSize = 11, alpha = 1.0, spacing = 2, maxPerRow = 8, maxRows = 2 },
@@ -76,16 +71,8 @@ local COMPONENT_DEFAULTS = {
     castBar   = { enabled = true,  x = 0, y = 0, size = 7,  fontSize = 12, alpha = 1.0 },
 }
 
---
--- 问题背景：维护者通过 HUD_TEMPLATE_V1 在实机完成目标装备区域校准，需要把这组结果
--- 固化为“新用户/恢复默认”的 target 默认模板，而不是覆盖已有用户保存的 targetLayout。
--- Authority/数据流：这些值只参与 fresh NormalizeSettings(nil) 与 ResetLayoutSettings 的默认
--- profile 构建；已有 schema5 targetLayout 仍是用户 Store Authority，schema4/缺 targetLayout 的
--- 老用户仍按兼容规则复制现有 player profile，绝不因为版本更新被强制换成发行模板。
--- 兼容边界：本次用户只提供 TARGET|EQUIP，因此只固化主手/副手/远程/背部；Buff、信息、
--- 施法条等目标默认继续继承 player defaults，禁止猜测未提供的模板行。
--- 单独维护目标 equipment overlay，避免复制整套 COMPONENT_DEFAULTS 后未来字段漂移。
--- 后续维护：收到其余 HUD_TEMPLATE_V1 行时按同样的“只覆盖已确认字段”方式扩展模板。
+-- HUD_TEMPLATE_V1 已核实的 TARGET|EQUIP 默认值，只用于新安装和恢复默认。
+-- 已有 targetLayout 不覆盖；缺失时仍按兼容规则复制 player。其余组件继承 player 默认值。
 local TARGET_EQUIPMENT_TEMPLATE = {
     mainHand = { enabled = true, x = -32, y = 0, size = 22, alpha = 1.0 },
     offHand  = { enabled = true, x = -33, y = 0, size = 22, alpha = 1.0 },
@@ -146,20 +133,9 @@ local function NormalizeComponents(value)
     return out
 end
 
---
--- 旧版只有 settings.plate/info/components/plateScale 一套几何 Authority，
--- 自身与目标 HUD 被迫共享布局；校准目标时会同时改动自身，无法满足 PVP 双 HUD。
--- Authority/数据流：Store 继续以旧字段作为 player Authority，新增 targetLayout 只负责 target
--- 的视觉几何；Feature/Presentation 只能通过 GetScopeLayoutSettings/GetHudCalibrationSnapshot
--- 读取 detached snapshot，禁止直接持有或修改 F.State。
--- 兼容边界：这一段是 schema5 引入双 HUD 时冻结下来的 profile 几何语义；当前 Store 已升级到
--- schema7，但 schema4/5/6 的 historical canonical 仍必须按当时规则验真。旧 schema4 存档不存在
--- targetLayout 时，完整性证明通过后由迁移路径复制当前 player 布局作为初始 target；一旦保存
--- targetLayout 就完全独立。
--- 这样升级不丢原 HUD，也不会让
--- 新字段反向污染追踪列表/分类/Feature 生命周期。
--- 不把 player 旧字段整体搬迁到新结构，避免对现有导入导出、Binding 和旧版
--- schema4 存档做破坏性迁移。潜在风险：未来若新增视觉字段，必须同时进入 profile normalize。
+-- player 保留旧平面字段，targetLayout 独立保存目标几何；新增视觉字段也要进入此 normalizer。
+-- schema4/5/6 的历史 canonical 按原规则验真；schema4 验真后才复制 player 作为初始 target。
+-- 对外只返回副本，避免界面直接修改 F.State。
 local function NormalizeHudProfile(value, fallback)
     fallback = type(fallback) == "table" and fallback or {}
     if type(value) ~= "table" then return Copy(fallback) end
@@ -167,10 +143,7 @@ local function NormalizeHudProfile(value, fallback)
     local infoFallback = type(fallback.info) == "table" and fallback.info or {}
     local componentsFallback = type(fallback.components) == "table" and fallback.components or {}
 
-    -- targetLayout 在旧存档升级、导入或未来字段
-    -- 扩展时可能只有“部分 component”。若直接用整张 component 表覆盖 fallback，未出现的
-    -- fontSize/spacing/maxRows 等字段会错误回落到全局默认，而不是用户已经调好的 player
-    -- profile。这里先做字段级 overlay，再交给统一 Normalize* 限幅，保证 Authority 只有一套。
+    -- 按字段叠加 fallback，再统一限幅。部分组件缺失的 fontSize/spacing/maxRows 应继承用户的 player 布局，而非全局默认。
     local plate = Copy(plateFallback)
     for key, item in pairs(type(value.plate) == "table" and value.plate or {}) do plate[key] = Copy(item) end
     local info = Copy(infoFallback)
@@ -334,18 +307,9 @@ local function NormalizeState(value)
     }
 end
 
---
--- .18.202 把 targetLayout 加进 schema4 的 NormalizeSettings，却没有升级
--- schema。旧 schema4 SaveData 的已盖章 canonical 因而从 515E1BF3 变成了
--- 3B898E2F，Persistence 正确地把它视为同代数据被静默改写并 Fence。
--- Authority/数据流：此函数只复刻 .18.202 之前 schema4 的 Store canonical；它不是
--- 新业务 Authority，也不会 Apply/写盘。Persistence Core 仍负责 envelope 校验、预算、旧
--- fingerprint exact-match、4->5 migrate、Apply 与当前 schema5 的重新盖章。
--- 兼容边界：只用于 __rsmeta.schema==4 的历史档；当前/future schema 永远不得调用。
--- 为什么不用“删掉 targetLayout 再 Hash”：.18.202 同时把 player profile 收敛到
--- NormalizeHudProfile；其中缺省 plate.y 的 fallback 与旧 schema4 有细微差异。逐行保留旧
--- normalizer 才能证明旧盖章，而不是猜测某个字段导致 Hash 变化。
--- 后续维护：任何新的持久化字段都必须升级 Schema；禁止再次在同一 schema 下改变 canonical。
+-- 冻结 .18.202 之前的 schema4 canonical，仅用于旧档验真，不写盘。
+-- 不能简单删除 targetLayout 后重算：当时 plate.y 等缺省规则也有差异。
+-- Persistence 负责精确比对旧指纹、4→5 迁移和重新盖章；新增字段必须升级 schema。
 local function NormalizeHistoricalSchema4SingleHudSettings(value)
     value = type(value) == "table" and value or {}
     local tracked = type(value.tracked) == "table" and value.tracked or {}
@@ -499,12 +463,8 @@ local function RecoverKnownSchema4SingleHud(decoded, stampedFingerprint, current
     return Copy(decoded), "schema4_single_hud_known_pair"
 end
 
---
--- 上方 Normalize* 是上传 .18.208 的 schema5 原逻辑；schema4 hook 也仍捕获旧 helper。
--- 以下以同名 local 重新绑定当前规范化函数，旧 closure 不会读取新组件/Auto/库元数据。
--- 权威边界：先由 Persistence 用 historical exact hash 验证，随后 migrate，再盖 schema6 章。
--- 不放宽未知 mismatch，不改变 schema5/4 的默认值、双 HUD、窗口或冻结字段的旧 hash。
--- 新冷却字段仅保存用户选择/几何，不保存实时计时；目标组件强制关闭，禁止推测敌人 CD。
+-- 同名 local 重新绑定当前 normalizer，让 schema4/5 的旧 closure 保留原规则。
+-- 先验历史指纹，再迁移、重新盖章。冷却字段只保存选择和几何，目标 CD 组件保持关闭。
 local NormalizeSchema5State = NormalizeState
 local NormalizeSchema5Settings = NormalizeSettings
 local NormalizeSchema5HudProfile = NormalizeHudProfile
@@ -513,16 +473,8 @@ local COMPONENT_KEYS = Copy(COMPONENT_KEYS)
 COMPONENT_KEYS[#COMPONENT_KEYS + 1] = "cooldowns"
 local COMPONENT_DEFAULTS = Copy(COMPONENT_DEFAULTS)
 COMPONENT_DEFAULTS.cooldowns = { enabled=false, x=0, y=90, size=29, fontSize=11, alpha=1, spacing=2, maxPerRow=8, maxRows=2 }
---
--- 历史 LAYOUT_PRESET_VERSION=3 被 schema4/5/6 已盖章 canonical 捕获，禁止直接改常量；
--- v4 引入“主手→副手→远程（视觉从左到右）”排列，但实机证明部分账号只拿到了 v4
--- 排列水位、没有拿到 ranged 默认开启。v5 因此仅作为一次性补迁移水位，视觉规则仍按 >=4。
--- 旧存档仍先按冻结 v3 normalizer 验真，只有加载成功后的兼容迁移才允许推进当前水位。
---
--- v4 同时承担“装备视觉顺序”与“远程默认开启”的代际标记，实机证明部分旧账号曾先被其它
--- HUD 路径写成 v4、但 ranged.enabled 仍保留旧默认 false，导致 UpgradeRangedWeaponReleaseDefault
--- 看到 v4 就提前退出。v5 只作为这次一次性兼容水位：精确匹配旧默认几何的 v3/v4 false
--- 才自动开启；任何自定义几何都保持用户 Authority。升级后若用户再主动关闭，v5 会阻止再次开启。
+-- 历史 canonical 捕获的 LAYOUT_PRESET_VERSION=3 不能改。v4 表示装备从左到右排列；部分旧档已到 v4 却仍关闭 ranged。
+-- v5 只补迁移精确匹配旧默认几何的 v3/v4 配置，自定义布局不动；之后用户主动关闭不会再被开启。
 local CURRENT_LAYOUT_PRESET_VERSION = 5
 local function NormalizeComponents(value)
     local out = {}
@@ -549,16 +501,10 @@ local function NormalizeCooldownIds(value)
     while #out > 256 do out[#out]=nil end
     return out
 end
--- 用户实机 hud.1.1 的三页已按
--- 619+619+314 连续偏移验真；wire=9BF4FA11，raw=1539/3486F051，含11条V2记录。
--- Authority/数据流：仅“无设置的新安装”和显式默认快照/恢复动作使用此发行模板；
--- 原 Store/canonical 仍拥有已存几何，不能在每次 Normalize 或加载时套用新布局。
--- 兼容边界：上方 schema4/5 closure、schema6 对已有 table 的缺字段 fallback 必须冻结；
--- 直接修改 COMPONENT_DEFAULTS 会改旧档 Hash，因此在当前 schema6 的 fresh 分支合并。
--- 坐标为校准局部 screen-y-v1：plate/info/class 的Y直接使用，Aura旧存储Y方向相反但本次
--- 两行均为0；不要据2560x1440/uiScale=1再乘分辨率或把屏幕绝对点写进默认。
--- 只固化已导出的视觉字段；未导出的cooldowns/距离/装分组件及业务选择继续用既有默认。
--- PLAYER/TARGET本次值相同但每次分别Normalize成独立表；以后不要共享用户可写表。
+-- hud.1.1 实机模板：三页偏移 619+619+314，wire=9BF4FA11，raw=1539/3486F051，共 11 条 V2 记录。
+-- 仅新安装、默认快照和恢复默认使用；已有布局及历史 closure 的缺省规则保持不变。
+-- 坐标为局部 screen-y-v1，不能再按 2560×1440/uiScale=1 乘缩放；Aura 的旧存储 Y 方向相反，本模板均为 0。
+-- 只固化导出过的字段，player/target 分别生成独立表。
 local VERIFIED_HUD_DEFAULT_PROFILE = {
     plateScale = 1.0,
     plate = { x=0, y=-24, width=150, height=20 },
@@ -611,9 +557,7 @@ local function NormalizeSettings(value)
         -- 默认入口集中到这一个纯函数分支；Reset/校准默认均经此处，不保存、不读Native。
         -- target显式覆盖本次全部已验真字段，避免继承历史TARGET装备的-32/-33/22px与远程开启。
         local player = NormalizeHudProfile(VERIFIED_HUD_DEFAULT_PROFILE, HudProfileFromSettings(out))
-        -- 经实机用户反馈，远程职业必须和主手/副手一样
-        -- 开箱即见。VERIFIED_HUD_DEFAULT_PROFILE 保留 2026-09-13 原始模板（ranged=false）作为
-        -- 历史证据；这里只在“fresh/reset 默认入口”覆盖玩家 ranged.enabled，避免修改冻结模板本身。
+        -- 原始实机模板保留 ranged=false 作为历史证据；仅在 fresh/reset 入口开启玩家 ranged。
         player.components.ranged.enabled = true
         out.plateScale, out.plate, out.info, out.components = player.plateScale, player.plate, player.info, player.components
         out.targetLayout = NormalizeHudProfile(VERIFIED_HUD_DEFAULT_PROFILE, out.targetLayout)
@@ -625,23 +569,9 @@ local function NormalizeState(value)
     value=type(value)=="table" and value or {}
     return {settings=NormalizeSettings(value.settings),widgetWindow=NormalizeWindow(value.widgetWindow),widgetVisible=value.widgetVisible==true}
 end
--- 旧回归未覆盖数字序号变成字符串，ipairs 可在
--- 校验前漏读仍存在磁盘的 ID。此处不改变正常 canonical、不新增 Hash 白名单；只对声明列表
--- 无损重建 dense 候选。schema5 用冻结旧 normalizer，schema6 用当前规则，再由 Core 比旧章。
--- Authority/数据流：原 decoded → 列表候选 → 对应世代 canonical → Core 验真/迁移/Apply。
--- 不重分类、不查 Native、不补默认 ID；未来 schema/错误 owner 禁入，未知 Hash 保留写保护。
---
--- 实机在 .240 已证明：用户把自身 distance.x 调为 -1、同步到目标并“保存并退出”时，
--- SaveData 回读会把主 v3.buff_display 的 `settings.components.distance.x` 整个字段省略，
--- 当前 Normalize 因缺字段回落到 0，形成 `number(-1) vs number(0)`。这次 .241 已把后续 HUD
--- 保存迁出主 Store，但用户磁盘上可能已经留下这份失败写入，必须先能安全跨过下一次 Reload。
--- Authority/验真：只接受 CURRENT schema8 + Transport5（调用者已校验）、Normalize 前 decoded 该字段为 nil、
--- 当前 canonical 恰为默认 0 的单字段事故。枚举 x 合法整数 [-400,400] 中非0候选，并要求完整
--- Store canonical 对旧 stamped fingerprint **唯一精确命中**；0个或>1个命中均 fail-closed。
--- 不枚举其它组件/坐标、不改 tracking、不根据 Hash 猜 ID；这是 bounded scalar proof，模式与 Core
--- 既有 F2 数值冷恢复一致但范围更窄。只在 integrity mismatch 冷路径运行，不进入 Tick/渲染/循环热路。
--- 恢复后不主动重写主 Store；HUD 下一次正式保存会写 v3.buff_display.layout 小 Store，从架构上结束
--- 该故障链。未来如出现其它字段省略，必须先有独立实机 divergence 再新增路径，禁止扩大通配。
+-- RU 回读可能把数字序号变成字符串；先无损重建 dense 候选，再用对应 schema 的 canonical 验证原章，不重分类或补 ID。
+-- 另有 schema8/Transport5 实机事故：distance.x=-1 被省略，Normalize 回落为 0。仅在原字段为 nil、当前值为 0 时枚举 [-400,400] 的非零整数，整份指纹唯一命中才恢复。
+-- 不扩展到其它坐标或追踪字段；只走 mismatch 冷路径。恢复后不重写旧主 Store，后续 HUD 保存改走 layout 小 Store。
 local function RecoverSchema8DistanceXTransport5Omission(decoded, stamped, current, raw, store, prefix)
     local settings = type(decoded) == "table" and type(decoded.settings) == "table" and decoded.settings or nil
     local components = type(settings) == "table" and type(settings.components) == "table" and settings.components or nil
@@ -649,10 +579,8 @@ local function RecoverSchema8DistanceXTransport5Omission(decoded, stamped, curre
     local canonicalDistance = type(current) == "table" and type(current.settings) == "table"
         and type(current.settings.components) == "table" and type(current.settings.components.distance) == "table"
         and current.settings.components.distance or nil
-    -- DecodeValue 交给 Store 的 decoded 仍是 Normalize 之前的业务 payload；因此这里用
-    -- `distance.x == nil` 作为“Native 物理回读省略了该字段”的证据。不要再次依赖 raw.payload：
-    -- Persistence 在进入 Store canonical hook 前已经把 transport envelope 解开，raw 的具体层级不是
-    -- Store Authority，历史版本也可能不同。current 则是当前 Normalize 后的 canonical，缺字段只会回落到 0。
+    -- decoded 已是解开 transport envelope 后、Normalize 之前的 payload；用 distance.x==nil 判断字段省略，不依赖 raw.payload 层级。
+    -- current 是归一化后的 canonical，此时缺字段已回落到 0。
     if type(distance) ~= "table" or distance.x ~= nil
         or type(canonicalDistance) ~= "table" or tonumber(canonicalDistance.x) ~= 0
         or type(stamped) ~= "string" or #stamped ~= 8 or stamped:find("[^%x]") then return nil end
@@ -677,9 +605,7 @@ local function RecoverSchema8DistanceXTransport5Omission(decoded, stamped, curre
 
     local recoveredDomain = Copy(decoded)
     recoveredDomain.settings.components.distance.x = matchedValue
-    -- current 已是 schema8 的当前 canonical。直接只替换经旧章唯一证明的 x，避免本 helper
-    -- 捕获到文件前部冻结的历史 NormalizeState closure；Core 随后仍会对 recoveredDomain
-    -- 按 Store 当前 Normalize 重新 canonicalize 并再次比章，所以这里不是绕过 Authority。
+    -- 只替换旧章唯一证明的 x，避免调用到历史 NormalizeState closure；Core 随后仍按当前 normalizer 重建并再次比章。
     local recoveredCanonical = Copy(current)
     recoveredCanonical.settings.components.distance.x = matchedValue
     local recoveredFp = P:FingerprintCanonicalValue(store, recoveredCanonical)
@@ -740,15 +666,8 @@ local function RebuildHistoricalCanonical(decoded, stamped, current, raw)
     return RebuildHistoricalSingleHudCanonical(decoded,stamped,current,raw)
 end
 
---
--- HUD 信息拆分后，装备分数已拥有独立文字组件，但用户仍只能看完整整数；
--- 同时直接在 schema6 normalizer 增字段会改变所有已盖章 schema6 canonical，破坏升级验真。
--- Authority/数据流：info.gearScoreFormat 是每个 HUD profile 的唯一显示策略 Authority，
--- 只接受 full/compact；Renderer 只消费 detached profile，不拥有/回写设置。player/target 各自保存，
--- “同步自身到目标”通过既有 profile Copy 自然同步。
--- 兼容边界：这里先冻结 schema6 的当前 normalizer，再以新 local 叠加 schema7 字段；旧 schema4/5/6
--- integrity hook 仍捕获上方旧 closure，未知 mismatch 继续 fail-closed。schema6 缺字段迁移为 full，
--- 不改变旧用户视觉。格式只影响显示文字，不改变真实 gearScore 数值、读取频率或业务事实。
+-- gearScoreFormat 按 HUD 独立保存 full/compact，只影响文字。
+-- 先冻结 schema6 normalizer，再叠加 schema7 字段；旧 schema4/5/6 hook 仍使用原 closure。schema6 缺字段迁移为 full。
 local RebuildHistoricalCanonicalSchema6 = RebuildHistoricalCanonical
 local NormalizeSchema6State = NormalizeState
 local NormalizeSchema6Settings = NormalizeSettings
@@ -795,12 +714,8 @@ local function NormalizeState(value)
     return {settings=NormalizeSettings(value.settings),widgetWindow=NormalizeWindow(value.widgetWindow),widgetVisible=value.widgetVisible==true}
 end
 
--- ArcheRage SaveData 已实证会把 dense 数组的数字索引
--- 回读为字符串索引。schema6 以前的 hook 只认识到当时的当前 schema；升级 schema7 后若不把当前
--- 世代接进同一“先重建候选、再用原 fingerprint 精确验真”的链，397项导入/满1024追踪会在
--- 保存回读或下次加载时被误判丢失并写保护。这里不放宽任何 Hash：仅重建索引表示和已有
--- Floating 单轴精度候选，candidate 仍必须命中磁盘已盖章 fingerprint 才能获得信任。旧 schema4/5/6
--- 委托冻结 hook，避免新 gearScoreFormat 默认污染历史 canonical。
+-- RU 可能把 dense 数组数字索引变为字符串。schema7 也须先重建索引候选，再精确验证原 fingerprint。
+-- 只允许已有的索引表示与 Floating 单轴精度恢复；schema4/5/6 委托冻结 hook，避免新默认值污染旧章。
 local function RebuildHistoricalCanonical(decoded, stamped, current, raw)
     local meta = type(raw) == "table" and raw.__rsmeta or nil
     local schema = type(meta) == "table" and tonumber(meta.schema) or nil
@@ -884,15 +799,8 @@ local function MigrateState(value, fromSchema)
     return out
 end
 
---
--- schema7 的 tracked.buff/debuff/auto 是全局白名单，同一状态无法只显示给自己或只显示给目标；
--- 页面点击行还会立即改写全局选择，用户无法先选择再决定显示范围。
--- Authority/数据流：schema8 将持久化追踪唯一 Authority 收敛为 player/target × buff/debuff/auto 六个有界通道；
--- Aura 仍只提供事实，HUD/管理投影只消费 detached index，分类 override 仍是独立元数据，不拥有追踪选择。
--- 兼容边界：旧 schema7 及更早的全局追踪在迁移时复制到 player+target，视觉行为与升级前一致；
--- historical exact-hash 先由冻结 schema7 closure 验真，再 migrate，未知 mismatch 继续 fail-closed。
--- 显式 Buff/Debuff 通道可以独立并存；Auto 只承接旧配置/内置库未人工放置状态。用户第一次
--- 显式放置该 ID 时两边 Auto 都退让，但不会删除任何显式 scope/category，才能真正表达“仅目标/仅自己/双方”。
+-- schema8 将追踪分为 player/target × buff/debuff/auto 六通道；旧全局选择在验真后复制到两侧。
+-- 分类覆盖仍是独立元数据。显式 Buff/Debuff 可跨 scope 并存；首次显式放置一个 ID 时，两侧 Auto 都退让，其它显式选择保留。
 local NormalizeSchema7StateFinal = NormalizeState
 local NormalizeSchema7SettingsFinal = NormalizeSettings
 local RebuildHistoricalCanonicalSchema7Final = RebuildHistoricalCanonical
@@ -951,31 +859,17 @@ local function NormalizeState(value)
     return { settings = NormalizeSettings(value.settings), widgetWindow = NormalizeWindow(value.widgetWindow), widgetVisible = value.widgetVisible == true }
 end
 
---
--- .239 实机完整 RAW_STORE 证明 RU Native 不只是“整字段省略”。player.auto 的
--- Transport5 marker/count 被省略，但 `chunks` 普通表仍保留 1..19；其中第 19 块又由 16 个
--- token 截成 15 个，而完整 target.auto 仍是 25 块/393 项。因为 marker 已丢，Core 的
--- TransportDecodeValueV5 会把 player.auto 当普通 map 成功解码，无法产生 missing-chunk 错误，
--- 最后只会在 schema8 historical canonical 看到 `player.auto:invalid_index`。
--- 权威边界：这里只生成一个“表示层恢复候选”，绝不直接 Apply/Save/清 Fence。必须同时满足：
--- 1) CURRENT Framework3/schema8/Transport5；2) 恰好一侧 auto 是另一侧完整 T5 vector 的严格
--- 物理前缀（前置 chunk 逐字相等，最后幸存 chunk 只能相等或是完整 chunk 的逗号边界严格前缀）；
--- 3) 健康 twin 解码为未改写的 dense 正整数列表；4) 用 twin 补回后整份 Store canonical
--- fingerprint 精确命中磁盘原 stamped fingerprint。任何一项不满足都返回 nil，由 Core 继续 Fence。
--- 兼容边界：不处理 buff/debuff、不使用 Catalog/Hash 猜 ID、不把 `{}`/任意 sparse map 当损坏，
--- 也不接受“中间 chunk 不同”“非连续 chunks”“额外键”“marker/count 与 twin 冲突”等形状。
--- 性能：只在已经发生 fingerprint mismatch 的 Load/Save readback 冷路径执行；最多审计 64 个
--- chunk/1024 个 ID，不进入 Tick/扫描/渲染循环。
+-- RU 可能丢掉 T5 marker/count，留下截断的 chunks 普通表，transport 解码仍会成功。
+-- 仅 Framework3/schema8/Transport5 mismatch 时生成候选：一侧 auto 必须是另一侧完整 vector 的物理前缀，健康侧须解为 dense 正整数列表，补回后整份 canonical 必须精确命中旧章。
+-- 不处理 buff/debuff、任意 sparse map、非连续 chunk、额外键或 marker/count 冲突。最多审计 64 chunk/1024 ID，只走 Load/Save 回读冷路径。
 local function RecoverTransport5ScopedAutoPrefix(decoded, stamped, raw, store, prefix)
     if type(raw) ~= "table" or type(raw.__rsmeta) ~= "table" or tonumber(raw.__rsmeta.transportVersion) ~= 5
         or type(decoded) ~= "table" or type(decoded.settings) ~= "table" or type(decoded.settings.tracked) ~= "table" then
         return nil
     end
 
-    -- 注意：Core 在调用 historical hook 前已经执行 DecodePhysicalEnvelope，因此这里的 `decoded/raw`
-    -- 都是逻辑 envelope。健康 T5 vector 已还原成 dense ID 数组；只有 marker 被 Native 丢掉的坏侧
-    -- 仍以 `{chunks={...}}` 普通 map 残留。这恰好保留了“幸存物理 chunk 字符串”，足够和健康
-    -- twin 重新编码出的期望 chunk 做逐字前缀证明，无需扩大 Core 的 hook 合同或缓存整份物理 raw。
+    -- Core 已解开物理 envelope：健康 T5 已是 dense 数组，丢 marker 的坏侧仍是 chunks 普通表。
+    -- 将健康侧重新编码后与幸存 chunk 逐字比较，无需扩大 hook 接口或缓存物理 raw。
     local chunkSize = 16
     local function DenseIds(value)
         if type(P.RebuildDenseSequenceForIntegrity) ~= "function" then return nil end
@@ -1034,25 +928,9 @@ local function RecoverTransport5ScopedAutoPrefix(decoded, stamped, raw, store, p
             if part < maximum then
                 if text ~= wanted then return nil end
             elseif text ~= wanted then
-                --
-                -- .240 只观察到“最后一个完整 token 被吃掉”，因此旧实现错误地把合法事故形状
-                -- 限死在 `wanted:sub(1,#text+1)==text..","` 的逗号边界。`.241` 的完整 RAW_STORE
-                -- 已证明 RU SaveData 还会把最后一个十进制 ID **截在数字中间**：例如健康 twin
-                -- 末尾 `...,23524,23642,23956`，损坏侧只剩 `...,23524,236`。这不是业务 ID=236，
-                -- 而是物理字符串的字节前缀；若继续按 token 计数判断，会把同一类 Transport5
-                -- 表示损坏误判为业务数据变化并永久 Fence。
-                --
-                -- Authority/安全边界：这里只把“最后幸存 chunk 是健康 twin 对应 chunk 的严格
-                -- **字节前缀**”作为候选资格；前面所有 chunk 仍必须逐字相等、chunks 必须连续、
-                -- outer map 仍只允许 chunks/count。候选随后仍需用完整 twin 重建整个 auto，并让
-                -- **整份 v3.buff_display canonical fingerprint 精确命中磁盘旧 stamp** 才能返回。
-                -- 因此这里不是把残缺 `236` 当成 ID，也不是依据 Hash 猜某个 ID；任何合法 scope
-                -- 分叉、任意改字节、隐藏在丢失后缀里的用户差异都会在 whole-Store Hash 处拒绝。
-                --
-                -- 兼容/性能：只在 schema8 + Transport5 + fingerprint mismatch 的冷加载/回读路径
-                -- 运行，最多审计 64 chunk/1024 ID；严禁把该逻辑搬进 Tick、HUD 刷新或 aura 扫描。
-                -- 未来若出现“中间 chunk 被截/替换”而不是末尾前缀，必须新增独立实机证据和测试，
-                -- 不得把本条件放宽成任意 substring/近似匹配。
+                -- 末尾 chunk 可能截在十进制 ID 中间，例如 ...,23524,236；只能把它当字节前缀，不能当 ID=236。
+                -- 前置 chunk 必须逐字相等，chunks 连续，outer map 只含 chunks/count；最后一块须为健康 twin 对应块的严格字节前缀。
+                -- 完整 twin 候选还须精确命中整份旧章。仅 schema8/Transport5 mismatch 冷路径，最多 64 chunk/1024 ID；不能扩成任意 substring 或中段修补。
                 if #text >= #wanted or wanted:sub(1, #text) ~= text then return nil end
                 lastTokens, fullLastTokens = TokenCount(text), TokenCount(wanted)
                 if lastTokens == nil or fullLastTokens == nil then return nil end
@@ -1122,9 +1000,7 @@ local function RebuildHistoricalCanonical(decoded, stamped, current, raw)
             return base, Copy(decoded)
         end
 
-        -- .18.240：必须先处理“marker/count 已丢但 chunks 普通 map 仍能成功 transport decode”的
-        -- T5 截断。若先进入下方 generic dense-sequence 修复，player.auto 会因为键名 `chunks`
-        -- 立即得到 invalid_index 并提前返回，永远到不了 Store 专属物理前缀证据。
+        -- 先处理 marker/count 丢失的 T5 chunks 残片；generic dense 修复会因 chunks 键提前报 invalid_index。
         if tonumber(meta.transportVersion) == 5 then
             local prefixCandidate, prefixDomain = RecoverTransport5ScopedAutoPrefix(decoded, stamped, raw, store, prefix)
             if type(prefixCandidate) == "table" and type(prefixDomain) == "table" then
@@ -1163,18 +1039,9 @@ local function RebuildHistoricalCanonical(decoded, stamped, current, raw)
                 end
             end
         end
-        --
-        -- .238 实机已经证明 known-pair 本身成功（integrityFail=0 / v3Upgrade=1/1），但立即
-        -- SaveData→LoadData 回读出现 `$.settings.tracked.player.auto.1: number vs nil`。Transport5
-        -- 对“整个 scoped auto 字段被 Native 省略”不会产生 missing-chunk 错误：父表仍可合法解码，
-        -- 随后 schema8 Normalize 才把 nil 变成空列表，因此旧的 chunk 级修复根本没有执行机会。
-        -- 权威边界：这里只在 CURRENT schema8 + Framework3 + Transport5、player/target group 都存在、
-        -- 且恰好一侧 `auto` **物理字段为 nil** 时，把另一侧完整 dense ID 列表作为单一候选。候选必须
-        -- 重新 Normalize 整份 Store 并精确命中已经盖在磁盘上的 stamped canonical fingerprint；Hash 不命中
-        -- 就继续 Fence/回读失败。不会把“空列表”当作缺失、不会修 buff/debuff、不会从 Catalog/Hash 猜 ID，
-        -- 也不会 Apply/Save/Clear。这样用户合法把某一 scope 主动清空或让两 scope 分叉时不会被 twin 覆盖。
-        -- 数据流：decoded(raw) -> 仅补一处 missing auto 候选 -> NormalizeState -> 全 Store fingerprint -> Core
-        -- 再做预算/当前 canonical/Apply 或 readback proof。该分支只位于 Load/Save 冷路径，不进入 Tick/扫描循环。
+        -- 仅 CURRENT schema8/Framework3/Transport5、两侧 group 均存在且恰有一侧 auto 物理字段为 nil 时，才用完整 twin 生成候选。
+        -- 空列表不算缺失，buff/debuff 不修；整份 Store 重新 Normalize 后必须精确命中旧章，合法 scope 分叉仍会拒绝。
+        -- 这里只返回候选，Core 继续预算、验真和 Apply/回读；不写盘、不清 Fence。
         if tonumber(meta.transportVersion) == 5 then
             local tracked = recovered.settings.tracked
             local player = type(tracked.player) == "table" and tracked.player or nil
@@ -1226,11 +1093,8 @@ local function RebuildHistoricalCanonical(decoded, stamped, current, raw)
 end
 
 local function MigrateState(value, fromSchema)
-    -- Persistence 会把 migrate(value)（不传 fromSchema）
-    -- 同时用作“当前 Domain -> canonical”的纯归一化器。这里绝不能把 nil 当成 0；否则 schema8 已经是
-    -- player/target 六通道的值会再次送进 schema7 legacy migrator，嵌套追踪被当成旧全局列表并清空，
-    -- 保存时指纹反而给“空追踪”盖章，下一次 Load 会合法地丢失整份追踪。只有 Core 明确传入
-    -- fromSchema<8 时才有旧代迁移 Authority；nil/8+ 永远只做当前 schema8 Normalize。
+    -- Core 也会不传 fromSchema 调用 migrate 来归一化当前 Domain。nil/8+ 只能走 schema8 Normalize；仅明确 fromSchema<8 才迁移。
+    -- 把 nil 当 0 会将六通道再次送入旧平面迁移器，保存时合法地清空追踪。
     local sourceSchema = tonumber(fromSchema)
     if sourceSchema == nil or sourceSchema >= 8 then return NormalizeState(value) end
     -- 先由固定旧迁移器重建全部 schema8 前字段（HUD/library/cooldowns），再仅转换追踪表示；保证迁移所有权单一且有序。
@@ -1240,15 +1104,9 @@ local function MigrateState(value, fromSchema)
     return out
 end
 
---
--- 实机报告明确：schema7->8 迁移写回后，SaveData 立即回读在 transport4 的 pN 分块上
--- 出现 missing_chunk。schema8 的迁移语义会把旧全局追踪“逐字复制”到 player/target；因此
--- 对这一次物理事故，另一 scope 是唯一可验证冗余来源。这里只修 physical raw，不碰 Domain。
--- 安全边界：仅 Framework3 + schema8 + transport4 + 当前 Store/owner + missing_chunk_v4。
--- 单侧损坏优先使用完整 twin；若两个迁移副本同段都丢失，只允许由已持久化 importedPacks 对应
--- 的只读 Catalog 构造有限候选，并要求 count 与所有尚存 chunk 逐字一致。Core 随后必须重新
--- transport decode，并继续通过原 Envelope/业务 fingerprint、预算、migrate/apply 全部门禁；
--- 任一不匹配仍 fail-closed，不从 Hash 反推未知 ID，也不以目录覆盖用户配置。
+-- T4 物理恢复仅接受当前 Store/owner、Framework3/schema8/Transport4 和 missing_chunk_v4。
+-- 优先用完整 twin；双方同段丢失时，才可用 importedPacks 对应的静态 Catalog 生成有限候选，count 与所有幸存 chunk 必须逐字相等。
+-- Core 仍重新解码并验证 envelope/业务指纹、预算、迁移和 Apply；不能用目录覆盖用户配置或从 Hash 反推 ID。
 local function RecoverSchema8ScopedTransport4(raw, transportError)
     if type(raw) ~= "table" or not tostring(transportError or ""):find("transport_vector_missing_chunk_v4", 1, true) then
         return nil, "not_schema8_missing_chunk_v4"
@@ -1265,19 +1123,13 @@ local function RecoverSchema8ScopedTransport4(raw, transportError)
     local player = tracked and type(tracked.player) == "table" and tracked.player or nil
     local target = tracked and type(tracked.target) == "table" and tracked.target or nil
     if player == nil or target == nil then return nil, "scoped_tracking_missing" end
-    -- 物理恢复会原地修改 raw。
-    -- 保存一份仅限本次失败 Load 的深拷贝，后续若“健康 twin”能解码但无法命中旧业务指纹，
-    -- 需要从事故原貌重新构造 Catalog 候选，不能在已被错误 twin 填过的表上继续叠加修改。
-    -- Authority 仍属于 Core：此副本只用于候选生成，不 Apply、不 SaveData、不清除 write fence。
+    -- 物理修复会改 raw，先保留本次失败 Load 的副本。twin 候选指纹不符时，Catalog 候选须从事故原貌重建。
+    -- 副本只用于候选生成，不 Apply、写盘或清 Fence。
     local originalRaw = Copy(raw)
 
     local marker, chunkSize, limit = "__rs_t4:a", 16, 2048
-    --
-    -- .232 实机已经证明“存在的 chunk”本身也可能被 Native 截短：player.auto.p5 只剩 10/16
-    -- 个 token。旧 InspectVector 只统计 pN 是否存在，把这种半截字符串当成健康 present，导致连续
-    -- 三轮恢复一直围绕 missing chunk 猜候选。这里严格复用 Transport4 decoder 的块级规则做只读
-    -- 审计，记录 bad chunk；不把 bad 自动当成 missing、不修改恢复接受条件、不写盘。Authority 仍是
-    -- Core DecodePhysicalEnvelope + fingerprint；本函数只让诊断能区分“字段丢失”和“字段内容截断”。
+    -- 存在的 pN 也可能只有部分 token。按 Transport4 decoder 规则只读审计 bad chunk，区分字段缺失与内容截短。
+    -- 不能把 bad 自动当 missing；最终仍由 Core 解码和原指纹验证。
     local function AuditChunk(index, text, count)
         if type(text) ~= "string" then return false, "type" end
         local expected = math.min(chunkSize, count - (index - 1) * chunkSize)
@@ -1319,15 +1171,8 @@ local function RecoverSchema8ScopedTransport4(raw, transportError)
         for i = 1, parts do if present[i] == nil then missing[#missing + 1] = i end end
         return { value = value, count = count, parts = parts, present = present, missing = missing, bad = bad, fields = fields }, nil
     end
-    --
-    -- .233 已经给出完整证据：player.auto 缺 p1/p2/p3/p4/p19，且 p5 仅剩 10/16；
-    -- target.auto 同 count/parts 下 25 个 chunk 全部健康，双方所有健康重叠块相同，唯一差异 p5
-    -- 恰好是 player 的截短块，且其 10 个 token 是 target.p5 的严格前缀。旧 SameExisting 把
-    -- “已知损坏块”也参与等值比较，因此错误拒绝了最强的冗余 Authority，反而落到 Catalog 猜测。
-    -- 新规则只允许：source 整体物理健康；damaged 的所有健康块逐字等于 source；bad 块只能是
-    -- count 截短且必须是 source 对应块的规范 token 前缀。候选生成后 Core 仍会用原始 envelope /
-    -- canonical fingerprint 对整份逻辑值验真，所以 schema8 用户若曾合法让 player/target 在丢失块
-    -- 内分叉，错误 twin 候选会被旧指纹拒绝并继续 Fence；这里没有获得绕过业务 Authority 的权限。
+    -- twin 必须整体健康；损坏侧所有健康块逐字相同，bad 块只允许 count 截短且为对应块的规范 token 前缀。
+    -- 候选仍须通过整份原指纹；用户在丢失块内的合法 scope 分叉不能被覆盖。
     local function HasBadChunks(info)
         return type(info) == "table" and type(info.bad) == "table" and next(info.bad) ~= nil
     end
@@ -1371,13 +1216,8 @@ local function RecoverSchema8ScopedTransport4(raw, transportError)
         end
         return repairs > 0, repairs
     end
-    -- .228 只允许“另一 scope 完整”时复制缺块，
-    -- 但实机 .227→.228 证明两个迁移副本可能在各自 v4 表里同时丢掉同一个 pN；此时 twin
-    -- 也没有完整来源。我们仍禁止从 Hash 反推 ID。唯一新增候选来自 Store 已保存的
-    -- library.importedPacks + 只读 StatusTrackingCatalogV3：只有候选长度与 vector.count 完全相同、
-    -- 所有尚存 chunk 逐字匹配时，才可填补缺段；随后 Core 仍会用原 envelopeFingerprint 与
-    -- encodedFingerprint 对整份候选做双重验真。用户手工增删/不同 scope/目录版本不匹配都会
-    -- 让候选失败并保持写保护，因此这不是“用内置库覆盖用户配置”。
+    -- 双方缺同一 pN 时，只能从 importedPacks 和只读 Catalog 生成候选，不能从 Hash 反推 ID。
+    -- 长度与所有幸存 chunk 必须逐字匹配，Core 再验证 envelope/encoded 双指纹；用户改动或目录版本不符仍保留写保护。
     local function BuildCatalogCandidates()
         local library = settings and type(settings.library) == "table" and settings.library or nil
         local imported = library and type(library.importedPacks) == "table" and library.importedPacks or nil
@@ -1479,12 +1319,8 @@ local function RecoverSchema8ScopedTransport4(raw, transportError)
         end
         return true, nil
     end
-    --
-    -- .228-.231 连续实机均停在 missing_chunk_v4，而“no_candidate”只能证明静态候选没有命中，
-    -- 不能回答到底缺哪一块、player/target 幸存区是否一致、同 count 候选从第几块开始偏离。
-    -- 这组 helper 只序列化本次失败 Load 已经在内存中的 v4 物理事实；不重新 LoadData、不写盘、
-    -- 不尝试新候选，也不把诊断字符串参与 fingerprint。每个 chunk 本来就被 Transport4 限制为
-    -- <=143 bytes，因此只记录首个不一致 chunk 的原文/期望值，整体仍有显式长度上限。
+    -- 只序列化本次失败 Load 已有的物理证据，记录首个不一致 chunk 的原文/期望值。每块受 Transport4 的 143 bytes 上限约束。
+    -- 不重读、不写盘、不尝试新候选，诊断文本不参与 fingerprint。
     local function ClipRecoveryProbe(value, limitBytes)
         local text = tostring(value or "")
         local limit = tonumber(limitBytes) or 180
@@ -1577,15 +1413,9 @@ local function RecoverSchema8ScopedTransport4(raw, transportError)
         return true, repaired
     end
 
-    --
-    -- importedPacks 只记录“这个包曾经导入到哪个版本”，用户之后可以逐条取消追踪；因此它绝不能
-    -- 充当“当前追踪集合”的 Authority。此前 .228-.230 把所有水位包先做 union，再拿 union.count
-    -- 与损坏 vector.count 比较，导致真实 all=393 + hidden 水位场景被错误重建为 397 候选并永久拒绝。
-    -- 这里改为有限候选枚举：union 只是候选之一；每个已知静态包也是独立候选；all/recommended
-    -- 作为历史主入口也可单独参与。候选必须同时满足 count 与所有尚存 pN chunk 逐字一致；若多个
-    -- 候选的完整 chunk 表不同则拒绝为 ambiguous。真正的最终 Authority 仍在 Core：返回候选后还要
-    -- 重新 transport decode，并通过原 encoded/envelope fingerprint、schema、budget、migrate/apply。
-    -- 所以这里既不根据水位补回用户已取消 ID，也不从 Hash 反推未知 ID。
+    -- importedPacks 只是历史导入水位，用户可能已取消部分 ID，不能直接当当前集合。
+    -- union、每个静态包及 all/recommended 分别生成有限候选；须匹配 count 和所有幸存 pN，完整 chunk 表有歧义就拒绝。
+    -- Core 最后仍验证原 encoded/envelope 指纹、schema、预算和迁移，不根据水位补回已取消的 ID。
     local function RepairFromCatalog(info, category, scope, twinProbe, allowCountTruncated)
         local hasRepairableBad = allowCountTruncated == true and HasBadChunks(info)
         if info == nil or (#info.missing == 0 and not hasRepairableBad) then return true end
@@ -1683,11 +1513,7 @@ local function RecoverSchema8ScopedTransport4(raw, transportError)
         return false, filled
     end
 
-    --
-    -- .18.234 实机证明“完整 target twin”可能与损坏 player 在已经丢失的 chunk 内存在合法 scope 分叉。
-    -- 此时 twin 能通过 Transport4 解码，却会得到与旧 encodedFingerprint 不同的业务值。这里允许 Store
-    -- 在故障冷路径预计算候选的 canonical fingerprint，仅用于“选哪个候选交给 Core”；它没有验收权限。
-    -- Core 后续仍会重新 DecodePhysicalEnvelope、验证 Envelope Seal / schema / 原 fingerprint / budget / migrate / Apply。
+    -- 完整 twin 也可能与损坏侧丢失部分存在合法差异。冷路径预算候选指纹只用于选候选，最终验真与 Apply 仍由 Core 完成。
     local stampedFingerprint = tostring(meta.encodedFingerprint or meta.payloadFingerprint or "")
     local function CandidateFingerprint(candidateRaw)
         local store = P:GetStore(STORE_ID)
@@ -1701,9 +1527,8 @@ local function RecoverSchema8ScopedTransport4(raw, transportError)
         return P:FingerprintCanonicalValue(store, canonical)
     end
 
-    -- 从事故原始 raw 构造“Catalog 优先”的第二种确定性候选。只有缺块与 count 截断块可由
-    -- 静态集合补齐；每个健康幸存 chunk 必须逐字匹配，截断块还必须是完整候选的严格 token 前缀。
-    -- 该候选若不能精确命中存档旧指纹，绝不返回；调用方继续保留 .234 的 twin 候选并让 Core Fence。
+    -- 从原始 raw 另建 Catalog 候选：只补缺块/count 截短块，健康块须相同，截短块须是严格 token 前缀。
+    -- 不能精确命中旧章就保留原 twin 候选，由 Core 继续拒绝。
     local function BuildExactCatalogFallback()
         local candidate = Copy(originalRaw)
         local cPayload = type(candidate.payload) == "table" and candidate.payload or nil
@@ -1747,9 +1572,7 @@ local function RecoverSchema8ScopedTransport4(raw, transportError)
         local aDamaged = a ~= nil and (aMissing + (HasBadChunks(a) and 1 or 0)) or 0
         local bDamaged = b ~= nil and (bMissing + (HasBadChunks(b) and 1 or 0)) or 0
 
-        -- schema8 在迁移后“初始”两 scope 相同，但用户随后允许独立修改；完整 bucket 的差异合法。
-        -- .234 只在“一侧物理完整、另一侧的健康块全部吻合，bad 块还是完整侧的严格截短前缀”时
-        -- 生成 twin 候选。它仍只是候选：Core 原始 fingerprint 才决定是否能真正应用。
+        -- 迁移时两侧相同，之后允许独立编辑；仅损坏侧健康块相同、bad 块为严格前缀时生成 twin 候选，仍由原指纹决定是否接受。
         if aDamaged > 0 or bDamaged > 0 then
             local twinProbe = DescribeTwinVectors(a, b, category)
             local twinRepaired = false
@@ -1794,9 +1617,7 @@ local function RecoverSchema8ScopedTransport4(raw, transportError)
             .. "/fp=primary_exact" .. (catalogProbe and ("/packs=" .. tostring(catalogProbe)) or "")
     end
 
-    -- 只有“第一候选可解码但旧指纹不匹配”才值得尝试 Catalog 备选；这正是 .18.234 实机
-    -- fp=old>wrongTwin / hook=candidate / seq=unchanged 的形状。若没有旧章或指纹计算本身失败，
-    -- 不扩大恢复面，继续把 primary 交回 Core 按原规则拒绝。
+    -- 仅第一候选可解码但指纹不符时尝试 Catalog；没有旧章或指纹计算失败时，保留 primary 交给 Core 拒绝。
     local fallbackProbe = nil
     if stampedFingerprint ~= "" and primaryFingerprint ~= nil then
         local fallbackRaw, fallbackKindsOrErr = BuildExactCatalogFallback()
@@ -1823,20 +1644,9 @@ local function RecoverSchema8ScopedTransport4(raw, transportError)
         .. (catalogProbe and ("/packs=" .. tostring(catalogProbe)) or "")
 end
 
---
--- 实机 .18.237 完整 RAW_STORE 已证明 player.auto 的 p1/p2/p3/p4/p19
--- 物理缺失且 p5 仅剩 10/16，而 target.auto 25 个分块完整。Transport4 的健康 twin
--- 因而能生成完整 Domain，但当前 canonical=0EBC870A 与事故前盖章 2FBF9352 不同；旧 Hash
--- 本身无法反推出已经丢失的 player-only ID，继续扩大 Catalog/twin Authority 会误吞合法 scope 分叉。
--- Authority/数据流：repairPhysicalTransport 仍只生成候选；Persistence Core 仍是唯一完整性
--- Authority。这里仅复用 Core 已有 recoverKnownLegacyCanonical 最终桥，并且同时锁死旧章、当前章、
--- Framework/schema/transport、Store identity、物理修复成功标记、精确缺块拓扑和恢复后双 scope
--- 393 项同值形状。任一条件不同立即返回 nil，继续 Fence；绝不按“相似度”或 Hash 猜业务 ID。
--- 兼容边界：这是一次已观测 RU Transport4 事故的 bounded allowlist，不是 schema8 通用放行。
--- 恢复成功后 Core 会立即按当前 canonical 重盖章；Store 当前 transportVersion=5，后续 Flush
--- 会改写为 v5 数字 chunk 表，避免再次进入 v4 pN 字符串缺块路径。
--- 维护约束：若未来再出现不同 old/new fingerprint、不同缺块或不同 scope 业务形状，必须先取得
--- 新完整报告并单独建事故证据，禁止把下列 gate 放宽成前缀/数量近似恢复。
+-- 已知 Transport4 事故的有限恢复桥：同时匹配 old/new 指纹、Store/owner、Framework/schema/transport、物理修复标记、精确缺块拓扑及恢复后双侧 393 项同值形状。
+-- 任一条件不同就拒绝。这是单次实机事故的精确许可，不是 schema8 通用恢复；不能按近似数量、前缀或 Hash 猜 ID。
+-- Core 验证后重新盖章，后续 Flush 用 Transport5。其它事故须另有完整证据，不能放宽此门禁。
 local KNOWN_SCHEMA8_TRANSPORT4_TWIN_INCIDENT = {
     oldFingerprint = "2FBF9352",
     currentFingerprint = "0EBC870A",
@@ -1961,22 +1771,18 @@ if P:GetStore(STORE_ID) == nil then
     local store, err = P:RegisterV3Store({
         id = STORE_ID, owner = "v3.buff_display", scope = P.Scope and P.Scope.Account or "account",
         lifetime = P.Lifetime and P.Lifetime.Permanent or "permanent", schemaVersion = SCHEMA,
-        -- v4 已解决旧 numeric[189] 丢项，但 schema8 六通道实机又证明 pN 字符串分块
-        -- 仍可能缺块。v5 把分块收敛到 <=128 的 chunks 数字索引表；旧 v4 永久可读，
-        -- 且仅 schema8 迁移产生的 player/target 精确冗余允许做受指纹约束的物理恢复。
+        -- T4 字符串分块仍有缺块实证；T5 改用最多 128 块的数字索引 chunks 表。旧 T4 仍可读，冗余恢复必须受原指纹约束。
         transportVersion = 5,
         repairPhysicalTransport = RecoverSchema8ScopedTransport4,
         legacySchemaVersion = 1, key = P.V3KeyPrefix and (P.V3KeyPrefix .. "buff_display") or STORE_ID,
-        -- Store 预算必须覆盖真实负载：2026-09-01 证据中旧 schema1-3 每分类有数百 ID，曾有 713。旧 192 条/2800 字节会拒绝保存并让整会话写保护，导致所有用户修改无法持久化。
-        -- 713+713 ID 加设置的编码 JSON 远小于 16KB，旧路径已证明客户端 SaveData 可以保存。
+        -- 旧 schema1-3 每类实测可达 713 个 ID，预算不能沿用 192 条/2800 字节，否则保存失败会让整会话写保护。
+        -- 713+713 ID 加设置的编码 JSON 小于 16KB，旧路径已有保存实证。
         budget = { maxDepth = 8, maxNodes = 32768, maxStringBytes = 65536, maxEntriesPerTable = 2048 },
         default = function() return NormalizeState(nil) end,
         get = function() return NormalizeState(F.State) end,
         apply = ApplyState,
         migrate = function(value, fromSchema) return MigrateState(value, fromSchema) end,
-        -- 旧单 HUD 存档必须先由旧 normalizer
-        -- 逐字重建 canonical 并命中原 fingerprint，之后才允许 4→5 migrate。known-pair 只作为
-        -- 已实机证明的 515E1BF3→3B898E2F 最终桥；未知 Hash 继续 fail-closed。
+        -- 旧单 HUD 先按旧 normalizer 命中原章，再做 4→5 迁移；515E1BF3→3B898E2F 仅是已核实事故的最后恢复桥。
         rebuildCanonicalForIntegrity = RebuildHistoricalCanonical,
         -- 当前序列已覆盖保存回读回归，仅声明许可；精确验真由 Core 完成。
         -- 历史世代和未知 Hash 不因此获得回读放行或写入权。
@@ -1992,8 +1798,8 @@ end
 function F:GetSettings() return self.State.settings end
 function F:GetDefaultSettingsSnapshot() return Copy(NormalizeSettings(nil)) end
 
--- HUD 布局持久化边界：页面编辑器拥有独立 Working 快照，Preview/Undo/Redo/Reset 禁止修改 F.State，它仍由旧主 Store 与专用布局投影共享。
--- 只有 Apply 通过 HUD Layout Store durable 事务提交，失败由 Persistence 回滚。主追踪 Store 仅保留旧安装兼容副本，HUD 操作禁止刷写它；未应用预览不能泄漏到 Store 或下次重载。
+-- Preview/Undo/Redo/Reset 只改编辑器 Working 副本；Apply 才经 Layout Store 耐久事务提交，失败由 Persistence 回滚。
+-- HUD 操作不能刷写旧主 Store，未应用预览不能泄漏到 F.State 或下次重载。
 local LAYOUT_SETTING_KEYS = {
     "layoutPresetVersion", "headEnabled", "headShowAll", "headPlayer", "headTarget",
     "headRefreshMs", "headShowStacks", "headShowTime", "plateScale",
@@ -2034,8 +1840,7 @@ local function NormalizeLayoutSnapshot(value)
             showClass = info.showClass ~= false,
             showGear = info.showGear ~= false,
             showDistance = info.showDistance ~= false,
-            -- schema7：gearScoreFormat 属于 player HUD info profile，Layout Store 必须完整携带；
-            -- 否则 overlay Apply 会把主 Store 中的 compact/full Authority 丢掉并退回 nil/full。
+            -- Layout Store 须携带 gearScoreFormat，否则 overlay Apply 会丢掉已保存的 compact/full。
             gearScoreFormat = NormalizeGearScoreFormat(info.gearScoreFormat or defaults.info.gearScoreFormat),
         },
         components = NormalizeComponents(value.components),
@@ -2071,25 +1876,13 @@ local function IsLayoutSettingKey(key)
 end
 
 local function ApplyHudLayoutStoreState(value)
-    --
-    -- 状态显示主 Store 同时承载 786+ 追踪 ID 与 HUD 几何；实机证明仅保存
-    -- distance.x=-1 也会让 RU SaveData 在“大表”里省略/改写合法字段，随后 durable readback
-    -- 以 number(-1) vs number(0) 失败。继续为每个坐标加恢复规则只会扩大猜测面。
-    -- Authority/数据流：v3.buff_display.layout 只拥有 LayoutSnapshot；主 v3.buff_display 仍拥有
-    -- tracked/classification/窗口/业务策略的历史兼容副本。加载顺序固定为“主 Store 验真并 Apply ->
-    -- layout Store 验真并覆盖 HUD 字段”。所有 HUD 编辑事务只写小 Store，绝不再重写追踪大表。
-    -- 兼容边界：新 Store 为空时不应用 factory defaults，继续使用主 Store 中已经验真的旧布局；
-    -- 一旦新 Store 有值，它就是 HUD layout 的更高优先级 Authority。失败时 Persistence 事务只回滚
-    -- 这组布局字段，不碰追踪列表。隔离高频/小配置与大数组，缩小 Native serializer
-    -- 故障域；Transport3 已对 0/负数做哨兵保护，不需要 Transport5 的大数组分块。
-    -- 维护约束：以后新增 HUD 几何或显示策略字段必须加入 NormalizeLayoutSnapshot，并通过本 Store
-    -- 保存；禁止再从 HUD 页面直接 durable-save 主 Store，否则会重新引入同类跨域保存故障。
+    -- RU 大表保存可能省略合法 HUD 字段，因此所有 HUD 编辑只写 v3.buff_display.layout。
+    -- 先加载主 Store 的已验真旧布局，再由 layout 覆盖；layout 为空时不能套新默认。事务失败只回滚布局，不能改存主 Store。
+    -- 新增 HUD 字段要进入 NormalizeLayoutSnapshot；小布局使用 Transport3 的 0/负数保护，无需 T5 数组分块。
     if type(F.State) ~= "table" then F.State = NormalizeState(nil) end
     if type(F.State.settings) ~= "table" then F.State.settings = NormalizeSettings(nil) end
     local normalized = ApplyLayoutSnapshotToSettings(F.State.settings, value)
-    -- 保存一份已经通过 Persistence 验真的/事务中的 layout Domain。主 Store 以后若被显式重读，
-    -- ApplyState 会替换整张 F.State；没有这份小快照，已加载的 layout Store 因 ready=true 不会
-    -- 再读磁盘，HUD Authority 就会被主 Store 旧副本悄悄覆盖。快照只含小布局，不含追踪数组。
+    -- 保留已提交的 layout 小快照。主 Store 重读会替换 F.State，而 ready 的 layout Store 不会重读；没有快照就会被旧布局覆盖。
     F.HudLayoutStoreSnapshot = Copy(normalized)
     if type(F.InvalidateSettingsCache) == "function" then F:InvalidateSettingsCache() end
     return true
@@ -2117,39 +1910,10 @@ if P:GetStore(HUD_LAYOUT_STORE_ID) == nil then
 end
 
 
-------------------------------------------------------------------------
--- 状态显示持久化拆分边界
---
---
--- `v3.buff_display` 曾同时保存 HUD、窗口、分类、库水位和 player/target 各 393+
--- 个 auto ID。RU SaveData 已连续实证会以多种方式破坏该单体 Store：Transport4 缺 pN、
--- Transport5 整字段省略、marker/count 丢失、最后 chunk 截断甚至十进制 ID 中途截断。
--- 继续给旧 Store 增加 Hash 白名单只能追着症状修，且任何 HUD 小改动都会重新经过大表故障域。
---
--- 权威边界：从本契约开始，旧 `v3.buff_display` 永久降级为 LegacyMigrationSourceOnly；运行时
--- 唯一 Authority 分为：settings 小 Store、layout 小 Store、tracking player/target/meta A/B slot，
--- 以及 tracking manifest。Manifest 是 tracking generation 的最终提交点；inactive slot 全部完成
--- durable SaveData + immediate readback 之前，绝不能切换 active slot。
---
--- 数据流：启动先读 manifest。已有 manifest 时只读 new stores，完全不 Load/Apply 旧大 Store；
--- manifest 为空时才执行一次 Legacy 迁移。用户已明确批准方案 A：若 legacy schema8/T5 中
--- player.auto 是已观测残片而 target.auto 是完整 dense 列表，必须先由已注册 recovery hook
--- 证明完整旧 Store 原章，再以该候选迁移；未知差异仍 fail-closed。迁移完成后永不再次执行。
---
--- 兼容边界：旧 Store 不自动 Clear，保留取证/回退证据；new tracking slot 使用 Transport5，
--- 但任何 inactive 写损坏只会让本次 mutation 失败，active manifest 仍指向上一份可靠 generation。
--- settings/meta/layout 均为小 Store，不再承载 393×2 大数组。
---
--- 把“能否写入新配置”与“是否破坏上一次可靠配置”解耦。即使 RU 未来仍破坏某次
--- tracking inactive slot，用户最多收到本次保存失败，不会再把整个状态显示启动写保护。
---
--- 风险/维护禁止项：
--- 1) 禁止任何新代码再次 durable-save `v3.buff_display`；
--- 2) 禁止绕过 manifest 直接把 inactive slot 当 active；
--- 3) 禁止用 Hash 反推 ID，禁止把方案 A 扩成日常 player<-target 同步；
--- 4) 新 tracking 字段必须进入 meta/player/target snapshot 与 A/B 提交流程；
--- 5) 本逻辑只在 Load/Save 冷路径运行，严禁搬进 Tick/aura/HUD render 循环。
-------------------------------------------------------------------------
+-- 旧 v3.buff_display 仅作一次性迁移来源，正常配置分属 settings、layout、tracking player/target/meta A/B 和 manifest。
+-- 启动先读 manifest；存在时只加载新 Store。首次迁移也须经旧 recovery hook 和原章验真，不清旧字节。
+-- inactive 三个分片全部保存并立即回读成功后，manifest 才切换 generation；失败保留上一代。
+-- 禁止再保存旧主 Store、绕过 manifest 或把 twin 恢复扩为日常同步。新追踪字段须进入分片提交流程，所有迁移/提交只走冷路径。
 
 local function TablesEqual(a, b, seen)
     if type(a) ~= type(b) then return false end
@@ -2425,10 +2189,8 @@ end
 local function BuildLegacyMigrationCandidate()
     local legacy = P:GetStore(STORE_ID)
     if type(legacy) ~= "table" then return nil, "legacy migration store unavailable" end
-    -- 物理解码不等于旧配置验真。原路径直接 normalize
-    -- raw payload，能把未知 Hash/损坏 seal/旧 canonical 差异静默迁成新 Authority。复用 Core 的
-    -- seal、schema、historical canonical、注册 recovery hook 与 budget 全链路；apply=false 保证
-    -- 不改当前 Domain、不排队旧 Store 重盖章，旧字节继续保留取证。失败前不得写任何 split Store。
+    -- 物理解码成功不代表配置可信。旧来源必须通过 Core 的 seal/schema、历史 canonical、recovery hook 和预算；apply=false 不改当前 Domain、不排旧 Store 重盖章。
+    -- 旧来源验真失败前不能写任何新分片。
     local loaded, candidate, loadErr = P:LoadStore(STORE_ID, { apply = false })
     if loaded == "empty" then return NormalizeState(nil), "legacy_empty_default" end
     if loaded ~= true or type(candidate) ~= "table" then
@@ -2506,13 +2268,8 @@ function F:GetDefaultLayoutSettingsSnapshot()
     return LayoutSnapshotFromSettings(NormalizeSettings(nil))
 end
 
---
--- CalibrationDraft 由 Presentation 临时持有，箭头/拖动/输入都只改 Draft。只有
--- PersistHudCalibrationSnapshot 才进入 Store MutateStore durable transaction；取消编辑不会
--- 触碰 F.State。player 使用旧字段 Authority，target 使用 targetLayout Authority。
--- 兼容边界：此接口只负责视觉 profile，不复制 headShowAll/追踪 ID/敌我过滤等业务规则。
--- 独立固定布局复用当前几何限幅，不改历史 Store 的 canonical/默认值。
--- 调用者仅取得副本；排列扩展仍由其所属小 Store/固定 profile 叠加。
+-- 校准只改 Presentation Draft；PersistHudCalibrationSnapshot 才提交，取消不碰 F.State。
+-- player/target 独立；此接口只保存视觉 profile，不复制追踪、headShowAll 或敌我策略，调用者只取得副本。
 function F:NormalizeHudVisualProfile(value, fallback)
     return NormalizeHudProfile(value, fallback)
 end
@@ -2613,10 +2370,7 @@ end
 function F:GetDefaultHudCalibrationSnapshot()
     local defaults = NormalizeSettings(nil)
     local player = HudProfileFromSettings(defaults)
-    -- 目标 HUD 已有独立默认 Authority，不能再像
-    -- .18.207 那样无条件 target=Copy(player)。否则“恢复当前目标 HUD”会绕过维护者实机校准
-    -- 的 TARGET|EQUIP 模板，而 Store 的 ResetLayoutSettings 又使用另一套 target defaults。
-    -- 这里统一从 defaults.targetLayout 读取，使新用户、恢复布局和校准恢复目标三条路径一致。
+    -- 目标默认统一取 defaults.targetLayout，让新安装、布局恢复和校准恢复使用同一份已核实模板。
     local target = NormalizeHudProfile(defaults.targetLayout, player)
     return { player = Copy(player), target = Copy(target) }
 end
@@ -2627,10 +2381,7 @@ function F:ApplyHudCalibrationSnapshotRaw(snapshot)
     local currentPlayer = HudProfileFromSettings(settings)
     local currentTarget = NormalizeHudProfile(settings.targetLayout, currentPlayer)
     local player = NormalizeHudProfile(snapshot.player, currentPlayer)
-    -- target 已经是独立 Authority；调用者若
-    -- 只提交 player patch，绝不能因为 target 缺席就隐式执行“同步自身 → 目标”。手动同步
-    -- 只能由校准器显式把 player Copy 到 snapshot.target。这样导入/未来 API 的部分更新也
-    -- 不会意外覆盖用户已经单独调好的目标 HUD。
+    -- 只提交 player patch 时不能隐式同步 target；同步须由校准器显式复制，避免部分导入覆盖独立目标布局。
     local target = NormalizeHudProfile(snapshot.target, currentTarget)
     settings.plateScale = player.plateScale
     settings.plate = Copy(player.plate)
@@ -2643,22 +2394,9 @@ end
 function F:PersistHudCalibrationSnapshot(snapshot, reason)
     snapshot = type(snapshot) == "table" and snapshot or {}
     local saved, saveErr = self:MutateHudLayoutStore(function()
-        --
-        -- `.240` 以前“保存并退出”会为了一个 HUD 坐标 durable-save 整个
-        -- v3.buff_display，连带序列化 player/target auto（393×2）。RU Native 已连续实证会在
-        -- 这个大 Store 中丢 marker/count、截掉后续 chunk，甚至把最后十进制 ID 截在数字中间；
-        -- 因此 `复制自身→目标` 本身不是错误，错误是把 HUD Draft 的提交跨到了追踪大 Store。
-        -- Authority/数据流：CalibrationDraft -> 本 mutator -> v3.buff_display.layout（唯一 HUD
-        -- durable Authority）-> ApplyHudLayoutStoreState；主 v3.buff_display 只保留旧版兼容基线和
-        -- tracking/classification 等业务数据。复制自身→目标只在 Draft 中显式 target=Copy(player)，
-        -- 绝不能因此触发主 Store SaveData。
-        -- 兼容边界：旧用户尚无 layout Store 时先使用已验真的主 Store 布局；第一次 HUD 保存后，
-        -- layout Store 成为更高优先级 overlay。若本小 Store 保存失败，Persistence 只回滚布局事务，
-        -- 不得回退到“改存主 Store”作为兜底，否则会重新制造本次故障。
-        -- 维护禁止项：这里和所有 HUD-only setter/reset/policy API **禁止调用 MutateStore(STORE_ID)**、
-        -- SaveStore(STORE_ID) 或 MarkStoreDirty(STORE_ID)。新增 HUD 字段必须进入 NormalizeLayoutSnapshot
-        -- 并补充隔离测试；如未来 tracking 大 Store 自身仍出现 RU 损坏，应独立做 tracking 分片，
-        -- 不能把 HUD 保存重新耦合回去。该规则是架构边界，不是临时 workaround。
+        -- CalibrationDraft 只提交 v3.buff_display.layout；旧主 Store 的追踪大数组存在 RU 截断实证，不能作为失败兜底。
+        -- 没有 layout 的旧用户先使用已验真布局；首次保存后以 layout 为准。新增 HUD 字段也必须进入 NormalizeLayoutSnapshot。
+        -- HUD-only setter/reset/policy 不得对 STORE_ID 调用 MutateStore、SaveStore 或 MarkStoreDirty。
         return self:ApplyHudCalibrationSnapshotRaw(snapshot)
     end, 0, tostring(reason or "buff_display_hud_calibration_apply"), true)
     if saved ~= true then return false, saveErr or "HUD 校准保存失败" end
@@ -2734,15 +2472,8 @@ end
 function F:ResetSettings()
     return self:ResetLayoutSettings()
 end
---
--- 历史玩家 HUD 的 ranged 默认关闭；旧逻辑把 v4 同时当“视觉排列已升级”和
--- “远程默认已升级”，导致一部分先被其它 HUD 路径写成 v4 的账号永远跳过 ranged 开启。
--- Authority/数据流：只有 Persistence 已验真并 Apply 到 F.State 后才检查当前玩家组件；若它仍
--- 完全等于旧发行默认（关闭/x0/y0/26px/font0/alpha1），v3/v4 才在同一个 Layout Store
--- 事务中开启并推进 v5。任何用户主动改过位置/大小/透明度都视为用户 Authority。
--- 兼容边界：自定义 ranged 保持原值；v5 之后用户再主动关闭远程不会被再次打开。
--- 不改主 schema8、不改变历史 normalizer/fingerprint；失败保存时由 Persistence 回滚，
--- EnsureStoreLoaded 仅记录警告并继续使用原配置，禁止为了新默认破坏启动。
+-- 只对 v3/v4 且 ranged 完全匹配旧默认（关闭/x0/y0/26px/font0/alpha1）的已验真配置，事务开启并推进 v5。
+-- 自定义值不动，v5 后用户再关闭也不重开；保存失败回滚并记录警告，继续使用原配置。
 local function IsLegacyUntouchedRanged(component)
     component = type(component) == "table" and component or {}
     return component.enabled == false
@@ -2757,11 +2488,11 @@ function F:UpgradeRangedWeaponReleaseDefault(persist)
     local settings = self.State and self.State.settings or nil
     if type(settings) ~= "table" then return false, "状态显示设置不可用" end
     local presetVersion = math.floor(tonumber(settings.layoutPresetVersion) or LAYOUT_PRESET_VERSION)
-    -- 权威边界：v5+ 明确表示本次兼容水位已经处理；之后 ranged.enabled 无论 true/false 都是
+    -- v5+ 明确表示本次兼容水位已经处理；之后 ranged.enabled 无论 true/false 都是
     -- 用户当前选择，绝不能在 Reload 时再次覆盖。v3/v4 仍可能来自旧版默认遗漏。
     if presetVersion >= CURRENT_LAYOUT_PRESET_VERSION then return true, false end
     local ranged = type(settings.components) == "table" and settings.components.ranged or nil
-    -- 兼容边界：只修“旧默认原样未动”的 ranged=false。位置/大小/透明度/字体任一不同都视为
+    -- 只修“旧默认原样未动”的 ranged=false。位置/大小/透明度/字体任一不同都视为
     -- 用户已经接管该组件，不自动开启，也不推进代际，避免升级吞掉个性化 HUD。
     if IsLegacyUntouchedRanged(ranged) ~= true then return true, false end
     local function ApplyUpgrade()
@@ -2781,10 +2512,7 @@ function F:UpgradeRangedWeaponReleaseDefault(persist)
             delayMs = 0, reason = "buff_display_ranged_release_upgrade", durable = true,
         })
         if ok ~= true then return false, err or "远程武器默认升级保存失败" end
-        -- EnsureHudLayoutStoreLoaded 已把磁盘中的
-        -- v4 快照缓存到 HudLayoutStoreSnapshot；这里若只 durable-write v5 而不更新缓存，后续任何
-        -- ready=true 的 EnsureHudLayoutStoreLoaded 都会把旧 ranged=false 快照重新覆盖到运行时。
-        -- Authority 仍是刚通过 durable readback 的 Layout Store，只同步同 Domain 的已提交投影，不读 Native。
+        -- v5 提交后同步 HudLayoutStoreSnapshot，否则 ready=true 的加载入口会把缓存中的 v4/ranged=false 再覆盖回来。
         self.HudLayoutStoreSnapshot = self:GetLayoutSettingsSnapshot()
     else
         ApplyUpgrade()
@@ -2822,12 +2550,8 @@ end
 function F:EnsureStoreLoaded()
     if self.StoreLoaded == true then return true end
 
-    --
-    -- 旧 v3.buff_display **不再参与正常启动**。过去 EnsureStoreLoaded 第一件事就是 P:LoadStore(STORE_ID)，
-    -- 因此旧大 Store 任意一次 tracking 物理截断都会把整个状态显示再次写保护，即使 layout/settings
-    -- 已经拆出。现在启动只读取 new manifest/settings/layout + manifest 指向的 tracking slot；只有
-    -- manifest 尚未建立的首次升级才直接只读旧 key 并迁移。迁移后旧 Store 即使仍损坏也只是证据，
-    -- 不再成为 blocker。禁止为了“兼容”把 P:LoadStore(STORE_ID) 加回这里。
+    -- 正常启动只读 manifest/settings/layout 及 active tracking 分片。仅首次升级在 manifest 为空时只读迁移旧主 Store。
+    -- 迁移后旧损坏字节只作证据，不能把 P:LoadStore(STORE_ID) 加回启动路径。
     local manifestLoaded, manifestStatus = EnsureSplitStoreLoaded(TRACKING_MANIFEST_STORE_ID, true)
     if manifestLoaded ~= true then return false, manifestStatus or "状态显示 Tracking Manifest 读取失败" end
     local manifest = NormalizeTrackingManifest(self.TrackingManifest)
@@ -2861,9 +2585,7 @@ function F:MarkStoreDirty(delayMs, reason)
     -- 该兼容入口现在只允许标记 settings 小 Store。
     -- 历史调用若仍把它理解成 v3.buff_display 全量保存，会重新把 HUD/追踪带回同一故障域。
     if type(F.InvalidateSettingsCache) == "function" then F:InvalidateSettingsCache() end
-    -- 窗口位置/折叠当场保存到 settings 小 Store；禁止触碰 HUD/追踪旧大表。
-    -- 维护：状态窗锁定/解锁同步保存既有 settings 小 Store；旧 lock 原因也保留，不触及追踪/HUD 分片。
-    -- 维护：NumericField 连续预览不走此入口；外观最终提交须立即回读，保留原 Store Authority 与失败回滚。
+    -- 窗口位置、折叠和锁定只提交 settings 小 Store；最终操作立即回读，预览不走此入口。
     if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" or reason == "widget_locked" or reason == "widget_lock"
         or reason == "widget_overall_opacity" or reason == "widget_background_opacity" or reason == "widget_text_opacity" or reason == "widget_font_scale" then
         return P:SaveStore(SETTINGS_STORE_ID, { durable=true, consumeDirty=true, reason=reason })
@@ -2872,11 +2594,8 @@ function F:MarkStoreDirty(delayMs, reason)
 end
 
 function F:MutateStore(mutator, delayMs, reason, durable)
-    --
-    -- 这是为了保留 Feature 旧调用签名，不是旧 monolith Authority 的别名。调用者只可修改
-    -- show*/rows/refresh/widget 等 settings-domain 字段；tracking/meta 必须走 MutateTrackingStore，
-    -- HUD 必须走 MutateHudLayoutStore。这里在 mutation 内做跨域快照比较，发现越界立即恢复完整
-    -- Domain 并拒绝，防止未来维护者无意间把大数组又接回单 Store。
+    -- 保留旧调用签名，但只允许 settings 字段；tracking/meta 走 MutateTrackingStore，HUD 走 MutateHudLayoutStore。
+    -- 事务内比较跨域快照，越界立即恢复并拒绝，避免大数组重新接回单 Store。
     if type(P.MutateStore) ~= "function" then return false, "Persistence mutation transaction unavailable" end
     local loaded, loadErr = self:EnsureStoreLoaded()
     if loaded ~= true then return false, loadErr or "状态显示存档尚未读取" end
@@ -2898,10 +2617,8 @@ function F:MutateStore(mutator, delayMs, reason, durable)
 end
 
 function F:MutateTrackingStore(mutator, reason)
-    -- 先改 detached/current Domain，再把完整 tracking snapshot
-    -- 写入 inactive player/target/meta 三个 Store；每个 Store 必须 durable readback 成功，最后才提交
-    -- manifest。任意前置失败都恢复内存，并且 manifest 保持旧 generation，因此不会破坏上一份可靠配置。
-    -- 该函数故意不提供 debounce：tracking 用户选择属于低频高价值配置，准确率/可恢复性优先于写入延迟。
+    -- 先写 inactive player/target/meta，逐个耐久回读成功后才提交 manifest。失败恢复内存并保留旧 generation。
+    -- 追踪是低频高价值选择，不提供 debounce。
     local loaded, loadErr = self:EnsureStoreLoaded()
     if loaded ~= true then return false, loadErr or "状态显示 Tracking 尚未读取" end
     local beforeState = Copy(self.State)
@@ -2930,12 +2647,8 @@ end
 
 
 function F:MutateCompositeStores(mutator, reason)
-    -- 完整导入可能同时修改 settings、HUD layout 与 tracking/meta。
-    -- 旧单 Store 可以天然“一次写”，拆分后必须显式协调。这里先在内存完成纯 Domain mutation，
-    -- 再写 settings/layout 小 Store，最后写 tracking inactive A/B 并以 manifest 提交。Tracking 始终
-    -- 最后提交，因为 manifest 是最大的数据 Authority；若前置小 Store 或 tracking 失败，会把内存
-    -- 恢复到 before，并尽力 durable 回写已经成功的小 Store。任何 rollback 写失败都返回明确错误，
-    -- 不会偷偷把旧 monolith 当补偿路径。
+    -- 组合导入先改内存，再写 settings/layout，最后提交 tracking A/B 与 manifest。
+    -- 失败恢复内存，并尽力回写已成功的小 Store；回滚失败要返回错误，不能用旧主 Store 补偿。
     local loaded, loadErr = self:EnsureStoreLoaded()
     if loaded ~= true then return false, loadErr or "状态显示存档尚未读取" end
     local before = Copy(self.State)
@@ -3046,10 +2759,7 @@ local function ScopedTracked(settings, scope)
     return scoped
 end
 
--- 四个可见按钮只调用此入口；同 ID 可跨 scope/显式类别并存。
--- Auto 只服务旧配置/内置库的“尚未人工放置”状态，并没有可见按钮。用户第一次显式设置 Buff/Debuff 时，
--- 必须让该 ID 的 player/target Auto 一并退让；否则内置库默认导入两边 Auto 后，用户点“仅目标 Buff”仍会被
--- 隐藏的 player Auto 强制显示在自身，违背四按钮模型。这里只清 Auto，不动另一 scope/类别的显式选择。
+-- 显式放置 Buff/Debuff 时，两侧 Auto 都须移除此 ID，否则“仅目标”仍可能被自身 Auto 显示。其它显式 scope/category 选择保留。
 function F:IsTrackedChannel(id, scope, category)
     id = math.floor(tonumber(id) or 0)
     if id <= 0 or (scope ~= "player" and scope ~= "target")
@@ -3076,9 +2786,8 @@ function F:IsTrackedId(id, category, scope)
     return false
 end
 
--- 基础“自己/目标”开关按 scope 管理完整选择；开启时保留已有
--- 人工类别，否则加入 Auto；关闭一次移除该 scope 的三个桶。独立于高级四通道放置，不能
--- 借 SetTrackedChannel 的显式类别分支清另一 scope 的 Auto。仍由原 A/B manifest 单事务提交。
+-- 基础自己/目标开关只作用于该 scope：开启保留人工类别或加入 Auto，关闭移除该侧三桶。
+-- 不能借高级显式放置分支清另一侧 Auto；仍用一次 A/B manifest 事务提交。
 function F:SetTrackedScope(id, scope, enabled)
     id = tonumber(id)
     if id == nil or id ~= math.floor(id) or id <= 0 or id > 2147483647 then return false, "状态 ID 无效" end
@@ -3211,7 +2920,7 @@ function F:SetClassification(id, category)
     id = math.floor(tonumber(id) or 0)
     if id <= 0 then return false, "Buff ID 无效" end
     if category ~= "buff" and category ~= "debuff" then return false, "分类必须是 buff 或 debuff" end
-    -- schema8中classification仅为元数据，禁止改写scope-aware追踪放置。旧平面RemoveTrackedFromBuckets残留会误触空桶/六通道意图；当前权威是tracking A/B+manifest，分类只写metadata且同事务回滚，保留两个scope原选择。
+    -- classification 只改元数据，不动六通道追踪选择；与 tracking A/B+manifest 同事务回滚。
     local marked, markErr = self:MutateTrackingStore(function()
         local classification = self.State.settings.classification or {}
         classification[id] = category

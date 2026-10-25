@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖完整通道交易测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 维护（2026-10-01，auction-full-lane-safety-1）：真实 Trade/配方/Query/Queue/材料价联测。
-------------------------------------------------------------------------
+-- 真实 Trade/配方/Query/Queue/材料价联测。
 dofile('tools/rs_trade_tests.lua')
 local baseS=ReplicatedSuite
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')
@@ -21,7 +18,7 @@ local function Fixture(source)
   m.entries[tostring(pair[1])..':0'].observedMinute=m.entries[tostring(pair[1])..':0'].observedMinute-4203
  end
  h.content=nil;ADDON.GetContentMainScriptPosVis=function()return nil,nil,nil,nil,nil end
- -- 中文维护注释（2026-10-02）：本组验证 API 不可读时的阻断，不能用正常空内容关闭形态代替故障。
+ -- 本组验证 API 不可读时的阻断，不能用正常空内容关闭形态代替故障。
  ADDON.GetContent=function()error('native_content_unreadable')end
  T.PriceQuoteSubscribed=false;T.PriceQuoteActivityTopic=nil;T.enabled=true;T.consumerCount=1
  T.Preferences.viewMode='all';T.State.fromZone,T.State.toZone=1,5;T.State.commerceMode,T.State.ratioMode='observe','current'

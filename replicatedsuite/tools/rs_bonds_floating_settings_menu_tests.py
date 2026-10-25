@@ -1,8 +1,6 @@
-# ---------------------------------------------------------------------
 # Replicated Suite · 债券浮窗设置菜单测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,27 +18,22 @@ def check(condition, message):
     if not condition:
         failures.append(message)
 
-# 悬浮窗必须只有一个常驻 Dropdown；主页面仍保留三项完整配置。
-check(bonds.count("RSUI:Dropdown({") == 1, "floating Bonds must allocate exactly one Dropdown")
-check("bondSettingsDropdown" in bonds and 'placeholder = "设置"' in bonds, "single Settings trigger missing")
-check("bondOrderDropdown" not in bonds and "bondScopeDropdown" not in bonds and "bondDuplicateDropdown" not in bonds,
-      "legacy three floating Dropdown instances remain")
+# 用户要求三项直接呈现于同一行；主页面仍保留三项完整配置。
+check(bonds.count("RSUI:Dropdown({") == 3, "floating Bonds must expose three Dropdowns")
+for name in ("bondScopeDropdown", "bondOrderDropdown", "bondDuplicateDropdown"):
+    check(name in bonds, f"floating setting missing: {name}")
+check("bondSettingsDropdown" not in bonds, "obsolete combined Settings menu remains")
 check(page.count('id = "v3_bonds_order"') == 1 and page.count('id = "v3_bonds_scope"') == 1
       and page.count('id = "v3_bonds_duplicate_mode"') == 1, "main page must retain the three full controls")
 
-# 单菜单使用不可选 header 分组，并只调用既有原子 Feature Command。
-for marker in ('text = "排序"', 'text = "显示范围"', 'text = "重复材料"', 'kind = "header"', 'selectable = false'):
-    check(marker in widget, f"group marker missing: {marker}")
+# 三项只调用既有原子 Feature Command。
 for marker in ("SetDisplayOrder", "SetFilterMask", "SetDuplicateMode"):
     check(marker in bonds, f"atomic command missing: {marker}")
-check('get = function() return "__bond_settings__" end' in bonds, "settings trigger sentinel missing")
-check('onChanged = function(_, _, control)' in bonds and 'control:Render()' in bonds,
-      "settings trigger must reset to placeholder after an action")
+check('__bond_settings__' not in bonds, "current selections must not use a placeholder sentinel")
 
 # 布局预算：常驻高度 26px，并恢复更多表格行池。
 check('height = 26' in bonds, "floating settings row is not compact")
-check("slot = instance.headerMode and {size='fill',fill=1,hAlign='fill'} or { size = \"fixed\", width = 112, minWidth = 100 }" in bonds,
-      "floating settings must retain 112px while only the home header uses its parent width")
+check(bonds.count('compact = true') == 3, "three choices must fit narrow windows")
 check('spec.featureName == "Bonds" then desiredRows = 9' in widget, "Bonds table row budget was not restored")
 check('"toolbar_primary"' not in bonds and '"toolbar_scope"' not in bonds, "old two-row toolbar remains")
 

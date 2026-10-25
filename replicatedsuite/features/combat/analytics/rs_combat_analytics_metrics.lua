@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗分析内置指标
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 独立且有界的指标插件；明确区分 direct、observed、inferred 证据。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Analytics = S.Services and S.Services.CombatAnalyticsV3 or nil
@@ -112,11 +109,48 @@ do
         GetHealth=function(self) return {current=self.state.current~=nil,history=self.state.history.count,timeline=self.state.current and self.state.current.timeline.count or 0,historyEvicted=self.state.history.evicted} end})
 end
 
-------------------------------------------------------------------------
 -- 2. Kills / deaths. 只保留目标类型/伤害观察时间，合并死亡与明确归属；不维护助攻集合。
-------------------------------------------------------------------------
 do
     local metric={state=C:NewActorState(MAX_ACTORS)}
+    -- 击杀计数只随确认死亡/补证变化；伤害刷新不应重复扫描、排序同一份战绩。
+    -- 私有缓存固定为6种排行（击杀/死亡/荣誉次数 × 是否含零）和最多4个角色技能索引槽。
+    -- 只缓存排序顺序，按精确版本及 state 身份失效；公开行永不存入私有缓存。
+    local rankCache,skillCache,nextSkillCache={},{},1
+    local cacheGeneration,cacheState,cacheRevision
+    local function ClearReadCache()
+        rankCache,skillCache,nextSkillCache={},{},1
+        cacheGeneration,cacheState,cacheRevision=nil,nil,nil
+    end
+    local function CheckReadCache(state)
+        if cacheGeneration~=S.Generation or cacheState~=state or cacheRevision~=state.revision then
+            ClearReadCache()
+            cacheGeneration,cacheState,cacheRevision=S.Generation,state,state.revision
+        end
+    end
+    local function KillRanking(self,key,limit,includeZero)
+        CheckReadCache(self.state)
+        local slot=(key=="deaths" and 3 or (key=="honorParticipations" and 5 or 1))+(includeZero and 1 or 0)
+        local order=rankCache[slot]
+        local rows={}
+        if order==nil then
+            rows=Rank(self,key,{"kills","deaths","honorParticipations","honorAssistedKills","lastKillConfidence"},MAX_ACTORS,{includeZero=includeZero})
+            order={};for index,row in ipairs(rows) do order[index]=row.key end
+            rankCache[slot]=order
+            -- 冷读直接交出本次新建行，只另存标量顺序，避免先建快照再复制整表。
+            while #rows>limit do rows[#rows]=nil end
+            return rows
+        end
+        for index=1,math.min(#order,limit) do
+            local actor=self.state.actors[order[index]]
+            local row={key=actor.key,name=actor.name~="" and actor.name or actor.key,value=tonumber(actor[key]) or 0,
+                firstAt=actor.firstAt,lastAt=actor.lastAt}
+            row.kills,row.deaths,row.lastKillConfidence,row.rank=actor.kills,actor.deaths,actor.lastKillConfidence,index
+            row.honorParticipations=actor.honorParticipations
+            row.honorAssistedKills=actor.honorAssistedKills
+            rows[index]=row
+        end
+        return rows
+    end
     -- 漏记击杀需要死亡原文与判定证据，errors=0 不能说明已计数。
     -- 只在死亡/通知分支保留32条标量记录；普通伤害不建诊断快照，不开全场桥/新任务。
     -- 证据属于本次加载，停用或清空实时计数不抹掉它；导出时才复制，不能触发结算。
@@ -296,12 +330,45 @@ do
     local function SkillKillProjection(state,opt)
         local actor=state.actors[tostring(opt.actorKey or "")]
         if not actor and C:Trim(opt.actorName)~="" then actor=state.actors[C:ActorKey(opt.actorName)] end
-        local rows={}
-        for _,row in pairs(actor and actor.skillKills or {}) do
-            rows[#rows+1]={key=row.key,name=row.name,abilityId=row.abilityId,kills=row.kills,
-                targets=C:MapRows(row.targets,128,"kills"),omittedTargets=row.omittedTargets}
+        CheckReadCache(state)
+        local cached,rows=nil,{}
+        if actor then
+            -- DPS 的 key 可能小写，必须先按原 actorName 回退解析，再复用真实角色键。
+            for _,entry in ipairs(skillCache) do if entry.key==actor.key then cached=entry;break end end
+            if not cached or cached.seen==true then
+                for _,row in pairs(actor.skillKills or {}) do
+                    rows[#rows+1]={key=row.key,name=row.name,abilityId=row.abilityId,kills=row.kills,
+                        targets=C:MapRows(row.targets,128,"kills"),omittedTargets=row.omittedTargets}
+                end
+                table.sort(rows,function(a,b)if a.kills~=b.kills then return a.kills>b.kills end return a.key<b.key end)
+                if not cached then
+                    -- 每版本首次读取只留标量准入标记；频繁新击杀后的单次读取不建立整份索引。
+                    -- 同角色第二次读取才准入，第三次起复用；绝不保存本次公开 skills/targets。
+                    skillCache[nextSkillCache]={key=actor.key,seen=true};nextSkillCache=nextSkillCache%4+1
+                else
+                    -- 顺序数组以版本内的私有技能行分段，后接已排序的目标名；至多66+128项。
+                    -- 行引用只属于当前 state，公开 skills/targets 均为新表，不会反向写入它。
+                    local order={}
+                    for _,row in ipairs(rows) do
+                        order[#order+1]=actor.skillKills[row.key]
+                        for _,target in ipairs(row.targets) do order[#order+1]=target.key end
+                    end
+                    cached.order,cached.seen=order,nil
+                end
+            else
+                local row,targets
+                for _,item in ipairs(cached.order) do
+                    if type(item)=="table" then
+                        row,targets=item,{}
+                        rows[#rows+1]={key=row.key,name=row.name,abilityId=row.abilityId,kills=row.kills,
+                            targets=targets,omittedTargets=row.omittedTargets}
+                    else
+                        local value=tonumber(row.targets[item]) or 0
+                        targets[#targets+1]={key=item,name=item,value=value,kills=value}
+                    end
+                end
+            end
         end
-        table.sort(rows,function(a,b)if a.kills~=b.kills then return a.kills>b.kills end return a.key<b.key end)
         return {actor=actor and {key=actor.key,name=actor.name,kills=actor.kills or 0} or nil,skills=rows,honorAssistedKills=actor and actor.honorAssistedKills or 0,
             retainedTargets=actor and actor.skillKillTargetCount or 0,dataRevision=tonumber(state.revision) or 0,
             statsAvailable=Feature:IsMetricPreferenceEnabled("kills"),coverage="CONFIRMED_PLAYER_KILLS_SKILL_FROM_DEATH_FACT_ONLY"}
@@ -492,11 +559,12 @@ do
             if opt and opt.actorKey~=nil then return SkillKillProjection(self.state,opt) end
             local key=tostring(opt and opt.valueKey or "kills");if key~="kills" and key~="deaths" and key~="honorParticipations" then key="kills" end
             local limit=math.max(1,math.min(MAX_ACTORS,tonumber(opt and opt.limit) or 100))
-            return {valueKey=key,rows=Rank(self,key,{"kills","deaths","honorParticipations","honorAssistedKills","lastKillConfidence"},limit,{includeZero=opt and opt.includeZero==true}),
+            return {valueKey=key,rows=KillRanking(self,key,limit,opt and opt.includeZero==true),
                 dataRevision=tonumber(self.state.revision) or 0,statsAvailable=Feature:IsMetricPreferenceEnabled("kills"),
                 assistsAvailable=false,coverage=key=="honorParticipations" and "SELF_HPW_POSITIVE_RECEIPTS" or "EXPLICIT_WITH_SELF_HPW_SUPPLEMENT"}
         end,
         Reset=function(self,reason,resetKind)
+            ClearReadCache() -- inactive 保留计数，但停用必须立即释放排序/技能快照。
             if S.Scheduler then S.Scheduler:RemoveTask("v3_combat_kills_notices") end
             if S.Scheduler then S.Scheduler:RemoveTask("v3_combat_kills_honor") end
             if type(Feature.CancelSystemKillEvidence)=="function" then Feature:CancelSystemKillEvidence() end

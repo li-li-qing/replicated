@@ -1,15 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 布局编辑命令条
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 布局编辑操作的共享命令投影。
--- Undo/Redo 可用性只来自 LayoutEditHistoryModel 快照；Revert/Reset/Apply 只来自可选 Session 快照。组件不定义这些语义，也不自行持久化 Feature；
--- 通过 Subscribe/Unsubscribe 观察变化，无 Tick/OnUpdate/轮询，页面不持有 canUndo/canRedo/dirty。
--- Session 投影契约：GetCommandSnapshot() -> { revision, busy, blocked, dirty, canRevert, canReset, canApply, statusText }；
--- ExecuteCommand("revert"|"reset"|"apply", context)；Subscribe(token, listener)/Unsubscribe(token)。
--- Revert/Reset/Apply 语义归 LayoutEditSessionModel；命令条仅投影/派发，不自行写 Feature。
-------------------------------------------------------------------------
+-- 命令条只投影和派发：Undo/Redo 取 History 快照，Revert/Reset/Apply 取可选 Session。
+-- Session 接口为 GetCommandSnapshot、ExecuteCommand、Subscribe/Unsubscribe；事件通知更新按钮，不另存 dirty 或持久化。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

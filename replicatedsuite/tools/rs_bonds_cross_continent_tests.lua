@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 债券跨大陆测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 开发期回归使用实际 Bonds、Store、Demand、Event 和 Scheduler。
 -- 原生 API、时钟和 SaveData 介质为受控输入，不能视为客户端验收。
-------------------------------------------------------------------------
 unpack = unpack or table.unpack
 local total, passed = 0, 0
 local function test(name, fn)

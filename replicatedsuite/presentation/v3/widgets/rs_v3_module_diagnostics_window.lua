@@ -1,17 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 模块诊断窗口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（module-diagnostics-window-1）：
--- 原因：每个 Feature 自建诊断窗会复制 Floating/分页/输入生命周期，最终再次分叉；因此全 Suite
--- 只保留一个共享窗口，moduleId 仅是当前展示上下文。Authority：报告由 ModuleDiagnosticsHub 生成，
--- 窗口只持有一次 Capture 的 immutable snapshot/pageIndex；Feature 生命周期/Store 均不归这里。
--- 数据流：PageHeader 诊断按钮 -> Open(moduleId)（零采集）-> 用户点生成 -> Hub:Capture ->
--- DiagnosticCopyBox:SetPageText；上一页/下一页只 Hub:GetPage(snapshot)，绝不重新采集。
--- 兼容/风险：模块切换和窗口关闭必须 Deactivate CopyBox，避免键盘 Authority 泄漏；未来禁止
--- 为单个业务模块复制第二个诊断 Floating Window，特殊证据应注册 Provider 而不是另建 UI。
-------------------------------------------------------------------------
+-- 全插件共用一个诊断窗，moduleId 只作展示上下文。打开不采集，用户生成后才由 Hub Capture。
+-- 窗口保留冻结快照和页码，翻页只 GetPage；特殊证据注册 Provider，不另建诊断 UI。
+-- 切模块或真正关闭时释放 CopyBox 焦点。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -23,7 +15,7 @@ if type(RSUI) ~= "table" or type(UI) ~= "table" or type(Floating) ~= "table"
     or type(AuxStore) ~= "table" or type(Hub) ~= "table" then return end
 
 S.UIV3 = S.UIV3 or {}
--- 维护（module-controls-diag-2）：重载后Native控件已由Bootstrap退役；不得复用旧surface/Hub闭包。
+-- 重载后Native控件已由Bootstrap退役；不得复用旧surface/Hub闭包。
 -- 只在同加载代复用共享窗口，下一代重新懒创建，防止报告写入隐藏的旧编辑框。
 local previousWindow = S.UIV3.ModuleDiagnosticsWindowV3
 S.UIV3.ModuleDiagnosticsWindowV3 = type(previousWindow) == "table"
@@ -40,10 +32,8 @@ S.UIV3.ModuleDiagnosticsWindowV3 = type(previousWindow) == "table"
     pageIndex = 0,
 }
 local W = S.UIV3.ModuleDiagnosticsWindowV3
--- 约束（2026-09-25，diagnostic-native-capacity-1）：RU 多行 EditBox 的 SetText/GetText
--- 往返容量明显小于 maxLength，且不同构建/文本形态会变化。3500 字节在实机出现
--- expected=3429 / actual=2256 的稳定截断。正常分页改为保守 2048，并在任何回读失败时
--- 基于本次 Native 实测 actualBytes 自动无损重分页；报告 snapshot 不重新采集。
+-- RU EditBox 回读容量低于 maxLength，3500 字节曾稳定截为 expected=3429 / actual=2256。
+-- 默认用 2048；回读失败按实测 actualBytes 重切同一快照，不重新采集。
 local NORMAL_PAGE_CAPACITY = 2048
 local MIN_PAGE_CAPACITY = 512
 local MAX_AUTO_REPAGE_ATTEMPTS = 3
@@ -59,16 +49,9 @@ local function SetText(control, text)
 end
 
 function W:_UpdateNavigation()
-    -- 约束（2026-09-19，module-diagnostics-pagination-authority-1）：
-    -- 原因：RU 实机出现“正文已经是 PAGE=1/2，但工具栏仍 0/0 且下一页禁用”。旧实现把
-    -- 分页导航错误绑定到 DiagnosticCopyBox 的 Native 回读事务：Hub 已经生成 immutable
-    -- snapshot，正文甚至已经写入编辑框，只要 CopyBox 最后一步回读/提交没有完成，snapshot
-    -- 就不发布，用户因此失去其余页面。分页 Authority 本应是 Hub snapshot，不是 Native 编辑框。
-    -- 权威归属/数据流：Hub:GetPage 成功即证明 page index 属于冻结 snapshot；窗口立刻发布
-    -- snapshot/pageIndex。CopyBox 只负责“当前页显示与完整性校验”，失败仅把页码标红并在状态栏
-    -- 报错，不得锁死上一页/下一页。缩短分页仍只重切同一份 report，不重新采集业务/Store。
-    -- 兼容边界：分页可继续浏览不代表失败页可作为完整证据；copyPageValid=false 时仍要求用户
-    -- 使用缩短分页，直到回读一致。这样既不丢第二页，也不把截断页伪装成已验证页面。
+    -- Hub:GetPage 成功即更新分页导航，CopyBox 另管当前页的写入和回读。
+    -- 旧实现等回读成功才发布快照，曾出现正文 PAGE=1/2、工具栏 0/0 且无法翻页。
+    -- 回读失败仍能浏览其它页，但 copyPageValid=false 的正文不能当完整证据，须缩短后重验。
     local total = self.snapshot and tonumber(self.snapshot.parts) or 0
     local index = tonumber(self.pageIndex) or 0
     if self.previousButton ~= nil and type(self.previousButton.SetEnabled) == "function" then self.previousButton:SetEnabled(index > 1) end
@@ -115,17 +98,9 @@ end
 function W:EnsureCreated()
     if self.created == true and self.surface ~= nil then return true end
 
-    -- 约束（2026-09-18，module-diagnostics-aux-fail-open-1）：
-    -- 原因：模块诊断是故障观察面，不得依赖另一个持久化 Store 健康后才能打开；否则
-    -- v3.presentation.aux_windows 恰好损坏时，用户会在最需要诊断的时刻失去诊断入口。
-    -- Authority：AuxWindowStore 只拥有“窗口几何/透明度”等 Presentation 状态，绝不拥有
-    -- 报告、Feature 生命周期或业务配置；因此读取失败可以安全退化为 Session-only 内存状态。
-    -- 数据流：优先 AuxStore -> 若 Load/Get/Set/Persist 任一失败，则永久切换本窗口实例到
-    -- fallbackState；FloatingSurface 后续仍能移动/缩放，但本次位置不再写盘。
-    -- 兼容边界：这里只对 module_diagnostics 这一诊断窗口 fail-open，其他业务辅助窗继续遵循
-    -- 各自持久化策略。禁止未来因为“保存位置失败”而 return false 阻断诊断窗口创建。
-    -- 风险：降级 Session 的窗口位置重载后会回默认值，这是可接受的 Presentation 损失；
-    -- 绝不能为了保位置而绕过 Persistence Fence 或直接写 Native SaveData。
+    -- 诊断不能依赖位置 Store 健康才能打开。AuxStore 的 Load/Get/Set/Persist 任一失败，
+    -- 本实例就改用会话 fallbackState，仍可移动、缩放，但不再保存位置。
+    -- 此降级仅限诊断窗，不绕过 Persistence fence；重载后位置可能回到默认。
     local policy = AuxStore:GetPolicy("module_diagnostics")
     local loaded, loadErr = AuxStore:EnsureLoaded()
     local auxHealthy = loaded == true
@@ -218,7 +193,7 @@ function W:EnsureCreated()
         overflow = "ellipsis", slot = { size = "fixed", width = 58 } })
     self.nextButton = RSUI:Button({ id = self.id .. "_next", parent = actions, text = "下一页", compact = true,
         slot = { size = "fixed", width = 60 } })
-    -- 维护（module-controls-diag-2）：复制失败只重切冻结正文，不重新取证；按钮明确且不会隐式翻页。
+    -- 复制失败只重切冻结正文，不重新取证；按钮明确且不会隐式翻页。
     self.normalPageButton = RSUI:Button({ id = self.id .. "_normal_pages", parent = actions, text = "正常分页", compact = true,
         slot = { size = "fixed", width = 76 } })
     self.retryButton = RSUI:Button({ id = self.id .. "_retry", parent = actions, text = "缩短分页", compact = true,
@@ -236,7 +211,7 @@ function W:EnsureCreated()
     -- 文本仅 Open 时更新，不触碰已经冻结的报告/选区；无错误标记不等于模块验收通过。
     self.stateText = RSUI:Text({id=self.id.."_state",parent=stack,text="",fontSize=10,tone="muted",overflow="ellipsis",
         slot={size="fixed",height=24,hAlign="fill"}})
-    -- 维护（module-controls-diag-2）：特殊字段探测也是统一诊断窗的显式动作，绝不能在生成/翻页时自动执行。
+    -- 特殊字段探测也是统一诊断窗的显式动作，绝不能在生成/翻页时自动执行。
     self.detailActions = RSUI:HorizontalBox({ id = self.id .. "_detail_actions", parent = stack, gap = 6,
         visible = false, slot = { size = "fixed", height = 28, hAlign = "fill" } })
     self.probeButton = RSUI:Button({ id = self.id .. "_aura_probe", parent = self.detailActions, text = "Buff字段", compact = true,
@@ -309,9 +284,7 @@ function W:Open(moduleId)
     return true
 end
 
--- 维护（module-controls-diag-2）：Window 是分页展示 Authority，不是数据采集 Authority。
--- Capture / GetPage / Native 写入分阶段隔离；第一页回读成功才提交 snapshot/pageIndex。
--- 失败保留旧快照并挂起候选；禁止为了恢复复制而反复扫描模块或自动改写用户选中的文本。
+-- 采集、分页和 Native 交付分开；交付失败保留冻结候选，不能反复扫描模块或自动改选中文本。
 function W:_ReportFailure(err)
     if self.surface and type(self.surface.SetStatus) == "function" then
         self.surface:SetStatus(tostring(err or "诊断操作失败"), "red")
@@ -340,11 +313,8 @@ local function PageForOffset(snapshot, offset)
     return math.max(1, math.min(#bounds, 1))
 end
 
--- 约束（2026-09-25，diagnostic-auto-repage-1）：Native 回读失败是 Presentation 容量
--- 事实，不是诊断采集失败。只允许对同一 immutable report 调 Hub:Repage；不调用 Provider、
--- Store、Feature 或 Native 业务 API。actualBytes 来自刚完成的 SetText/GetText，取 78% 作为
--- 安全预算，并同时最多缩到上一预算的 70%，避免 UTF-8/头部形态差异再次触顶。成功后记住
--- 本加载代容量，后续模块直接用校准预算，用户不必反复点击“缩短分页”。
+-- 回读失败只对同一报告 Repage，不调用 Provider 或业务 API。
+-- 预算取实测 actualBytes 的 78%，且不高于上一预算的 70%；成功容量留在本加载代供后续报告使用。
 function W:_AutoRepageReadback(snapshot, index, depth)
     depth = tonumber(depth) or 0
     if depth >= MAX_AUTO_REPAGE_ATTEMPTS or type(snapshot) ~= "table" or type(Hub.Repage) ~= "function" then return false end
@@ -376,17 +346,14 @@ function W:_PresentSnapshot(snapshot, index, autoDepth)
     local got, text, err = pcall(Hub.GetPage, Hub, snapshot, index)
     if not got or text == nil then return self:_ReportFailure(got and err or text) end
 
-    -- Hub snapshot/page 是不可变的报告分页 Authority。只要 GetPage 成功，就先发布导航状态；
-    -- Native CopyBox 写入/回读属于下一层展示事务。这样即使 RU 编辑框回读异常，用户仍能
-    -- 访问冻结报告的其余页面，再用“缩短分页”解决当前页复制完整性，而不是卡在 0/0。
+    -- GetPage 成功就发布导航；编辑框交付失败不应锁住其它页，可另用缩短分页重试。
     self.snapshot, self.pageIndex = snapshot, index
     self.pendingSnapshot = nil
     self.copyPageValid = nil
     self:_UpdateNavigation()
 
-    -- 修复（2026-09-30，diagnostic-copy-selection-1）：与全局报告已有交付顺序一致，
-    -- 先激活焦点、再写入并验证正文。原先 SetText/GetText 成功后又 SetFocus，Native
-    -- 可能重置缓冲/选区，使“回读一致”失效。焦点失败仍继续交付正文并明确提示，不重采集。
+    -- 先激活焦点，再写正文并回读；写完后 SetFocus 可能重置缓冲或选区，使先前验证失效。
+    -- 焦点失败仍尝试交付并明确提示，不重新采集。
     self.copyActivationError = nil
     if type(self.copyBox.Activate) == "function" then
         local activated, result, detail = pcall(self.copyBox.Activate, self.copyBox, "page_ready")
@@ -436,9 +403,8 @@ end
 
 function W:Generate()
     if self.moduleId == nil or self.copyBox == nil then return false, "尚未选择模块" end
-    -- 修复（2026-09-30，diagnostic-copy-selection-1）：先保留用户复制失败后的只读输入状态，
-    -- 再撤权采集。否则报告永远只能看到 Generate 主动制造的 inactive，无法定位原失焦。
-    -- 翻页不更新此证据；不读取报告正文/系统剪贴板，也不引入轮询或普通输入生命周期。
+    -- 先记录复制失败时的只读输入状态再撤权，否则只会看到 Generate 自己造成的 inactive。
+    -- 翻页不更新此证据，也不读取正文或剪贴板。
     if type(self.copyBox.GetDiagnostics) == "function" then
         local ok, value = pcall(self.copyBox.GetDiagnostics, self.copyBox)
         self.copyBeforeCapture = ok and value or { error = tostring(value):sub(1, 160) }
@@ -503,10 +469,8 @@ function W:RestoreNormalPages()
 end
 
 function W:Close()
-    -- 约束（2026-09-18）：CopyBox 的键盘 Authority 只允许在“窗口确实关闭”
-    -- 的 onClosed 生命周期里释放。这里禁止提前 Deactivate；否则 FloatingSurface:Close()
-    -- 随后再次触发 onClosed，会造成双重释放/焦点抖动，也会让未来 Close 被 veto 时出现
-    -- “窗口仍可见但复制框已经失去 Authority”的半关闭状态。
+    -- 仅在真正关闭后的 onClosed 释放 CopyBox，不能在 Close 前提前 Deactivate。
+    -- 否则可能双重释放，或被 veto 后窗口仍在而复制框已失焦。
     if self.surface ~= nil and type(self.surface.Close) == "function" then
         local ok, err = self.surface:Close("module_diagnostics_close")
         if ok ~= true then return false, err end
@@ -532,7 +496,7 @@ function W:Describe()
         copy = self.copyBox and type(self.copyBox.GetDiagnostics) == "function" and self.copyBox:GetDiagnostics() or nil }
 end
 
--- 维护：复用已验证的业务只读探测Command，保留聊天输出与短报告；仅缓存返回证据供下次Capture。
+-- 复用已验证的业务只读探测Command，保留聊天输出与短报告；仅缓存返回证据供下次Capture。
 -- 不改变当前snapshot；诊断窗口不直接访问X2Unit、不写配置、不隐式启用模块。
 function W:ProbeAuraFields()
     if self.moduleId ~= "combat_buff_display" then return false, "当前模块不支持状态字段探测" end

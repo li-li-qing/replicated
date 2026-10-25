@@ -1,17 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能方案功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 用户自定义“功能方案”权威边界：一个方案只保存“哪些可控业务 Feature 应开启”。
--- 应用时当前 Registry 中其它可控业务 Feature 一律关闭；方案本身不硬编码“生活/战斗”等语义。
--- 关键边界：
--- * FeatureRuntime 是启停/偏好唯一 Authority，本模块绝不直接调用其它 Feature:Enable/Disable。
--- * 方案只控制 Enabled/PreferredEnabled，不删除任何 Feature 自己的永久配置、窗口位置或业务 Store。
--- * 批量切换使用 FeatureRuntime:ApplyPreferenceTargets 单事务提交，失败反向回滚，禁止半套状态。
--- * 快捷按钮只是 Presentation Proxy；本文件只保存方案/按钮位置并发布投影事件，不创建 Native UI。
--- * 无 Tick/OnUpdate；仅用户操作、Feature lifecycle 事件和页面 Consumer 边沿刷新。
-------------------------------------------------------------------------
+-- 方案只保存应启用的可控 Feature，应用时关闭当前 Registry 其它可控项；各功能自身配置不删。
+-- 启停统一交 FeatureRuntime:ApplyPreferenceTargets 单事务处理，失败反序回滚；快捷按钮仅投影方案和位置，本文件不建 Native UI 或 Tick。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P, Runtime, Registry, Demand = S.Persistence, S.FeatureRuntime, S.FeatureRegistry, S.Demand
@@ -84,13 +75,8 @@ local function NormalizePlacement(value)
         and (anchorH == "LEFT" or anchorH == "RIGHT") and (anchorV == "TOP" or anchorV == "BOTTOM")
         and offsetX ~= nil and offsetY ~= nil
 
-    -- 屏幕快捷按钮除了
-    -- “最近边锚点”之外，还必须保留产生该位置的 source viewport identity（逻辑宽高 +
-    -- 中心比例 + uiScale）。否则同一个分辨率重登时只能靠边锚点反推，一旦恢复期 viewport
-    -- 与保存期不同（登录期临时 canvas / 窗口模式变化），右侧按钮就会被推到真实窗口之外；
-    -- 而且每次重新投影都会以“上一次投影结果”为输入，产生累计漂移。
-    -- 这里只做读取归一化：绝不根据旧 edge 值合成新语义（启动期不升级旧配置），
-    -- 只有用户真实拖动提交 SetQuickPosition 时才会写入这组字段。
+    -- 快捷按钮须保留保存时的逻辑宽高、中心比例和 uiScale，不能反复用上次投影结果定位，否则登录临时 canvas/窗口切换会累积漂移。
+    -- 加载只归一化，不从旧 edge 值猜新意图；真实拖动提交才写 source viewport 字段。
     local savedW, savedH = FiniteNumber(value.quickSavedLogicalWidth), FiniteNumber(value.quickSavedLogicalHeight)
     local savedScale = FiniteNumber(value.quickSavedUiScale)
     local centerX, centerY = FiniteNumber(value.quickNormalizedCenterX), FiniteNumber(value.quickNormalizedCenterY)
@@ -397,9 +383,7 @@ end
 function F:GetProjection()
     if self.storeLoaded ~= true then self:EnsureStoreLoaded() end
     local selected = ProfileById(self.State.selectedId)
-    -- 2026-10-06：Disable 会释放导航订阅；不能继续返回上次事件留下的旧 moduleRows。
-    -- Projection 按请求从同一个 Registry/Workspace/Runtime 只读投影名单与开关，启用/关闭均一致。
-    -- 不为了名单更新重新启用模块、订阅事件、写Store或注册轮询；不从这里 Publish 造成页面重入。
+    -- 投影每次从 Registry/Workspace/Runtime 读当前名单，避免 Disable 释放订阅后返回旧 moduleRows；不重启功能或发布重入事件。
     local navigationRows=self:GetNavigationFeatureRows()
     local controllableCount=0
     for _,row in ipairs(navigationRows)do if row.controllable then controllableCount=controllableCount+1 end end
@@ -521,9 +505,7 @@ local function NormalizeResponsivePlacement(placement)
         offsetX = math.max(0, math.floor(offsetX + 0.5)), offsetY = math.max(0, math.floor(offsetY + 0.5)) }
 end
 
--- 真实拖动提交时由 Widget 传入
--- 的 source-viewport intent（Layout logical-free-v2 projection 的 Feature 侧镜像）。
--- 只接受完整、有限、可信的一组值；任何缺失都整体拒绝，避免生成“半套” viewport 身份。
+-- 拖动提交须带完整、有限的 source viewport intent，缺任一字段整体拒绝，不能保存半套身份。
 local function NormalizeViewportIntent(intent)
     if type(intent) ~= "table" then return nil end
     local width, height = FiniteNumber(intent.savedLogicalWidth), FiniteNumber(intent.savedLogicalHeight)
@@ -626,9 +608,7 @@ function F.Commands:SetModule(profileId, featureId, enabled)
 end
 function F.Commands:CaptureCurrent(profileId)
     local profile = ProfileById(profileId); if profile == nil then return false, "请先选择方案" end
-    -- 2026-10-06：获取当前始终重读同源导航目录，不复用上一次页面 moduleRows。
-    -- 删除/合并模块、完成标签和个人隐藏由 Registry/Workspace 解释；显式捕获才替换旧开启集合。
-    -- 功能方案仍只捕获 FeatureRuntime 开关，不跨权威读取/写入游戏键位或业务配置。
+    -- 获取时重读同源导航目录，显式捕获才替换旧开启集合；只捕获 FeatureRuntime 开关，不碰键位或业务配置。
     local currentRows=F:GetControllableFeatureRows()
     local enabledCount=0
     local nextModules = { team_feature_split_linked = true } -- 捕获真实独立开关，不借旧团队中心位推断视觉开关。
@@ -775,17 +755,12 @@ function F:GetHealth()
     }
 end
 
--- 模块诊断 Provider 只读取已经存在的
--- Store/Runtime 投影，不主动 LoadStore、不切 Feature、不创建 UI。这样方案应用失败时可以从模块右上角
--- 诊断直接区分“存档未加载 / 最近方案已偏离 / 正在批量切换”等状态，而不会让诊断本身成为第二 Authority。
+-- 诊断只读现有 Store/Runtime 投影，不加载、切功能或建 UI，以区分未加载、方案偏离和正在切换。
 if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
     S.ModuleDiagnosticsHub:RegisterProvider(F.Id, "feature_profile_state", function()
         local profileStore = type(P.GetStore) == "function" and P:GetStore(F.storeId) or nil
         local preferenceStore = type(P.GetStore) == "function" and P:GetStore(Runtime.preferenceStoreId) or nil
-        -- 方案 Store 是否真的落到
-        -- SaveData 必须可直接从诊断读出，而不是靠“重启后按钮没了”反推。这里只读已存在的
-        -- Persistence Store 元数据（key/loadStatus/dirty/revision/lastError），不 LoadStore、
-        -- 不 MarkDirty、不写任何存档。
+        -- 只读 Persistence 的 key/loadStatus/dirty/revision/lastError 证明保存状态，不 LoadStore、MarkDirty 或写盘。
         local quickRows = {}
         for _, profile in ipairs(F.State.profiles or {}) do
             quickRows[#quickRows + 1] = {

@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 浅色主题测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实 Theme/NativePrimitive/RSUI/DiffRenderer；仅 Native 对象为可控替身。
 -- 验证配色切换不会变成控件重建、输入/几何事务或业务查询；不冒充 RU 客户端像素实测。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)local ok,e=xpcall(fn,debug.traceback);if ok then passed=passed+1;print('PASS light-theme '..name)else failed=failed+1;print('FAIL light-theme '..name..': '..e)end end
 local function Eq(a,b)for i=1,4 do assert(math.abs((a[i] or 1)-(b[i] or 1))<.000001,'color mismatch channel '..i)end end
@@ -15,7 +12,7 @@ local function Boot()
   h.widgets=h.widgets+1
   local n={id=id,parent=parent,width=500,height=500,x=0,y=0,shown=true,enabled=true,text='',events={},draws={}}
   n.style={SetColor=function(self,...)self.rgba={...}end,SetShadow=function(self,v)self.shadow=v end,
-   SetOutline=function(self,v)self.outline=v end, -- 中文维护（2026-10-09）：记录原生描边值，透明文字必须关闭粗描边。
+   SetOutline=function(self,v)self.outline=v end, -- 记录原生描边值，透明文字必须关闭粗描边。
    SetAlign=function()end,SetFontSize=function(self,v)self.font=v end,SetEllipsis=function()end}
   n.guideTextStyle={SetColor=n.style.SetColor,SetAlign=function()end,SetShadow=n.style.SetShadow,SetOutline=n.style.SetOutline}
   function n:SetExtent(w,ht)h.geometry=h.geometry+1;self.width=w;self.height=ht end
@@ -102,7 +99,7 @@ Test('all scroll families repaint existing rails and thumbs and preserve exact o
  end
  assert(S.Theme:ApplyWorkspacePalette('dark'));for _,v in ipairs(bars)do Eq(v.bar.thumbDrawable.rgba,S.UITokens.scrollbar.thumb)end
 end)
--- 中文维护（2026-10-08）：滚动装饰属于宿主的背景通道；透明/半透明/恢复、文字独立及切主题都不能改滚动事务。
+-- 滚动装饰属于宿主的背景通道；透明/半透明/恢复、文字独立及切主题都不能改滚动事务。
 Test('all scrollbar families follow background opacity through palette changes',function()
  local h=Boot();local S,R=h.S,h.R;local views={}
  for _,kind in ipairs({'ScrollBox','ListView','TableView','TileView'})do
@@ -181,7 +178,7 @@ Test('transparent readable text reaches existing and lazy wrapped lines without 
  assert(first.style.outline==false and late.style.outline==false and first.style.shadow and late.style.shadow and h.widgets==count)
  assert(R:ApplyOpacityChannels(c,1,nil));assert(first.style.outline==false and late.style.outline==false)
 end)
--- 中文维护（2026-10-09）：反例覆盖旧逻辑在 alpha=0 打开粗描边、alpha=.2 仍用浅底深色字；Native 不证明实际阴影像素。
+-- 反例覆盖旧逻辑在 alpha=0 打开粗描边、alpha=.2 仍用浅底深色字；Native 不证明实际阴影像素。
 Test('light palettes switch transparent text to bright shadowed colors and restore opaque colors',function()
  local h=Boot();local S,UI=h.S,h.UI
  local label=assert(UI:CreateLabel(UIParent,'readable', '中文小字',0,0,180,24,12,'default','LEFT',false))

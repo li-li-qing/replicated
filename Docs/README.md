@@ -248,6 +248,8 @@ Store / Settings + Domain / Authority + Projection + Commands + Demand lifecycle
 - 可复用交互（悬浮、颜色、数值）优先沉到 RSUI，不在业务页重复手写
 - RSUI Component **只有一个逻辑 Parent**；RU 没有已验证的通用 Reparent API，跨 Parent 重挂载一律 fail-closed
 
+私用伴随 Addon `lcotpotion` 的血量阈值编辑（2026-10-18）通过 TOC 的 `../replicatedsuite/...` 路径在本Addon环境载入公共UI源码，复用真实 NativeFactory、Theme、Diff、RSUI输入/按钮/布局及ModalHost。不能假定两个Addon共享Lua全局表；若确有同环境Suite，则跳过库重装并复用原实例。LCot库物理控件名使用短`lc`前缀，与Suite的`rs`分开。独立库的共享Scheduler只处理UI布局/焦点/hover任务，首次编辑时启动，LCot退休时停止；不启动Suite功能、游戏扫描或Suite运行体。三项校验后由LCot原私有键`lcot_potion_signal_bindings_v1`保存及接口回读，默认88/62/62；加减/默认仅改草稿，保存后保持暂停。取消/关闭/退休释放输入，重载后读取原配置。回归须包含真实TOC、独立`_G`、同一Native命名空间、完整重载与真实共享构造边界，不能只在共用全局表的模型中验证。此私用适配不进入公开Suite发布包。
+
 ### 3.7 Persistence
 
 先定义 Lifetime，再决定是否保存：**Permanent / Daily / Weekly / Session / Checkpoint**。
@@ -316,7 +318,7 @@ Tracking 修改必须先 durable 写入并回读验证 inactive 的 player/targe
 7. **禁止伪重构**：只拆文件、超级 Core、全局可写 State 都不允许
 8. **API 治理**：以 `core/rs_api_capabilities.lua` 为静态基线；不因旧版本曾开放就假设当前可用
 9. **故障隔离**：单个模块异常不拖垮 Suite
-10. **中文维护注释强制**：所有新增/修改代码行必须说明"为什么存在、属于哪个 Authority/生命周期/安全边界、未来不能破坏什么"
+10. **注释简洁、具体**：需要解释时再写，用自然的中文交代用途、处理原因和容易误用的条件。保留真实的客户端、存档和生命周期约束，不给每行代码配模板化旁白。
 
 ### 4.1 高风险 Native 能力（安全护栏，不得绕过事务）
 

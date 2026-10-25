@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 设置页面组合基础
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 密集设置页标准组合，无业务状态/第二布局权威；
 -- 复用 Vertical/Horizontal/UniformGrid/FormRow/GroupBox/CollapsibleGroup，继承 Measure/Arrange、失效、构建事务与 Native 所有权边界。
 -- 统一功能表头/区域/样式卡/诊断层级；宽度驱动一/双列，不写分辨率常量；窄设置/数值行堆叠而不挤压；诊断默认隐藏但同页可用；无 Tick/OnUpdate/轮询。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

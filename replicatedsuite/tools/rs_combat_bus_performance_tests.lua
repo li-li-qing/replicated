@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗总线热路分配与重入回归
--- 维护：真实 Demand / Events / CombatBus，仅以受控 Native 宿主代替游戏；不读写玩家存档。
+-- 真实 Demand / Events / CombatBus，仅以受控 Native 宿主代替游戏；不读写玩家存档。
 -- 小突发只核对瞬时垃圾和借用事实契约，不运行长 CPU 基准，也不推断 RU 实机帧率。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local sourcePath = arg and arg[1] or 'services/rs_combat_event_bus_v3.lua'
 local function Test(name, fn)

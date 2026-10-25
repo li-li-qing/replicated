@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖用户优先级交易测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 维护（2026-09-30）：复用真实 Trade/经济悬浮内容回归的 Native 边界主机；不得复制生产状态机。
+-- 复用真实 Trade/经济悬浮内容回归的 Native 边界主机；不得复制生产状态机。
 -- 主机回归本身仍先运行，下面验证新增独立活动事件、只读投影和既有悬浮窗提示。
-------------------------------------------------------------------------
 dofile("tools/rs_trade_tests.lua")
 local S = ReplicatedSuite
 local Trade, Queue = S.Features.Trade, S.Services.PriceQuoteQueueV3

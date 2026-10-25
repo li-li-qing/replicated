@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 头顶 HUD 校准编辑器
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并约束：先检查冲突标记、toc.g 加载清单完整性与 Lua 语法，再做运行时验收。
--- 权威归属、调用链和存档协议由实现负责，不能通过清配置、跳过加载或恢复 Legacy 绕过错误。
--- 玩家/目标头顶 HUD 的临时编辑器，不持有 Scheduler 任务或 Aura/Combat Consumer；预览使用有界缓存公开投影、有界样本及已知屏幕锚点。
--- 持久化边界：Store -> 分离 CalibrationDraft -> 预览/控件编辑 -> 仅 Save 写入；Cancel 不修改 Store。主 Shell 临时最小化，退出时恢复校准前状态。
-------------------------------------------------------------------------
+-- 玩家和目标 HUD 使用分离草稿，预览取公开缓存投影、有限样本及已知锚点。
+-- 仅保存操作写 Store，取消不写；Shell 临时最小化，退出后恢复原状态。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Feature = S.Features and S.Features.BuffDisplay or nil
@@ -33,16 +28,9 @@ C.globalPreviewEnabled = C.globalPreviewEnabled ~= false
 C.allPreviewEnabled = false
 C.dragging = false
 
--- 约束（HUD 校准专项诊断，2026-09-11）：
--- 维护原因：HUD 校准横跨表现、Shell、Store、Renderer；出现“能打开但
--- 不能保存、目标不跟随、主菜单不恢复、拖动不生效”时，整体健康摘要
--- 不能证明故障发生层级。Authority：此表只属于校准 Presentation 的瞬时运行态，不持久化、
--- 不参与 BuffDisplay 业务判定；Store/Feature 仍是配置唯一 Authority。数据流：用户显式校准动作 ->
--- 有界诊断 -> DiagnosticsManager 按需读取。兼容边界：不注册 Scheduler、不进入 50ms HUD
--- 热路径、不输出逐帧聊天。实现理由：保留 12 条以内事件轨迹和聚合计数，实机一次“输出诊断摘要”
--- 即可定位。潜在风险：新增动作时必须只在用户事件边界 Trace，禁止从 LayoutPreview Tick 化采样。
--- 校准期间全局预览与正式 HUD 隐藏共用边界：正式 Renderer 只隐藏表现，
--- 不释放 Consumer/Aura/位置 Lane；预览只用 Draft、公开缓存投影与既有 anchor，不形成第二套业务数据源。
+-- 诊断只记用户动作，保留最多 12 条轨迹和聚合计数，便于分辨保存、跟随、拖动或 Shell 恢复失败。
+-- LayoutPreview 只更新最近快照，不能逐帧记 Trace 或输出聊天。
+-- 预览时正式 Renderer 只隐藏表现，保留 Consumer/Aura/位置通道；预览不另建业务数据源。
 C.DiagnosticsContractVersion = 6
 C.Diagnostics = C.Diagnostics or {
     contractVersion = 3, openCount = 0, openFailures = 0, saveCount = 0, saveFailures = 0,
@@ -71,20 +59,14 @@ local COMPONENTS = {
     { key="plate",    label="血条基准" },
     { key="buffs",    label="Buff" },
     { key="debuffs",  label="Debuff" },
-    -- 约束（Cooldown Runtime V1）：cooldowns 已是 schema8 既有 HUD component，
-    -- 这里只把它暴露给校准器；不新增 Store 字段、不改变旧用户默认 enabled=false。
-    -- Runtime Authority 来自 CooldownObservationV3 的本机 Native 读数；校准复用已采集快照，缺项才补样本，不触发查询。
+    -- CD 沿用 schema8 组件和默认关闭偏好；只取已采集本机快照，缺项补样本，不触发查询。
     { key="cooldowns", label="技能 CD" },
     { key="info",     label="职业名称" },
-    -- 约束（target-alias-hud-2）：自定义名字是 target-only 固定语义槽。它不进入
-    -- player profile，也不参与兄弟组件布局；按钮仅在“目标 HUD”页出现，位置/字号/透明度由独立
-    -- alias Store 的 CalibrationDraft 控制，避免改动历史 HUD layout schema。
+    -- 别名仅属目标 HUD，独立 Alias 草稿保存显隐和几何，避免改变历史 layout schema。
     { key="alias",    label="自定义名字", targetOnly=true },
     { key="gearScore",label="装备分数" },
     { key="distance", label="距离" },
-    -- 约束（HUD 信息拆分）：class 保持“职业图标”几何，不复用为职业名称，避免旧图标
-    -- x/y/size/alpha 与文字再次耦合；职业名称继续使用历史 info 字段，装分/距离复用 schema6
-    -- 已存在但旧 Renderer 未消费的 component 字段，因此无需 Store schema 迁移。
+    -- class 只代表职业图标，info 代表职业文字；装分和距离使用已有独立字段，避免重新耦合。
     { key="class",    label="职业图标" },
     -- 复用校准存档字段，不移动已有用户布局；目标栏表达可见 Buff 类型而非可检查装备。
     { key="mainHand", label="主手/目标武器" },
@@ -103,9 +85,7 @@ local function Copy(value)
 end
 local function NowMs() return math.max(0, tonumber(S.NowMs and S.NowMs()) or 0) end
 
--- 约束（诊断事件边界）：Trace 只允许被 Open/Exit/Sync/Reset/Drag 等显式用户动作
--- 调用；普通 RefreshControls/LayoutPreview 只能更新当前快照字段，避免校准期间反复布局导致轨迹
--- 被噪声淹没。traceMax 固定有界，诊断从不成为第二份业务历史缓存。
+-- Trace 只记 Open/Exit/Sync/Reset/Drag 等用户动作；RefreshControls/LayoutPreview 只更新快照，避免淹没有用事件。
 local function Trace(action, fields)
     local d = C.Diagnostics
     if type(d) ~= "table" then return end
@@ -160,15 +140,9 @@ local function Round(value)
 end
 local function ScopeName(scope) return tostring(scope) == "target" and "目标 HUD" or "自己 HUD" end
 
--- 约束（HUD 校准屏幕坐标适配，2026-09-11）：
--- 问题原因：正式 Renderer 的 Buff Y 不是普通屏幕坐标。buffCfg.y 会增加“Buff 到血条的间距”，
--- 因此 storedY 越大，Buff 实际越往上；Debuff/Info/装备/施法条则仍是 storedY 越大越往下。
--- 若校准器直接把 Store 的 y 暴露给用户，就会出现 ↑/↓ 在不同组件上方向相反。
--- Authority：Store/Renderer 的历史字段语义保持不变；本适配层只负责 Presentation 中“用户看到的 Y”。
--- 数据流：屏幕语义 Y -> ScreenYToStoredY -> Draft -> 保存；预览仍由 ComputePlateLayout 读取原始 storedY。
--- 兼容边界：不改 schema5、不迁移旧配置、不改正式 Renderer；只有 Buff 需要反号。
--- 维护注意：以后若新增“正值代表向上”的组件，必须只在 UsesInvertedStoredY 中登记，禁止到按钮/拖动
--- 各自加特判，否则三条输入路径会再次漂移。
+-- Buff 的 storedY 表示离血条的间距，正值向上；其它组件正值向下。
+-- 编辑统一使用屏幕 Y，经 ScreenYToStoredY 转入草稿，预览仍按历史 storedY 计算。
+-- 只有 Buff 反号；新组件若同样正值向上，登记 UsesInvertedStoredY，别在按钮、拖动中分别特判。
 local function UsesInvertedStoredY(key) return tostring(key or "") == "buffs" end
 local function StoredYToScreenY(key, value)
     local y = N(value, 0)
@@ -187,7 +161,7 @@ C.GlobalPreviewContractVersion = 1
 C.AllPreviewContractVersion = 2 -- 当前scope有界缓存/缺项模拟及无填充遮挡，仅属于瞬时Presentation。
 C.LiveHudSuppressionContractVersion = 1
 C.TemplateSnapshotContractVersion = 1
-C.SplitInfoTextCalibrationContractVersion = 1 -- 约束（.18.225）：职业名称/装分/距离各自选择并消费各自现有 schema6 几何字段；职业图标仍独立。
+C.SplitInfoTextCalibrationContractVersion = 1 -- 职业名称/装分/距离各自选择并消费各自现有 schema6 几何字段；职业图标仍独立。
 C.GearScoreFormatCalibrationContractVersion = 1 -- 装备分数校准项拥有 full/compact 两个 profile-local 草稿选项。
 C.IndependentHudSlotPreviewContractVersion = 1 -- 校准预览与正式 HUD 共用固定 Info/Cast/Equipment 语义槽位，禁止按实时行数重排。
 C.TargetAliasCalibrationContractVersion = 1 -- 目标自定义名字进入目标 HUD 校准器；名字编辑与 HUD 几何 Authority 分离。
@@ -286,9 +260,7 @@ local function ComponentProfile(key,profile)
     return profile
 end
 
--- 约束（target-alias-hud-2，Draft 分层）：目标自定义名字的 HUD 几何不属于历史
--- player/target Layout Store，因此校准器持有第二份极小 Draft。aliasDraft.hud 只保存显示开关与几何；
--- targetName/savedAlias 只是当前目标编辑态。切目标只刷新名字编辑态，不覆盖尚未保存的 HUD 几何。
+-- Alias 几何不在历史 Layout Store，故另持小草稿；切目标只刷新名字编辑态，不能覆盖未保存几何。
 local function AliasDraft()
     C.aliasDraft = type(C.aliasDraft) == "table" and C.aliasDraft or {}
     C.aliasDraft.hud = type(C.aliasDraft.hud) == "table" and C.aliasDraft.hud or { x=0, y=-94, fontSize=12, alpha=1.0 }
@@ -482,9 +454,8 @@ local function SetCurrentEnabled(value)
         C.dirty = true
         return C:RefreshControls()
     end
-    -- 约束（双可见性字段兼容）：旧 Store 同时存在 info.show* 与 component.enabled。
-    -- 独立文字校准不能引入第三套 Authority；开启任一文字时恢复 legacy info master，再同步
-    -- 对应 show* / component 门。职业名称关闭只写 showClass，避免顺手关闭独立职业图标。
+    -- 旧档同时用 info.show* 和 component.enabled 控制显隐。开启文字须恢复 info master 并同步对应门；
+    -- 关闭职业文字只写 showClass，不能关掉独立图标。
     if C.component == "info" then
         if value then profile.info.enabled = true end
         profile.info.showClass = value
@@ -649,9 +620,7 @@ local function BasePreviewRect(key,previewProfile)
         local cfg = profile.components.castBar or {}
         local width = math.max(24, Round(N(cfg.width,120) * scale))
         local height = math.max(12, Round(N(cfg.size,7) * scale) + 16)
-        -- 约束（.18.265，校准/正式 HUD 同一固定槽位）：正式 Renderer 已禁止
-        -- Debuff 行数推动施法条；校准预览必须消费 ComputePlateLayout.cast.top，同样只叠加
-        -- castBar 自己的 y。若这里继续按 actualRows 重算，预览会再次与实机产生位置差异。
+        -- 施法条预览取 ComputePlateLayout.cast.top 加自身 y，不能按实际 Debuff 行数重算，否则与正式 HUD 错位。
         local castBaseY = type(layout.cast) == "table" and N(layout.cast.top, layout.bar.bottom + 6 * scale)
             or (layout.bar.bottom + 6 * scale)
         local y = castBaseY + N(cfg.y,0) * scale
@@ -892,16 +861,10 @@ function C:ToggleAllPreview()
     return true
 end
 
--- 约束（发行模板快照，2026-09-11）：用户会在 RU 客户端把自己/目标 HUD 调整到
--- 最终发行模板后，把结果回传给维护者写入默认值。Authority 必须是当前 Calibration Draft，
--- 不能强迫 Save & Exit 后再从 Store 读取，否则“眼前已经调好但尚未保存”的最后一次微调会丢失。
--- 输出只包含视觉布局，不包含 tracked ID、敌我分类、Aura 业务规则等用户数据；格式固定为
--- HUD_TEMPLATE_V1 并按 META/BASE/AURA/EQUIP/CAST 分行；当前只作为内存兼容格式，禁止直接发聊天。该能力
--- 只在用户点击按钮时执行，不注册 Scheduler、不进入 50ms Renderer，也不会修改 Draft/Store。
--- 维护（hud-template-restore-1）：新增职业图标可独立校准后，旧快照遗漏 components.class，
--- 仅恢复按钮仍无法重建用户的新默认布局。沿用上述 Draft Authority，额外输出 CLASS 行；
--- 原 V1 各行/屏幕 Y 语义不变，size=0 保留自动大小，scale 仍取 BASE 的 profile.plateScale。
--- 输出的是相对 HUD 布局的逻辑偏移，不是移动单位当前的绝对屏幕点；不得把预览合成坐标写回默认值。
+-- 发行模板取当前 Draft，不能强迫先保存，否则会漏掉眼前最后的微调。
+-- 只导出视觉布局，含独立 CLASS section；不含追踪、分类或 Aura 规则，不自动发聊天。
+-- HUD_TEMPLATE_V1 保留 META/BASE/AURA/EQUIP/CAST 分行协议；size=0 表示自动，scale 取 BASE.plateScale。
+-- 导出局部逻辑偏移，不能把预览合成的绝对屏幕点写进默认值。
 local function TemplateNumber(value, fallback)
     local n = tonumber(value)
     if n == nil then n = tonumber(fallback) or 0 end
@@ -986,7 +949,7 @@ function C:BuildTemplateSnapshotLines(meta)
             ..",h="..TemplateNumber(castBar.size,7)..",font="..TemplateNumber(castBar.fontSize,12)
             ..",alpha="..TemplateNumber(castBar.alpha,1)..",enabled="..TemplateBool(castBar.enabled,true)
             ..",text="..TemplateBool(castBar.showText,true).."}"
-        -- 维护：只追加独立 CLASS section，避免延长已有 EQUIP 行或改变旧行解析；不导出职业事实/纹理。
+        -- 只追加独立 CLASS section，避免延长已有 EQUIP 行或改变旧行解析；不导出职业事实/纹理。
         -- class 的 enabled 与 BASE.info.class 均保留，维护者按现有双开关语义重建，不在导出时做归一化写入。
         lines[#lines+1] = "HUD_TEMPLATE_V1|"..scopeName.."|CLASS|"
             ..TemplateComponent(profile,"class",{size=0})
@@ -1033,12 +996,9 @@ function C:BuildTemplateSnapshotLines(meta)
     return lines
 end
 
--- 维护（hud-template-copy-2）：实机回传V1的scope/section及部分正文已丢失。旧边界把带“|”
--- 的机器文本直接交给聊天富文本，SafeChat成功仅证明调用未抛错，不能证明渲染/复制字节完整。
--- Authority：校准Draft仍是布局来源；此对象只拥有一次只读导出的字符串/分页/输入焦点，
--- 绝不更新Store或内置默认值。V1纯生成器保留兼容，交付正文换成无管道符V2，经已有完整
--- 报告分页器校验SetText/GetText后才提示“已显示”。原生剪贴板和聊天渲染均不作为可信回读。
--- 生命周期：只由获取/翻页/重试/关闭驱动；无Tick/新订阅，关闭校准一并释放正文和输入。
+-- 旧模板含“|”，经聊天富文本后曾丢 scope、section 和正文；SafeChat 成功不能证明字节完整。
+-- 交付改用无管道符 V2，经分页器校验 SetText/GetText 后才提示已显示；V1 生成器仍保留。
+-- 此对象只持有冻结文本、分页和焦点，关闭时释放，不改 Draft 或 Store。
 C.TemplateCopyContractVersion = 2
 C.TemplateCopyPatch = "hud-template-copy-2"
 
@@ -1054,7 +1014,7 @@ end
 function C:CloseTemplateCopy()
     local r = self.templateCopy
     if not r then return true end
-    -- 维护：关闭报告只丢弃导出快照，不关闭校准/不动Draft；不能用全局ClearFocus抢走聊天输入。
+    -- 关闭报告只丢弃导出快照，不关闭校准/不动Draft；不能用全局ClearFocus抢走聊天输入。
     r.visible = false
     if r.editor then
         if type(S.UI.DeactivateInputWidget) == "function" then
@@ -1077,7 +1037,7 @@ local function EnsureTemplateCopyUi()
     r = r or { index=0, visible=false, generation=S.Generation }
     C.templateCopy = r
     local ok, err = pcall(function()
-        -- 维护：可交互跨根报告必须用已有真实Window策略；普通root emptywidget不能保证越过校准HUD。
+        -- 可交互跨根报告必须用已有真实Window策略；普通root emptywidget不能保证越过校准HUD。
         -- owner在注册之前传入，避免先无主注册再补字段；禁用Native ESC/模态，关闭由本生命周期处理。
         r.root = assert(ui:CreatePanel(UIParent, "v3_buff_hud_template_copy", 0, 0, 720, 420, "card",
             {owner=C.owner,transientWindow=true,pickable=true,visible=false,gradient=false}))
@@ -1108,7 +1068,7 @@ local function EnsureTemplateCopyUi()
 end
 
 local function LayoutTemplateCopy(r)
-    -- 维护：复制框不参与每帧预览布局。仅显式获取时按逻辑视口布置一次，翻页/空闲不重设
+    -- 复制框不参与每帧预览布局。仅显式获取时按逻辑视口布置一次，翻页/空闲不重设
     -- Extent/Anchor/Focus，防止复发等待两秒后选区消失；原生几何失败不能进入成功交付。
     local sw, sh = ScreenSize()
     local w, h = math.min(800, sw-24), math.min(460, sh-24)
@@ -1163,7 +1123,7 @@ function C:ShowTemplateCopyPage(index)
         local exact; exact, trace = transport:VerifyEditorReadback({capacity=cap,wire="error_pages1"},payload,compare)
         trace.writeOk,trace.writeRejected,trace.readOk,trace.attempts=wrote,result==false,read,attempt
         if wrote and result~=false and read and exact then
-            -- 维护：第一页回读成功即冻结ID/正文/边界；之后失败不缩容、不再读Draft或Store。
+            -- 第一页回读成功即冻结ID/正文/边界；之后失败不缩容、不再读Draft或Store。
             r.session,r.index,r.failed=session,index,false
             SafeText(r.status,"报告 "..r.id.." · "..#r.text.." 字节 · "..self.TemplateCopyPatch
                 .."\n点击下框，Ctrl+A、Ctrl+C；逐页复制，不要修改正文。\n关闭报告不保存布局；重新获取才生成新快照。")
@@ -1370,8 +1330,7 @@ function C:LayoutPreview()
     if self.preview.root == nil then return false end
     local rect, liveAnchor = PreviewRect()
     self.preview.expectedRect = Copy(rect)
-    -- 约束（预览定位取证）：这里只更新“最近快照”，不写 Trace；LayoutPreview 会被按钮
-    -- 和输入框频繁调用，若每次入环会快速覆盖真正有价值的 Open/Save/Drag 事件。
+    -- 预览频繁重排，只更新最近快照；写入 Trace 会覆盖真正有用的 Open/Save/Drag 事件。
     if type(self.Diagnostics) == "table" then
         self.Diagnostics.previewRefreshes = (tonumber(self.Diagnostics.previewRefreshes) or 0) + 1
         self.Diagnostics.previewSource = liveAnchor and "live" or "synthetic"
@@ -1665,8 +1624,7 @@ function C:RefreshControls(resetInputs)
     end
     if self.playerButton ~= nil then S.UI:SetButtonActive(self.playerButton, self.scope == "player", self.owner) end
     if self.targetButton ~= nil then S.UI:SetButtonActive(self.targetButton, self.scope == "target", self.owner) end
-    -- 约束（信息拆分）：职业名称/装分/距离现在各自拥有选择项和显示按钮，
-    -- 不再用“基础信息”三个辅助按钮形成第二套 UI Authority；辅助按钮只保留施法文字开关。
+    -- 职业文字、装分和距离各有独立选择项；辅助按钮只保留施法文字开关。
     local profile = Profile()
     for i, button in ipairs(self.auxButtons or {}) do
         local castVisible = self.component == "castBar" and i == 1
@@ -2056,12 +2014,10 @@ function C:HideOverlay()
     self:CancelInputFields();self.inputContext=nil
     if self.layoutPreset then self.layoutPreset:Close()end
     if S.UIV3.BuffColorSettings then S.UIV3.BuffColorSettings:CloseCalibration()end
-    -- 维护（hud-template-copy-2）：取消/保存/重载退出均释放本校准的导出快照与键盘，不触碰其他报告。
+    -- 取消/保存/重载退出均释放本校准的导出快照与键盘，不触碰其他报告。
     self:CloseTemplateCopy()
-    -- 维护（2026-09-22，geometry-gesture-authority-1）：隐藏/保存/取消不等于 Native 拖动自然结束。
-    -- 若退出校准时鼠标仍在拖动，必须先 StopMovingOrSizing + 释放几何 lease，再清状态；否则客户端
-    -- 仍可能保留捕获，重开/分辨率变化后出现“松手又跳一次”的迟到 DragStop。这里只撤销瞬时交互，
-    -- 不提交 panelRect/draft，不触碰用户 Store；后续迟到回调因 dragging=false 直接失去写权限。
+    -- 退出时若仍在拖动，先 StopMovingOrSizing 并释放几何 lease，再清状态。
+    -- 否则可能残留捕获，重开或换分辨率后迟到 DragStop 再跳一次；此处不提交草稿，迟到回调也须失去权限。
     if self.panelDragging == true and self.panel ~= nil then
         if type(self.panel.StopMovingOrSizing)=="function" then pcall(function() self.panel:StopMovingOrSizing() end) end
         if type(S.UI.EndNativeGeometryLease)=="function" then S.UI:EndNativeGeometryLease(self.panel,self.owner) end
@@ -2095,10 +2051,8 @@ function C:HideOverlay()
 end
 
 local function ExitGeometry(self,save)
-    -- 约束（target-alias-hud-2，双 Store 提交）：HUD Layout 与 Alias HUD 是两个独立
-    -- 小 Store。Save 先提交 alias，再提交 layout；若 layout 事务失败则把 alias HUD 配置回滚到 Open
-    -- 时快照。名字映射不在本事务内，因为“保存名字/删除名字”是用户显式即时动作。取消退出两份几何
-    -- Draft 都不写 Store。这样既不污染大型 v3.buff_display，也避免一半 HUD 几何永久落盘。
+    -- 先保存 Alias HUD，再保存 Layout；后者失败时把 Alias 几何回滚到打开时快照。
+    -- 名字映射由显式保存、删除即时提交，不在此事务；取消时两份几何草稿都不写。
     if save == true then
         if self.modeLayouts then
             self:CaptureAliasModeDraft()
@@ -2218,19 +2172,16 @@ function C:EnsureCreated()
         return EnsureGlobalPreviewWidgets()
     end
     if UIParent == nil then return false, "UIParent 不可用" end
-    -- 约束（校准 UI 生命周期）：ArcheRage RU 没有经过验证的通用 DestroyWidget，
-    -- 因此首次创建后采用“隐藏 + 失焦 + 无 Scheduler/无 Consumer”的静默复用策略；退出时
-    -- 不保留任何高频逻辑或事件订阅。直接尝试销毁 Native Widget 反而有悬空回调风险。
+    -- RU 没有验证过的通用 DestroyWidget；首次创建后隐藏、失焦并停订阅，留待复用。
+    -- 直接销毁 Native 可能留下悬空回调。
     local PANEL_W, PANEL_H = 420, 640
     local panel, panelErr = S.UI:CreateEmptyWidget(UIParent, "v3_buff_hud_calibration_panel", 18, 70, PANEL_W, PANEL_H, true, self.owner)
     if panel == nil then return false, panelErr or "校准面板创建失败" end
     self.panel = panel; panel.rsUiOwner = self.owner
     self.panelBg = MakeFill(panel, "background", 0.015,0.025,0.035,0.96)
 
-    -- 约束（校准控制面板拖动）：旧实现只有 HUD 预览框可拖，控制面板自身固定在
-    -- 左侧；低分辨率或与技能栏/聊天重叠时用户无法挪开。这里使用独立标题栏 handle 接手
-    -- DragStart/DragStop，真正 StartMoving 的仍是 panel。Authority 只是瞬时 Native geometry，
-    -- 不写入 BuffDisplay Store。DragStop 统一 clamp 到逻辑屏幕并记录 bounded diagnostics。
+    -- 标题栏 handle 接收拖动，实际移动 panel；位置只属本次校准，不写业务 Store。
+    -- DragStop 限制在逻辑屏幕内并记录有界诊断，便于低分辨率避开技能栏和聊天。
     self.panelDragHandle = S.UI:CreateEmptyWidget(panel, "v3_buff_hud_calibration_panel_drag_handle", 0, 0, PANEL_W, 32, true, self.owner)
     self.title = S.UI:CreateLabel(panel, "v3_buff_hud_calibration_title", "状态显示 · HUD 校准", 12, 8, 220, 22, 13, "strong", "LEFT", true)
     self.dragHint = S.UI:CreateLabel(panel, "v3_buff_hud_calibration_drag_hint", "拖动标题栏移动", 280, 10, 128, 18, 9, "muted", "RIGHT", true)
@@ -2329,9 +2280,8 @@ function C:EnsureCreated()
         local index = i
         self.auxButtons[i] = MakeButton(panel, "v3_buff_hud_calibration_aux_"..tostring(i), "", rx + (i-1)*72, 490, 68, 26, function() return C:ToggleAux(index) end)
     end
-    -- 约束（target-alias-hud-2，目标名字编辑）：复用辅助按钮这一行，不扩大面板高度。
-    -- TextInput 只在 target/alias 选中时显示；保存/删除是显式映射操作，HUD 几何仍由底部“保存并退出”
-    -- 提交。这样切换目标时只刷新编辑态，不把键盘输入/名字查询放入 Renderer Tick。
+    -- 目标名字编辑只在 target/alias 选中时显示；保存、删除即时改映射，
+    -- 几何仍由底部保存操作提交，目标切换不把输入和查询放入 Renderer Tick。
     self.aliasInput = MakeInput(panel, "v3_buff_hud_calibration_alias_input", rx, 490, 120, 26)
     self.aliasSaveButton = MakeButton(panel, "v3_buff_hud_calibration_alias_save", "保存名字", rx+124, 490, 72, 26, function() return C:SaveAliasName() end)
     self.aliasDeleteButton = MakeButton(panel, "v3_buff_hud_calibration_alias_delete", "删除名字", rx+200, 490, 72, 26, function() return C:DeleteAliasName() end)
@@ -2340,11 +2290,8 @@ function C:EnsureCreated()
     self.statusLabel = S.UI:CreateLabel(panel, "v3_buff_hud_calibration_status", "拖动预览框或使用按钮微调", 12, 544, 396, 18, 9, "muted", "LEFT", false)
     MakeButton(panel, "v3_buff_hud_calibration_default_component", "恢复当前组件", 12, 568, 116, 26, function() return C:ResetCurrentComponent() end)
     MakeButton(panel, "v3_buff_hud_calibration_default", "恢复当前 HUD", 134, 568, 116, 26, function() return C:ResetCurrentScope() end)
-    -- 维护（hud-template-restore-1）：用户重新校准新增组件，需要恢复被发行 DebugFlags 隐藏的入口。
-    -- Authority 仍是 Calibration Draft；按钮复用 OutputTemplateSnapshot，同时导出自己/目标，
-    -- 不触发 Save/Reset、不改默认值、不退出校准。文本框未应用的输入仍不是 Draft，必须先“应用输入值”。
-    -- 兼容：保留原逻辑 ID 与 152x26 布局槽，仅取消开发开关门禁；复用面板时不重复创建/绑定。
-    -- 风险：这是“获取布局供维护者设默认值”，不是自动设为默认；未来新增组件须同步补充模板 section。
+    -- 模板按钮从当前 Draft 导出自己和目标，不保存、重置或退出校准。
+    -- 输入框未应用的文字尚不属于 Draft，须先应用；新增组件时也须补模板 section。
     MakeButton(panel, "v3_buff_hud_calibration_template", "获取当前位置", 256, 568, 152, 26, function() return C:OutputTemplateSnapshot() end)
     MakeButton(panel, "v3_buff_hud_calibration_cancel", "取消并退出", 12, 602, 148, 28, function() return C:Exit(false) end)
     MakeButton(panel, "v3_buff_hud_calibration_save", "保存并退出", 166, 602, 156, 28, function() return C:Exit(true) end)
@@ -2371,7 +2318,7 @@ function C:EnsureCreated()
             C.Diagnostics.panelDragFailures = (tonumber(C.Diagnostics.panelDragFailures) or 0) + 1
             Trace("panel_drag_lease_failed", { error="geometry_lease_rejected" }); return false
         end
-        -- 维护（geometry-gesture-authority-1）：和 Windowing 共用 viewport-logical-v1 语义，手势开始只
+        -- 和 Windowing 共用 viewport-logical-v1 语义，手势开始只
         -- 校准一次 RU Effective 几何单位。此值只活到 DragStop/HideOverlay，不持久化。
         if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect)=="function" then
             local _,_,_,_,unit=S.Layout:GetWindowLogicalRect(panel)
@@ -2612,5 +2559,5 @@ end
 function C:IsOpen() return self.visible == true end
 function C:GetDraftSnapshot() return Copy(self.draft) end
 
--- 表现契约：编辑布局无需启用功能，“保存并退出”之前不持久化任何临时校准状态。
-Feature.HudCalibrationPresentationContractVersion = 10 -- v10 复用当前scope缓存、补缺项样本与纹理锚点，去除全览辅助遮挡；无新增Scheduler/Consumer，不保存模拟模式。
+-- 编辑布局无需启用功能；几何仅在“保存并退出”时保存，预览样本不写存档。
+Feature.HudCalibrationPresentationContractVersion = 10

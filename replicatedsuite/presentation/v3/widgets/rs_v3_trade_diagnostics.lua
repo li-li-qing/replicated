@@ -1,13 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 贸易链路诊断
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 跑商报价链路的专用只读诊断窗口。
 -- 链路为 route -> 材料身份 -> PriceQuoteQueueV3 -> X2Auction；
 -- 仅消费公开 Feature/Service describe API，不获取租约、不执行 Commands、不访问原生拍卖/制作，也不写业务状态。
 -- 可复制报告是维护者排查契约：包含 route、身份、实际尝试和携带原始 Native 返回结构的报价队列等分层事实，使 RU 运行反馈一次粘贴即可完整提供。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -45,7 +42,7 @@ local function AgoText(at)
     return math.floor(delta / 60 + 0.5) .. "m前"
 end
 
--- 维护（2026-09-23，trade-diagnostics-utf8-1）：诊断页容量限制是 Lua 字节预算，不是 Unicode 字符数；
+-- 诊断页容量限制是 Lua 字节预算，不是 Unicode 字符数；
 -- RU/中文文本不能直接按 byte string.sub，否则落在 UTF-8 中间时复制报告会损坏。最大只扫描 4.8KB，
 -- 且仅发生在用户打开/刷新诊断时，不进入业务刷新或 Native 查询链。
 local function Utf8Prefix(value, maxBytes)
@@ -469,7 +466,7 @@ function M:Close(reason)
     return true
 end
 
--- 维护（module-controls-diag-2）：主入口统一后，跑商专有证据迁入共享Hub，而非删除功能。
+-- 主入口统一后，跑商专有证据迁入共享Hub，而非删除功能。
 -- 每个只读Describe独立隔离；不获取Consumer、不发查询、不启用Feature，不导出其他模块的报价行。
 -- 旧面板仍保留兼容入口，但正常页面只打开统一诊断窗口。
 if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then

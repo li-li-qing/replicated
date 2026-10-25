@@ -1,22 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 每日收益事件来源
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 今日收益原生事件适配器 / overview-income-source-9
--- Authority: PLAYER_MONEY / PLAYER_HONOR_POINT / PLAYER_LIVING_POINT / EXP_CHANGED 的 Native
--- payload 直接提供本次变化量；EXP_CHANGED 额外校验 player unitId，适配器只做结构校验与精确数值归一化，再交给 DailyLedger
--- 按日累计。DailyLedger 独占跨日、持久化、暂停边界，UI 不做业务计算。
--- Evidence: ArcheAge 客户端 UI 的 chat_msg_event.lua 明确使用
--- PLAYER_MONEY(change, changeStr, itemTaskType, info)、PLAYER_HONOR_POINT(amount, amountStr, ...)
--- 与 PLAYER_LIVING_POINT(amount, amountStr)。官方客户端 exp_bar_set.lua / combat_text.lua 同时确认
--- EXP_CHANGED(stringId, expNum, expStr)，且只有 player unitId 的 expStr 被作为本次获得经验显示。
--- money.lua 则证明 moneyStr 的末四位分别为银/铜，即 changeStr 是精确的最小货币单位十进制字符串。
--- Compatibility: 当前随包 z_api_functions 仍把 X2Bag:GetCurrency / GetMyMoneyString /
--- GetGamePoints / GetExpInfo 列为不允许，本适配器绝不调用。旧 overview-income-source-7
--- 曾错误把 change 当余额；新 delta 源首次命中时由 DailyLedger 清除该旧余额模式污染。
--- Performance: 纯事件驱动；无余额轮询、无 Tick、无聊天正文数字解析。
-------------------------------------------------------------------------
+-- PLAYER_MONEY/PLAYER_HONOR_POINT/PLAYER_LIVING_POINT 提供本次变化量，EXP_CHANGED 另须匹配 player unitId。校验精确数值后交 DailyLedger 按日累计。
+-- 来源：客户端 chat_msg_event.lua、exp_bar_set.lua/combat_text.lua；money.lua 证明 moneyStr 末四位为银/铜，changeStr 是最小货币单位十进制字符串。
+-- 不调用被禁余额 getter、不解析聊天数字。旧 overview-income-source-7 将 delta 误当余额，新源首次命中由账本清掉该日污染。
 if ReplicatedSuite==nil or ReplicatedSuite.BootError~=nil then return end
 local S=ReplicatedSuite
 local L=S.Features and S.Features.DailyLedger

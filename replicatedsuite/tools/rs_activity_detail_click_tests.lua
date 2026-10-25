@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 活动详情点击测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 开发期离线测试；不进入 toc.g。验证双列表点击转发和诊断证据，不模拟 RU Native 鼠标驱动。
-------------------------------------------------------------------------
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

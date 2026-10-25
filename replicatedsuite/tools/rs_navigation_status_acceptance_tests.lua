@@ -1,15 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 导航状态验收测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并时须检查未解决冲突，不能把文件存在视为实现已完整恢复。
--- 数据归属、调用链和存档协议由原实现管理，
--- 不能通过清配置、跳过加载或恢复旧架构绕过错误；本文件须与完整 toc.g 和相应 UI 配套。
--- 合并后先核对冲突标记、加载清单和 Lua 语法，再进行客户端验收。
--- 维护说明（2026-09-13）：导航开发态必须以用户实机验收为准，不能因为离线实现或 API 完整度
+-- 导航开发态必须以用户实机验收为准，不能因为离线实现或 API 完整度
 -- 自动上移。此测试只验证 Presentation 元数据，不得影响 FeatureRuntime/Persistence/Authority。
-------------------------------------------------------------------------
 ReplicatedSuite = { BootError = nil }
 dofile("features/rs_feature_registry.lua")
 local R = assert(ReplicatedSuite.FeatureRegistry, "FeatureRegistry missing")
@@ -26,7 +19,7 @@ local expected = {
     -- 用户此前已要求职责设置、牺牲之舞标记完成；验收预期跟随现有 Registry，不回退产品状态。
     ["combat.team_tools"] = { state = "complete", incomplete = false },
     ["combat.sac_highlight"] = { state = "complete", incomplete = false },
-    -- 中文维护注释（2026-09-15）：用户已实机确认拍卖收藏进入完成区；该路由仍可能保留
+    -- 用户已实机确认拍卖收藏进入完成区；该路由仍可能保留
     -- 原生搜索框“增强同步”的可选验证，但直接 AuctionQuery/收藏/Sidecar/独立开关均已形成产品闭环。
     ["tools.auction_favorites"] = { state = "complete", incomplete = false },
     ["tools.social"] = { state = "incomplete", incomplete = true },

@@ -1,24 +1,18 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗助手光环契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 非破坏契约验收：禁止启用 Healer；只验证已禁用功能保持冷状态、已启用功能恰好拥有独立生命周期要求的资源。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 local F = S.Features and S.Features.Healer or nil
 local B = S.Features and S.Features.HealerAuraBridge or nil
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 本文件是 Healer 与
--- HealerAuraBridge 的**唯一契约 Authority**。原先 F 或 B 缺失时这里静默 return，把“实现根本没注册”
--- 留给 Foundation 的硬编码独立契约检查；这里必须**无条件注册** case，
--- 并在实现缺失时明确失败（见 case 开头的两处守卫）。
+-- 无论实现是否加载，都必须注册验收 case；Healer 或 AuraBridge 缺失时明确失败，不能静默跳过。
 
 local function Fail(message) return false, tostring(message or "healer_runtime_acceptance_failed") end
 
--- 显式接回只读运行时诊断；完整序列仍保留给离线验收。
+-- 运行时只做只读诊断；完整序列测试仅离线执行。
 G:RegisterSequenceCase("v3_m16_18_healer_visual_consumers_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if type(B) ~= "table" then return Fail("aura_bridge_not_registered") end
@@ -32,9 +26,7 @@ G:RegisterSequenceCase("v3_m16_18_healer_visual_consumers_contract", function()
     if S.FeatureRuntime == nil or S.FeatureRuntime:IsImplemented("combat_healer") ~= true then return Fail("implementation_missing") end
 
     local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.healer") or nil
-    -- schema 版本从 3 取齐到 **6**。
-    -- 原 acceptance 只要 3，而 Foundation 的 healer 呈现判定要求 6；如果直接删掉 Foundation 分支
-    -- 而不取齐，等于悄悄把强度降回 3（这正是 Batch L 踩过的坑）。
+    -- 治疗数据要求 schema 6，与原呈现检查保持一致。
     if store == nil or tostring(store.owner or "") ~= "v3.healer" or tonumber(store.schemaVersion) ~= 6 then
         return Fail("store_contract")
     end

@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 装备与称号方案业务权威
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 装备与称号业务权威。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}; S.Features.Gear = S.Features.Gear or {}

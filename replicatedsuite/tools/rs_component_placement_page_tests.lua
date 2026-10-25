@@ -1,9 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 组件显示位置设置页回归
 -- 作者：Replicated
 -- QQ群：1104129461
 -- 运行真实页面、Feature Commands 与持久化；仅使用现有离线 UI/磁盘宿主。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)

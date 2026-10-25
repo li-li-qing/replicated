@@ -1,13 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 提示菜单与焦点服务
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- UMG 风格 RSUI 交互层，此处扩展服务，不再添加另一批控件。
 -- 已确认 RU API：Suite 验证的 OnEnter/OnLeave/OnClick；客户端导出时的全局 SetTooltip(text, widget)；
 -- Button/Edit SetFocus()、Edit ClearFocus()；焦点getter在RU清单中not allowed，不能调用。
 -- 不假设通用 OnKeyDown/OnKeyUp、可靠全局右键或指针 delta API；ContextMenu 由明确调用或调用方选定的已验证事件打开，键盘导航能力报告 false。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -15,7 +12,7 @@ if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 local Tokens = S.UITokens or {}
 RSUI.InteractionServiceContractVersion = 4
 RSUI.InteractionPopupCoordinateConsumerContractVersion = 2 -- 目标型 Tooltip/ContextMenu 与 Dropdown 同样优先使用原生 Trigger 相对锚；仅鼠标/显式屏幕点走 point 路径。
-RSUI.InteractionPopupCoordinateConsumerLane = "popup-native-relative-v1" -- Interactions 的目标型 detached Popup 显式登记 Native-relative lane；显式鼠标/屏幕点仍在函数内单独标记 popup-point-v1。
+RSUI.InteractionPopupCoordinateConsumerLane = "popup-native-relative-v1"
 RSUI.InteractionPopupVisibilityContractVersion = 1
 
 local function Token(path, fallback)
@@ -62,11 +59,8 @@ local function AnchorRect(target)
     return 0, 0, 1, 1, nil
 end
 
-------------------------------------------------------------------------
 -- PointerService 指针服务。
---
 -- 仅事件驱动采样；RU 证据提供绝对鼠标位置，未验证通用指针捕获，Native StartMoving/StartSizing 保持捕获权威。
-------------------------------------------------------------------------
 local Pointer = {
     version = 1,
     captureSupported = false,
@@ -132,11 +126,8 @@ local function Callback(label, fn, ...)
     return ok, result
 end
 
-------------------------------------------------------------------------
 -- TooltipService 提示服务。
---
 -- 当前 RU 导出 Native SetTooltip 时优先使用，由客户端负责安全光标位置和关闭；否则使用统一 RSUI 提示池，绑定/位置仅事件驱动。
-------------------------------------------------------------------------
 local Tooltip = {
     version = 6,
     -- 提示池根须为 system 层实际临时 WINDOW，带 popup 绘制优先级；emptywidget 不能可靠越过背包/仓库等原生窗口，遵循已验证 ContextMenu 策略。
@@ -275,22 +266,23 @@ function Tooltip:Show(target, text, options)
         or type(positioning.ResolveAnchored) ~= "function" then
         return false, "tooltip_popup_positioning_contract_unavailable"
     end
-    local gap = N(options.gap, 10) -- Tooltip 与 Trigger/鼠标之间只保留逻辑间距，不参与分辨率比例换算。
-    local resolved, resolveErr -- resolved 仅为 point lane 或尺寸预算保存结果；目标型 Tooltip 的最终位置由 Native-relative Anchor 提交。
-    local relativeTarget = false -- 默认认为当前 Tooltip 不是目标相对车道，只有无鼠标点且能证明 Trigger 时才切换。
-    local targetW, targetH = 1, 1 -- 缓存 Trigger 逻辑尺寸供 Native-relative bottom offset 使用，尺寸来源仍是现有 AnchorRect 只读事实。
-    if mouseX ~= nil and mouseY ~= nil then -- 鼠标跟随 Tooltip 属于显式 point lane，不强行改成 Trigger relative，以免丢失真实指针位置语义。
-        -- 跟随光标仍只在 OnEnter 采样一次；共享弹层求解器负责视口逻辑空间的边缘翻转/限制。
+    -- 目标提示用 Trigger-relative；光标提示在 OnEnter 采样一次，走 viewport point 求解。
+    local gap = N(options.gap, 10)
+    -- 相对车道只取 Trigger 尺寸，不用其绝对 x/y；没有可用 Trigger 时保留中央安全 fallback。
+    local resolved, resolveErr
+    local relativeTarget = false
+    local targetW, targetH = 1, 1
+    if mouseX ~= nil and mouseY ~= nil then
         resolved, resolveErr = positioning:ResolvePoint(mouseX, mouseY, width, height, {
             id = "tooltip", gap = gap,
         })
     else
-        local _, _, w, h, anchor = AnchorRect(target) -- 这里只用现有 AnchorRect 判断 Trigger 是否真实可用并取得逻辑尺寸，不再消费其绝对 X/Y 作为最终定位。
-        targetW, targetH = math.max(1, tonumber(w) or 1), math.max(1, tonumber(h) or 1) -- 把 Trigger 尺寸归一为正逻辑值，后续相对 Anchor 只依赖 width/height。
-        if type(anchor) == "table" and targetW > 2 and targetH > 2 then -- 有真实 Trigger 时切换到 .18.191 Native-relative lane，Shell/Scroll/UI Scale 均由 Native Anchor 系统处理。
-            relativeTarget = true -- 标记最终位置必须相对目标控件提交，禁止后续 UIParent 绝对坐标写入。
-            resolved = { width = width, height = height } -- 目标型 Tooltip 只需要已经 Measure 的 Popup 尺寸，不再运行绝对屏幕 placement solver。
-        else -- 无法证明 Trigger 时继续使用既有 viewport 中央安全 fallback，避免 nil Anchor 产生异常。
+        local _, _, w, h, anchor = AnchorRect(target)
+        targetW, targetH = math.max(1, tonumber(w) or 1), math.max(1, tonumber(h) or 1)
+        if type(anchor) == "table" and targetW > 2 and targetH > 2 then
+            relativeTarget = true
+            resolved = { width = width, height = height }
+        else
             local viewport = positioning:GetViewport()
             resolved, resolveErr = positioning:ResolvePoint(
                 viewport.x + viewport.width * 0.5 - width * 0.5,
@@ -298,20 +290,21 @@ function Tooltip:Show(target, text, options)
                 width, height, { id = "tooltip", gap = 0 })
         end
     end
-    if resolved == nil then return false, "tooltip_popup_position_failed:" .. tostring(resolveErr or "unknown") end -- point/fallback solver 无结果时保持 fail-closed，不显示位置未知的 Tooltip。
-    if relativeTarget == true then -- 目标型 Tooltip 使用 Trigger-local Native Anchor，完全绕开 UIParent 绝对坐标反推。
-        local relativeOk, relativeErr = positioning:ApplyNativeRelativePopup(popup.root, target, self.owner, { id = "tooltip", width = width, height = height, triggerWidth = targetW, triggerHeight = targetH, gap = gap, placement = "bottom-start" }) -- 顶层 Tooltip Window 直接引用目标 Native Widget 作为 Anchor reference，解决不同分辨率/父级链造成的漂移。
-        if relativeOk ~= true then return false, "tooltip_native_relative_anchor_failed:" .. tostring(relativeErr or "unknown") end -- Native-relative 失败时禁止退回旧绝对坐标猜测路径。
-    else -- 鼠标/显式安全 fallback 没有 Trigger relative 语义，仍由 UIParent point lane 定位。
-        UI:SetAnchor(popup.root, UIParent, resolved.x, resolved.y, self.owner) -- point lane 的 resolved 坐标已经属于 viewport logical；这里保持单次 UIParent Anchor 写入。
-        popup.root.rsUiCoordinateLane = "popup-point-v1" -- 显式标记鼠标/point lane，诊断不再把它与 Trigger-relative 混为同一路径。
-        popup.root.rsUiCoordinateSpace = "viewport-logical-v1" -- point lane 仍消费统一 viewport logical 坐标，不做二次 uiScale。
-    end -- 结束 Tooltip relative/point 两条互斥定位车道。
-    local shown, showErr = EnsureVisible(popup.root, true, self.owner) -- Native Anchor 建立后再显示 Tooltip，状态事务顺序保持与其他 Popup 一致。
-    if shown ~= true then return false, "tooltip_show_failed:" .. tostring(showErr or "unknown") end -- 显示失败立即返回真实错误，不继续修正或 Raise。
-    local correctionOk, correctionErr = positioning:CorrectNativePopupToScreen(popup.root, "tooltip") -- 无论 relative 还是 point lane，最终都让 RU Native 做屏幕边缘修正，避免低分辨率越界。
-    if correctionOk ~= true then return false, "tooltip_screen_correction_failed:" .. tostring(correctionErr or "unknown") end -- Native 边缘修正存在但异常时 fail-closed，并把最终原始几何留在 Popup 诊断。
-    -- Show 之后再 Raise，原生可见转换会重置临时窗口 z-slot，提前抬升不能保持。
+    -- 定位失败即停止，相对锚失败不能退回猜测绝对坐标。
+    if resolved == nil then return false, "tooltip_popup_position_failed:" .. tostring(resolveErr or "unknown") end
+    if relativeTarget == true then
+        local relativeOk, relativeErr = positioning:ApplyNativeRelativePopup(popup.root, target, self.owner, { id = "tooltip", width = width, height = height, triggerWidth = targetW, triggerHeight = targetH, gap = gap, placement = "bottom-start" })
+        if relativeOk ~= true then return false, "tooltip_native_relative_anchor_failed:" .. tostring(relativeErr or "unknown") end
+    else
+        UI:SetAnchor(popup.root, UIParent, resolved.x, resolved.y, self.owner)
+        popup.root.rsUiCoordinateLane = "popup-point-v1"
+        popup.root.rsUiCoordinateSpace = "viewport-logical-v1"
+    end
+    -- 先锚定再显示、修正屏幕边缘；Show 后 Raise，避免显示时重置 z-slot。
+    local shown, showErr = EnsureVisible(popup.root, true, self.owner)
+    if shown ~= true then return false, "tooltip_show_failed:" .. tostring(showErr or "unknown") end
+    local correctionOk, correctionErr = positioning:CorrectNativePopupToScreen(popup.root, "tooltip")
+    if correctionOk ~= true then return false, "tooltip_screen_correction_failed:" .. tostring(correctionErr or "unknown") end
     if type(popup.root.Raise) == "function" then pcall(function() popup.root:Raise() end) end
     popup.text = value
     popup.visible = true
@@ -414,11 +407,8 @@ function Tooltip:Unbind(target)
     return true
 end
 
-------------------------------------------------------------------------
 -- ContextMenuService 上下文菜单。
---
 -- Suite 共用菜单池，明确打开；可绑定具体控件已验证事件，不能补造 ui_functions.lua 不存在的右键事件名。
-------------------------------------------------------------------------
 local ContextMenu = {
     version = 1,
     owner = "rsui:context_menu_service",
@@ -575,34 +565,35 @@ function ContextMenu:Open(anchor, items, options)
     end
     local anchorRect, anchorErr = positioning:ResolveAnchorRect(anchor)
     if anchorRect == nil then return false, "context_menu_anchor_unavailable:" .. tostring(anchorErr or "unknown") end
-    local resolved, resolveErr -- ContextMenu 只在显式 screen point 时需要绝对 solver；目标型菜单直接使用 Native-relative Anchor。
-    local relativePlacement = nil -- nil 表示 point lane；bottom/right 表示相对 Trigger 的 Native Anchor 方向。
-    if tonumber(options.x) ~= nil and tonumber(options.y) ~= nil then -- 调用方给出明确屏幕点时保留 point lane，不能擅自改成目标相对语义。
-        resolved, resolveErr = positioning:ResolvePoint(tonumber(options.x), tonumber(options.y), width, height, { id = "context_menu", gap = 0 }) -- 显式 point 只经过统一 viewport solver 一次，并在 Show 后继续走 Native 屏幕修正。
-    elseif options.position == "right" then -- 右侧菜单属于 Trigger-relative 语义，不再用 anchorRect.right 反推 UIParent 绝对坐标。
-        relativePlacement = "right-start" -- 记录相对方向，由 ApplyNativeRelativePopup 使用 TriggerWidth + gap 生成本地 X。
-        resolved = { width = width, height = height } -- 相对车道只保留 Popup 尺寸，不运行绝对 placement solver。
-    else -- 默认 ContextMenu 紧贴 Trigger 下方，与 Dropdown/ColorField 使用同一 Native-relative 基础能力。
-        relativePlacement = "bottom-start" -- 默认方向为 Trigger 下方，边缘越界由 CorrectOffsetByScreen 修正。
-        resolved = { width = width, height = height } -- 相对车道不需要 anchorRect.x/y，因此不会受 Shell/Scroll/UI Scale 影响。
-    end -- 结束 ContextMenu point/relative 路由选择。
-    if resolved == nil then return false, "context_menu_popup_position_failed:" .. tostring(resolveErr or "unknown") end -- 显式 point solver 失败时保持 fail-closed。
-    if relativePlacement ~= nil then -- 有目标相对方向时，顶层 Window 直接锚到 anchor Native Widget。
-        local relativeOk, relativeErr = positioning:ApplyNativeRelativePopup(self.root, anchor, self.owner, { id = "context_menu", width = width, height = height, triggerWidth = anchorRect.width, triggerHeight = anchorRect.height, gap = 4, placement = relativePlacement }) -- ContextMenu 复用统一 Native-relative Authority，不再维护私有坐标算法。
-        if relativeOk ~= true then return false, "context_menu_native_relative_anchor_failed:" .. tostring(relativeErr or "unknown") end -- 相对锚定失败时拒绝打开，禁止回退错误绝对坐标。
-    else -- 只有显式 options.x/options.y 仍走 UIParent point lane。
-        UI:SetAnchor(self.root, UIParent, resolved.x, resolved.y, self.owner) -- point lane 保持一次绝对 Anchor 写入，随后交给 Native 做边缘修正。
-        self.root.rsUiCoordinateLane = "popup-point-v1" -- 标记显式点定位车道，便于诊断区分。
-        self.root.rsUiCoordinateSpace = "viewport-logical-v1" -- 显式点仍使用 viewport logical 坐标空间。
-    end -- 结束 ContextMenu 最终 Anchor 提交。
-    -- 菜单与 Dropdown/ColorField 共用命中静默契约：Close() 取消拾取，Show 先恢复。
+    -- 显式 x/y 走 viewport point；其余按 Trigger 下方或右侧相对锚定，不能混用绝对坐标。
+    local resolved, resolveErr
+    local relativePlacement = nil
+    if tonumber(options.x) ~= nil and tonumber(options.y) ~= nil then
+        resolved, resolveErr = positioning:ResolvePoint(tonumber(options.x), tonumber(options.y), width, height, { id = "context_menu", gap = 0 })
+    elseif options.position == "right" then
+        relativePlacement = "right-start"
+        resolved = { width = width, height = height }
+    else
+        relativePlacement = "bottom-start"
+        resolved = { width = width, height = height }
+    end
+    if resolved == nil then return false, "context_menu_popup_position_failed:" .. tostring(resolveErr or "unknown") end
+    -- 先锚定，再恢复拾取、显示、修正和 Raise；失败不发布打开状态。Close 会取消拾取，重开须恢复。
+    if relativePlacement ~= nil then
+        local relativeOk, relativeErr = positioning:ApplyNativeRelativePopup(self.root, anchor, self.owner, { id = "context_menu", width = width, height = height, triggerWidth = anchorRect.width, triggerHeight = anchorRect.height, gap = 4, placement = relativePlacement })
+        if relativeOk ~= true then return false, "context_menu_native_relative_anchor_failed:" .. tostring(relativeErr or "unknown") end
+    else
+        UI:SetAnchor(self.root, UIParent, resolved.x, resolved.y, self.owner)
+        self.root.rsUiCoordinateLane = "popup-point-v1"
+        self.root.rsUiCoordinateSpace = "viewport-logical-v1"
+    end
     local repickOk, _, repickErr = UI:EnsurePickable(self.root, true, self.owner)
     if repickOk ~= true then return false, "context_menu_repick_failed:" .. tostring(repickErr or "unknown") end
-    local shown, showErr = EnsureVisible(self.root, true, self.owner) -- ContextMenu Anchor 成功后再显示，保持 Native/Presentation 状态事务顺序。
-    if shown ~= true then return false, "context_menu_show_failed:" .. tostring(showErr or "unknown") end -- 显示失败立即停止，避免 hidden/pickable/open 状态分叉。
-    local correctionOk, correctionErr = positioning:CorrectNativePopupToScreen(self.root, "context_menu") -- 由 RU CorrectOffsetByScreen 统一处理右/下屏幕边缘，分辨率适配不再依赖 Lua 固定偏移。
-    if correctionOk ~= true then return false, "context_menu_screen_correction_failed:" .. tostring(correctionErr or "unknown") end -- Native 修正异常时 fail-closed，并保留实机几何证据。
-    if type(self.root.Raise) == "function" then pcall(function() self.root:Raise() end) end -- 最终 Raise 保证 Menu 的 Popup Z-Layer 契约不因坐标重构改变。
+    local shown, showErr = EnsureVisible(self.root, true, self.owner)
+    if shown ~= true then return false, "context_menu_show_failed:" .. tostring(showErr or "unknown") end
+    local correctionOk, correctionErr = positioning:CorrectNativePopupToScreen(self.root, "context_menu")
+    if correctionOk ~= true then return false, "context_menu_screen_correction_failed:" .. tostring(correctionErr or "unknown") end
+    if type(self.root.Raise) == "function" then pcall(function() self.root:Raise() end) end
     self.open = true
     RSUI.metrics.contextMenuOpens = (tonumber(RSUI.metrics.contextMenuOpens) or 0) + 1
     return true
@@ -643,9 +634,7 @@ function ContextMenu:Bind(target, provider, eventName, options)
     return UI:SafeHandler(native, eventName, handler, "rsui:context_bind:" .. eventName)
 end
 
-------------------------------------------------------------------------
 -- FocusService 焦点服务。
-------------------------------------------------------------------------
 local Focus = {
     version = 3,
     keyboardNavigationSupported = false,

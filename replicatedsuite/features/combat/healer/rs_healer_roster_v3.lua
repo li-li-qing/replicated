@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗助手名单投影
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- TeamRosterV3 是发现团队 unit token 的唯一权威；本 Domain 仅增加旧推荐公式要求的稳定 key、自身标志和可选职责分类。
 -- X2Team:GetRole 仅在职责评分开启时按有界切片刷新，TTL5s，禁止每次健康扫描读取。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}
@@ -91,6 +88,8 @@ function R:Invalidate(reason)
     self.roleCycleActive = false
     self.roleCursor = 1
     self.roleForce = true
+    -- 失效属于名单版本边界，即使成员未改，也不能让 Runtime 复用失效前的完整副本。
+    self.revision = self.revision + 1
     self.metrics.invalidations = (tonumber(self.metrics.invalidations) or 0) + 1
     return true
 end
@@ -171,6 +170,8 @@ function R:RunRoleSlice()
         self.roleCycleActive = false
         for _, member in ipairs(self.members) do member.role = ClassifyRole(member, settings) end
         self.ready = true
+        -- 评分关闭早退也提交了重分类后的角色，必须推进版本使 Runtime 下一周期更新副本。
+        self.revision = self.revision + 1
         return true
     end
 
@@ -216,6 +217,8 @@ function R:RefreshRolesIfDue()
 end
 
 function R:IsReady() return self.ready == true end
+-- 只暴露完整名单的版本标量；职责分片中的行仍可变，不能作为跨周期复用依据。
+function R:GetRevision() return self.ready == true and self.revision or nil end
 function R:GetSnapshot()
     return { revision = self.revision, sourceRevision = self.sourceRevision, count = #self.members, members = DeepCopy(self.members) }
 end

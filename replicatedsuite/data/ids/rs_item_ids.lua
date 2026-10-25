@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 物品身份注册
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 可复用物品身份集中在本表；业务模块消费这些值，禁止在运行时热路径重复散落魔数 Item ID。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 if S.GameDataRegistry == nil then return end
@@ -19,12 +16,8 @@ local I = {
         lumber = 8337,
         iron = 8318,
     },
-    -- 公开 ArcheRage 当前数据库确认
-    -- 10504..10515 六组原大陆居民板任务分别消耗王子/女王/祖先的钱袋与箱子。旧 Bonds 只保存
-    -- 任务 ID，却没有把这 6 个真实 ItemType 纳入统一背包快照，导致原大陆行即使出现也只能显示
-    -- “持有 ? / 缺口 ?”。物品身份统一放在共享 GameIds.Item，Bonds 只消费映射，禁止在 Feature 热路径
-    -- 重新散落魔数。兼容边界：仅新增静态身份，不改变 Store schema；后续 RU 若替换任务物品，必须先
-    -- 重新核对数据库/实机再改这里，不能按文本猜 ItemType。
+    -- RU 数据库的居民任务 10504..10515 消耗王子/女王/祖先钱袋和箱子；共享映射供 Bonds 背包持有量查询。
+    -- 后续替换物品须先核实数据库或实机，不能按文本猜 ItemType。
     AURORIA_BOND_MATERIAL = {
         prince_purse = 35461,
         prince_crate = 42076,

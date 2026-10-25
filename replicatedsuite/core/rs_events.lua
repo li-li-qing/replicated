@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 隔离原生事件与内部总线
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 隔离事件总线使用私有隐藏 Window，绝不替换其他插件的 UIParent:SetEventHandler 回调。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -27,8 +24,7 @@ S.Events = {
     unregisterCapability = nil,
     unregisterSkipped = 0,
     ownerReleaseContractVersion = 1,
-    -- Owner 释放立即撤销在途回调，Epoch 隔离同代 Stop/Start。
-    -- 仅治理事件执行权限，不拥有 Feature/UI 状态；不改变 owner-first 参数或 Native 注册策略。
+    -- Owner 释放立即取消在途回调；Epoch 区分同代 Stop/Start，事件参数仍保持 owner-first。
     dispatchEpoch = 0,
     -- 全局 UI 事件单独桥接，不能假定私有 Window:RegisterEvent 会收到；每个事件只注册一个可释放的 Native 回调。
     globalBridges = {}, globalRegisterFailures = 0, globalReleaseFailures = 0,
@@ -102,8 +98,7 @@ end
 
 function E:Subscribe(eventName, owner, callback)
     if type(eventName) ~= "string" or eventName == "" or type(callback) ~= "function" then return false end
-    -- 原生注册属于订阅事务；RegisterEvent 失败时不能告诉 Service 监听已生效。已有可选主题须等注册成功且必需
-    -- 监听器真正提交后，才能升级为必需。
+    -- RegisterEvent 属于订阅事务；原生注册和必需监听器都提交后，才能把可选主题升级为必需。
     if self.running == true and self.registered[eventName] ~= true then
         if self:Register(eventName) ~= true then
             self.subscribeFailures = self.subscribeFailures + 1
@@ -125,8 +120,8 @@ function E:Unsubscribe(eventName, owner)
     if type(list) ~= "table" then return 0 end
     local kept, removed = {}, 0
     for _, listener in ipairs(list) do
-        -- 只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
-        -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
+        -- 所有分发快照共用撤销标记；只换 list 无法阻止旧快照继续调用 Owner。
+        -- 保留 callback/owner 到当前栈退回，避免破坏正在执行的回调。
         if listener.owner == owner then
             listener.cancelled = true
             removed = removed + 1
@@ -151,8 +146,7 @@ function E:UnsubscribeOwner(owner)
         if type(list) == "table" then
             local kept = {}
             for _, listener in ipairs(list) do
-                -- 只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
-                -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
+                -- 撤销标记同时使旧分发快照失效；字段留到当前回调结束后回收。
                 if listener.owner == owner then
                     listener.cancelled = true
                     removed = removed + 1
@@ -173,8 +167,7 @@ function E:UnsubscribeOwner(owner)
     return removed
 end
 
--- 内部事件总线供 V3 Feature 发布投影变化。内部主题不调用 Native RegisterEvent()，因此 Presentation 订阅不能
--- 仅因观察 Feature 而扩大游戏事件面。
+-- 内部主题不调用 Native RegisterEvent，观察 Feature 不应扩大游戏事件订阅。
 function E:SubscribeInternal(topic, owner, callback)
     topic = tostring(topic or "")
     if topic == "" or type(callback) ~= "function" then return false end
@@ -190,8 +183,7 @@ function E:UnsubscribeInternal(topic, owner)
     if type(list) ~= "table" then return 0 end
     local kept, removed = {}, 0
     for _, listener in ipairs(list) do
-        -- 只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
-        -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
+        -- 撤销旧快照的执行权，保留当前回调仍在使用的字段。
         if listener.owner == owner then
             listener.cancelled = true
             removed = removed + 1
@@ -209,8 +201,7 @@ function E:UnsubscribeInternalOwner(owner)
         if type(list) == "table" then
             local kept = {}
             for _, listener in ipairs(list) do
-                -- 只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
-                -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
+                -- 撤销旧快照的执行权，保留当前回调仍在使用的字段。
                 if listener.owner == owner then
                     listener.cancelled = true
                     removed = removed + 1
@@ -295,8 +286,7 @@ function E:Unregister(eventName)
     eventName = tostring(eventName or "")
     if eventName == "" or self.registered[eventName] ~= true then return true end
 
-    -- 部分 ArcheRage RU 版本提供 RegisterEvent 却没有匹配的 UnregisterEvent，这是能力限制而非运行失败。上方
-    -- 已移除监听所有权，原生事件可安全停放在隐藏宿主并忽略，直到宿主关闭。
+    -- 部分 RU 版本有 RegisterEvent 却无 UnregisterEvent；撤销监听权后将事件留在隐藏宿主并忽略，直到宿主关闭。
     if self.host == nil or type(self.host.UnregisterEvent) ~= "function" then
         self.unregisterCapability = false
         if self.parkedRegistrations[eventName] ~= true then
@@ -366,8 +356,7 @@ function E:Start()
     if host == nil then self.startFailures = self.startFailures + 1; return false end
     if type(host.Show)=="function" then host:Show(false) end
     if type(host.SetHandler)~="function" then self.startFailures = self.startFailures + 1; return false end
-    -- Generation 只区分重载，不区分同代重启；Native 可能无法解绑旧 Handler。
-    -- Host 身份 + Epoch 是 transport 执行门，不复制模块启停/可见性 Authority。
+    -- Generation 只能区分重载；Host + Epoch 还须隔离同代重启及无法解绑的旧 Native Handler。
     self.dispatchEpoch = self.dispatchEpoch + 1
     local epoch = self.dispatchEpoch
     local generation = S.Generation
@@ -429,7 +418,6 @@ function E:GetHealth()
         unregisterSkipped = tonumber(self.unregisterSkipped) or 0,
         nativeUnregisterSupported = self.unregisterCapability,
         ownerReleaseContractVersion = tonumber(self.ownerReleaseContractVersion) or 0,
-        -- 仅只读契约标识，诊断不触发事件注册、订阅或业务状态变更。
         lifecycleContractVersion = self.lifecycleContractVersion,
     }
 end

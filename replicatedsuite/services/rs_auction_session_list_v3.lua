@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖会话临时清单
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 会话临时购物或材料组没有 Persistence Store、Scheduler 或 Native API。Trade/detail Presenter 提交分离事实
--- ；服务只拥有本次插件运行的临时清单、CRUD 和顺序。
-------------------------------------------------------------------------
+-- 保存本次运行的临时购物/材料清单和顺序，不存档或调用 Native；输入是 Presenter 提交的分离数据。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -55,9 +51,7 @@ function T:GetSnapshot()
     return { status = #self.groups > 0 and "ready" or "empty", groups = Copy(self.groups), revision = self.revision, groupCount = #self.groups }
 end
 
--- （2026-09-14，临时清单身份/合并）同一个货物组内优先按 itemType 合并数量，只有缺失
--- itemType 时才退回规范化名称；不同组绝不跨组相加，以保留“哪个跑商货物产生哪些材料”的来源事实。
--- 本 Service 没有 Store/Scheduler，ReloadAddon 后 Lua state 自然清空，符合 Session lifetime。
+-- 同组优先按 itemType 合并，缺 ID 时按规范名；不同组不合并，以保留货物来源。重载后清空。
 function T:AddTradeGroup(spec)
     spec = type(spec) == "table" and spec or {}
     local productName = Trim(spec.productName or spec.name); if productName == "" then return false, "临时货物名称不能为空" end
@@ -121,10 +115,8 @@ function T:UpdateMaterial(groupId, materialKey, patch)
             local nextCount = material.count
             if patch.count ~= nil then nextCount = tonumber(patch.count); if nextCount == nil or nextCount <= 0 then return false, "材料数量必须大于 0" end end
             local nextSearchable = patch.searchable ~= nil and patch.searchable == true or material.searchable
-            -- （2026-09-14，Session 材料改名身份）itemType 是稳定物品身份，显示名修改不能改 key；
-            -- 只有没有 itemType 的手工临时材料才以规范化名称作为身份。旧实现只改 material.name，不刷新
-            -- name:<...> key，之后再次添加同名材料会生成第二行，导致 CRUD/移动/删除引用旧身份。这里在 Service
-            -- Authority 内原子更新 key；若新名称已经存在则合并数量并删除旧行，保证同一组内身份唯一。
+            -- 有 itemType 时改名不改身份；手工无 ID 材料须同时更新 name key。
+            -- 新名称已存在时原子合并数量并删旧行，避免重复条目及过期引用。
             local nextKey = material.key
             if not (tonumber(material.itemType) ~= nil and tonumber(material.itemType) > 0) then
                 nextKey = MaterialKey({ name = nextName }) or material.key

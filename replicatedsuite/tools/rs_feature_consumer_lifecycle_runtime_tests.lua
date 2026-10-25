@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能消费者生命周期运行时测试
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 local ROOT = './'
 local function eq(a, b, message)
     if a ~= b then error((message or 'assert') .. ': expected=' .. tostring(b) .. ' actual=' .. tostring(a), 2) end

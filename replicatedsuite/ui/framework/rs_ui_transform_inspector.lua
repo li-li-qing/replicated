@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 变换属性检查器
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- HUD/布局复用 Inspector，绑定 AnchorPivotModel/LayoutEditorSnapSettingsModel，不持 Feature 持久化或第二几何权威。
 -- 密集 Inspector：Transform 编辑局部左上 X/Y、宽高；Anchor 编辑九点预设、归一化 anchor/pivot、锚偏移；Snapping 编辑启用/网格/对齐/画布/引导与有界参数。
 -- 坐标标签须明确：ArcheAge/CryEngine 左上原点，+X 右、+Y 下，“上”即负 Y。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

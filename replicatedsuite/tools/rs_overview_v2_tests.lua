@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 总览测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 使用实际 RSUI 布局、Feature 和 Service，仅原生数据与父控件为替身；不能作为 RU 客户端视觉验收。
-------------------------------------------------------------------------
 local pass,fail=0,0
 local function Test(name,fn)
     local ok,err=xpcall(fn,debug.traceback)
@@ -90,7 +87,7 @@ Test('hidden task changes do no page work; visible trade updates locally',functi
 end)
  Test('overview keeps bounded manual quote and no automatic query',function()
   local S,p,n,c=HomeBoot({visible={'trade'}});p:OnActivated()
-  -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：与 rs_home_overview_tests.lua 同源的过期断言。
+  -- 与 rs_home_overview_tests.lua 同源的过期断言。
   -- 首页卡当前的 Authority（rs_v3_life_economy_widgets.lua:105 “构建和刷新绝不发出材料询价”、
   -- :443 只要求单行询价 QuoteRowMaterials）已不提供 `v3_home_trade_quote` 批量询价按钮；批量/高级
   -- 询价只属于完整跑商页。这里保留本用例真正要证明的“有界、非自动”契约，不再要求不存在的控件。

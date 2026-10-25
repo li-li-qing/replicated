@@ -1,15 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖查询与结果快照
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 拍卖查询是无 token 的 AUCTION_ITEM_SEARCHED 完成边沿的共享显式搜索权威。Feature 不直接订阅原生事件；有界
--- 服务串行化用户搜索，通过内部 EventBus 发布分离快照。
-------------------------------------------------------------------------
+-- AUCTION_ITEM_SEARCHED 不带请求 token，因此共用串行搜索；Feature 只消费分离快照，不直接订阅原生事件。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
--- （2026-09-30，trade-quote-price-safety-1）共享服务早于按需 ImportAPI 加载。
--- 不捕获早期/重载占位的 X2Auction 表；每次由 Api capability boundary 解析当前 Native host。
--- 这不启用拍卖助手，只让 Trade 所有的惰性导入在 Search/回包读取时真正生效。
+-- 服务早于惰性 ImportAPI 加载；每次经能力边界解析当前 X2Auction，不能缓存早期占位表。
 local S = ReplicatedSuite
 S.Services = S.Services or {}
 local Q = {
@@ -19,9 +13,7 @@ local Q = {
     priorityPatch = "auction-user-priority-1",
     surfaceTopic = "v3.auction_surface.updated",
     interruptions = 0, discardedCompletions = 0,
-    -- （2026-09-25，auction-listing-unit-price-1）GetSearchedItemInfo 的 direct/bid 是整条
-    -- 拍卖记录价格，而不是材料单价。数量是价格归一 Authority 的必要组成；下游不得再把 listing total
-    -- 当作 unit cost。该契约同时要求兼容 RU 常见 itemStack 字段，避免数量丢失后错误放大材料成本。
+    -- direct/bid 是整条挂单总价，材料单价必须结合数量计算；数量可能放在 itemStack。
     ListingUnitPriceContractVersion = 1,
     SampledUnitPriceContractVersion = 1,
     sortPatch = "auction-three-sample-1",
@@ -79,24 +71,18 @@ local function ItemName(info)
 end
 local function Amount(info)
     return Nested(info, function(row)
-        -- （2026-09-25，auction-listing-unit-price-1）官方 Auction API 的分割购买接口
-        -- 使用 itemStack 命名，RU 搜索结果也可能沿用该字段。旧实现漏掉 itemStack 后 quantity=nil，
-        -- PriceQuote fallback 只能看到整单 directPrice，最终会把几百/几千件的总价误当成 1 件单价。
-        -- 这里只做 bounded 字段归一，不调用 Native；数量至少为 1，保持 AuctionQuery 为字段 Authority。
+        -- RU 搜索结果可能沿用 itemStack 数量字段，遗漏会把整组总价误当单价。这里只归一字段，不调用 Native。
         local value = tonumber(row.itemStack or row.stackCount or row.stack or row.count or row.amount
             or row.itemCount or row.quantity or row.stackSize)
-        -- （2026-09-30，trade-quote-price-safety-1）零/负数/小数/无穷不是“1件”。
-        -- 禁止把不可读数量钳成1后用整单总价当单价，保留 nil 让报价按无可靠数量失败。
+        -- 零、负数、小数或无穷都不是“1件”；数量不可读时留 nil，不能钳成 1。
         if value == nil or value ~= value or value == math.huge or value < 1 or value ~= math.floor(value) then return nil end
         return value
     end)
 end
 local function Money(value, depth)
     depth = tonumber(depth) or 0
-    if depth > 4 then return nil end -- 无效递归包装不得拖垮共享 AUCTION_ITEM_SEARCHED 回调。
-    -- （2026-09-24，auction-money-normalize-1）RU 的拍卖价格字段并不保证始终是裸 number；
-    -- 历史客户端会出现逗号分组字符串或 gold/silver/copper 复合表。AuctionQueryV3 是搜索结果字段
-    -- normalization Authority，应在这里一次归一为铜币 number，不能让各 Feature 各猜一次返回形状。
+    if depth > 4 then return nil end -- 金额可能为逗号分组字符串或 gold/silver/copper 表，统一在此归一到铜币。
+    -- 递归必须有界，异常包装不能拖垮共享回包。
     if type(value) == "number" then return value >= 0 and math.floor(value) or nil end
     if type(value) == "string" then
         local n = tonumber((value:gsub(",", ""):gsub("%s", "")))
@@ -141,8 +127,7 @@ end
 local function NormalizeRow(info, index)
     if type(info) ~= "table" then return nil end
     local itemType = ItemType(info)
-    local itemGrade = ItemGrade(info) -- 提取拍卖行搜索结果的物品品级，支持后续针对具体品级走
-                                      -- PriceQuoteQueueV3 显式询价
+    local itemGrade = ItemGrade(info)
     local name = ItemName(info)
     local count = Amount(info)
     local direct = Price(info, { "directPriceStr", "directPrice", "buyoutPriceStr", "buyoutPrice" })
@@ -170,8 +155,7 @@ local function NormalizeRow(info, index)
     }
 end
 
--- （2026-10-02）严格报价释放快照后仍保留有界字段证据。仅在既有回包读取处采集，
--- 不补读 Native、不保存卖家/整张 Native 表。独立诊断 provider 避免报价大快照耗尽节点预算。
+-- 释放报价快照后仍保留有界字段证据；只用已读返回，不补读 Native 或保存卖家信息。
 local function EvidenceTime() return type(S.NowMs) == "function" and S.NowMs() or 0 end
 local function EvidenceClip(text, limit)
     if #text <= limit then return text end
@@ -217,9 +201,8 @@ local function EvidenceFields(info)
     -- 8 请求 × 3 样本仍须落在 Hub 每个 provider 的 16 KiB 预算内。
     return EvidenceClip(table.concat(parts, " "), 450)
 end
--- （2026-10-02，auction-search-packet-evidence-1）210656 报告只有 getter 的 0，旧订阅丢掉了
--- 完成事件的所有参数，无法排除事件携带数据而 Native 缓存为空。这里只保全事实，不把未知表 schema
--- 当报价 ABI；保留参数类型及中间 nil，剥离 owner，并有界脱离 Native 表/循环/个人名称字段。
+-- Getter=0 时仍需保留完成事件参数，判断数据是否只在事件中。
+-- 记录类型及中间 nil，剥离 owner、循环和个人名称；未知结构只作证据，不当报价 ABI。
 local function EvidencePacket(...)
     local packet = { argCount = select("#", ...), types = {}, values = {} }
     for index = 1, math.min(packet.argCount, 8) do
@@ -339,9 +322,8 @@ function Q:_Publish(requester)
     end
 end
 
--- （2026-09-30，auction-user-priority-1）toc.g 中 Surface 晚于 Query，必须调用时
--- 解析依赖。不能读取旧 snapshot，也不能把 Trade 的 priority=user 当成原生搜索授权。
--- 该方法仅在请求/回包/活动询价调度中读取 Native；Describe 仍是无副作用快照。
+-- Surface 在 TOC 后加载，调用时再取依赖。Trade 的 priority=user 不代表玩家已授权占用原生搜索。
+-- 只在请求、回包和活动询价时读可见性，Describe 不读 Native。
 function Q:CanBackgroundSearch()
     local surface = S.Services and S.Services.AuctionSurfaceV3 or nil
     local ok, known, visible, source, probe = false, false, false, "surface_unavailable", nil
@@ -360,8 +342,7 @@ function Q:CanBackgroundSearch()
     return true
 end
 
--- 已发出的 Native 查询没有取消/请求令牌 ABI。失去归属后保留原 timeout 占位；期间所有完成边
--- 都丢弃，不读结果、不缩短隔离期，避免把玩家自己的搜索回包当成“旧请求已排空”。
+-- Native 查询不能取消，也没有 token；失去归属后保留原 timeout，丢弃期间完成边，不读结果或缩短隔离。
 function Q:YieldBackgroundSearch(reason, requester, searchGeneration)
     local pending = self.pending
     if type(pending) ~= "table" or pending.background ~= true then return false end
@@ -454,8 +435,7 @@ function Q:_OnSearched(expected, ...)
     end
     local limit = math.min(sourceCount, math.max(1, math.min(self.maxRows, tonumber(pending.resultLimit) or 20)))
     if pending.firstValidBuyout ~= nil then
-        -- 三条样本只提供参考单价。无论拍卖行当前是升序还是降序，最多读取本页前三条，
-        -- 以同身份、同品质的有效一口单价中较低者展示；不声称这是全市场最低价。
+        -- 最多取本页前三条同身份、同品质样本中的较低一口单价，仅作参考，不代表全市场最低。
         limit = math.min(limit, 3)
         pending.coverageComplete = limit == sourceCount
         pending.listingSelection = "sampled_unit_buyout"
@@ -600,8 +580,7 @@ function Q:Search(requester, keyword, options)
             return false, reason
         end
     end
-    -- RU 官方已核实九参数签名；0/0 的过滤语义仍待实机对照，不能沿用旧注释宣称它已经证明无上限。
-    -- 本轮保留现有参数，先记录返回与事件；不新增 Native 查询或 UI 搜索框写入。
+    -- 九参数签名已核实，但 0/0 过滤含义仍待实机；先保留参数并记录返回，不宣称已证明无上限。
     if pending.evidence ~= nil then pending.evidence.sentAt = EvidenceTime() end
     local ok, value, err, second, third, fourth = S.Api:CallCapability("X2Auction:SearchAuctionArticle", nil, "SearchAuctionArticle",
         1, 0, 0, 1, 0, options.exactMatch == true, keyword, "0", "0")
@@ -610,7 +589,7 @@ function Q:Search(requester, keyword, options)
         -- Api:Call 固定返回最多四个 Native 槽位；该数不是 Native 的实际返回数量，尾 nil 不推断不存在。
         returned.argCount, returned.observedReturnSlots = nil, 4
         returned.callOk, returned.error = ok == true, err
-        pending.evidence.searchReturn = returned -- 同步完成后也补回同一请求证据，不污染下一代。
+        pending.evidence.searchReturn = returned
     end
     if ok ~= true or value == false then
         local reason = tostring(err or "搜索请求被拒绝")

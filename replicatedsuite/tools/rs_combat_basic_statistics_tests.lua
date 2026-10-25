@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗基础统计测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 从 replicatedsuite 目录用 Lua 5.1 运行；原生边界为替身，业务实现保持真实。
-------------------------------------------------------------------------
 local function Copy(t) if type(t)~='table' then return t end local out={} for k,v in pairs(t) do out[k]=Copy(v) end return out end
 local now=1000
 ReplicatedSuite={Generation=1,NowMs=function() return now end,SafeTraceback=tostring,Utils={DeepCopy=Copy},Services={},Features={},Data={}}

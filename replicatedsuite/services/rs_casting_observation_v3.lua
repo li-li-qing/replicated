@@ -1,19 +1,15 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享施法观察
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 共享 player/target/targettarget/watchtarget 只读施法事实；四单位范围源于 wbdebuff 已验证模型（
--- jumpblackdragon.lua:115-129 依次 target->targettarget->player->watchtarget）。Boss 机制依赖全部范围，失去
--- 目标不能抹掉施法事实。消费者声明所需 scope；服务拥有唯一 UnitCastingInfo 轮询任务，最后租约释放即停止。
-------------------------------------------------------------------------
+-- 按消费者 scope 共用 UnitCastingInfo 轮询，最后租约释放即停。
+-- 四单位模型来自 wbdebuff/jumpblackdragon.lua:115-129：target→targettarget→player→watchtarget；失去目标不应抹掉其它单位施法。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
 
 local C = {
     Id = "v3.casting_observation",
-    version = 3, -- 新增可用性与会话施法序号；不是服务器施法/实体 ID，不用于归属推断。
+    version = 3, -- serial 是本地观察序号，不是服务器施法或实体 ID。
     taskName = "v3_casting_observation_refresh",
     snapshots = { player = nil, target = nil, targettarget = nil, watchtarget = nil },
     revision = 0,
@@ -62,8 +58,7 @@ end
 
 local function NowMs() return math.max(0, tonumber(S.NowMs and S.NowMs()) or 0) end
 
--- Native 返回只在本边界解析；未知/非法计时不能按 0/1ms 补齐，
--- 否则下游会把坏数据当真实首领机制。已有无读条 nil/空名称语义保留，不增加 API 调用。
+-- 非法计时不能补成 0/1ms，否则会伪造首领机制；nil/空名称继续表示无读条。
 function C:_Read(scope)
     local function Failed(reason)
         self.readFailures = self.readFailures + 1
@@ -98,8 +93,7 @@ function C:Refresh(reason)
             local scopeChanged = oldCoverage == nil or oldCoverage.available ~= available or oldCoverage.error ~= err
             self.coverage[scope] = { available = available == true, error = err, at = NowMs() }
             if available == true then
-                -- 序号只描述本 scope 的本地观察段；读失败不清空旧比较基线，
-                -- 真正空读条、名称/总时长变化或进度回退才产生新段。绝不能把序号保存成服务器身份。
+                -- 序号只标本 scope 的本地观察段；读取失败保留比较基线，真实结束、改名/总时长或进度回退才开新段。
                 if nextCast ~= nil then
                     if oldCast == nil or oldCast.spellName ~= nextCast.spellName
                         or oldCast.totalMs ~= nextCast.totalMs or nextCast.currMs < oldCast.currMs then
@@ -168,7 +162,7 @@ function C:_Desired(after)
 end
 
 function C:_StopTask()
-    -- 移除索引不保证已捕获闭包失效；每次停止推进代次，旧任务不得借新 Consumer 再次读取。
+    -- 移除任务不一定撤销已捕获闭包；停止时推进代次，防止旧任务借新消费者再次读取。
     self.taskGeneration = self.taskGeneration + 1
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.taskName) end
     self.intervalMs = nil

@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 应用状态
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 应用状态只保存应用自身的小量状态；功能和业务状态归拥有它的 Feature，并通过自身 V3 Store 持久化。本文件作
--- 为 Foundation 依赖，不承担旧单体 Suite State 的领域职责。
-------------------------------------------------------------------------
+-- 这里只保存少量应用状态；功能数据由各 Feature 的 V3 Store 保存。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence

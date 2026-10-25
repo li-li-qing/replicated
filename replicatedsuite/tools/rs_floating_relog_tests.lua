@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 窗口立即退出重登回归
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 覆盖实际用户提交到 Store 的同步耐久边沿，不执行心跳或退出 Flush。
--- 本文件仅供开发期离线测试，禁止加入运行时 TOC。
-------------------------------------------------------------------------
--- 维护：只运行真实 Persistence/Transport/Layout/Windowing/Shell/Floating/Aux；
--- Native 控件和 SaveData 是隔离模型，绝不触碰用户 UDF，不能当作 RU 真机认证。
+-- 设置提交后立刻模拟重登，不运行心跳或退出 Flush，避免延迟保存掩盖未落盘的问题。
+-- 窗口与存档使用真实实现，原生控件和磁盘使用隔离替身。
 local NativeBoot=dofile('tools/rs_window_viewport_test_host.lua')
 local function Copy(v)local out={};for k,x in pairs(v)do out[k]=type(x)=='table' and Copy(x) or x end;return out end
 local function Boot(disk)
@@ -78,7 +73,7 @@ Test('all API appearance saves report Native rejection or silent loss and restor
     local methods={{'SetOverallOpacity','overallOpacity',.5},{'SetBackgroundOpacity','backgroundOpacity',.5},{'SetTextOpacity','textOpacity',.5},{'SetFontScale','fontScale',1.1}}
     for _,row in ipairs(methods)do for _,mode in ipairs({'rejectSave','dropSave'})do
         local h=Boot();local s=h:Aux('bag_settings');assert(Drag(s,300,200));local before=Copy(h.A.state.bag_settings)
-        -- 维护：真实 SaveData 拒写/静默丢写均须穿过 Core durable 回读，不能用 Persist=false 桩替代实际故障。
+        -- 真实 SaveData 拒写/静默丢写均须穿过 Core durable 回读，不能用 Persist=false 桩替代实际故障。
         h[mode]=true
         assert(s[row[1]](s,row[3],true)==false,row[1]..' turned rejection into Stage success')
         Eq(h.A.state.bag_settings[row[2]],before[row[2]]);local nativeField=row[2]=='overallOpacity' and 'opacity' or row[2];Eq(s.shell[nativeField],before[row[2]])
@@ -134,7 +129,7 @@ Test('failed final restores every staged appearance channel and preserves absent
     Eq(s.shell.opacity,.94);Eq(s.shell.fontScale,1)
     h.dropSave=false;assert(s:SetFontScale(1.1,true));Eq(raw.overallOpacity,.94);Eq(raw.fontScale,1.1)
 end)
--- 维护：直接加载真实 Store owner，验证每个发布中的 reason 前缀均提交原 Store；
+-- 直接加载真实 Store owner，验证每个发布中的 reason 前缀均提交原 Store；
 -- 测试在隔离 Domain 中改窗口标量，不复制生产 Store 归一化/持久化实现。
 local owners={
     {'Activities','features/life/activities/rs_activity_store.lua','v3.activities','widget_'},

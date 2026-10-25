@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 基础设置页面
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -21,8 +19,7 @@ local PERSISTENCE_ACCEPTANCE_STORE_IDS = {
     "v3.tasks",
     "v3.dps",
     "v3.life.trade",
-    -- 约束（2026-09-23，trade-preferences-acceptance）：跑商历史 Store 不扩 schema；
-    -- 新的关注/自动刷新/随身扫描偏好独立持久化，因此也必须进入运行时存档验收，避免升级后静默丢配置。
+    -- 跑商偏好独立存储，须纳入存档验收；历史 Store 不扩 schema。
     "v3.trade_preferences",
     "v3.death_review",
 }
@@ -70,8 +67,7 @@ local function FormatApiDependencies(meta)
     return table.concat(out, " · ")
 end
 
--- 维护（overview-content-1）：统一首页入口不变；独立内容模块仅拥有UI，
--- 不能启动关闭的Feature、复用原生浮窗或复制业务数据。初始化失败照常报告。
+-- 独立模块只提供 UI，不启动关闭的 Feature；初始化失败正常报告。
 local function BuildHome(parent, route)
     local home=S.UIV3 and S.UIV3.HomeOverview
     if not home or type(home.Build)~="function" then return nil,"今日总览内容模块未加载" end
@@ -254,11 +250,9 @@ local function BuildWidgets(parent, route)
     AdoptWidgetAction(activityLock, "activity_lock")
     AdoptWidgetAction(activityReset, "activity_reset")
     local activityHint = RSUI:Text({ id = "v3_widgets_activity_hint", parent = actions, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-    -- 维护（2026-09-15，numeric-range-v2）：透明度百分比是归一化业务量，不属于“推荐窗口”。
-    -- 明确固定 0..100，防止通用自适应 Slider 把非法精确输入扩展成新的范围；Authority 仍由 WidgetHost/Feature
-    -- 回读确认，旧 appearance 配置与持久化键不变。
-    -- 维护：NumericField 拖动预览不调用 set；完成操作直接由 Host/原 Feature Owner 耐久提交。
-    -- 不再附 storeId 二次持久绑定，否则 PersistentBinding 会把 Domain setter 当成 false 暂存并只排期，立即退出仍可能丢值。
+    -- 透明度是固定 0..100 百分比，精确输入不能扩展滑块范围。
+    -- 预览不调用 set，完成后由窗口 Owner 保存并回读；不要再套 PersistentBinding，
+    -- 否则已保存的 setter 会被当作暂存，退回延迟保存并可能在立即退出时丢值。
     local overallOpacityField = D:NumericSetting(activityStack, {
         id = "v3_widgets_activity_overall_opacity", label = "整体透明度", hint = "作用于整个悬浮窗，并与背景/文字透明度相乘；可直接输入 0–100。",
         autoCommit = true, -- 原 Owner 已耐久提交；这里只清理 Binding 草稿反馈，不再创建第二次保存。
@@ -389,11 +383,10 @@ local function BuildWidgets(parent, route)
     local function GearAppearanceSet(channel, value)
         local host = S.UIV3 and S.UIV3.WidgetHost or nil
         if host == nil then return false, "悬浮组件宿主不可用" end
-        -- 维护：三个 NumericField 的 set 仅接完成边沿；Gear Commands 是唯一保存 Authority，不再让页面 PersistentBinding 重复标脏。
+        -- 三个 NumericField 的 set 仅接完成边沿；Gear Commands 是唯一保存 Authority，不再让页面 PersistentBinding 重复标脏。
         return host:SetAppearance("combat.gear.quick", channel, (tonumber(value) or 100) / 100, true)
     end
-    -- 同一 Numeric Range v2 规则：换装快捷按钮透明度是真实 0..100 百分比，因此保留 fixedRange。
-    -- 这里只声明 Presentation 安全语义，不新增 Store，也不改变 Gear Appearance 的 Authority/升级兼容。
+    -- 换装快捷按钮透明度固定在 0..100，沿用 Numeric Range v2 的 fixedRange。
     local gearOverallOpacityField = D:NumericSetting(gearStack, {
         id = "v3_widgets_gear_overall_opacity", label = "整体透明度", hint = "同时作用于所有换装快捷按钮，并与背景/文字透明度相乘；可直接输入 0–100。",
         autoCommit = true, -- Gear Store 保存成功后才清除已应用输入的本地脏反馈。
@@ -548,8 +541,8 @@ local function BuildSettings(parent, route)
         return true
     end
 
-    -- 设置按钮与标题栏拖动共用 Shell Store 提交契约；Native 布局成功不等于位置/大小已经保存。
-    -- 完整快照仅覆盖小型 Shell 表，拒写时恢复原始字段形状和布局，不修改 Store/schema 或另建保存权威。
+    -- 设置按钮和标题栏拖动共用 Shell Store 提交；布局成功不代表保存成功。
+    -- 拒写时用完整快照恢复字段形状和布局。
     local function CommitShellLayout(reason, apply)
         local current = S.UIV3 and S.UIV3.ShellState
         local shell = S.UIV3 and S.UIV3.Shell
@@ -606,7 +599,7 @@ local function BuildSettings(parent, route)
             local shell = S.UIV3 and S.UIV3.Shell or nil
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             if shellState == nil or shell == nil or host == nil then return false end
-            -- 维护（viewport-recovery-1）：设置页不再自行清字段/猜坐标，硬恢复与 Native
+            -- 设置页不再自行清字段/猜坐标，硬恢复与 Native
             -- 可见性、捕获取消、Store 失败回滚全部由 Shell 负责；不影响 Workspace 偏好。
             local shellOk = type(shell.ResetLayout)=="function" and shell:ResetLayout(true) or false
             local widgetsOk = type(host.ResetAllLayouts) == "function" and host:ResetAllLayouts() or false
@@ -758,17 +751,13 @@ local function BuildPersistenceAcceptanceCopyText()
 end
 
 local function BuildDiagnostics(parent, route)
-    -- 维护（2026-09-12）：旧ScrollBox的OuterSize只读子项Measure，不采用slot.height；
-    -- 原生编辑框不是Border的RSUI content，因此Border测量为0，实际布局复现宿主高仅1。
-    -- 同时回执早于编辑框写入。诊断主体为run/print与前后翻页+单正文，采用Foundation VerticalBox fill，
-    -- 由共享布局分配正文空间，无Tick/自制滚动/新弹窗；不更改其他长设置页的ScrollBox。
+    -- 旧 ScrollBox 只取子项 Measure，不取 slot.height；裸编辑框又不参与 Border 测量，
+    -- 曾让宿主只剩 1px 高。这里用 VerticalBox fill 分配正文空间。
     local root, rootErr = D:PageRoot(parent,{id="v3_page_system_diagnostics",gap=6})
     if root==nil then return nil,"页面根组件创建失败："..tostring(rootErr or "未知错误") end
     root.route=route
-    -- 约束（2026-09-18，module-diagnostics-system-scope-1）：全局诊断页不删除，
-    -- 但职责固定为 Core/Foundation/完整维护取证；普通业务故障的默认入口已经迁到模块页左上角。
-    -- 禁止为了“方便”把所有 Feature 的日常诊断再次塞回这里；只有维护者明确需要全局证据时才使用
-    -- 下方完整报告。这个页面的旧复制框继续保持兼容，不允许为了修模块 DiagnosticCopyBox 去改普通输入生命周期。
+    -- 全局诊断负责 Core、Foundation 和完整取证；普通业务故障使用模块页诊断。
+    -- 旧复制框保持独立，不能为修复模块复制框而改变所有输入的生命周期。
     D:PageHeader(root,"v3_diag_header","系统诊断与维护",
         "这里保留 Core / Foundation 的完整维护自检。业务模块故障请优先使用对应页面左上角“诊断”，只采集该模块的错误、Store 与运行状态；完整报告仅在维护底层框架时使用。")
     local actions=RSUI:HorizontalBox({id="v3_diag_actions",parent=root,gap=8,slot={size="fixed",height=32,hAlign="fill"}})
@@ -778,8 +767,7 @@ local function BuildDiagnostics(parent, route)
     -- 导出完整冻结原文，不读取当前编辑页；独立快照 key 不更改业务配置。
     local exportButton=RSUI:Button({id="v3_diag_export_file",parent=actions,text="导出文件",compact=true,slot={size="fixed",width=100}})
     local perfEntry -- 入口放在下方翻页行，避免500px窄视口顶部固定按钮挤出可点击范围。
-    -- 约束（continuous-performance-1）：持续诊断只经已有 Monitor 手动开始/停止，页面关闭不
-    -- 停采集；没有 UI Tick、自动业务查询或自动写盘。刷新仅消费快照，不碰下方报告选区。
+    -- 持续诊断仅由用户手动启停 Monitor，关页不停止采集；刷新只读快照，不碰报告选区。
     local perfActions=RSUI:HorizontalBox({id="v3_diag_perf_actions",parent=root,gap=7,slot={size="fixed",height=30,hAlign="fill"}})
     -- 按钮按可用宽度分配 Fill，预留可读最小宽；固定548px会让500px窗口的导出按钮越界。
     local perfStart=RSUI:Button({id="v3_diag_perf_start",parent=perfActions,text="开始持续诊断",compact=true,fontSize=10,slot={size="fill",fill=1.35,minWidth=90}})
@@ -797,7 +785,7 @@ local function BuildDiagnostics(parent, route)
     local status=RSUI:Text({id="v3_diag_report_status",parent=root,fontSize=10,tone="accent",overflow="wrap",maxLines=3,
         text="系统报告用于 Core / Foundation 维护，仍完整保留本次加载阻断与故障 Store 取证；业务模块请优先使用模块左上角诊断，避免复制无关内容。",
         slot={size="fixed",height=50,hAlign="fill"}})
-    -- 维护：导航独立于run/print，不创建N个Native编辑框；复用同一框显示逻辑编辑框1..N，
+    -- 导航独立于run/print，不创建N个Native编辑框；复用同一框显示逻辑编辑框1..N，
     -- 节省控件/焦点资源。前后按钮达到边界即禁用；没有隐式轮转、没有新事件或后台任务。
     local navigation=RSUI:HorizontalBox({id="v3_diag_report_navigation",parent=root,gap=8,slot={size="fixed",height=30,hAlign="fill"}})
     local previousButton=RSUI:Button({id="v3_diag_report_prev",parent=navigation,text="上一页",compact=true,slot={size="fixed",width=96}})
@@ -810,13 +798,13 @@ local function BuildDiagnostics(parent, route)
     local editor,editorReady,editorError
     if host and host.root and type(ui)=="table" and type(ui.CreateMultiEditBox)=="function" then
         -- 原生容量须实际回读，不能因 SetMaxTextLength(1MiB) 不抛错就认定支持1MiB。
-        -- 维护（2026-09-12）：32KiB只为请求值，RU本次回报9215。交付按实际返回容量
+        -- 32KiB只为请求值，RU本次回报9215。交付按实际返回容量
         -- 分段，无返回时保守3500，再以真实回读协商；两个主操作之外是明确的上一页/下一页。
         local ok,value,err=pcall(ui.CreateMultiEditBox,ui,host.root,"v3_diag_report_edit",4,4,300,96,32768)
         if ok then editor=value;editorError=err else editorError=value end
         if editor and type(editor.SetText)=="function" and type(editor.GetText)=="function" and type(ui.BindDeferredInputActivation)=="function" then
             local bound,accepted,bindErr=pcall(ui.BindDeferredInputActivation,ui,editor,host.owner,"v3_diag_report_edit",
-                {preserveFocusedSelection=true}) -- 维护：仅此复制框启用实时焦点身份保护，不影响业务表单。
+                {preserveFocusedSelection=true}) -- 仅此复制框启用实时焦点身份保护，不影响业务表单。
             editorReady=bound and accepted==true
             if not editorReady then editorError=bound and bindErr or accepted end
         end
@@ -826,10 +814,8 @@ local function BuildDiagnostics(parent, route)
             editor=nil
         end
     end
-    -- 维护（report-selection-1）：原先每次同尺寸布局仍进入Native几何回读修复，
-    -- GetWidth/GetEffectiveOffset抖动时会重设Extent/Anchor并破坏Native选区。
-    -- 此原生框几何只由本宿主提交：已成功的相同逻辑尺寸/父级不再重复写；真实resize或失败重试仍执行。
-    -- 不改变共享RSUI的strict规则，不用SetText/SetFocus轮询“维持”选区；缓存随页面生命周期释放。
+    -- 同尺寸下重复回读 Native 几何会因抖动重设锚点，破坏选区。
+    -- 仅本宿主提交几何，成功后缓存逻辑尺寸和父级；真实 resize 或失败重试仍提交，离页清缓存。
     local geometryError, geometryWidth, geometryHeight, geometryParent
     local copyStats={textWrites=0,geometryApplications=0,geometrySkips=0}
     local function CopyNow()return type(S.NowMs)=="function" and S.NowMs() or 0 end
@@ -864,7 +850,7 @@ local function BuildDiagnostics(parent, route)
                 geometryError=not(ok and accepted==true) and (err or "editor_extent_failed") or nil
                 local anchored,yes,_,anchorErr=pcall(ui.EnsureAnchor,ui,editor,self.root,4,4,self.owner)
                 if not anchored or yes~=true then geometryError=anchorErr or "editor_anchor_failed" end
-                -- 维护：只有整组原生几何提交成功才能缓存；失败不伪装no-op，后续布局必须再试。
+                -- 只有整组原生几何提交成功才能缓存；失败不伪装no-op，后续布局必须再试。
                 if geometryError==nil then geometryWidth,geometryHeight,geometryParent=w,h,self.root end
             end
             return result
@@ -874,7 +860,7 @@ local function BuildDiagnostics(parent, route)
         root.selfCheckText,root.selfCheckMeta=nil,nil
         -- 同一快照分段缓存只属于此页；运行新自检/隐藏一起释放，禁止持久化或跨快照混页。
         root.selfCheckDelivery,root.selfCheckPart,root.selfCheckRetry=nil,nil,nil
-        if editor then WriteReportText("","clear_report") end -- 维护：显式清空也计入输入诊断，不记录正文。
+        if editor then WriteReportText("","clear_report") end -- 显式清空也计入输入诊断，不记录正文。
     end
     local function Backend(method)
         local diagnostic=S.DiagnosticsManager
@@ -961,7 +947,7 @@ local function BuildDiagnostics(parent, route)
         self:RefreshPerformance() -- 只有页面显式刷新更新性能显示，不创建常驻页面刷新任务。
         return true
     end
-    -- 维护：一个Native编辑框承载多份独立页文本。快照/边界在首次打印确定，上一页/下一页
+    -- 一个Native编辑框承载多份独立页文本。快照/边界在首次打印确定，上一页/下一页
     -- 只读这份快照，绝不能重跑Gate、读取Store或变更报告ID。失败不推进页码、不重分段。
     local function Navigation()
         local session,index=root.selfCheckDelivery,root.selfCheckPart or 0
@@ -1014,7 +1000,7 @@ local function BuildDiagnostics(parent, route)
             end
             local payload,err=transport:GetTextPage(session,index)
             if not payload then return {state='failed',code='PAGE_RANGE',error=err} end
-            local wrote,result=WriteReportText(payload,"present_page") -- 维护：只在用户打印/翻页时更换正文。
+            local wrote,result=WriteReportText(payload,"present_page") -- 只在用户打印/翻页时更换正文。
             if wrote and result~=false and type(editor.SetCursorOffset)=='function' then pcall(editor.SetCursorOffset,editor,0) end
             local read,actual=pcall(editor.GetText,editor)
             -- Wire无字面CR/LF，允许控件插入排版换行；原字符串换行已显式转义。
@@ -1030,7 +1016,7 @@ local function BuildDiagnostics(parent, route)
             if locked or cap<=512 or attempt==8 then break end
             cap=math.max(512,math.floor(cap/2));session=nil
         end
-        WriteReportText("","delivery_failed") -- 维护：失败交付显式清空，不能留着截断页冒充成功。
+        WriteReportText("","delivery_failed") -- 失败交付显式清空，不能留着截断页冒充成功。
         return {state='failed',code='TEXT_READBACK',readback=trace,error=transport:FormatReadback(trace)}
     end
     -- 没有已生成报告时先只读生成完整自检；文件出口不依赖编辑框交付成功或分页容量。
@@ -1055,15 +1041,10 @@ local function BuildDiagnostics(parent, route)
             return true
         end)
     end
-    -- 约束（2026-09-18，.18.237 故障报告 Authority 回归修复）：
-    -- 原因：诊断页“打印故障报告”曾误接历史兼容 PrintFocusedSelfCheckReport；Focused 会在 Presentation
-    -- 分页之前先把证据压到 3500 bytes，导致真实 RU 报告出现 PAGE=1/1 但正文已有 <cut>/<text_omitted>，
-    -- 丢失恰好用于判断 Store 恢复候选的尾部证据。权威归属/数据流：Diagnostics 的 BuildPaged 仍是
-    -- 本次加载故障快照 Authority，Persistence/Store 只提供只读取证；Presentation 只持有固定 text/meta
-    -- 并按 Native 编辑框回读容量分页，上一页/下一页不得重新 RunSelfCheck/LoadData。兼容边界：
-    -- PrintFocusedSelfCheckReport API 保留给旧工具/专项测试，但不再作为用户默认按钮；不改变 Store schema、
-    -- fingerprint/Fence、恢复候选或写盘行为。风险：完整故障证据可能产生更多页，这是为了不丢证据的预期结果；
-    -- 页数增加不能通过重新引入预裁剪来“优化”。
+    -- 默认故障报告曾误用 PrintFocusedSelfCheckReport，在分页前先裁到 3500 bytes，
+    -- 导致 PAGE=1/1 却含 <cut>/<text_omitted>，丢掉存档恢复所需的尾部证据。
+    -- 此处须取 BuildPaged 的完整冻结快照，再按 Native 回读容量分页；翻页不能重跑自检或读盘。
+    -- 完整证据可能增加页数，不能重新预裁剪；Focused API 只留给旧工具。
     printButton.onClick=function()
         return Execute('print_self_check',function()
             root:ShowPerformance(false) -- 用户打印自检时回到报告视图，不停止持续采集。
@@ -1099,7 +1080,7 @@ local function BuildDiagnostics(parent, route)
     nextButton.onClick=function()return MovePage(1)end
     Navigation()
     function root:OnActivated()
-        -- 维护：重开可重新验证物理布局；在新复制选区建立前执行，不在等待Ctrl+C时回填。
+        -- 重开可重新验证物理布局；在新复制选区建立前执行，不在等待Ctrl+C时回填。
         geometryWidth,geometryHeight,geometryParent=nil,nil,nil
         if editor and type(editor.Show)=="function" then pcall(editor.Show,editor,true) end
         return self:Refresh()

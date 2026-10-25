@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 基础布局面板
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 布局契约：Measure(availableW,availableH) 返回期望尺寸且不写 Native；Layout(x,y,width,height) 通过缓存 UI 写排列子节点。
 -- Panel/Slot 仅事件/布局驱动，不能从 Tick 调用。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -116,11 +113,8 @@ local function NewLinear(kind, axis, spec)
             local child,slot=entry.child,entry.slot
             if child.visible~=false then
                 local dw,dh=Measure(child, availableW, availableH)
-                -- 约束（2026-09-14，linear slot minimum authority）：Measure 与 Layout 必须对
-                -- slot.minWidth/minHeight/maxWidth/maxHeight 使用同一套约束。旧 Measure 只看 child 的自然尺寸，
-                -- Layout 却在 Arrange 阶段才应用 slot minimum，导致父容器先报告过小高度，随后子项又按更大的
-                -- 最小高度排版并溢出父边界；在设置页表现为颜色/状态行、标题/列表互相覆盖或被裁切。
-                -- 这里仅统一几何预算，不改变业务组件尺寸来源、Fill 权重或 Native 写入时机。
+                -- Measure 和 Layout 必须共用 slot min/max。若测量只看自然高度、排列才套最小值，
+                -- 父容器会先报小，子项再越界，造成颜色、状态、标题和列表重叠或裁切。
                 local childSpec=type(child.spec)=="table" and child.spec or {}
                 local desiredPrimary=axis=="x" and dw or dh
                 local desiredCross=axis=="x" and dh or dw

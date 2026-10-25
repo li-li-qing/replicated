@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 交易单次查询传输测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅替代原生边界，断言加载真实 Queue、AuctionQuery、Api 和 Surface。
-------------------------------------------------------------------------
 local Boot = dofile('tools/rs_trade_requote_test_host.lua')
 local passed, total = 0, 0
 local function Eq(a,b,m) assert(a==b,(m or 'value')..': expected='..tostring(b)..' actual='..tostring(a)) end
@@ -18,7 +15,7 @@ local function Strict(h,token,id,options,callback)
  options.priority=options.priority or 'user'
  return h.queue:RequestQuote(token,id,1,callback or function(r)h.deliveries[#h.deliveries+1]=r end,{0,1,2,3},options)
 end
--- 中文维护注释（2026-10-02）：复现 MD1.3.life_trade 实机报告：两个受许可 getter 均成功，
+-- 复现 MD1.3.life_trade 实机报告：两个受许可 getter 均成功，
 -- UIC_AUCTION 未创建/已关闭时内容对象与五个 MainScript 字段全为空。不得继续把这个现场当 API 故障。
 local function Absent(h)
  h.content=nil
@@ -108,7 +105,7 @@ Test('strict anomaly records once retains accepted price and never triggers seco
 end)
 Test('unknown or open native surface is immediately blocked with no native request or parked work',function()
  for _,kind in ipairs({'unknown','visible'})do
-  -- 中文维护注释：unknown 必须模拟实际读取失败；正常成功返回 nil 的关闭窗口已有独立回归。
+  -- unknown 必须模拟实际读取失败；正常成功返回 nil 的关闭窗口已有独立回归。
   local h=Boot();if kind=='visible'then h.visible=true else Absent(h);ADDON.GetContent=function()error('native_content_failed')end end
   assert(Strict(h,'user',101));Eq(#h.deliveries,1);Eq(h.deliveries[1].status,'blocked')
   Eq(h:count('SearchAuctionArticle'),0);Eq(h:count('AskMarketPrice'),0);Eq(h.queue.pending,nil)
@@ -338,7 +335,7 @@ Test('detail retains only three already-read rejected listings including unfamil
  Eq(h.query:DescribePriceEvidenceDetail().requests[1].listingDetails[1].raw.itemType,101);Eq(#h.calls,calls)
  Eq(h.deliveries[1].price,nil)
 end)
--- 维护（2026-10-02）：210656 实机报告中 16 个 Count 均为 number:0，不能据此推导事件没有数据。
+-- 210656 实机报告中 16 个 Count 均为 number:0，不能据此推导事件没有数据。
 -- 此处只验证参数保全和未知形状不报价；事件表的业务 schema 必须等真实 TXT，不能反造 ABI。
 Test('empty cache preserves owner-first native event packet including nil and unknown fields without accepting its price',function()
  local h=Boot();assert(Strict(h,'event-packet',101))
@@ -381,13 +378,13 @@ Test('packet diagnostics are bounded and late callbacks cannot attach to another
  local r=h.query:DescribePriceEvidenceDetail().requests[2];Eq(r.eventPacket.argCount,10)
  Eq(r.eventPacket.omittedArguments,2);Eq(r.eventPacket.values[8],8);Eq(r.eventPacket.values[9],nil)
 end)
--- 维护：这是名称筛选的明确故障模型，验证候选召回和最终价格身份是两层；不宣称已复现 RU 分词 ABI。
+-- 这是名称筛选的明确故障模型，验证候选召回和最终价格身份是两层；不宣称已复现 RU 分词 ABI。
 -- 普通搜索可以返回同名变体/相似材料，但数量/品质/ID/一口价仍必须严格匹配，且只发一包。
 Test('name candidate filtering cannot replace strict item identity or suppress a qualified-name matching listing',function()
  local h=Boot();h.syncComplete=true
  local wrong=Listing(102,1);wrong.name='苹果汁'
  local grade=Listing(101,2,3);grade.name='新鲜苹果'
- -- 中文维护（发布审查）：名称召回独立验证已知身份；未知品质另案必须阻止最低价提交。
+ -- 名称召回独立验证已知身份；未知品质另案必须阻止最低价提交。
  local otherGrade=Listing(101,3,2);otherGrade.name='新鲜苹果'
  local accepted=Listing(101,70);accepted.name='新鲜苹果'
  local market={wrong,grade,accepted,otherGrade}

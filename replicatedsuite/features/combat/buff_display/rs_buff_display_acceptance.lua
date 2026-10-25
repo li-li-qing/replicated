@@ -1,20 +1,12 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态显示契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 非破坏验收，禁止启用任何功能。合并后先查冲突标记、toc.g完整性和Lua语法，再运行验收；不能清配置、跳加载或恢复Legacy绕过错误。
--- 覆盖契约：Store schemaVersion==8与schema4/5/6/7精确历史完整性重建；各HUD gearScoreFormat full/compact迁移和player/target追踪。
--- StatusClassificationV3解析分类与检测来源，hidden仅检测来源；SetTrackedChannel(id,scope,category,enabled)拥有player/target×Buff/Debuff四可见通道，SetTrackedId仅兼容。
--- SetComponentField、分scope追踪导入、完整v3导出/导入；GetSettingsProjection投影十个头顶组件；ProjectStatusMap行携category/detectionSource，hidden来源归debuff；装备投影保留已核实品质覆盖纹理。
-------------------------------------------------------------------------
+-- 只读验证 Store schema8、历史 canonical、scoped tracking、组件与导入导出契约，不启用功能或改配置。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 本文件是 combat_buff_display
--- 的**唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
--- 独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败。
+-- 验收必须注册；实现缺失时明确失败，不能静默跳过。
 local F = S.Features and S.Features.BuffDisplay or nil
 
 G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(runtimeOnly)
@@ -30,17 +22,12 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
     local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.buff_display") or nil
     if store == nil or tostring(store.owner or "") ~= "v3.buff_display" or tonumber(store.schemaVersion) ~= 8 then return false, "store_contract" end
     local layoutStore = S.Persistence and S.Persistence:GetStore(F.HudLayoutStoreId or "v3.buff_display.layout") or nil
-    -- 校准/策略/Reset 已从追踪大 Store 拆出。
-    -- Acceptance 必须同时看到小 Store，防止只覆盖 Feature 文件却漏掉 Store 注册，导致 HUD 编辑
-    -- 静默退回 v3.buff_display 全量保存。这里只读注册定义，不 Load/Save/Apply。
+    -- 只读验证小 Store 注册，防止只覆盖 Feature 文件后 HUD 静默退回旧大 Store 保存。
     if layoutStore == nil or tostring(layoutStore.owner or "") ~= "v3.buff_display.layout"
         or tonumber(layoutStore.schemaVersion) ~= 1 or tonumber(layoutStore.transportVersion) ~= 3 then
         return false, "hud_layout_store_contract"
     end
-    -- 旧 v3.buff_display 仅保留历史迁移 hooks，
-    -- 正常运行必须由 settings/layout + tracking A/B + manifest 共同组成 Authority。这里故意逐个
-    -- 验证注册与版本，防止“只覆盖 Feature 文件/漏覆盖 Store 注册”后静默退回单体大 Store。
-    -- 兼容边界：Acceptance 只读 Store 定义，不 LoadData、不触发迁移、不写用户配置。
+    -- 正常配置须由 settings/layout、tracking A/B 和 manifest 共同提供；这里只读注册定义，不加载、迁移或保存。
     if tostring(F.SettingsStoreId or "") ~= "v3.buff_display.settings"
         or tostring(F.TrackingManifestStoreId or "") ~= "v3.buff_display.tracking.manifest"
         or (tonumber(F.TrackingPersistenceContractVersion) or 0) < 1
@@ -61,10 +48,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
     end
     if type(store.rebuildCanonicalForIntegrity) ~= "function" or type(store.recoverKnownLegacyCanonical) ~= "function"
         or type(store.migrate) ~= "function" then return false, "historical_migration_hooks_missing" end
-    -- 构造一个“不含 targetLayout”的旧单 HUD
-    -- Domain，要求 historical hook 返回仍不含新字段的旧 canonical；随后正式 migrate 必须补出
-    -- targetLayout。这里只验证纯函数边界，不 Apply、不保存、不取得 Consumer。
-    -- 历史恢复 hook 会写探针，合成迁移不属于玩家只读诊断。
+    -- 旧单 HUD 的 historical hook 不能补 targetLayout；验真后的 migrate 才补。纯函数场景只离线执行，避免覆盖真实恢复探针。
     if runtimeOnly ~= true then
         local legacyProbeSettings = type(F.GetDefaultSettingsSnapshot) == "function" and F:GetDefaultSettingsSnapshot() or nil
         if type(legacyProbeSettings) ~= "table" then return false, "schema5_migration_probe_defaults_missing" end
@@ -98,11 +82,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or type(classification.SetOverride) ~= "function" or type(classification.GetOverrides) ~= "function"
         or type(classification.ApplyOverrides) ~= "function" or type(classification.GetRegistrySnapshot) ~= "function"
         or type(classification.GetHealth) ~= "function" then return false, "classification_service_contract" end
-    --
-    -- UnitGearScore 的 comma 参数曾被误作 target 标志，且 target 装分被 kind gate
-    -- 阻断；同时发行模板开始拥有已实机确认的 TARGET|EQUIP 默认值。Acceptance 只验证声明
-    -- 能力与共享 parser，不主动读取目标、不调用 X2Unit、不写 Store。旧模块热重载残留必须
-    -- fail-closed，避免 UI 看似可用却继续吞掉格式化装分或恢复成错误目标默认值。
+    -- 验证装分 parser 和已核实 TARGET|EQUIP 默认模板声明，不主动读目标或写 Store；旧文件残留应明确失败。
     if type(F.ProjectStatusMap) ~= "function" or type(F.ProjectPlates) ~= "function"
         or type(F.GetProjection) ~= "function" or type(F.GetSettingsProjection) ~= "function"
         or type(F.RefreshScope) ~= "function" or type(F.Refresh) ~= "function"
@@ -120,7 +100,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or (tonumber(F.Schema8Transport5ScopedPrefixRecoveryContractVersion) or 0) < 2
         -- 以下两项原先只在
         -- core/rs_foundation_gate.lua 的 buff_display_v3_statusmap_contract 里检查，acceptance 缺；
-        -- 搬迁前补齐，避免删掉 Foundation 分支时把这两条恢复契约一起丢掉。
+        -- 同时检查这两项恢复契约。
         or (tonumber(F.Schema8Transport4RecoveryProbeContractVersion) or 0) < 4
         or (tonumber(F.Schema8KnownTransport4IncidentRecoveryContractVersion) or 0) < 1
         or tostring(F.HudLayoutStoreId or "") ~= "v3.buff_display.layout"
@@ -182,10 +162,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or type(F.Commands.ImportBuiltinPack)~="function" or type(F.Commands.PreviewImport)~="function" then
         return false,"schema8_tracking_modules_missing"
     end
-    -- Catalog.version 是内置条目的增量导入
-    -- 水位，不是 Store schema 或交换格式。目录已升为 v2（853 introducedVersion=2），
-    -- 写死 ==1 会误报完整安装。允许兼容的正整数数据修订，并验证消费者依赖的索引；
-    -- 不降目录版本、不重置 importedPacks、不改 schema8/transfer v3 的精确门禁。
+    -- Catalog.version 是增量导入水位；v2 的 853 introducedVersion=2 仍是合法目录。验证正整数修订与索引，不将目录水位混作 schema/交换版本。
     if type(catalog) ~= "table" then return false, "schema8_tracking_catalog_missing" end
     local catalogVersion = catalog.version
     if type(catalogVersion) ~= "number" or catalogVersion ~= catalogVersion
@@ -210,12 +187,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or (tonumber(headMarkers.TargetAliasHudContractVersion) or 0) < 2
         or type(headMarkers.ComputeTargetAliasLayout) ~= "function"
         or type(headMarkers.SetCalibrationSuppressed) ~= "function" then return false, "head_marker_gate_contract" end
-    -- .18.206 在方向适配/面板拖动基础上增加全局位置预览，
-    -- 并要求正式 Renderer 支持仅 Presentation 层的校准隐藏。Acceptance 只检查声明能力，不创建
-    -- Native Widget、不写 Draft/Store、不取得或释放 Consumer。兼容边界：schema5 不变；旧校准器、
-    -- 旧 Renderer 或旧 HUD 布局页若热重载残留必须 fail-closed，避免校准画面同时出现正式 HUD。
-    -- .18.207 继续要求 equipment local-offset 与 HUD_TEMPLATE_V1 Draft snapshot 两个能力；前者防止
-    -- 主手/副手/远程位置串联，后者只读校准 Draft 并分行输出，不取得新的 Consumer、不写 Store。
+    -- 验证校准隐藏、全局预览、装备局部偏移和 HUD_TEMPLATE_V1 Draft 快照能力；只查声明，不建 Widget、不改 Draft/Store 或 Consumer。
     local calibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 or nil
     if type(calibration) ~= "table" or (tonumber(calibration.version) or 0) < 5
         or (tonumber(F.HudCalibrationPresentationContractVersion) or 0) < 8
@@ -526,10 +498,7 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     return true
 end)
 
--- 观察契约版本。
--- 原先由 core/rs_foundation_gate.lua 的 v3_combat_life_usability_contract 里的 buff_observation 判定
--- 点名检查（取实现表的 GetHealth 再读 observationContractVersion）；搬到这里之后 Core 不再认识
--- 具体业务 Feature。判定与旧版**逐条等价**：health 可取 + observationContractVersion >= 2。
+-- 观察契约要求可读 health 且 observationContractVersion>=2，具体判定留在 Feature 验收。
 G:RegisterSequenceCase("v3_combat_buff_display_observation_contract", function()
     if type(F) ~= "table" then return false, "implementation_not_registered" end
     local health = type(F.GetHealth) == "function" and F:GetHealth() or nil

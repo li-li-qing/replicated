@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 背包设置悬浮窗口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 整理背包设置：只展示 Feature 的背包快照与持久黑名单，不拥有搬运队列。
 -- 窗口布局/筛选是当代 Session 状态；黑名单写入唯一 tools_bag Store。
 -- 无定时扫描；打开或显式刷新才取得 InventorySnapshot，隐藏后释放自身 Consumer。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local R = S.RSUI

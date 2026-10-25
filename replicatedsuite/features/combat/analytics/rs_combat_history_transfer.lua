@@ -1,12 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 个人战斗历史交换
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 历史 Authority 的冷路径扩展：每个来源只接纳较新的累计快照，回传/重复/乱序包不重复相加。
 -- 来源、设备写入身份和派生合计共用原 Store 的一次耐久提交；不监听战斗、不新增后台任务。
 -- 文本为有限字段协议，绝不执行 Lua。复制校验只检查传输完整性，不构成战绩真实性认证。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local F=S.Features and S.Features.CombatAnalytics

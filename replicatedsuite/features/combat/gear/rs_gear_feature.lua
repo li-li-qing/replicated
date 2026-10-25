@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 装备与称号方案功能入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 装备与称号功能生命周期。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Runtime = S.FeatureRuntime
@@ -363,7 +360,7 @@ end
 function F:SetQuickHudAppearance(key, value, persist, reason)
     local normalizedKey = tostring(key or "")
     if persist == false then return self:ApplyQuickHudAppearance(normalizedKey, value) end
-    -- 维护：显式 persist=true 的小锁/三个 alpha 均是完成边沿，须由 Gear 索引事务保存并回读；
+    -- 显式 persist=true 的小锁/三个 alpha 均是完成边沿，须由 Gear 索引事务保存并回读；
     -- 拒写或静默丢写恢复原投影，不能依赖退出前下一次250ms心跳；上方 persist=false 预览仍保持零 IO。
     local saved, saveErr = self:MutateIndex(function() return self:ApplyQuickHudAppearance(normalizedKey, value) end, 250, reason or ("gear_quick_" .. normalizedKey), true)
     if saved ~= true then return false, saveErr end

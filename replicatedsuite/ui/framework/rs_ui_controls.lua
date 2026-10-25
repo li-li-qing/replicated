@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 交互控件与草稿
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
@@ -66,13 +64,12 @@ local function RequireBinding(component, spec, kind)
 end
 
 -- 交互草稿契约。
---
 -- RU 文本输入未验证 OnTextChanged，Slider 预览到拖动停止才提交 Binding；交互时其它页面/投影 Refresh 不能无条件 Render 覆盖草稿。
 -- 控件自行持有边界，各页共享，无需本地抑制标志或永久轮询。
 RSUI.InteractiveDraftContractVersion = 4
 RSUI.InputDraftCommitContractVersion = 3
 RSUI.InputDraftSessionContractVersion = 3 -- Native可编辑缓冲按文字差异接入草稿；不依赖RU不可用的焦点getter或OnClick投递。
-RSUI.InputActionDraftReadContractVersion = 1 -- 约束（2026-09-25）：按钮 OnClick 与 Native OnLostFocus 的先后顺序不是稳定 ABI；业务确认动作必须读取当前草稿/Native 可见值，不能只读尚未提交的 Binding。
+RSUI.InputActionDraftReadContractVersion = 1 -- 按钮 OnClick 与 Native OnLostFocus 的先后顺序不是稳定 ABI；业务确认动作必须读取当前草稿/Native 可见值，不能只读尚未提交的 Binding。
 RSUI.NumericInputDraftReadContractVersion = 1
 RSUI.InputFocusVisualContractVersion = 1
 RSUI.InputDisableDraftCleanupContractVersion = 1
@@ -116,7 +113,7 @@ end
 local function ShouldPreserveDraft(component, source)
     if component == nil or CanOverrideActiveDraft(source) == true then return false end
     if type(component.ObserveNativeDraft)=='function' then component:ObserveNativeDraft('ambient_render') end
-    -- 约束（DraftSession V2）：ambient Render 是否可覆盖输入，Authority 是 Lua draft session，
+    -- ambient Render 是否可覆盖输入，Authority 是 Lua draft session，
     -- 不能再依赖 RU Native Focus。LostFocus 后显式确认型输入仍保留 draftActive，页面/投影刷新必须继续让路。
     if type(component.HasDraftSession) == "function" and component:HasDraftSession() == true then return true end
     return type(component.IsEditing) == "function" and component:IsEditing() == true
@@ -164,12 +161,9 @@ local function EndEditInteraction(component, source)
     return ok == true, detail
 end
 
--- 约束（2026-09-14，single-line copy/focus ordering）：RU 的 OnLostFocus 与
--- GetFocusedWidgetId 更新顺序不是稳定 ABI。实机可出现“先收到 LostFocus，但焦点 identity 仍是当前
--- EditBox”的一帧窗口；旧 TextInput/NumericInput 会立即 EnableKeyboard(false)，于是 caret/选区还在，
--- Ctrl+C 却偶发失效。这里只在 identity 明确仍属于本框时安排一次 1ms high-frequency one-shot；
--- 下一帧仍在本框则什么都不写，真的离开才执行原 blur 提交/撤权。没有周期轮询，不 SetFocus，
--- 不读取剪贴板，不影响聊天焦点；Release/Commit/Disable 会取消挂起任务。
+-- RU 可能先派 LostFocus、后更新焦点 ID；立即撤键盘会让选区仍在却无法 Ctrl+C。
+-- 仅当 ID 明确仍属本框时安排一次 1ms 检查，仍在则不写，已离开才按原 blur 规则提交和撤权。
+-- 不抢焦点、不读剪贴板；Release/Commit/Disable 取消挂起任务。
 local function CancelInputLostFocusRecheck(component)
     if component == nil then return end
     local name, scheduler = component._lostFocusTask, component._lostFocusScheduler
@@ -230,11 +224,8 @@ function DraftCoordinator:Forget(component)
     if component ~= nil then self.active[component] = nil end
 end
 
--- 约束（DraftSession V2 / input switch）：旧版 Begin() 会 CommitAndEndEditing 其它输入，
--- 导致用户只是点击第二个编辑框就把第一个未确认草稿写进 Feature/Store。现在只撤销其它输入的 Native
--- 键盘权，并要求组件把当前 Native 文本捕获到 Lua draftText；业务 Authority 完全不写。多个显式草稿可
--- 同时存在，页面离开/Cancel 时再丢弃，Apply/Enter 才提交。风险边界：blur-commit 组件仍由自身 LostFocus
--- 走兼容提交，不在这里强行提交。
+-- 切换输入只撤销前框键盘权，并把 Native 文本存入 Lua 草稿，不能顺便提交前框。
+-- 多个显式草稿可并存，Apply/Enter 才提交，离页或取消时丢弃；旧 blur-commit 输入仍由自身失焦处理。
 function DraftCoordinator:SuspendOthers(component, reason)
     local snapshot = {}
     for active in pairs(self.active) do
@@ -318,9 +309,8 @@ function RSUI:CancelInputDraftsWithin(ancestor,reason)
     end
 end
 
--- 约束（DraftSession V2 / page fence）：高频 UnitLines/RangeAssist Presentation 刷新
--- 必须看 draftActive，而不是 Native Focus。真实 RU LostFocus 可以先于用户完成输入；若这里只看 IsEditing，
--- blur 后页面会立即恢复 Authority 文本，正是“删一个字符过一会又变回来”的根因。
+-- 高频页面刷新须看 draftActive，不能只看 Native Focus。RU 可能提前失焦，
+-- 若此时恢复业务文本，就会出现删掉的字符稍后又回来。
 RSUI.InputDraftScopeContractVersion = 3
 function DraftCoordinator:HasActiveWithin(ancestor,observeNative)
     if ancestor == nil then return false end
@@ -416,7 +406,6 @@ end)
 
 
 -- HUD/工具条的紧凑多选一复用控件，模式/关系/指标选择器共用统一选中状态、持久化与幂等契约。
---
 -- 不使用 Tick/OnUpdate；点击已选分段为幂等成功，不再写持久 Binding。
 RSUI.SegmentedSelectorContractVersion = 1
 RSUI:RegisterType("SegmentedSelector", function(spec)
@@ -588,7 +577,7 @@ RSUI:RegisterType("TextInput", function(spec)
     end
     function c:GetValue() return Normalize(Read(self.binding, self.value)) end
     function c:HasDraftSession() return self.draftActive == true end
-    -- 约束（DraftSession V2 / detached draft）：Native EditBox 只在当前持有焦点时作为输入载体；
+    -- Native EditBox 只在当前持有焦点时作为输入载体；
     -- 失焦后的 Authority 是 Lua draftText，不能重新读取可能被 RU/页面刷新改写过的 Native 文本。
     function c:GetDraftValue()
         self:ObserveNativeDraft('draft_read')
@@ -598,11 +587,8 @@ RSUI:RegisterType("TextInput", function(spec)
         end
         return NativeText(self)
     end
-    -- 约束（InputActionDraftRead v1）：RU 中“点击按钮”与输入框 OnLostFocus 的派发顺序
-    -- 不稳定。若 Presentation 在按钮回调里调用 GetValue()，可能读到上一次已提交 Binding，
-    -- 即使用户屏幕上已经输入了新文本。ActionValue 的 Authority 是当前用户可见草稿：有 draft
-    -- 时读取 Lua/Native draft，无 draft 时读取 Native 当前文本。它只用于显式业务动作取值，
-    -- 不改变 GetValue() 的“已提交 Binding”语义，避免刷新/校验路径把未提交文本误当持久状态。
+    -- 按钮可能早于 LostFocus，动作须读 ActionValue 的可见草稿，GetValue 仍只返回已提交 Binding。
+    -- 有草稿取 Lua/Native draft，无草稿取当前 Native 文本；只在显式动作使用，避免刷新把未提交值当配置。
     function c:GetActionValue() return self:GetDraftValue() end
     function c:IsEditing()
         return self.editing == true or (self.root ~= nil and self.root.rsUiKeyboardArmed == true) or IsFocusedDraft(self)
@@ -688,7 +674,7 @@ RSUI:RegisterType("TextInput", function(spec)
         end
         return ok, err
     end
-    -- 约束（DraftSession V2 / suspend）：LostFocus 对显式确认输入只代表 原生键盘所有权
+    -- LostFocus 对显式确认输入只代表 原生键盘所有权
     -- 结束，不代表业务事务结束。先捕获 Native 文本到 Lua，再撤键盘/焦点；不写 Binding、不恢复 Authority。
     function c:SuspendEditing(source)
         CancelInputLostFocusRecheck(self)
@@ -929,7 +915,7 @@ RSUI:RegisterType("NumericInput", function(spec)
         end
         return ok, err
     end
-    -- 约束（DraftSession V2 / numeric suspend）：显式 Apply 数值框在真实/伪 LostFocus 后只把
+    -- 显式 Apply 数值框在真实/伪 LostFocus 后只把
     -- Native 文本存入 Lua draftText 并释放 keyboard；不调用 Binding:Set，不把 Feature Authority 回写进框。
     function c:SuspendEditing(source)
         CancelInputLostFocusRecheck(self)
@@ -1142,7 +1128,7 @@ RSUI:RegisterType("Slider", function(spec)
 end)
 
 RSUI.DropdownContractVersion = 4
-RSUI.DropdownCloseBeforeCommitContractVersion = 1 -- 约束（2026-09-24）：Dropdown 必须先关闭/取消 Native popup 交互所有权，再提交同步业务 mutation；防止 Feature Publish -> Refresh -> SetItems 在同一 option click 栈中重入仍打开的 popup。
+RSUI.DropdownCloseBeforeCommitContractVersion = 1 -- Dropdown 必须先关闭/取消 Native popup 交互所有权，再提交同步业务 mutation；防止 Feature Publish -> Refresh -> SetItems 在同一 option click 栈中重入仍打开的 popup。
 RSUI.PopupCoordinateConsumerContractVersion = 3 -- Controls v3 按 Popup 类型选择安全车道：Dropdown 保留 Native-relative；ColorField V2 使用 Suite 父链 resolved viewport→UIParent，禁止跨层级顶层 Window→Button Anchor。
 RSUI.PopupCoordinateConsumerLane = "popup-mixed-safe-v1" -- 这是能力集合标签，不代表所有控件共享同一最终 Anchor 方式。
 RSUI.DropdownDegradedFailClosedContractVersion = 1
@@ -1179,7 +1165,7 @@ function PopupCoordinator:CloseAll(except)
     return closed
 end
 
--- 约束（外部点击收起弹层）：普通按钮/输入事件也要结束其它弹层的交互所有权。
+-- 普通按钮/输入事件也要结束其它弹层的交互所有权。
 -- 下拉选项、颜色预设/应用按钮属于弹层自身，沿逻辑父链识别，不能提前取消它们的草稿。
 -- 仅现有OnClick边调用，无全局鼠标钩子/轮询/新增Native事件。
 function PopupCoordinator:BeforeComponentClick(component)
@@ -1636,10 +1622,8 @@ RSUI:RegisterType("Dropdown", function(spec)
             local itemIndex = optionButton.rsItemIndex
             local item = itemIndex and c.items[itemIndex] or nil
             if type(item) ~= "table" or optionButton.rsDropdownSelectable ~= true then return false end
-            -- 维护（2026-09-24，dropdown-close-before-commit-1）：Dropdown popup 对 Native 交互的所有权必须先结束，
-            -- 再进入 Binding.Set/Feature Command。许多 Command 会同步 PublishFeatureUpdate，而订阅者会立刻 Refresh 并对
-            -- 同一个 Dropdown 执行 SetItems/Render；旧顺序让 ApplyPopupLayout 在 option 的 OnClick 栈内重入一个仍打开的
-            -- Native popup，RU 客户端可因此抛错并连带中止整块 Presentation。关闭失败时 fail-closed，不提交半个用户意图。
+            -- 先关闭 popup 再调用 Binding.Set/Feature Command。同步 Publish 会立即 Refresh/SetItems，
+            -- 若原弹层仍开着，选项 OnClick 栈会重入布局并触发 RU 错误；关闭失败就不提交命令。
             local closed, closeErr = c:Close()
             if closed ~= true then return false, closeErr or "dropdown_close_before_commit_failed" end
             local ok = c:SetSelectedValue(item.value, false, "dropdown")
@@ -1667,18 +1651,10 @@ RSUI:RegisterType("Dropdown", function(spec)
     return c
 end)
 
-------------------------------------------------------------------------
--- ColorField 共享颜色选择控件。
---
--- 维护契约（2026-09-13）：
--- 1) Authority：业务只提供 get/set/defaultColor；RSUI 拥有 Draft、Popup、预览和提交事务。
--- 2) 数据流：打开时 Read authoritative -> draftColor；滑块/预设只改 draft；只有“应用”调用一次 Write；
---    “取消/外部关闭”丢弃 Draft，“恢复默认”只改 Draft，用户仍需点击应用。
--- 3) 坐标：ColorField popup 是 UIParent 顶层 Window，禁止直接跨层级 Anchor 到页面 Button。先通过
---    PopupPositioning:ResolveAnchorRect/ResolveAnchored 得到 viewport-logical 坐标，再只 Anchor 到 UIParent。
--- 4) 兼容：公开 get/set 仍使用 {r,g,b} 的 0..1 数组，避免破坏既有 Feature/存档；仅 UI 展示转换成 0..255。
--- 5) 性能：无 Tick；拖动只改本地 Draft/Drawable/Text，不触发 Persistence；Apply 最多一次业务写入。
-------------------------------------------------------------------------
+-- 共享颜色选择器：业务提供 get/set/defaultColor，控件持有草稿与弹层。
+-- 滑块、预设和恢复默认只改草稿；应用调用一次 set，取消或外部关闭丢弃。
+-- ColorField 是 UIParent 顶层 Window，先经 PopupPositioning 解算 viewport-logical，再锚 UIParent，
+-- 不能跨层直接锚页面按钮。公开颜色仍为 0..1 的 {r,g,b}，界面换算为 0..255。
 RSUI.ColorFieldContractVersion = 2
 
 local COLORFIELD_POPUP_WIDTH = 300
@@ -1702,7 +1678,7 @@ RSUI:RegisterType("ColorField", function(spec)
     if binding == nil then return nil, bindingErr end
 
     c.open = false
-    c.color = { 1, 1, 1 } -- 权威/持久化投影。
+    c.color = { 1, 1, 1 }
     c.draftColor = { 1, 1, 1 } -- 弹层本地事务草稿。
     c.defaultColor = type(spec.defaultColor) == "table"
         and { tonumber(spec.defaultColor[1]) or 1, tonumber(spec.defaultColor[2]) or 1, tonumber(spec.defaultColor[3]) or 1 }

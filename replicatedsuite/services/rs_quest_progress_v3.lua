@@ -1,14 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 任务与副本进度
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- Activity 与任务跟踪器共享只读任务/副本进度投影，不拥有 UI 或持久化，不恢复旧 QuestService。任务加入/完成
--- 事实归 X2Quest 只读 getter，副本次数归 InstanceCatalogV3（拥有 X2BattleField），语义分组归
--- data/rs_quest_data.lua。无 Tick/OnUpdate；原生任务读取事件驱动，消费者存在时加 15s 安全刷新。副本发现/次
--- 数委托目录，只有显式请求事件副本进度才租用。消费者按不可变数据读取，Presentation 不直接调用
--- X2Quest/X2BattleField。
-------------------------------------------------------------------------
+-- 任务事实取 X2Quest，副本次数委托 InstanceCatalogV3，分组取 data/rs_quest_data.lua。
+-- 有消费者时响应任务事件并每 15s 校验；只有显式需要副本进度才租目录服务。UI 只读分离投影。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -25,8 +19,7 @@ local P = {
     scopeSnapshots = { daily = {}, weekly = {} },
     activeIndex = {},
     activeIndexAvailable = false,
-    -- （2026-09-14，quest-active-state-publish）除固定 QuestGroups 外，居民债券/拍卖今日任务
-    -- 也会消费任意活动任务事实。保存 detached qid->state 快照，只用于判断事件是否需要发布；不暴露 Native 对象。
+    -- 任意活动任务也可能供债券/采购使用；保存 qid→state 副本以判断是否发布，不只比较固定分组。
     activeQuestStates = {},
     refreshQuestStateCache = nil,
     instanceConsumerToken = "service:v3.quest_progress:instances",
@@ -83,10 +76,7 @@ local function RelatedList(group)
     return type(group) == "table" and type(group.relatedObjectives) == "table" and group.relatedObjectives or {}
 end
 
--- （2026-09-21，activity-progress-selection-1）稳定任务身份必须由静态 Quest variant
--- 集合构造，不能用“当前最匹配 QuestId”或本地化标题。Activity 个人进度选择和详情行共用同一 token，
--- 但 QuestProgressV3 只发布身份/状态事实，不读取用户选择 Store。这样 Service 保持只读 Authority，
--- Activities Feature 才拥有“哪些事实计入我的 x/y”这一偏好投影。
+-- 身份 token 取静态 Quest variant 集合，不能取当前最佳 ID 或本地化标题；Service 只给事实，个人分母由 Activities 选择。
 local function ObjectiveTrackingKey(objective, index, related)
     objective = type(objective) == "table" and objective or {}
     local variants = {}
@@ -261,10 +251,7 @@ function P:BuildQuestSnapshot(key, group, activeIndex, questAvailable)
     local text = available and (tostring(completed) .. "/" .. tostring(total)) or "--"
     local tone = ProgressTone(completed, total, activeCount, readyCount, available)
     if kind == "scoreQuest" and available then
-        -- （2026-09-22，scoreQuest binary completion）积分型任务内部虽然有分数/奖励阶段，
-        -- 但 Activity 层跟踪的是“这一个每日任务是否完成”。因此紧凑活动行必须保留统一 x/y 合同：
-        -- 未接/进行中 = 0/1，可交付/已完成 = 1/1。分数和 Reward Level 只在显式详情读取 Native Journal，
-        -- 禁止把积分文本解析塞进 1 秒 Activity 热路径，也禁止把 scoreQuest 改成自定义多阶段分母。
+        -- 积分任务在 Activity 仍为固定 0/1→1/1；分数和 Reward Level 只在显式详情读 Journal，不混入每秒刷新或扩大分母。
         text = tostring(math.min(completed, 1)) .. "/1"
         tone = ProgressTone(math.min(completed, 1), 1, activeCount, readyCount, true)
     end
@@ -338,13 +325,12 @@ end
 function P:ReleaseInstanceConsumer()
     if self.instanceConsumerHeld ~= true then return true end
     local service = S.Services and S.Services.InstanceCatalogV3 or nil
-    -- 中文维护注释：正常释放与强制静默共用同一租约偿还边界；缺接口不是“已经释放”的证据。
+    -- 正常释放和 quiesce 共用租约偿还检查；缺接口不代表已释放。
     if type(service) ~= "table" or type(service.ReleaseConsumer) ~= "function" then
         return false, "instance catalog release unavailable"
     end
     local demand = service.Demand
-    -- 中文维护注释：父 quiesce 失败后，全局关闭仍会继续清理 Catalog；下一轮子 token 可能已不存在。
-    -- 仅在子 Demand 无忙事务、无静默故障且明确 Has=false 时承认已偿还，避免父层永远 consumer-not-held。
+    -- 全局关闭可能已清空子 token；仅子 Demand 明确 Has=false、无忙事务和静默故障时，才算已偿还。
     local alreadyReleased = type(demand) == "table" and type(demand.Has) == "function"
         and demand.transitioning ~= true and demand.quiescing ~= true and demand.needsQuiesce ~= true
         and demand:Has(self.instanceConsumerToken) == false
@@ -369,7 +355,7 @@ function P:SyncInstanceConsumer()
         return true
     end
     if needsInstances ~= true and self.instanceConsumerHeld == true then
-        -- 中文维护注释：不能因普通 options 对账绕开故障重试的幂等证据规则。
+        -- 普通 options 对账也须遵守故障重试的幂等检查。
         return self:ReleaseInstanceConsumer()
     end
     return true
@@ -406,9 +392,7 @@ function P:Refresh(reason, forceInstanceDiscovery)
         local activeIndex, questAvailable = self:BuildActiveIndex()
         self.refreshQuestStateCache = {}
 
-        -- 只遍历 Native 当前活动任务（数量有界），记录 membership
-        -- 与 IN_PROGRESS/READY_TO_TURN_IN 状态。居民债券并不一定属于静态 QuestGroups；如果这里只比较固定组，
-        -- 交任务/变为可交付时不会发布 v3.quest_progress.updated，只能等别的页面刷新或 15s safety 偶然碰上。
+        -- 比较全部活动任务的成员及状态；居民债券不一定在固定组内，否则交付变化可能等到 15s 校验才通知。
         local nextActiveQuestStates = {}
         for questId in pairs(activeIndex or {}) do
             nextActiveQuestStates[questId] = self:QuestState(questId, activeIndex)
@@ -456,11 +440,8 @@ function P:Refresh(reason, forceInstanceDiscovery)
         end
         return false, err
     end
-    -- （2026-09-21，任务详情实时目标刷新）`v3.quest_progress.updated` 只在主进度/任务状态
-    -- 发生变化时发布，但击杀 17/30 -> 18/30 这类 Journal Objective 文本变化不会改变 BuildQuestSnapshot，
-    -- 若详情窗只监听 updated 就会停在旧数字。这里额外发布“成功刷新纪元”，仅表示 QuestProgress Authority
-    -- 已完成一次事件驱动/15s safety 读取并清掉 Journal cache；Presentation 可按需重读当前显式详情。
-    -- 该事件不改变业务 revision、不新增 Tick/轮询，活动 Authority 仍只监听 updated，避免普通列表无意义重建。
+    -- 17/30→18/30 等目标文本变化不改变主进度，不能只等 updated。
+    -- 成功读取并清 Journal cache 后另发 refreshed 纪元，详情可按需重读；不改业务 revision，普通列表仍监听 updated。
     if S.Events ~= nil and type(S.Events.Publish) == "function" then
         S.Events:Publish("v3.quest_progress.refreshed", self.refreshEpoch, self.revision, tostring(reason or "refresh"))
     end
@@ -555,8 +536,7 @@ function P:ReconcileDemand(before, after, context)
 end
 
 function P:QuiesceDemand(reason, cause)
-    -- 中文维护注释：停止自身和偿还 Catalog 是两项真实清理；只要任一失败就保留 Demand 的故障证据。
-    -- 子层已被全局清空的情况由同一释放边界判定，不能无条件吞失败，也不能永久卡在不存在的 token 上。
+    -- 停止自身与偿还 Catalog 任一失败，都保留 Demand 故障；子 token 已由全局清空时仍走同一幂等检查。
     local stopped, stopErr = self:Stop()
     local released, releaseErr = self:ReleaseInstanceConsumer()
     if stopped ~= true then return false, stopErr or "quest progress stop failed" end
@@ -603,18 +583,13 @@ function P:GetQuestProgress(scope, key)
     return value
 end
 
--- （2026-09-14，任务活动事实只读接口）DailyAuctionMaterialsV3 需要知道一组已核
--- QuestId 当前是否在活动列表中，但 Service 私有 activeIndex 不能被外部直接引用，否则刷新/排序后消费者
--- 可能持有过期表并反向修改 Authority。这里每次只返回 detached primitive；state 仍由 QuestProgressV3
--- 的 QuestState 统一判定，不新增任务轮询，也不暴露内部缓存。
+-- 只返回活动任务的基础值副本，状态统一由 QuestState 判断，不能把私有 activeIndex 交给消费者持有或修改。
 function P:GetActiveQuestState(questId)
     local id = tonumber(questId)
     if id == nil or id ~= math.floor(id) or id < 1 then return nil end
     id = math.floor(id)
     local index = type(self.activeIndex) == "table" and tonumber(self.activeIndex[id]) or nil
-    -- （2026-09-30，daily-auction-title-recovery-1）活动 ID 可能先于标题就绪。
-    -- 生成的“任务 #id”不是 Native 标题事实；显式投影可用性，让消费者在既有 refreshed 纪元
-    -- 中只补读缺失标题。保留原字符串 API 与缓存策略，不增加 Native 轮询或伪造进度变化。
+    -- 活动 ID 可能先于标题就绪，“任务 #id”不算 Native 名称；投影明确可用性，消费者在既有 refreshed 后补读。
     local title = index ~= nil and self:QuestTitle(id, "居民做货任务 #" .. tostring(id)) or nil
     return {
         questId = id,
@@ -637,9 +612,7 @@ function P:GetActiveQuestStates(questIds)
     return out
 end
 
--- （2026-09-14，活动任务目录只读接口）今日做货不能只依赖历史 QuestId 白名单，
--- RU 私服可能存在同语义不同 ID 的区域制作日常。这里只把当前 activeIndex 转成 detached 列表并按
--- Native 活动列表 index 排序；标题仍由 QuestProgressV3 缓存读取，消费者不能持有/修改 activeIndex。
+-- 当前 RU 制作日常可能不在旧 ID 白名单。导出 activeIndex 的分离列表，按 Native index 排序，标题仍经本服务缓存读取。
 function P:GetActiveQuestList()
     local rows = {}
     for rawId, rawIndex in pairs(type(self.activeIndex) == "table" and self.activeIndex or {}) do
@@ -738,11 +711,8 @@ function P:ResolveObjectiveDetail(objective, index, related, stateOverride)
     end
     local category = related == true and (role ~= "" and role or "关联")
         or tostring(objective.category or "主任务")
-    -- （2026-09-21，activity-progress-selection-1）Presentation 的追踪选择不能用
-    -- `bestQuest` 作为身份，因为同一逻辑阶段可能按阵营/已接状态切换不同 QuestId；也不能依赖标题，
-    -- 否则本地化或官方改名会把用户偏好指向错误任务。这里用静态 variants 的排序集合构造 detached
-    -- trackingKey；它只提供稳定身份，不拥有“是否追踪”的业务状态。若未来目录增删变体，必须显式
-    -- 处理兼容，而不是让 UI 猜旧标题。无 QuestId 的极端目录项才回退到逻辑 index。
+    -- trackingKey 取静态 variants 排序集合，不取随阵营变化的 bestQuest 或本地化标题。
+    -- 目录增删变体须显式兼容旧选择；无 QuestId 才回退逻辑 index。这里只给身份，不决定追踪偏好。
     local trackingKey = ObjectiveTrackingKey(objective, index, related)
     return {
         key = (related == true and "related:" or "main:") .. tostring(index or 1),
@@ -812,18 +782,15 @@ local function FindGroup(scope, key)
     return nil
 end
 
--- （2026-09-21，详情窗 Demand 选项）Presentation 需要在 Acquire QuestProgress Consumer 之前
--- 知道当前条目是否依赖 InstanceCatalog，否则所有普通活动都被迫唤醒副本目录，违反按需加载。这里只返回
--- 静态分组 kind，不暴露 group/table，也不读取 Native；具体任务/副本事实仍由 GetGroupDetail/GetProgress 提供。
+-- Acquire 前只读分组 kind，供详情决定是否租 InstanceCatalog，避免普通任务也唤醒副本目录。
 function P:GetGroupKind(scope, key)
     local group = FindGroup(scope, key)
     if type(group) ~= "table" then return nil end
     return tostring(group.kind or "quest")
 end
 
--- RU 于 2026-09-09 官方开放这两个 getter，签名存在不等于实机验证；只接受有限整数计数和纯文本。QuestProgress
--- 拥有 Native 读取，UI 不保留 Gameplay 副本；仅显式详情读取，不纳入表投影。读取前后核验活动列表索引身份，防
--- 止日志重排将其他任务目标归给所选任务。
+-- 两个详情 getter 于 RU 2026-09-09 开放，返回形状仍须保守校验，只收有限整数和纯文本。
+-- 读取前后重验活动 index 对应 ID，防止日志重排后归错任务；不在普通投影读取。
 local JOURNAL_MAX_QUESTS, JOURNAL_MAX_ROWS, JOURNAL_TEXT_BYTES = 4, 16, 2048
 local JOURNAL_CACHE_MAX, JOURNAL_TTL = 16, 3000
 function P:ClearJournalCache()
@@ -962,9 +929,7 @@ function P:GetGroupDetail(scope, key, options)
         if readyCount > 0 then stateText = "可交付"
         elseif total > 0 and completed >= total then stateText = "已完成"
         elseif activeCount > 0 then stateText = "进行中" end
-        -- （2026-09-22，scoreQuest detail）详情同时保留两层语义：Activity 完成度是 0/1 -> 1/1，
-        -- score/reward-level 是同一个任务内部目标。这样用户在所有活动里都能用一致的完成度判断，同时不会丢失
-        -- 积分型信息。
+        -- 积分/奖励阶段属于单任务内部详情；Activity 完成度仍保持 0/1→1/1。
         summary = "已完成 " .. tostring(math.min(completed, 1)) .. "/1 · 积分任务 " .. stateText
     else
         summary = total > 0 and ("已完成 " .. tostring(completed) .. "/" .. tostring(total)) or "暂无主任务"

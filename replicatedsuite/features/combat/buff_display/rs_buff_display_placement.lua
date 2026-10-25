@@ -1,10 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · HUD 显示模式与屏幕固定布局
 -- 作者：Replicated
 -- QQ群：1104129461
 -- 旧头顶 layout/arrangement canonical 保持原样；固定布局拥有独立小 Store。
 -- 锚点为 UIParent 视口万分比（整数），不存物理像素，不复制 Aura/目标事实或调度器。
-------------------------------------------------------------------------
 if not ReplicatedSuite or ReplicatedSuite.BootError then return end
 local S=ReplicatedSuite
 local F,P=S.Features and S.Features.BuffDisplay,S.Persistence

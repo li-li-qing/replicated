@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 装备与称号操作
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 装备/称号服务仅响应显式用户动作，Tick 和被动页面刷新不扫描装备或背包。只有应用用户授权套装时建立有界
--- Scheduler 事务，结束立即移除。
-------------------------------------------------------------------------
+-- 只响应显式换装动作，应用时才建立有限 Scheduler 事务，结束即移除；被动刷新不扫装备或背包。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -183,11 +179,7 @@ end
 
 function G:TitleText(title)
     if type(title) ~= "table" then return "未读取称号" end
-    --
-    -- 方案中的称号业务含义是“切换效果”，不是恢复保存瞬间的展示称号。旧版本的 displayName
-    -- 通常也来自 effect，但历史 payload 可能同时保存了 showing；展示层必须优先展示 effect
-    -- 自身名称，避免用户误以为方案会把“名字称号”一起切回去。showing 继续保留为旧配置/诊断快照，
-    -- 不再承担换装 Authority。
+    -- 方案只切换效果称号，显示优先取 effect 名称。历史 showing 仅作兼容/诊断，不能让用户误以为会恢复展示称号。
     local effectName = type(title.effect) == "table" and Trim(title.effect.name) or ""
     if effectName ~= "" then return effectName end
     if Trim(title.displayName) ~= "" then return Trim(title.displayName) end
@@ -205,10 +197,7 @@ end
 
 function G:GetEquipped(slot)
     if X2Equipment == nil then return nil, "X2Equipment unavailable" end
-    -- GetEquipped 是轻量自身 HUD 公开读取路径，使用 false 选择器。
-    -- RU 各构建的 targetEquippedItem 语义有差异，HUD 与换装事务不能共用未经区分的布尔假设。
-    -- 数据流：BuffDisplay(player scope) -> GearV3:GetEquipped -> X2Equipment；
-    -- target HUD 不得将此 API 视为目标装备权威。
+    -- 自身 HUD 的 GetEquipped 使用 false 选择器；RU 各版本布尔语义有差异，目标 HUD 不能用它读目标装备。
     local ok, value, err = S.Api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", X2Equipment, "GetEquippedItemTooltipInfo", slot, false)
     if ok ~= true then return nil, err end
     return value, nil
@@ -216,10 +205,8 @@ end
 
 function G:GetLoadoutEquipped(slot)
     if X2Equipment == nil then return nil, "X2Equipment unavailable" end
-    -- Gear Capture/Validate/Verify 换装事务使用自身装备选择器 true，HUD 继续 GetEquipped(false)。受影响 RU
-    -- 封装的 false 会把已穿装备判 mismatch，队尾时装槽 28 和等待装备完成的称号因此受阻；远程 HUD 的
-    -- ranged.enabled=false 证据不能证明换装选择器应改变。没有新增被动扫描，不改槽位或存档；未来统一参数语义
-    -- 须同时通过实机换装事务与 HUD 两套 probe。
+    -- 换装 Capture/Validate/Verify 使用 true，HUD 仍用 false；受影响 RU 的 false 会把已穿装备误判 mismatch，阻住槽28和称号。
+    -- 统一参数前须同时实测换装与 HUD，不能凭远程 HUD 的 ranged.enabled=false 改事务选择器。
     local ok, value, err = S.Api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", X2Equipment, "GetEquippedItemTooltipInfo", slot, true)
     if ok ~= true then return nil, err end
     return value, nil
@@ -246,10 +233,8 @@ end
 
 function G:CaptureTitle()
     if X2Player == nil then return nil, "X2Player unavailable" end
-    -- ArcheAge 展示称号 nameType 与效果称号 effectType 可合法不同。GetEffectAppellation ->
-    -- payload.title.effect 是换装持久化唯一业务权威；GetShowingAppellation -> payload.title.showing 仅兼容
-    -- 或诊断快照，执行时不能据此恢复名称，也不能把合法 nameType=0 当缺失。保留 showing 与 Store schema，旧
-    -- 方案不迁移；展示读暂失败但 effect 可读时仍允许获取当前，不依赖非权威展示状态。
+    -- 展示 nameType 与效果 effectType 可不同；方案只保存并执行 effect，showing 留作兼容快照。
+    -- nameType=0 合法；展示读失败但 effect 可读时仍可捕获。
     local okEffect, effectRaw, effectErr = S.Api:CallCapability("X2Player:GetEffectAppellation", X2Player, "GetEffectAppellation")
     if okEffect ~= true then return nil, "读取当前效果称号失败：" .. tostring(effectErr) end
     local effect = self:PackAppellation(effectRaw)
@@ -265,9 +250,7 @@ end
 function G:CapturePayload(previous)
     previous = type(previous) == "table" and previous or {}
     local previousUnchecked = {}
-    -- （2026-10-08，旧方案副手重新获取）旧方案的空槽会以 managed=false 保存。
-    -- 后来穿上副手再点“获取当前”时，不能把这个由空槽产生的 false 当作用户主动取消勾选，
-    -- 否则新读取到的副手仍被排除在换装方案外。只继承“原来有装备且主动取消”的选择。
+    -- 旧空槽的 managed=false 不等于用户取消勾选；重新获取已有装备时，只继承“原来有装备且主动取消”的选择。
     if previous.configured == true then
         for _, item in ipairs(previous.items or {}) do
             previousUnchecked[tonumber(item.slot)] = item.empty ~= true and item.managed == false
@@ -304,8 +287,7 @@ function G:SavedItemMatchesTooltip(saved, tooltip)
     if self:RequiresRingIdentity(saved) and self:SavedRingIdentityError(saved)~=nil then return false end
     local wantedName, currentName = self:NormalizeItemName(saved.name), self:NormalizeItemName(tooltip.name)
     if wantedName == "" or currentName == "" or wantedName ~= currentName then return false end
-    -- （2026-09-30）稳定ID都存在时冲突必须失败，不能只因同名同品质判定已匹配。
-    -- 旧方案未保存ID时保留原有名称/品质/属性指纹兼容，不回写用户配置。
+    -- 双方稳定 ID 都存在且冲突时必须拒绝；旧方案缺 ID 才用原名称/品质/属性指纹兼容。
     local currentType = self:ExtractBagType(tooltip)
     if saved.itemType ~= nil and currentType ~= nil and tostring(saved.itemType) ~= tostring(currentType) then return false end
     local wantedGrade, currentGrade = tonumber(saved.grade), self:ExtractGrade(tooltip)
@@ -323,8 +305,7 @@ end
 
 function G:CurrentItemMatches(saved)
     if type(saved) ~= "table" or saved.empty == true then return false end
-    -- （2026-09-30，gear-partial-continuation-1）读取失败不是普通“不匹配”。
-    -- 保留第二返回值给显式换装事务：该槽不可验证时跳过，不能用未知状态授权装备动作。
+    -- 第二返回值保留读取失败；不可验证的槽跳过，不能把未知当普通 mismatch 后授权动作。
     local tooltip, err = self:GetLoadoutEquipped(saved.slot)
     if err ~= nil then return false, err end
     if self:RequiresRingIdentity(saved) then
@@ -396,13 +377,8 @@ function G:GetCurrentShowingAppellationType()
     local ok, raw, err = S.Api:CallCapability("X2Player:GetShowingAppellation", X2Player, "GetShowingAppellation")
     if ok ~= true then return nil, "读取当前称号展示类型失败：" .. tostring(err) end
 
-    --
-    -- 公开 titleswap 的成熟调用约定是：执行前读取 GetShowingAppellation()[1]；当当前没有展示称号
-    -- 或 getter 返回 nil 时，向 ChangeAppellation 传 0。这里不能复用通用 MeaningfulId()，因为
-    -- MeaningfulId 为装备/效果身份设计，会把 0 过滤掉；但对 ChangeAppellation 的 nameType 来说
-    -- 0 是“当前不展示称号”的合法选择器，而不是数据缺失。
-    -- 重要：这里只读取“执行这一刻”的当前展示状态，绝不回退到 payload.title.showing。这样用户保存
-    -- 时名称 A / 效果 B 是否对应都不会影响之后只切效果，也不会意外恢复旧的展示称号。
+    -- titleswap 执行前读取当前 GetShowingAppellation()[1]；无展示称号或 nil 时传 0，不能用会滤掉 0 的 MeaningfulId。
+    -- 只读执行此刻的展示状态，绝不能回退保存时的 showing，避免切效果时恢复旧名称称号。
     if raw == nil then return 0, nil end
     if type(raw) ~= "table" then return nil, "当前称号展示数据格式异常" end
     local value = Primitive(raw[1])
@@ -422,8 +398,7 @@ function G:ApplyTitle(payload)
     local effect = title.effect and MeaningfulId(title.effect.id) or nil
     if effect == nil then return false, "称号效果数据不完整" end
 
-    -- Effect Authority：方案只决定 effectType；nameType 每次执行都从当前角色读取并保持原样。
-    -- saved title.showing 是保存时快照，可能与 effect 不对应，禁止参与动作参数。
+    -- 方案只决定 effectType，nameType 保留执行时当前值；保存时 showing 不参与动作参数。
     local showing, showingErr = self:GetCurrentShowingAppellationType()
     if showing == nil then return false, showingErr or "无法取得当前称号展示类型" end
     local effectType = tonumber(effect) or effect
@@ -671,9 +646,8 @@ function G:ValidateStepCandidate(step, session)
         if ok == true then step.deferredCandidate = nil end
         return ok, reason, code
     end
-    -- （2026-09-30，gear-partial-continuation-1）前项换装/背包操作可能改变物理槽。
-    -- 动作前只回读当前候选的一个槽；指纹变化才进入现有有界扫描，不对旧槽盲目 Equip。
-    -- 继续后项不等于放宽身份校验；歧义、缺失、读错仍交给 SkipRuntimeStep 留证后跳过。
+    -- 前项可能改变背包物理槽；动作前先读候选单槽，指纹变动才重新有限扫描。
+    -- 缺失、歧义或读错仍留证后跳过，不能对旧槽盲目 Equip。
     local info = self:GetBagItem(step.bagId, step.bagSlot)
     local candidate = self:BuildBagCandidate(step.bagId, step.bagSlot, info)
     if candidate ~= nil and self:CandidateMatches(step.saved, candidate)
@@ -771,8 +745,7 @@ function G:FinishRuntime(ok, message)
     self.runtime.session = nil
     Publish("runtime_finished")
 
-    -- Service 只发布完成，Feature 自有瞬态生命周期并可响应 EventBus；Service 不得向上访问 S.Features 或直接
-    -- 调用 Feature 方法。
+    -- 只发布完成事件，由 Feature 响应；Service 不向上调用具体 Feature。
     return ok
 end
 
@@ -790,9 +763,7 @@ function G:RuntimeTick()
     if (S.NowMs and S.NowMs() or 0) - (session.startedAt or 0) > 60000 then return self:FinishRuntime(false, "换装总超时，已停止") end
 
     local step = session.queue[r.index]
-    -- （2026-10-04）真实装备回读确认后，同一拍进入下一项；旧流程每件
-    -- 都单独空等一个 220ms 拍。循环只消费已匹配项目，动作分支仍立即 return，
-    -- 每拍最多一次原生写入；候选指纹、战斗门和未生效的验证预算均保留。
+    -- 回读确认后可同拍检查下一项；循环只消费已匹配项，动作分支立即返回，每拍仍最多一次 Native 写。
     while step ~= nil do
         local itemMatched, equippedErr, ringErrorCode = self:CurrentItemMatches(step.saved)
         -- Native 回读可能同步触发取消/停用；旧会话不能继续下一项。
@@ -893,8 +864,7 @@ function G:Start(setId, payload)
         Publish("combat_non_weapon_deferred")
         return true
     end
-    -- （2026-09-30，gear-partial-continuation-1）预检只生成可明确定位的动作。
-    -- not_found/read_error/ambiguous 全部保留为跳过证据，不能因一件无法识别阻断其它项目。
+    -- 预检只生成明确定位的动作；not_found/read_error/ambiguous 留证后跳过，不阻断其它项目。
     self.runtime.skipped = DeepCopy(session.blocked or {})
     if #session.queue == 0 and session.titlePending ~= true then
         local first = session.blocked[1]

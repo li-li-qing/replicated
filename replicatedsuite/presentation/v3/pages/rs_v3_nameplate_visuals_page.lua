@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 名牌视觉设置页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（nameplate-mark-ratio-3）：Presentation 不访问 X2Option，所有
--- Native 写入只走 Feature.Commands -> Authority。RU 某些 CVar 允许 Set 但 Get 返回 nil，因此页面
--- 必须区分 strict / partial / write_only，禁止把“调用 Set 成功”伪装成“全部回读验证成功”。
-------------------------------------------------------------------------
+-- 设置经 Feature.Commands 写入；RU 某些 CVar 可 Set 但 Get 返回 nil，
+-- 须区分 strict、partial、write_only，不能把 Set 成功当作完整回读验证。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -131,9 +127,8 @@ local function BuildPage(parent, route)
         return field
     end
 
-    -- 约束（nameplate-mark-ratio-3）：旧 over_head_marker_width/height/offset 在 RU 实机
-    -- Set 成功但无视觉变化，页面不再暴露三个无效控件。百分比仍写 schema1 width/height 兼容字段，
-    -- Native Authority 只转换成 name_tag_mark_size_ratio，避免改 Store schema 导致旧用户指纹 fence。
+    -- RU 的 over_head_marker_width/height/offset 虽 Set 成功却无视觉变化，故不提供控件。
+    -- 百分比仍存 schema1 的 width/height，Native 转换为 name_tag_mark_size_ratio，避免破坏旧指纹。
     local markerScale = D:CompactNumericSetting(markerGrid, {
         id = ID .. "marker_scale_percent", label = "标记倍率%", min = 50, max = 300, step = 5, integer = true,
         slider = true, stepButtons = false, labelWidth = 74, inputWidth = 62,

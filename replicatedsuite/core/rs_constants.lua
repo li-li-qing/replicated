@@ -1,10 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享常量
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 共享常量。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -21,16 +17,13 @@ if ItemIds.BLUE_SALT_BOND == nil or type(ItemIds.BOND_MATERIAL) ~= "table"
 end
 
 S.Constants = {
-    -- Schema 21 将模块启用和团队/伤害复盘开关放到 Account 基础层，使使用习惯跨角色保留，加载时不再依赖带世
-    -- 界名身份匹配。Schema 20->21 迁移在首次加载时将既有 Character Override 的 modules/settings 折入
-    -- Account 基础层。
+    -- Schema 20->21 首次加载时，将角色档的 modules/settings 合入 Account，保留跨角色开关偏好。
     SaveSchemaVersion = 21,
-    -- 可复用游戏 ID 由 data/ids/*.lua 统一拥有，Constants 只消费共享目录，不另存数值副本。
+    -- 游戏 ID 统一放在 data/ids/*.lua，这里引用目录，不另存副本。
     BlueSaltBondItemType = ItemIds.BLUE_SALT_BOND,
     BondMaterialItemTypes = ItemIds.BOND_MATERIAL,
-    -- （2026-09-24，原大陆债券材料共享映射）与大陆四种加工材料分开保存，
-    -- 避免旧业务把 six-token Auroria 物品误当 fabric/leather/lumber/iron；Bonds InventorySnapshot
-    -- 读取时会合并两张只读 identity map，但 Quest/筛选语义仍保持独立。
+    -- 原大陆债券材料与大陆四种加工材料分开，避免把 six-token Auroria 物品误当 fabric/leather/lumber/iron。
+    -- Bonds 读取背包时合并两张只读映射，任务和筛选仍分开处理。
     AuroriaBondMaterialItemTypes = ItemIds.AURORIA_BOND_MATERIAL,
     BondQuestByMaterialQuantity = ResidentBondQuestIds.MaterialByQuantity,
     -- 当前 ArcheRage 原大陆居民日常的官方映射；解析器按居民板物品名与需求数量匹配。
@@ -39,8 +32,7 @@ S.Constants = {
     Breakpoint = { COMPACT = 1150, STANDARD = 1700, WIDE = 2300, NARROW_ONE_COLUMN = 760 },
     SafeArea = 12,
     SnapDistance = 16,
-    -- 分辨率安全使用 UIParent 逻辑坐标。CryEngine 改分辨率时从 TOPLEFT 裁剪可见画布，新浮控件应在此稳定可发
-    -- 现区生成，所有实时浮窗必须能在当前逻辑视口内恢复访问。
+    -- CryEngine 改分辨率时从 TOPLEFT 裁剪画布；新浮窗在此区域生成，并按当前逻辑视口夹紧。
     ResolutionSafety = {
         spawnX = 300, spawnY = 100, spawnGapX = 8, spawnGapY = 8,
         maxColumns = 4, edge = 12,
@@ -52,14 +44,12 @@ S.Constants = {
     MinAddonScale = 0.80,
     MaxAddonScale = 1.20,
 
-    -- 共享视觉引导控件的硬安全范围。滑块可先显示较窄范围（如 2..10）；精确输入须先由 Domain 接受其位于硬边
-    -- 界内，才能扩展表现范围。Feature 与 Renderer 使用同一来源，避免点大小上限不一致。
+    -- 视觉引导的硬范围。滑块可显示较窄范围（如 2..10），精确输入经 Domain 校验后再扩展显示范围。
     VisualGuide = {
         pointSizeMin = 2,
         pointSizeDefaultMax = 10,
         pointSizeHardMax = 24,
-        -- NumericSlider 的 8/12..48 是建议表现范围，不是业务最大值。这里保存 Renderer/Domain 真正的有界范围
-        -- ，Page、Feature、Presenter 必须共同使用。
+        -- NumericSlider 的 8/12..48 只是建议范围；Page、Feature、Presenter 统一使用这里的硬范围。
         unitLineDensityHardMin = 2,
         unitLineDensityHardMax = 160,
         rangeDensityHardMin = 3,
@@ -70,8 +60,8 @@ S.Constants = {
         refreshMsHardMax = 60000,
     },
 
-    -- 现代深色主题总开关：开启时 UI 工厂创建的 card/header/soft 面板自动采用竖向渐变，header 另带强调条。关
-    -- 闭恢复纯色；单个面板也可通过 CreatePanel 的 { gradient = false } 退出渐变。
+    -- 深色主题默认给 card/header/soft 加竖向渐变，header 另带强调条。
+    -- 关闭后用纯色；单个面板可传 CreatePanel 的 { gradient = false } 退出渐变。
     Theme = {
         modern = true,
         gradientPanels = true,   -- card/soft 面板使用渐变背景。
@@ -85,15 +75,12 @@ S.Constants = {
         buttonHeight = 26, entryBaseSize = 42, entryMinHitSize = 36,
     },
     MainWindow = {
-        -- 新安装或恢复默认的推荐尺寸须容纳生活仪表盘的五条纵向轨道，避免债券、事件和角色卡片初次打开仅有少
-        -- 量可见行。Layout:GetMainSpec() 优先使用用户已保存宽高，所以只影响从未调整或显式恢复默认的用户；屏
-        -- 幕安全夹紧仍是权威。
+        -- 默认尺寸需容纳生活仪表盘的五列；已保存宽高优先，最终按屏幕安全范围夹紧。
         threeColumnWidth = 1120, threeColumnHeight = 840,
         twoColumnWidth = 980, twoColumnHeight = 860,
         oneColumnWidth = 640, oneColumnHeight = 860,
         minWidth = 560, minHeight = 600,
-        -- 仅为旧版本兼容保留的元数据。V3 外窗权威不能消费这些历史最大值；旧 schema 和可读性计算继续使用，直
-        -- 到迁移层退役。
+        -- 旧 schema 和可读性计算仍使用这些历史上限；V3 外窗不再使用。
         maxWidth = 1180, maxHeight = 900, collapsedHeight = 32, maxReadingWidth = 1180,
     },
     -- HUD 最小尺寸只用于拖动和缩放技术下限；推荐尺寸仍是上方 width/height，内容须适应更小尺寸。

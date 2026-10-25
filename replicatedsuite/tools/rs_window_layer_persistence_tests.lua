@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 窗口层级持久化测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 维护（2026-09-16）：本测试只验证 Foundation 契约，不冒充 RU 实机层级验收。
-------------------------------------------------------------------------
+-- 本测试只验证 Foundation 契约，不冒充 RU 实机层级验收。
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -146,7 +143,7 @@ Test("FloatingSurface persists the committed geometry rect and requests immediat
     assert(delays[#delays] and delays[#delays].delay == 0, "geometry edge must request immediate persistence")
 end)
 
--- 维护：置顶必须由真实 Persistence/Transport 证明耐久；手写 SaveStore=true 会漏掉 Native 静默丢写。
+-- 置顶必须由真实 Persistence/Transport 证明耐久；手写 SaveStore=true 会漏掉 Native 静默丢写。
 local function PreferenceHost(disk)
     local h=dofile('tools/rs_gear_page_test_host.lua')({disk=disk})
     dofile('ui/framework/rs_ui_window_preferences.lua')
@@ -274,7 +271,7 @@ Test("real Layout stores committed logical rect without UI-scale reread", functi
     assert(rx==123 and ry==234, "same viewport relog must restore exact committed x/y")
 end)
 
--- 维护：页面骨架仅用于捕获实际 NumericSetting spec；数值控件/Binding、WidgetHost、Feature、Persistence 全走生产实现。
+-- 页面骨架仅用于捕获实际 NumericSetting spec；数值控件/Binding、WidgetHost、Feature、Persistence 全走生产实现。
 local function AppearancePageHost(disk)
     local S,UI,R,h=ShellHost(false,disk)
     dofile('ui/framework/rs_ui_floating_surface.lua')

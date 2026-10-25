@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 工作区首页测试
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 local p,f=0,0
 local function T(n,fn)local ok,e=xpcall(fn,debug.traceback);if ok then p=p+1;print('PASS '..n)else f=f+1;print('FAIL '..n..' '..e)end end
 local function Boot()

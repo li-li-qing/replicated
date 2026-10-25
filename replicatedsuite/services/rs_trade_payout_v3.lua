@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 贸易收益计算
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- life_trade 纯数据收益计算器仅组合已观察事实、静态售价表和已验证货物类别倍率。X2Store 唯一拥有路线有效性和
--- 实时货率，X2Ability 拥有当前 Commerce 熟练度。无 Tick/Scheduler/Native 调用，用户触发路线结果后惰性构建
--- priceKey 和发酵索引。
-------------------------------------------------------------------------
+-- 只组合已观察货率/熟练度、静态售价和类别倍率；路线有效性归 X2Store，熟练度归 X2Ability。
+-- 用户取路线后才惰性构建价格索引，不调用 Native。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -194,9 +190,7 @@ function P:ResolvePriceKey(destination, itemName, originZoneName)
 end
 
 function P:GetPackMultiplier(itemName, priceKey)
-    -- （2026-09-27，trade-freshness-matrix-v3）这里解析的是“最高新鲜度/品类奖励”，
-    -- 与 X2Store 返回的实时供需货率严格分离。Authority 只来自维护过的精确 token 表；禁止模糊匹配。
-    -- sourceName 优先，是为了尊重 Native 当前商品身份；静态 priceKey 仅作为本地化/别名兜底。
+    -- 品类奖励与实时供需货率分开，按精确 token 表解析；Native sourceName 优先，静态 priceKey 只作别名兜底。
     local sources = { { value = Text(itemName), source = "source_name" }, { value = Text(priceKey), source = "price_key" } }
     for _, source in ipairs(sources) do
         if source.value ~= "" then
@@ -215,14 +209,12 @@ function P:GetPackMultiplier(itemName, priceKey)
             return 1, nil, source.source, "neutral", "无新鲜度奖励"
         end
     end
-    -- 未分类不是“默认 1.00”的同义词。未来新增贸易品若没有补类别规则，继续给数字会再次静默产出错误售价；
-    -- 因此明确标记 unclassified，让 Estimate fail-closed，并在模块诊断的覆盖审计中暴露名称。
+    -- 未分类不能默认为 1.00；返回 unclassified，让 Estimate 保留未知并在诊断暴露漏规则的名称。
     return nil, nil, "none", "unclassified", "新鲜度类别未登记"
 end
 
 function P:AuditFreshnessCoverage()
-    -- 冷路径诊断：只在 Describe/测试调用时遍历静态售价表，不参与刷新/排序循环。它保证每次新增贸易品
-    -- 都能看见是否命中类别倍率，避免未来再次出现“某一类名称忘记补倍率却静默按 1.00 计算”。
+    -- 仅 Describe/测试遍历静态表检查倍率覆盖，不进入刷新或排序。
     local result = { total = 0, categorized = 0, neutral = 0, byCategory = {}, neutralSamples = {} }
     for destination, rows in pairs(S.Data and S.Data.TradePrices or {}) do
         if type(destination) == "number" and type(rows) == "table" then

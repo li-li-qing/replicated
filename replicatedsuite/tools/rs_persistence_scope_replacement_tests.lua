@@ -1,14 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 角色存档完整替换边界回归
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 中文维护：生产 Persistence/Transport/Treasure 命令原样加载，只把 Native 存盘和角色身份换成内存边界。
--- 当前键被另一角色 envelope 污染、owner/store/scope 不符和未来契约必须拒写，原盘逐项比较不得改变。
--- 中文姓名现已独立分键，故 foreign 替换用显式错放 envelope 复现；旧键迁移另由 character_scope 回归覆盖。
--- payload 截断/transport/业务与 envelope 指纹损坏仅在元数据归属完整匹配时允许显式耐久重建。
--- 这些是合成离线契约证据，不是 RU 实机存档或 Native 返回形态；只进默认测试 runner，禁止进 toc.g。
-------------------------------------------------------------------------
+-- 使用真实存档和寻宝命令，只替换原生磁盘与角色身份。
+-- 错角色、错归属或未来版本的存档必须拒写，原始字节也不能变。
+-- 只有归属完整匹配时，才允许显式重建损坏内容；旧角色键迁移另有用例。
 local function Copy(value)
     if type(value) ~= 'table' then return value end
     local out={}; for k,v in pairs(value) do out[k]=Copy(v) end; return out

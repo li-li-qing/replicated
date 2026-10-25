@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 交易重新询价链路测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 断言真实原生调用、结果和状态行为，不能另造报价实现。
 -- 594/8800 铜是用户提供的价格；1500/8950 为构造的反例，有意得到旧截图的 -3 金 40 银，不能视为恢复的玩家缓存证据。
-------------------------------------------------------------------------
 local Boot=dofile('tools/rs_trade_requote_test_host.lua')
 local passed,total=0,0
 local function Eq(a,b,m) assert(a==b,(m or 'value')..': expected='..tostring(b)..' actual='..tostring(a)) end
@@ -13,7 +10,7 @@ local function Test(name,fn) total=total+1;local ok,err=xpcall(fn,debug.tracebac
  if ok then passed=passed+1;print('PASS '..name) else print('FAIL '..name..': '..tostring(err)) end end
 local function Unknown(h)
  h.content=nil;ADDON.GetContentMainScriptPosVis=function()h.visibilityReads=h.visibilityReads+1;return nil,nil,nil,nil end
- -- 中文维护注释（2026-10-02）：真实调用失败才是 unknown；两个 getter 正常为空已证明窗口关闭。
+ -- 真实调用失败才是 unknown；两个 getter 正常为空已证明窗口关闭。
  ADDON.GetContent=function()error('native_content_unreadable')end
 end
 local function Strict(h,token,id,name)
@@ -72,7 +69,7 @@ Test('strict request upgrades in-progress unsent market read without duplicate n
  assert(Strict(h,'user',30901,'香料'));h:advance(12000)
  Eq(h:count('SearchAuctionArticle'),1);for _,r in ipairs(h.deliveries)do Eq(r.price,594)end
 end)
--- 维护（auction-full-lane-safety-1）：unknown 时所有价格请求均停本地，不再把 ID 通道当作安全旁路。
+-- unknown 时所有价格请求均停本地，不再把 ID 通道当作安全旁路。
 Test('unknown admission parks both requests and user-priority ID quote resumes first after close',function()
  local h=Boot();Unknown(h)
  assert(h:quote('bg',3545,'燕麦',{priority='background',searchName='燕麦'}));h:advance(6000)

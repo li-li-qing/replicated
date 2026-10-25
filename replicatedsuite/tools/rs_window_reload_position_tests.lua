@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 窗口重载位置测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 窗口位置重载回归仅供开发使用，不进入 toc.g；执行真实 Layout、Windowing、Shell 和 Surface。
 -- 原生重置时序、根单位、磁盘往返及原生拒写为故障模型，不能视为 RU 认证。
-------------------------------------------------------------------------
 local Boot = dofile('tools/rs_window_viewport_test_host.lua')
 local passed, failed = 0, 0
 local function Eq(a,b,label)

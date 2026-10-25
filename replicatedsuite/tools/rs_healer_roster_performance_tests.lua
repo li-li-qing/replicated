@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗名单快照性能回归
 -- 真实 Lua 5.1 Store/Roster/Recommendation/Feature/Presenter + 既有 Native 宿主。
 -- 仅验证操作数量、快照隔离与显示契约；不证明 RU 帧率，不进入 toc.g。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, callback)
     local ok, err = xpcall(callback, debug.traceback)

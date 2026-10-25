@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 主应用窗口
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- V3 Shell 是唯一活跃应用窗口，仅负责外框、导航、PageHost/ModalHost 与响应式几何；顶层移动/缩放交给共享 RSUI Windowing。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI, Adapter = S.UI, S.RSUI, S.UIV3NativeAdapter
@@ -69,7 +66,7 @@ Shell.NavigationCallbackCaptureContractVersion = 1
 Shell.StateMutationTransactionContractVersion = 1
 Shell.TopmostLayerContractVersion = 1
 Shell.CommittedGeometryPersistenceContractVersion = 1
-Shell.DevelopmentNavigationPresentationContractVersion = 1 -- Shell v1 开始只用 navigationTitle 展示“未完成”后缀，页面 title/route/Feature identity 均保持原语义。
+Shell.DevelopmentNavigationPresentationContractVersion = 1 -- 开发后缀只取 navigationTitle，页面 title 保留业务原名。
 
 local SCROLL_CATEGORY_ORDER = { "home", "combat", "life", "tools" }
 local SYSTEM_ROUTES = { "system.workspace", "system.widgets", "system.features", "system.settings", "system.diagnostics" }
@@ -94,7 +91,7 @@ local function MarkDirty(reason)
     return false, "主窗口存档不可用"
 end
 
--- 维护（viewport-recovery-1）：读取主窗配置只过滤运行值；不改 v3.shell schema/历史指纹。
+-- 读取主窗配置只过滤运行值；不改 v3.shell schema/历史指纹。
 local function Finite(value,fallback)
     local n=tonumber(value)
     if n==nil or n~=n or n==math.huge or n==-math.huge then return fallback end
@@ -110,7 +107,7 @@ function Shell:ResolveRect(designWidth, designHeight)
     local normalDh = math.max(size.minHeight, Finite(designHeight) or Finite(state.height) or size.defaultHeight)
     local width = dw * scale
     local height = normalDh * scale
-    -- 维护：主窗保留自己的隐藏式最小化/导航/Modal 生命周期，只共享 placement 求解。
+    -- 主窗保留自己的隐藏式最小化/导航/Modal 生命周期，只共享 placement 求解。
     -- 消费运行时 fit 的宽高；原设计尺寸 dw/normalDh 不写回，回大屏时仍从原 Store 恢复。
     local fittedW,fittedH = math.min(width,context.usableWidth),math.min(height,context.usableHeight)
     local centerX = (context.logicalWidth-fittedW)*0.5
@@ -151,7 +148,7 @@ function Shell:RefreshNavScrollHint()
     return true
 end
 
--- 维护（module-controls-diag-2）：红绿仅表示FeatureRuntime真实启停，选中态仍由路由决定。
+-- 红绿仅表示FeatureRuntime真实启停，选中态仍由路由决定。
 -- 构建时缓存路由->Feature映射；生命周期事件/导航/按钮事务后刷新，禁止轮询GetHealth。
 function Shell:RefreshFeatureStates(featureId)
     local controls = V3.ModuleControlsV3
@@ -170,8 +167,8 @@ function Shell:RefreshFeatureStates(featureId)
     return true
 end
 
--- 个人工作台：按钮只创建一次。重排使用 RSUI 同父顺序 API，隐藏仅改变导航可见性，
--- 不启停模块。全部模式忽略用户隐藏，Registry.navigationVisible=false 仍不可复活。
+-- 导航按钮只建一次，在同一父节点内重排；隐藏导航不启停功能。
+-- “全部”忽略用户隐藏，但不能恢复 Registry 已关闭的入口。
 function Shell:BuildScrollableNavigation()
     if not self.navScroll then return false end
     for _, categoryId in ipairs(SCROLL_CATEGORY_ORDER) do
@@ -265,7 +262,7 @@ end
 function Shell:ApplyMinimizedState(persist)
     local state = V3.ShellState or {}
     local minimized = state.minimized == true
-    -- 主应用最小化回到持久 R 启动器，不压成意义不清且占空间的仅标题条；全部 Native/Component 状态转换被接受后，投影才算应用成功，ShellState 事务由调用方持有。
+    -- 最小化回到 R 启动器；全部显隐操作被接受后才算成功，状态事务由调用方提交。
     local bodyOk, bodyErr = EnsureComponentVisibility(self.body, "visible", "shell_body")
     if bodyOk ~= true then return false, bodyErr end
     local footerOk, footerErr = EnsureComponentVisibility(self.footer, "visible", "shell_footer")
@@ -373,9 +370,7 @@ function Shell:CommitWindowGeometry(_, x, y, width, height, reason)
         state.width = math.max(size.minWidth, width / scale)
         state.height = math.max(size.minHeight, height / scale)
     end
-    -- 维护（2026-09-16，main-shell-committed-geometry-1）：Windowing 已把最终逻辑矩形
-    -- 作为参数交给这里；禁止再次从 Native 读回坐标。主菜单与悬浮窗使用同一 Layout Authority，
-    -- 保持原 free-v2 / normalized-center 持久化格式，旧配置无需迁移。
+    -- Windowing 已传入最终逻辑矩形，不再从 Native 回读坐标；沿用 free-v2 / normalized-center 存档格式。
     if S.Layout ~= nil and type(S.Layout.StorePlacementRect) == "function" then
         S.Layout:StorePlacementRect(state, x, y, width, height, { mode = "free" })
     elseif S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" then
@@ -430,8 +425,7 @@ end
 
 function Shell:GetTopmost() return self.topmost == true end
 
--- 主菜单复用悬浮窗的 Windowing alpha 和 RSUI 局部外观通道。提交失败恢复已保存值，
--- 不修改旧 ShellState，也不扫描其它顶层窗口；新建页面/虚拟行由 AddChild 继承这些通道。
+-- 主菜单共用 Windowing alpha 和 RSUI 外观通道；失败恢复已保存值，新子组件由 AddChild 继承。
 function Shell:ApplyAppearanceSettings(settings)
     if not self.created or not self.root or not self.window then return false,"主窗口尚未创建"end
     local previous=self.mainAppearance or {}
@@ -479,7 +473,7 @@ end
 function Shell:ResetAppearance()return self:SetAppearance({overallOpacity=1,backgroundOpacity=1,textOpacity=1,fontScale=1},true)end
 
 function Shell:Create()
-    if self.created ~= true then S.Layout:GetContext(true) end -- 维护：首次创建不用启动早期的 provisional context。
+    if self.created ~= true then S.Layout:GetContext(true) end -- 首次创建不用启动早期的 provisional context。
     if self.created == true and self.window ~= nil then return true end
     if tonumber(self.failedBuildGeneration) == tonumber(S.Generation) then
         self.buildQuarantinedRejects = (tonumber(self.buildQuarantinedRejects) or 0) + 1
@@ -508,7 +502,7 @@ function Shell:Create()
         return false, self.failedBuildError
     end
 
-    -- 维护（2026-09-16，main-shell-topmost-1）：主窗口默认 normal，只有用户显式保存 [顶]
+    -- 主窗口默认 normal，只有用户显式保存 [顶]
     -- 才请求 system。偏好由 RSUI.WindowPreferences 独立持久化，避免修改 v3.shell schema。
     local prefs = RSUI.WindowPreferences
     self.topmost = type(prefs) == "table" and type(prefs.GetTopmost) == "function" and prefs:GetTopmost("main_shell") == true or false
@@ -549,18 +543,14 @@ function Shell:Create()
     })
     local topRow = RSUI:HorizontalBox({ id = "v3_shell_top_row", parent = self.topBar, gap = 4 })
     local brand = RSUI:VerticalBox({ id = "v3_shell_brand", parent = topRow, gap = 1, slot = { size = "fill", fill = 1 } })
-    -- 维护（5.6 发布）：发行标记紧跟 QQ 群；第二行只是联系文案，不添加邮件发送或业务写入口。
-    -- Authority / 数据流：仍由 v3:shell 经 RSUI:Text 创建展示文本，不直接写 Native 或业务 Store。
-    -- 兼容边界：保留逻辑 ID、响应式宽度及样式；不改 ESC 注册名、聊天前缀或用户配置，无迁移。
-    -- 后续维护：联系信息仅在此展示；窄窗沿用省略规则，不扩大拖动命中区或挤占右侧按钮。
-    self.brandTitle=RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461   正式版5.6", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
+    -- 联系信息只展示；窄窗沿用省略规则，不挤压右侧按钮或扩大拖动区。
+    self.brandTitle=RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461   正式版5.7", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
     self.supportText=RSUI:Text({ id = "v3_shell_support_text", parent = brand, text = "如果觉得功能好用，可以邮件给作者提供一点打赏", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 14 } })
     -- 窄窗可省略顶栏文字，悬停时仍能读到完整文案；不改变右侧按钮的命中区域。
     if RSUI.Tooltip and type(RSUI.Tooltip.BindOverflowText) == "function" then RSUI.Tooltip:BindOverflowText(self.brandTitle,self.brandTitle,{cursorFollow=true,maxWidth=440}); RSUI.Tooltip:BindOverflowText(self.supportText,self.supportText,{cursorFollow=true,maxWidth=440}) end
     self.runningButton=RSUI:Button({id="v3_shell_running",parent=topRow,text="已开启 0 · 异常 0",compact=true,
         onClick=function()return self:Navigate("system.features",{source="running_summary"})end,slot={size="fixed",width=138}})
-    -- 约束（2026-10-05）：外观快捷入口移到 Shell 标题栏，从任意模块复用工作台原页面与保存路径。
-    -- 窄窗只允许此按钮在 50..78 内收缩，既有诊断/置顶/关闭尺寸和标题省略规则保持不变；不扩大拖动命中区。
+    -- 外观入口复用工作台页面与保存路径；窄窗仅允许此按钮缩到 50px，其余标题按钮保持尺寸。
     RSUI:Button({id="v3_shell_appearance_button",parent=topRow,text="界面外观",compact=true,
         slot={size="auto",minWidth=50,maxWidth=78},onClick=function()
             if not V3.WorkspacePage then return false,"外观设置页面不可用" end
@@ -664,7 +654,7 @@ function Shell:Create()
         onLiveGeometry = function(controller, x, y, width, height, kind) return self:ApplyInteractiveGeometry(x, y, width, height, kind) end,
     })
     if self.windowController == nil then return FailBuild("主窗口拖动/缩放能力创建失败") end
-    -- 维护：手势跨 viewport 后先丢弃旧坐标，再从持久 intent 重排，不能保存混合坐标空间。
+    -- 手势跨 viewport 后先丢弃旧坐标，再从持久 intent 重排，不能保存混合坐标空间。
     self.windowController.onPlacementReady=function() return self:ApplyLayout(true) end
 
     self.created = true
@@ -726,7 +716,7 @@ function Shell:ApplyLayout(fromMetricsChange, designWidth, designHeight)
     end
     local x, y, width, height, dw, dh = self:ResolveRect(designWidth, designHeight)
     if self.windowController ~= nil and self.windowController:IsInteracting() == true then
-        -- 维护：活动手势沿固定 effective 单位读取；resolution 只标记，停止后再应用。
+        -- 活动手势沿固定 effective 单位读取；resolution 只标记，停止后再应用。
         if fromMetricsChange == true then self.windowController.pendingPlacement=true;return true end
         local ix, iy, iw, ih = self.windowController:GetLogicalRect()
         x, y, width, height = tonumber(ix) or x, tonumber(iy) or y, tonumber(iw) or width, tonumber(ih) or height
@@ -736,7 +726,7 @@ function Shell:ApplyLayout(fromMetricsChange, designWidth, designHeight)
         self.lastRect = { x = x, y = y, width = width, height = height, designWidth = dw, designHeight = dh, metricsChange = fromMetricsChange == true, interacting = true }
         return true, self.lastRect
     end
-    -- 维护：Native 写入统一走 Windowing；已知 metrics/reset 强制失效几何缓存而非猜测缩放。
+    -- Native 写入统一走 Windowing；已知 metrics/reset 强制失效几何缓存而非猜测缩放。
     local rectOk, rectErr = Windowing:ApplyGeometry(self.window,self.owner,x,y,width,height,fromMetricsChange==true or self.placementReason=="explicit_reset")
     if rectOk ~= true then return false, rectErr or "主窗口原生几何应用失败" end
     self.root:LayoutIfNeeded(0, 0, width, height, true)
@@ -752,7 +742,7 @@ function Shell:ApplyLayout(fromMetricsChange, designWidth, designHeight)
 end
 
 function Shell:Open()
-    -- 维护：显式打开是允许的采样边沿，防启动 fallback 留在缓存。主窗仍不注册永久 Tick。
+    -- 显式打开是允许的采样边沿，防启动 fallback 留在缓存。主窗仍不注册永久 Tick。
     S.Layout:GetContext(true)
     local created, err = self:Create()
     if created ~= true then return false, err end
@@ -786,9 +776,8 @@ function Shell:Open()
         return false, showErr or "主窗口显示失败"
     end
     if not wasVisible then
-        -- 约束（2026-10-05）：隐藏时的布局已建立 Diff 镜像，但 Native Show 仍可能
-        -- 调整出生锚点。只在真实显示边沿通过 Windowing 重新提交同一矩形；不能等到
-        -- 下一次导航才把这个合法交接记为 strict 越权，也不能强制跳过可见窗口的校验。
+        -- Native Show 可能重设出生锚点，真实显示时经 Windowing 重交同一矩形。
+        -- 否则下一次导航会把引擎调整误报为 strict 越权；可见窗口的几何校验仍须保留。
         local rect = self.lastRect
         local rectOk, rectErr = Windowing:ApplyGeometry(self.window,self.owner,rect.x,rect.y,rect.width,rect.height,true)
         if rectOk ~= true then
@@ -819,7 +808,7 @@ function Shell:Open()
     return true
 end
 
--- 维护：主窗硬恢复统一入口，设置页只调用它；先当前 viewport Native transaction，
+-- 主窗硬恢复统一入口，设置页只调用它；先当前 viewport Native transaction，
 -- 再标记原 Store dirty，失败恢复原状态。位置/尺寸属 ShellState，Workspace/Modal 不改。
 function Shell:ResetLayout(persist)
     if self.window == nil or not self.created then return false,"main_window_unavailable" end
@@ -910,10 +899,11 @@ function Shell:Navigate(routeId, context)
     end
     self.lastRoute = resolved.id
     Router.current = resolved.id
-    -- 隐藏子页属于语义子导航；这里仅修正侧栏选中态，PageHost 仍以 resolved.id 持有独立页面生命周期，禁止把子页业务合并进父 Feature。
-    local navigationRoute = tostring(resolved.navigationParentRoute or "") -- 优先采用 Registry/Router 明确声明的父导航路由，避免 Shell 写死团队中心等业务标识。
-    if navigationRoute == "" or self.navButtons[navigationRoute] == nil then navigationRoute = resolved.id end -- 没有合法父导航按钮时退回真实路由，保证普通页面和未知元数据继续按旧逻辑工作。
-    for route, button in pairs(self.navButtons) do SetButtonSelected(button, route == navigationRoute) end -- 只切换主导航视觉状态，不触发二次 Navigate、Consumer 获取或 Authority 读取。
+    -- 隐藏子页用 Registry/Router 声明的父路由高亮侧栏，无合法父按钮时用真实路由。
+    -- PageHost 仍按 resolved.id 管子页；此处只改选中态，不重复导航或获取 Consumer。
+    local navigationRoute = tostring(resolved.navigationParentRoute or "")
+    if navigationRoute == "" or self.navButtons[navigationRoute] == nil then navigationRoute = resolved.id end
+    for route, button in pairs(self.navButtons) do SetButtonSelected(button, route == navigationRoute) end
     self:RefreshFeatureStates()
     local state = V3.ShellState or {}
     if state.lastRoute ~= resolved.id then state.lastRoute = resolved.id; MarkDirty("route_changed") end

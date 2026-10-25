@@ -1,16 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能分片拆分测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- Phase 1 Batch A 源码故障域拆分契约回归（2026-09-28）
--- 目的：证明“从 rs_business_bridge.lua 拆到独立源码单元”只改变源码边界，
--- 不改变任何公开契约。逐项对应规划文档 §31 的 Feature 前后对照表。
--- 覆盖：tools_social（已拆）。tools_market_analysis 在共享 Auction 读模型
--- 归属确定前不在此文件断言，避免用错误 Authority 换取绿色。
--- 使用真实 Persistence / Demand / FeatureRuntime 替身（只替换 Native 与应用宿主），
--- 不读写用户 UDF，不声明 RU 实机行为。
-------------------------------------------------------------------------
+-- 拆分文件不能改变功能公开接口；这里只替换原生边界和宿主，不访问用户存档。
 unpack = unpack or table.unpack
 local passed, failed = 0, 0
 local function Test(name, fn)
@@ -19,7 +10,7 @@ local function Test(name, fn)
     else failed = failed + 1; print('FAIL split ' .. name .. ': ' .. tostring(err)) end
 end
 
--- 中文维护注释（2026-09-28，Phase 1 Batch E）：rs_business_bridge.lua 已在最后一批拆完退役。
+-- rs_business_bridge.lua 已在最后一批拆完退役。
 -- “文件不存在”本身就是契约：它再出现就意味着有人把拆掉的 Feature 又塞回了一个巨型 chunk。
 local function bridge_retired()
     local handle = io.open('features/rs_business_bridge.lua', 'rb')
@@ -29,7 +20,7 @@ local function bridge_retired()
 end
 
 local H = dofile('tools/rs_udf_numeric_test_host.lua')
--- 中文维护注释：宿主返回的第三个值是它自己的内存盘替身，名字不能叫 io，
+-- 宿主返回的第三个值是它自己的内存盘替身，名字不能叫 io，
 -- 否则会遮蔽 Lua 标准库 io，静态源码断言会直接报错而不是给出真实结论。
 local S, P, _io = H.Boot()
 S.SafeTraceback = debug.traceback
@@ -50,7 +41,7 @@ local friendCalls = { writes = {} }
 local friendLists = { friends = {}, blocks = {}, mutes = {} }
 local friendFail = {}
 local friendValue = {}
--- 中文维护注释：能力读取失败在这套架构里表现为能力调用不成功（blocked / 冷却 / Native 抛错），
+-- 能力读取失败在这套架构里表现为能力调用不成功（blocked / 冷却 / Native 抛错），
 -- 而不是“方法返回 nil”。返回 nil 只是“本次没有名单数据”，必须与失败区分开，
 -- 所以失败样本用 error() 触发 pcall 失败，与真实 CallCapability 语义一致。
 _G.X2Friend = {
@@ -121,7 +112,7 @@ Test('Projection 顶层键不变且不泄露私有 State', function()
     for key in pairs(projection) do
         assert(allowed[key] == true, 'projection leaked an unexpected key: ' .. tostring(key))
     end
-    -- 中文维护注释：error 属于“有错才出现”的键（nil 值在 Lua 里根本不存在于表中），
+    -- error 属于“有错才出现”的键（nil 值在 Lua 里根本不存在于表中），
     -- 因此这里断言的是允许键集与 revision 的绑定关系，而不是强行要求 4 个键全在。
     assert(type(projection.revision) == 'number', 'projection.revision missing')
     assert(type(projection.rows) == 'table' and type(projection.status) == 'string', 'projection rows/status missing')
@@ -184,7 +175,7 @@ Test('读取路径：三个名单都为空才是 empty，nil 名单不伪造成�
     friendLists.friends, friendLists.blocks, friendLists.mutes = {}, {}, {}
     assert(Read())
     assert(F.Authority.status == 'empty', 'expected empty, got ' .. tostring(F.Authority.status))
-    -- 中文维护注释：Native 返回 nil 表示“本次没有名单数据”，不是失败，也不是 0 个好友的伪造事实；
+    -- Native 返回 nil 表示“本次没有名单数据”，不是失败，也不是 0 个好友的伪造事实；
     -- 该名单不得产生任何行，也不得被记成读取失败，因此整体仍是 empty（确实没有任何成员）。
     friendLists.friends = nil
     assert(Read())
@@ -223,7 +214,7 @@ Test('生命周期：没有 Scheduler task / 事件订阅副作用', function()
 end)
 
 Test('静态：bridge 已退役，tools_social 由独立文件唯一持有', function()
-    -- 中文维护注释（2026-09-28，Phase 1 Batch E 更新）：rs_business_bridge.lua 已在最后一批拆完删除，
+    -- rs_business_bridge.lua 已在最后一批拆完删除，
     -- “不再双注册”由更强的两个事实保证：bridge 文件不存在 + 全树只有一个 NewFeature("tools_social"。
     assert(bridge_retired(), 'rs_business_bridge.lua must stay retired')
     local social = assert(io.open('features/tools/social/rs_social_feature.lua', 'rb'))
@@ -239,10 +230,8 @@ Test('静态：X2Friend 写能力仍由 core 能力表登记（写路径未被�
     end
 end)
 
-------------------------------------------------------------------------
 -- tools_market_analysis：与 tools_auction 共用 AuctionReadModel，
 -- 但不允许共享同一份命令表实例，也不允许反向依赖 tools_auction。
-------------------------------------------------------------------------
 local auctionSnapshot = { status = 'idle', rows = {}, count = 0 }
 local auctionSearchCalls = {}
 S.Services.AuctionQueryV3 = {
@@ -252,7 +241,7 @@ S.Services.AuctionQueryV3 = {
         return true, 'waiting'
     end,
 }
--- 中文维护注释：按 toc.g 顺序加载拍卖共享读模型，再加载它的新消费方。
+-- 按 toc.g 顺序加载拍卖共享读模型，再加载它的新消费方。
 dofile('features/tools/auction/rs_auction_read_model.lua')
 assert(type(S.AuctionReadModel) == 'table', 'AuctionReadModel missing')
 dofile('features/tools/market_analysis/rs_market_analysis_feature.lua')
@@ -328,9 +317,9 @@ Test('market：无结果时给“非历史成交价”提示，失败/等待状�
 end)
 
 Test('market：Search 命令经归一化后交给共享 AuctionQueryV3', function()
-    -- 中文维护注释：真实使用顺序是 Feature 先 Initialize（读取 Store）再执行命令；
+    -- 真实使用顺序是 Feature 先 Initialize（读取 Store）再执行命令；
     -- 未加载时 Persistence 会按 default 应用一次，直接改内存 State 会被覆盖 —— 这是既有契约，
-    -- 不是本轮拆分引入的行为，所以测试必须复现真实顺序。
+    -- 测试按运行时的实际顺序装配。
     assert(Market:Initialize(), 'market Feature store load failed')
     auctionSearchCalls = {}
     Market.State.exactMatch = true
@@ -349,7 +338,7 @@ Test('静态：bridge 不再注册 tools_market_analysis / tools_auction 仍由 
     assert(bridge_retired(), 'rs_business_bridge.lua must stay retired')
     local readModel = assert(io.open('features/tools/auction/rs_auction_read_model.lua', 'rb'))
     local readModelText = readModel:read('*a'); readModel:close()
-    -- 中文维护注释：共享读模型把投影定义为 R.Projection（表方法），不是 local function；
+    -- 共享读模型把投影定义为 R.Projection（表方法），不是 local function；
     -- 断言它仍归读模型所有，而不是被任何 Feature 文件复制。
     assert(readModelText:find('function R.Projection(feature)', 1, true) ~= nil,
         'the shared auction projection must stay in the read model, not in a Feature file')
@@ -360,8 +349,7 @@ Test('静态：bridge 不再注册 tools_market_analysis / tools_auction 仍由 
     end
 end)
 
-------------------------------------------------------------------------
--- Phase 1 Batch B：保留 Siege 通用装配契约；2026-10-06 用户删除强化分析/传送配置。
+-- 保留 Siege 通用装配契约；2026-10-06 用户删除强化分析/传送配置。
 dofile('features/combat/siege_readiness/rs_siege_readiness_feature.lua')
 local Siege=S.Features.combat_siege_readiness
 Test('BatchB：保留的 Siege 独立注册且身份与阻塞边界不变',function()
@@ -392,7 +380,7 @@ _G.X2Team = _G.X2Team or {}
 _G.X2Team.RaidApplicantList = function(_, ...) unitHost.calls[#unitHost.calls+1] = { 'RaidApplicantList', ... }; return { { name = '申请人甲', level = 55 }, second = { name = '申请人乙', gearScore = 8000 } } end
 _G.X2Team.RaidRecruitDel = function(_, ...) unitHost.calls[#unitHost.calls+1] = { 'RaidRecruitDel', ... }; return true end
 
--- 中文维护注释：boss_alerts 在**加载期**把 S.Data.BossAlerts 读成内部规则索引，因此目录必须先于 dofile 存在；
+-- boss_alerts 在加载期把 S.Data.BossAlerts 读成内部规则索引，因此目录必须先于 dofile 存在；
 -- 没有规则目录时它不会启动观察任务（这是正确的“无规则即无观察”行为，不是缺陷）。
 S.Data = S.Data or {}
 S.Data.BossAlerts = {
@@ -527,7 +515,7 @@ Test('BatchC：boss_alerts 观察任务由服务租约驱动并在停用时释�
         Describe = function() return { ownerCount = 0 } end,
     }
     assert(BossAlerts:Enable(), 'boss alerts enable failed')
-    -- 中文维护注释：onEnable 只取 runtime 租约；观察任务由“有消费者 + 有启用规则”共同决定，
+    -- onEnable 只取 runtime 租约；观察任务由“有消费者 + 有启用规则”共同决定，
     -- 所以这里必须再取一个业务消费者才能真正证明任务生命周期。
     assert(BossAlerts:AcquireConsumer('split_test'), 'boss alerts consumer acquire failed')
     local task = assert(S.Scheduler.tasks.v3_business_boss_alert_observe, 'boss observe task missing after acquire')
@@ -561,7 +549,7 @@ Test('BatchC：raid_recruitment 只读申请列表，写入命令仍显式安全
 end)
 
 Test('BatchC：boss 规则目录按固定目录投影，未启用规则如实标注', function()
-    -- 中文维护注释：本宿主注入 2 条规则（cast + debuff），断言投影按规则目录逐条输出，
+    -- 本宿主注入 2 条规则（cast + debuff），断言投影按规则目录逐条输出，
     -- 且默认启用状态与状态文案一致；不伪造任何未发生的机制事实。
     assert(BossAlerts.Authority:Refresh('test'))
     assert(BossAlerts.Authority.status == 'ready', 'boss projection status changed: ' .. tostring(BossAlerts.Authority.status))
@@ -602,12 +590,10 @@ Test('静态：bridge 不再注册 Batch C 四个 Feature', function()
     end
 end)
 
-------------------------------------------------------------------------
 -- 覆盖 combat_team_tools、tools_craft 和 tools_auction 的功能拆分契约。
 -- （这三个是 chunk 级 helper 大户：搬走后 bridge 主 chunk 从 187 降到 105 slots）
-------------------------------------------------------------------------
 _G.BagApi_SharedHost = true
--- 中文维护注释：按 toc.g 顺序先加载共享边界模块，tools_craft 依赖 S.SharedBounds.BagScanLimit。
+-- 按 toc.g 顺序先加载共享边界模块，tools_craft 依赖 S.SharedBounds.BagScanLimit。
 dofile('features/shared/rs_shared_bounds.lua')
 dofile('features/combat/team_tools/rs_team_tools_feature.lua')
 dofile('features/tools/craft/rs_craft_feature.lua')
@@ -716,10 +702,8 @@ Test('BatchD：auction 仍通过共享读模型消费，不复制投影实现', 
     assert(text:find('local function AuctionRows', 1, true) == nil, 'auction feature re-defined the shared row builder')
 end)
 
-------------------------------------------------------------------------
--- Phase 1 Batch E（最后一批）：tools_bag / combat_unit_lines / combat_range_assist
+-- tools_bag / combat_unit_lines / combat_range_assist
 -- 以及“rs_business_bridge.lua 退役”这一事实本身。
-------------------------------------------------------------------------
 dofile('features/tools/bag/rs_bag_feature.lua')
 dofile('features/combat/unit_lines/rs_unit_lines_feature.lua')
 dofile('features/combat/range_assist/rs_range_assist_feature.lua')
@@ -752,7 +736,7 @@ Test('BatchE：Feature ID / Store ID / owner / UpdateTopic 不变', function()
         assert(store.schemaVersion == 1 and store.lifetime == P.Lifetime.Permanent, id .. ' store schema/lifetime changed')
         assert(type(feature.Demand) == 'table', id .. ' Demand lease missing')
     end
-    -- 中文维护注释：契约版本是跨升级的公开承诺，逐个钉死。
+    -- 契约版本是跨升级的公开承诺，逐个钉死。
     assert(BagToolsSplit.BagMoveContractVersion == 8, 'BagMoveContractVersion changed')
     assert(BagToolsSplit.BatchLifecycleContractVersion == 5, 'BatchLifecycleContractVersion changed')
     assert(BagToolsSplit.NativeWindowQuickContractVersion == 7, 'NativeWindowQuickContractVersion changed')
@@ -839,17 +823,8 @@ Test('BatchE：静态 —— bridge 文件已退役，且保留的 13 个 Featur
     assert(seen == 26, 'unexpected extra registrations: ' .. tostring(seen))
 end)
 
-------------------------------------------------------------------------
--- Phase 2（2026-09-28）：life bundle 拆分契约 —— 同样对应 §31 前后对照表
---
--- Phase 2 Step 1–4 把 features/life/rs_life_m16_bundle.lua（5633 行 / 4 个 Feature）拆成
--- life_treasure / life_fishing / life_bonds / life_trade 四个独立源码单元并退役删除 bundle。
--- 下面每一项的期望值都不是“照着拆分后源码反抄”，而是同一探针在**拆分前**的 bundle 与
--- **拆分后**的四个文件上分别跑出来再逐项比对的（44 行契约面 0 差异，见 Phase 2 报告）。
--- 中文维护注释：后续已公开的寻宝罗盘设置/海上点位/保管箱组件，以当前 TOC 装配及独立回归
--- test_rs_treasure_compass_runtime.py / test_rs_treasure_sea_points.py / test_rs_treasure_inventory.py
--- 为证据维护精确白名单；不能只加载主 Feature 而漏掉后置组件追加的公开命令与依赖。
-------------------------------------------------------------------------
+-- 生活功能已分为寻宝、钓鱼、债券和跑商，公开接口应与拆分前保持一致。
+-- 寻宝的后置组件也会补充命令和依赖，测试要按完整 TOC 加载，不能只加载主文件。
 local LifeConfigured = true
 
 local lifeRegistrations = {}

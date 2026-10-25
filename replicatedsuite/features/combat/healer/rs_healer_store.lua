@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 治疗助手设置存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 永久 Healer 策略与表现状态；启用/禁用偏好归 FeatureRuntime，不存于此处。首次加载仅导入历史账号 Store 已知策略字段，禁止清理或覆盖旧来源。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence

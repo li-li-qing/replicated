@@ -1,9 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享服务依赖释放失败回归
--- 中文维护注释：加载真实 Demand/Events/Scheduler 与三层任务服务，只替代原生只读 getter；
+-- 加载真实 Demand/Events/Scheduler 与三层任务服务，只替代原生只读 getter；
 -- 用实际重入拒绝和故障子租约证明释放失败不会丢 held，且全局已静默的子 token 可以安全重试。
 -- 不加载 Persistence、不读取真实 UDF；不进入 toc.g。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, callback)
     local ok, err = xpcall(callback, debug.traceback)
@@ -18,7 +16,7 @@ local function Copy(value)
     local out={};for key,item in pairs(value) do out[key]=Copy(item) end;return out
 end
 local function Boot()
-    -- 中文维护注释：空的已就绪原生目录足以让真实 Start/Stop 分配和释放任务，避免用伪服务代替被测生命周期。
+    -- 空的已就绪原生目录足以让真实 Start/Stop 分配和释放任务，避免用伪服务代替被测生命周期。
     ReplicatedSuite={Generation=1,Services={},Data={},Utils={DeepCopy=Copy},
         NowMs=function() return 1000 end,SafeTraceback=debug.traceback,Api={}}
     local S=ReplicatedSuite
@@ -35,7 +33,7 @@ local function Boot()
     dofile('core/rs_events.lua')
     dofile('services/rs_instance_catalog_v3.lua')
     dofile('services/rs_quest_progress_v3.lua')
-    -- 中文维护注释：本测试无任何配方，不替换任务事实或租约；Identity 只需满足空列表投影的依赖边界。
+    -- 本测试无任何配方，不替换任务事实或租约；Identity 只需满足空列表投影的依赖边界。
     S.Services.TradeMaterialIdentityV3={ResolveStatic=function() return nil end}
     dofile('services/rs_daily_auction_materials_v3.lua')
     return S,S.Services.DailyAuctionMaterialsV3,S.Services.QuestProgressV3,S.Services.InstanceCatalogV3
@@ -124,7 +122,7 @@ for _,busy in ipairs({'transition','quiesce'}) do
         local S,D,P=Boot();assert(D:AcquireConsumer('sidecar'))
         assert(P.Demand:ForceQuiesce('global_child_cleanup'))
         local quiesced
-        -- 中文维护注释：Has=false 必须与已结算状态一起使用；这些真实重入窗口不能被当成子层已静默。
+        -- Has=false 必须与已结算状态一起使用；这些真实重入窗口不能被当成子层已静默。
         if busy=='transition' then
             local observer={}
             S.Events:SubscribeInternal('v3.quest_progress.refreshed',observer,function()
@@ -150,7 +148,7 @@ end
 
 Test('quest retries after global cleanup already removed its instance token',function()
     local S,D,P,C=Boot();assert(P:AcquireConsumer('activity',{instances=true}))
-    -- 中文维护注释：只注入子 Demand 正反事务拒绝，保留 Catalog 的真实 quiesce/Stop 和资源释放。
+    -- 只注入子 Demand 正反事务拒绝，保留 Catalog 的真实 quiesce/Stop 和资源释放。
     local reconcile, reject=C.Demand.reconcile,true
     C.Demand.reconcile=function(...)
         if reject then return false,'injected instance transition failure' end

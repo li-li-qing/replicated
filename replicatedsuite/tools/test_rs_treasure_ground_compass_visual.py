@@ -1,8 +1,6 @@
-# ---------------------------------------------------------------------
 # Replicated Suite · 宝藏地面罗盘视觉测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 """实际 Lua5.1 Feature/Presenter，Native 绘制替身；覆盖 GroundCompass 对照行为。"""
 import unittest
 from lupa.lua51 import LuaRuntime

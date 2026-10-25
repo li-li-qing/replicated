@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 装备快捷按钮吸附设置弹窗
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 仅负责表现。精确数字输入是有意设计：交互策略由 Gear Feature 的权威层持久化；本弹窗不持有独立状态，也不执行轮询或 Tick。
-------------------------------------------------------------------------
+-- 精确输入经 Gear Feature 保存；弹窗不另存设置。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI

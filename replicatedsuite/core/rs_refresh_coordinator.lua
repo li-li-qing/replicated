@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 刷新合并与防抖
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 刷新协调器在 Suite 单一 Scheduler 上提供事件驱动、有界滑动 debounce/合并，不增加 Tick/OnUpdate 权威。冲突
--- 身份为 owner+稳定 key，回调闭包身份不参与，因为调用者通常每次事件新建闭包。
-------------------------------------------------------------------------
+-- 用共享 Scheduler 合并事件刷新；以 owner+稳定 key 识别请求，不以每次新建的闭包识别。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -104,9 +100,8 @@ function R:Request(spec)
             priority = tostring(spec.priority or "P2"),
             cost = math.max(1, math.floor(Finite(spec.cost, 1))),
             generation = S.Generation,
-            -- 首次请求固定 deadline，后续事件只能合并，不能无限向后推。
-            -- maxWait 至少容纳首次明确 delay；默认 1s 是防饥饿合并窗口，不是真机响应 SLA。
-            -- 仍受 Scheduler 帧间隔/预算/客户端暂停影响，不在事件热路径直接刷新业务。
+            -- 首次请求固定 deadline；maxWait 至少容纳首次 delay，默认 1s 防止持续事件无限推迟。
+            -- 实际执行仍受帧间隔、预算和客户端暂停影响。
             deadlineAtMs = now + math.max(delayMs, Finite(spec.maxWaitMs, DEFAULT_MAX_WAIT_MS)),
             scheduledAtMs = nil,
         }
@@ -131,9 +126,8 @@ function R:Request(spec)
     end
 
     local targetAtMs = math.min(now + delayMs, state.deadlineAtMs)
-    -- 达到同一 deadline 后保留已有任务，而不是反复重设 50ms 最小延迟。
-    -- 否则 16ms 事件流仍会饿死已到期任务，并反复抹掉预算 deferCount；也会无谓分配闭包。
-    -- 只读查询确认任务未被外部 RemoveOwner 移除，缺查询能力时保留旧的重排兼容路径。
+    -- deadline 到期后保留已有任务；反复重设 50ms 会让 16ms 事件流饿死刷新并清掉 deferCount。
+    -- 先确认任务未被 RemoveOwner 移除；旧 Scheduler 无查询能力时仍重排。
     if state.scheduledAtMs == targetAtMs and type(scheduler.GetTaskState) == "function"
         and scheduler:GetTaskState(state.taskName).registered == true then
         if spec.priority ~= nil and type(scheduler.SetPriority) == "function" then scheduler:SetPriority(state.taskName, state.priority) end
@@ -202,7 +196,6 @@ function R:Describe()
         executed = self.executed,
         cancelled = self.cancelled,
         failed = self.failed,
-        -- 只读性能/契约证据；Describe 不刷新业务、不启动 Consumer、不修改 deadline。
         boundedDebounceContractVersion = self.boundedDebounceContractVersion,
         reusedSchedules = self.reusedSchedules,
     }

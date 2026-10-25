@@ -1,19 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 服务边界契约测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 中文维护（2026-09-25，RS-ERROR-PAGE-1）：
--- Foundation Gate `service_presentation_boundary` 契约的静态回归。
--- 该检查会遍历 S.Services.* 的每一张表（以及 S.TargetService），要求显式声明
--- presentationBoundary ∈ {service_only, event_host_only}；任何一个 Service 漏声明都会把
--- 整份游戏内自检报告变成 status="BLOCKED"（实机案例：MaterialPriceServiceV3:missing）。
--- 本测试把该运行时契约提前到离线阶段兑现：
--- 1) services/*.lua 中每一个 `S.Services.X = ...` 注册文件都必须声明允许的边界值；
--- 2) 复刻 Gate 的判定循环语义（含 S.TargetService 分支）；
--- 3) 断言合法取值集合没有被悄悄放宽。
--- 不进入 toc.g。运行：cd replicatedsuite && lua tools/rs_service_boundary_contract_tests.lua
-------------------------------------------------------------------------
+-- 服务漏声明边界时，游戏内自检会被阻断。这里提前检查所有服务和 TargetService，
+-- 只接受 service_only、event_host_only 两个值。
 local pass, fail, skipped = 0, 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

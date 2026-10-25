@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生导入登记
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- ADDON:ImportAPI/ImportObject 的唯一权威。Foundation 仅导入启动所需最小对象和 API；已迁移 Feature 通过同一
--- 登记表延迟取得业务 API。
-------------------------------------------------------------------------
+-- 统一导入并登记对象/API；基础层仅取启动所需，其余随功能惰性导入。
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite
 local Contract = S.NativeContract
@@ -148,7 +144,7 @@ function M:AcquireApi(ownerId, name, core)
     return true
 end
 
--- FeatureRuntime 使用的兼容形状接口只是 Native 登记表别名，不能形成第二套导入权威。
+-- 兼容 FeatureRuntime 的接口别名，仍共用同一登记表。
 function M:Acquire(ownerId, dependencies)
     local list = type(dependencies) == "table" and dependencies or {}
     for _, value in ipairs(list) do
@@ -225,7 +221,6 @@ function M:Describe()
     }
 end
 
--- 保留面向 FeatureRuntime 的名称，同时维持唯一权威。
 S.ApiImports = M
 
 S.BootStage = "native_imports"

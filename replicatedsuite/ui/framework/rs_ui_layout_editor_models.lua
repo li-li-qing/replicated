@@ -1,14 +1,11 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 布局编辑模型
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- HUD/布局编辑器共享且与 UI 无关的状态。
 -- ArcheAge/CryEngine UI 坐标：左上原点，+X 向右、+Y 向下，上移为负 Y。
 -- 不创建 Native、不持 Tick；
 -- AnchorPivotModel 负责点锚/pivot/rect-offset 转换，LayoutEditorSnapSettingsModel 提供有界吸附/引导设置投影。
 -- 当前只支持点锚，不支持 stretch；Suite 保存左上 rect，静默引入 min/max stretch 会重新解释位置数据并造成升级歧义。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -293,9 +290,7 @@ end
 RSUI.AnchorPivotModel = AnchorPivotModel
 RSUI.AnchorPresets = { order = ANCHOR_PRESET_ORDER, values = ANCHOR_PRESETS }
 
-------------------------------------------------------------------------
 -- LayoutEditorSnapSettingsModel 吸附设置模型。
-------------------------------------------------------------------------
 local HARD_MAX_CANDIDATES = 1024
 local SnapSettingsModel = {}
 SnapSettingsModel.__index = SnapSettingsModel

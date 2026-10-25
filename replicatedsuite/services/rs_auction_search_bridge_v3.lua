@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 拍卖搜索桥
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 玩家拍卖辅助与 AuctionQueryV3 查询权威之间的显式桥接。同步原生 Auction EditBox 仅是可选表现增强，必须有界
--- 、读回验证、失败封闭；不能证明安全 EditBox 时也不能阻断权威搜索。
-------------------------------------------------------------------------
+-- 请求接受后可同步原生搜索框；这只是可选显示，找不到可验证 EditBox 时仍允许查询。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -46,9 +42,7 @@ local function Trim(value) return (tostring(value or ""):match("^%s*(.-)%s*$")) 
 local function SafeCall(object, method, ...)
     if object == nil then return false, nil end
     local args, count = { ... }, select("#", ...)
-    -- （2026-09-14，Native userdata fail-closed）RU 原生窗口子对象可能是带受限
-    -- __index 的 userdata。方法探测本身也可能抛错，不能让可选的搜索框同步打断已经接受的服务器查询；
-    -- 因此“取方法 + 调用方法”都置于 pcall 中，任何不透明对象都只视为不可验证候选并降级。
+    -- RU userdata 的 __index 也可能抛错，取方法和调用都须置于 pcall；不透明对象按不可验证候选跳过。
     local ok, value = pcall(function()
         local fn = object[method]
         if type(fn) ~= "function" then return nil end
@@ -86,9 +80,7 @@ function B:GetSnapshot()
     return out
 end
 
--- （2026-09-14，Native 搜索框候选生命周期）原生 Auction widget 引用只允许在
--- 当前拍卖窗口 generation 内缓存，窗口关闭/新一轮打开立即释放。它不是业务 Authority，也绝不写入
--- Persistence。这样 RU 客户端重建原生窗口后不会继续持有上一代 userdata/table 造成悬空引用。
+-- 原生窗口引用仅缓存当前拍卖窗口代际，关闭或重开即释放，避免使用重建前的悬空 userdata。
 function B:ResetNativeCandidate(reason)
     self.candidate, self.candidatePath, self.candidateName, self.candidateType = nil, nil, nil, nil
     self.probedGeneration = nil
@@ -121,10 +113,8 @@ function B:_ProbeNativeCandidate()
         return nil, rootErr
     end
 
-    -- （2026-09-14，bounded native probe）RU API 没有已验证的通用 child-enumeration
-    -- 方法，因此禁止猜 GetChildren/GetChild。这里只检查 ADDON:GetContent 返回的 Lua content table 及其
-    -- 最多 3 层 table 字段；userdata 无法安全枚举就直接降级。最多 128 节点，且只接受同时具备
-    -- EditBox 类型 + GetText/SetText + search/keyword 语义证据的候选，防止误写拍卖数量/价格输入框。
+    -- 没有已验证的通用子节点枚举 API。仅查 ADDON:GetContent 的 Lua table，最多 3 层、128 节点；不枚举 userdata。
+    -- 候选须同时具备 EditBox 类型、GetText/SetText 和 search/keyword 语义，防止误写数量或价格框。
     local queue, head = { { value = root, path = "$content", depth = 0 } }, 1
     local seen, checked = {}, 0
     while head <= #queue and checked < self.maxProbeNodes do

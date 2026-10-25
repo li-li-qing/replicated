@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生控件路径测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅供开发期使用，启动身份逻辑保持真实，原生路径长度为有界模型。
 -- 用户日志有 4043 条重复警告，打印的 Suite 路径均为 259 字节；截断路径注册表用于复现歧义，通过测试不代表已证明 C++ 内部行为。
-------------------------------------------------------------------------
 ReplicatedSuite={};ADDON={ChatLog=function()end};UIParent=nil;UI=nil
 dofile('replicatedsuite.lua')
 local S=ReplicatedSuite

@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 文本输入回归测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- RU 单行 EditBox 光标几何及延迟 OnLostFocus 顺序回归。
 -- 运行生产基础控件与控制逻辑，原生替身有界；不宣称模拟了剪贴板内容或 RU 实际像素。
-------------------------------------------------------------------------
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)

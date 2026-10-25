@@ -1,11 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 原生客户端契约
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- Suite 精选的 ArcheRage RU 客户端 ABI 只包含活动 V3 已迁移代码需要的契约。新 Feature 的 API/Object 依赖须
--- 在对应客户端契约验证后登记；旧全局仅作迁移证据，绝不作为运行权威。
-------------------------------------------------------------------------
+-- 只登记现有 V3 需要且已验证的客户端 API/Object 契约；旧全局仅留作来源证据。
 if ReplicatedSuite == nil then return end
 local S = ReplicatedSuite
 
@@ -44,15 +40,10 @@ S.NativeContract = {
         HOUSE                = { id = 20, nativeName = "X2House",               feature = true },
         PLAYER               = { id = 32, nativeName = "X2Player",              feature = true },
         QUEST                = { id = 33, nativeName = "X2Quest",               feature = true },
-        -- （2026-09-28，native-dependency-ownership-4）SKILL=35 不再是猜测，而是取自
-        -- 本机历史资产中的客户端 API_TYPE 枚举表副本：Addon.zip / Addon1.2.zip 内的 globals/apitypes.lua
-        -- （SHA-256 df8475b7cb31… / 08d3f2383908…）第 82 行 `SKILL = { id = 35, apiname = "X2Skill" }`。
-        -- 该表与本工程此前已核的 24 个 namespace 100% 一致（含 UNIT=42 / CHAT=8 / ABILITY=3 / STORE=37 /
-        -- AUCTION=51 / RESIDENT=73 / EQUIPMENT=13 / CRAFT=9），并且本项目旧 Professional 模块
-        -- （Addon1.2.zip!replicatedsuite/modules/professional/plates/replicatedplates.lua）确实以
-        -- `ADDON:ImportAPI(API_TYPE.SKILL.id)` 导入该 namespace。因此 35 是对应 X2Skill 的已验证 ABI 值。
-        -- 使用方必须是 lazy 子能力（CooldownObservationV3 / SkillMetadataV3），不得升成所有 BuffDisplay/DPS
-        -- 消费者的 hard dependency。
+        -- SKILL=35 来自本机历史 Addon.zip / Addon1.2.zip 的 globals/apitypes.lua:82。
+        -- SHA-256 df8475b7cb31… / 08d3f2383908…；该表与项目已核实的 24 个 namespace 一致。
+        -- 旧 Plates 也通过 ADDON:ImportAPI(API_TYPE.SKILL.id) 导入，故可确认对应 X2Skill。
+        -- 仍仅供 CooldownObservationV3/SkillMetadataV3 惰性导入，不能升为全部消费者的硬依赖。
         SKILL                = { id = 35, nativeName = "X2Skill",               feature = true },
         STORE                = { id = 37, nativeName = "X2Store",               feature = true },
         TEAM                 = { id = 38, nativeName = "X2Team",                feature = true },
@@ -96,8 +87,7 @@ function C:GetApi(name)
     return self.Api[tostring(name or ""):upper()]
 end
 
--- Feature 元数据使用玩家可见方法能力 X2Foo:Bar，ADDON:ImportAPI 却整体导入 X2Foo。此处解析边界，使
--- FeatureRuntime 保持方法级依赖，Native 层无需知道每个方法字符串。
+-- Feature 依赖写方法能力 X2Foo:Bar，ImportAPI 导入整个 X2Foo；在此映射到命名空间。
 function C:ResolveApiKey(dependency)
     local value = tostring(dependency or ""):gsub("%s+", "")
     if value == "" then return nil end

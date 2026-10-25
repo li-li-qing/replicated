@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 基础层生命周期测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 底层生命周期回归：真实 Events / Scheduler / RefreshCoordinator；仅 Native
--- Host、单调时钟、遥测为替身。开发期独立入口，不进 toc.g，不读取用户存档。
--- Authority：取消属于 Owner，分发/任务执行属于 Core；替身不实现被测调度逻辑。
--- 维护：这些测试证明同步回调中的重入/释放边界，不等同 RU 真机或网络验收。
-------------------------------------------------------------------------
+-- 用真实事件、调度和合并刷新检查回调重入与释放；只替换原生宿主、时钟和遥测。
+-- 取消归发起者管理，替身不实现被测的调度逻辑。
 local passed, failed = 0, 0
 local function Test(name, callback)
     local ok, err = xpcall(callback, function(e) return tostring(e) .. "\n" .. debug.traceback() end)

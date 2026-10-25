@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · Buff追踪交互测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- Buff 追踪交互测试使用真实 Store、Commands 和投影，仅原生磁盘以内存替代。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function T(name,fn) local ok,err=pcall(fn);if ok then passed=passed+1;print('PASS buff-ux '..name) else failed=failed+1;print('FAIL buff-ux '..name..': '..tostring(err)) end end
 local Boot=dofile('tools/rs_pvp_hud_test_host.lua')

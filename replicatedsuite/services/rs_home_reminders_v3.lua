@@ -1,20 +1,14 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 家园提醒
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 今日总览提醒事实（2026-10-04）：只读自身时装/内衣与 Achievement 每日、公会任务。
--- Native 返回形状和 1..7 板位来自用户已工作的 1.2 Character service；不猜装备槽号、
--- 期限或任务状态。成功读取且具备物品身份、没有倒计时的装备按 1.2 契约显示永久；
--- 读取失败、无身份或倒计时畸形仍待确认，六项全零才判到期。
--- 只由 Core Demand 驱动：首个可见租约读一次，事件合并 + 30 秒低频校验；末租约停止
--- Scheduler/RefreshCoordinator/Events，并撤销旧闭包。无 Store、无 UI、无后台常驻扫描。
-------------------------------------------------------------------------
+-- 只读自身时装/内衣和 Achievement 日常/公会任务，返回结构及 1..7 板位沿用用户有效的 1.2 Character。
+-- 成功识别装备且无倒计时表示永久；读失败或时间畸形待确认，六项全零才判到期。
+-- 首个可见租约采样，事件合并加 30s 校验；末租约停任务和事件，不存档。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
 local C = { Id = 'v3.home_reminders', version = 2, patch = 'home-reminders-permanent-2',
-    -- 只提供提醒事实与租约生命周期，界面由首页负责；漏声明会被 Foundation Gate 判为阻断。
+    -- 声明提醒服务的表现边界，供 Foundation Gate 检查。
     presentationBoundary = 'service_only',
     taskName = 'v3_home_reminders_refresh', intervalMs = 30000, revision = 0,
     nativeReads = 0, readFailures = 0, taskGeneration = 0, running = false }
@@ -167,9 +161,7 @@ function C:_Stop()
 end
 function C:_Start()
     if not S.Scheduler then return false, 'reminder_scheduler_unavailable' end
-    -- 不能假设其他模块/插件已经导入 X2Achievement 或装备常量。
-    -- 本服务在 0->1 Demand 边界通过唯一 NativeImports 领取两个可选依赖；逐项记录失败，
-    -- 成就失败只使每日/公会提醒待确认，不阻断装备提醒或今日账本。
+    -- 首个需求经 NativeImports 领取成就和装备依赖；成就导入失败只使对应提醒待确认，不影响装备或今日账本。
     self.dependencies = {}
     for _, definition in ipairs({{'equipment','X2Equipment:GetEquippedItemTooltipInfo'},{'assignments','X2Achievement:GetTodayAssignmentInfo'}}) do
         local ok, err = false, 'native_import_boundary_unavailable'

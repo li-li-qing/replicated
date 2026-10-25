@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 数值范围元数据存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅持久化 NumericField 自适应滑块端点；业务值仍归 Feature/App Store 绑定。
 -- 此 Store 只记向外扩展如 1..10 -> 1..20，使 Fresh Reload 保持入口范围，不把各 Feature schema 耦合 RSUI 元数据。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P, RSUI = S.Persistence, S.RSUI

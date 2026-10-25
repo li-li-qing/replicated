@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享游戏数据注册表
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 权威边界：Registry 仅拥有共享游戏数据身份和索引；业务策略与可变运行时状态仍归 Domain。关系文件可引用 Registry ID，但 Registry 不判定任务完成、治疗优先级或 DPS 分类。
+-- 只登记共享身份和索引；完成状态、治疗优先级、DPS 分类等由使用方判断。
 -- 所有索引在加载/注册时建立；热路径按 ID、key、tag、family 查询预建表，禁止扫描完整目录。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
@@ -252,7 +249,7 @@ function R:Register(kind, key, id, metadata)
     local existingById = bucket.byId[id]
     if existingById ~= nil then
         if existingById.generated == true then
-            -- 集合可能在完整语义记录加载前引入 ID；原地提升占位记录，保证所有关系指向同一记录身份，并避免误报重复注册。
+            -- 集合先引入 ID 时原地补完整记录，保留已有关系引用，避免误报重复注册。
             local generatedKey = existingById.key
             existingById.aliases = existingById.aliases or {}
             if generatedKey ~= key then existingById.aliases[#existingById.aliases + 1] = generatedKey end
@@ -304,8 +301,7 @@ function R:Register(kind, key, id, metadata)
     return record
 end
 
--- 为已知服务器 ID 注册显式语义别名。与 Register(kind,key,sameId) 不同，此路径不报 duplicate-ID：调用方明确声明两个键是同一身份。
--- 这样既能诊断意外重复注册，也允许 Trade/Bond 等共享静态目录汇合到同一物品记录。
+-- 显式别名可指向同一 ID 而不报 duplicate-ID；普通重复注册仍报错。
 function R:RegisterAlias(kind, key, id)
     kind = NormalizeKind(kind)
     key = NormalizeKey(key)

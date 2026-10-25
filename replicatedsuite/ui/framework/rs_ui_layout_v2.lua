@@ -1,8 +1,6 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 响应式布局辅助
 -- 作者：Replicated
 -- QQ群：1104129461
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI = S.UI

@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗来源代理目录
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 玩家放置的技能实体以技能对象名称作为战斗来源；本目录只分类来源，不猜测所属玩家。
 -- 热路径仅按来源名称/ability ID 做 O(1) 精确查询；禁止模糊/标签匹配和运行时 Native 查询，也禁止按目标、距离、时间或最近施法者推断所有者。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Data = S.Data or {}
@@ -40,7 +37,8 @@ local function Register(spec)
     end
 end
 
--- 2026-08-31用户核实RU tooltip：治愈之泉由玩家施放，持续60秒，周期治疗附近盟友。当前API无可靠通用代理实体→施法者关联，因此sourceName=治愈之泉分类为SKILL_PROXY并明确未归属，禁止编造玩家或猜所属者。
+-- 2026-08-31 用户核实：治愈之泉持续 60 秒，周期治疗盟友；现有 API 无可靠代理实体→施法者关联。
+-- sourceName=治愈之泉 仅标 SKILL_PROXY，保留未归属，不能猜玩家。
 Register({
     id = "healing_fountain",
     kind = "PLAYER_PLACED_SKILL_PROXY",

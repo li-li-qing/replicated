@@ -1,14 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享材料报价队列
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- X2Auction:GetLowestPrice 的共享显式限频报价权威。该 server_query 冷却 500ms，
--- Trade/CraftAssist/AuctionFavorites 不得在普通 Refresh 对每个 itemType 直接调用。Feature 用显式 requester
--- 、itemType/itemGrade 和可选回调 RequestQuote；单一 Scheduler 通道逐个排空，间隔不低于官方冷却。完成经内部
--- v3.price_quote.completed 和请求回调异步交付；requester 快照保留最后结果，重读不再发服务器查询。身份未知、
--- 能力阻断、限频或原生不可读均返回状态，不能伪造价格。
-------------------------------------------------------------------------
+-- 显式报价共用串行通道，间隔不低于 GetLowestPrice 的 RU 官方 500ms 冷却；普通刷新不能逐材料发查询。
+-- RequestQuote 按 requester 和 itemType/itemGrade 排队，回调及 completed 交付结果；重读快照不再发包。
+-- 身份未知、阻断或不可读都返回状态，不能伪造价格。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
@@ -22,10 +17,8 @@ local Q = {
     activityPatch = "auction-user-priority-1",
     paused = false, pauseReason = nil, pauseStartedAt = nil, resumeAfter = nil,
     EventPayloadContractVersion = 1, -- 完成事件携带 itemType/itemGrade/status/reason，用于有界投影同步。
-    RequestIdentityDedupContractVersion = 1, -- 稳定 itemType+grade 梯度构成请求身份，本地化 searchName 仅为
-                                             -- 兜底元数据。
-    MaterialPriceAuthorityContractVersion = 1, -- 耐久材料价格归 MaterialPriceServiceV3，此队列仍拥有 Native
-                                               -- 串行权威。
+    RequestIdentityDedupContractVersion = 1, -- 请求身份取稳定 itemType+grade 梯度，searchName 仅作 fallback 元数据；耐久价格由 MaterialPriceServiceV3 保存。
+    MaterialPriceAuthorityContractVersion = 1,
     PriorityQueueContractVersion = 1, -- 用户显式报价排在后台 SWR 前，但不抢占当前 Native 调用。
     FallbackIdentityMatchContractVersion = 1,
     MarketPriceHandshakeContractVersion = 1,
@@ -40,9 +33,7 @@ local Q = {
     unknownAdmissionWaitMs = 45000,
     maxListingObservations = 2,
     priceSafetyPatch = "trade-quote-price-safety-1",
-    -- （2026-09-25，trade-fallback-unit-price-1）名称搜索 fallback 只能消费
-    -- AuctionQueryV3 已按 listing quantity 归一后的单价；禁止把整单 directPrice/bidPrice 作为 unit cost。
-    -- 同 itemType 多条结果按最低“可立即购买单价”选择，数量缺失则 fail-closed。
+    -- 名称搜索只取 AuctionQueryV3 按数量归一的单价；同身份选较低可立即购买价，数量缺失则拒绝。
     FallbackUnitPriceContractVersion = 1,
     presentationBoundary = "service_only",
     Topic = "v3.price_quote.completed",
@@ -58,12 +49,10 @@ local Q = {
     -- itemType 映射会话最新完成报价；Trade/CraftAssist/AuctionFavorites 可按 itemType+itemGrade 得材料单价
     -- ，不需知道请求者，也不重新查询服务器。
     pricesByItemType = {},
-    -- 长期参考价格表只作旧数据迁移输入，耐久年龄和新鲜度归 MaterialPriceServiceV3，因为 NowMs 不能跨重载表
-    -- 示多日年龄。按 itemType+grade 保存，保留有界历史用于识别异常低样本；账号运行数据绝不随包分发，各玩家
-    -- 形成自身观察。最后已知成本可立即显示，后台报价完成再替换，旧值保持升级可读。
+    -- 旧长期参考表仅作迁移来源；耐久年龄由服务器时间计算，NowMs 不能跨重载。
+    -- 按 itemType+grade 保存有界观察历史，旧价可先显示，再由新报价替换。
     StoreId = "v3.trade_reference_prices",
-    -- Contract 2 使整单价/单价语义修正前的 name_search_direct 缓存样本失效；不改 Store schema，仅迁移缓存证
-    -- 据语义。
+    -- 缓存契约 v2 丢弃旧 name_search_direct 的整单价语义，不改 Store schema。
     StoreContractVersion = 2,
     referencePrices = {},          -- 缓存形状：itemType:grade -> { price, updatedAt, samples }。
     storeLoaded = false,
@@ -73,11 +62,9 @@ local Q = {
     cache = {},
     cacheTtlMs = 120000,
     owner = {},
-    -- 排空间隔必须 >=官方 500ms，避免批次中下一调用被门禁拒绝。服务拥有多品质或协议探测节奏；普通请求不探测
-    -- 、不隐式展开。默认 1000ms，单次同步 Native 调用仍不能拆帧。
+    -- 默认每 1000ms 排一项，仍按单调时钟保证 >=500ms，不能只数 tick（预算延迟会让相邻执行贴近）。
+    -- 只有显式协议/品质探针展开梯度，普通请求不隐式探测。
     intervalMs = 1000,
-    -- 真正间距按单调时钟而非 Scheduler tick 数执行；预算延后的 tick 可使相邻排空接近，必须避免落入 RU 官方
-    -- 500ms 冷却而报 cooldown active。
     lastNativeCallAt = nil,
     maxQueue = 64,
     taskName = "v3_price_quote_drain",
@@ -90,7 +77,7 @@ local Q = {
     budgetPatch = "trade-budget-1",
     recent = {},        -- 最近完成环按最新优先保存。
     recentMax = 12,
-    lastRawReturn = nil, -- 最近原生返回的有界形状。
+    lastRawReturn = nil,
     -- 名称搜索仍只发一次服务器请求；最多读取 20 条分离结果，按稳定 itemType/精确名称本地匹配，
     -- 避免模糊搜索首条并非目标导致误判。
     fallbackSearchLimit = 20,
@@ -115,8 +102,7 @@ local function PositiveInt(value)
     return math.floor(n)
 end
 
--- （2026-09-30，auction-user-priority-1）暂停不属于报价终态，必须使用独立 topic。
--- price_quote.completed 会驱动 Trade 的 RowJob 完成计数，禁止用它发送 paused/resumed。
+-- 暂停/恢复用独立 topic；completed 会推进 RowJob 完成数，不能用它发送 paused/resumed。
 local PAUSE_REASONS = {
     native_auction_visible = "拍卖行使用中，材料询价已暂停；关闭拍卖行后自动继续",
     native_auction_visibility_unknown = "无法确认拍卖行已关闭，材料询价已暂停；持续不可读将停止本次询价",
@@ -170,9 +156,8 @@ local function InsertByPriority(list, request)
     end
     table.insert(list, index, request)
 end
--- （2026-10-01，auction-full-lane-safety-1）保护覆盖整个 Ask/Read/Search 协议，
--- 不是只有名称 fallback。诊断已证实 unknown 时前半段仍反复 Ask；false UI 参数不证明无共享占用。
--- 只在现有需求 lane/显式探针边沿采样；缺 Authority 或读失败均不允许发送原生询价。
+-- Ask/Read/Search 整条协议都须检查玩家占用；UI 参数 false 不代表空闲。
+-- 仅在需求 lane/显式探针读取可见性，缺证据或读失败时不能发包。
 function Q:CanNativeQuote()
     local query = S.Services and S.Services.AuctionQueryV3 or nil
     local allowed, reason = false, "native_auction_visibility_unknown"
@@ -233,14 +218,10 @@ local function PauseFallback(request, reason)
     Q:_SetPaused(true, reason)
 end
 
--- 将 GetLowestPrice 的数字、字符串或尚未完全实机证明字段布局的表保守解析为有界真实报价；不可读即不造价。RU
--- 金额可为 1,234,567 逗号分组字符串或 gold/silver/copper 复合表，裸 tonumber 会误将真实挂单判无货，所有价格
--- 提取均使用此强制转换。函数先于调用者声明，定义后赋给局部名以正确递归表分支。
+-- 金额接受标量、逗号串及已支持的 gold/silver/copper 包装，递归最多 4 层。
+-- 带 listing/堆叠字段的未知表不能据总价、数量或 bid 猜单位价，交给名称搜索在同一行中核实。
+-- 先声明局部名再赋递归函数，避免递归引用解析成全局。
 local function ToMoney(value, depth)
-    -- （2026-09-30，trade-quote-price-safety-1）GetLowestPrice 的“单价”不得从
-    -- listing 总价/数量/bidPrice 猜测。带堆叠或挂单字段的未验证对象交给既有名称搜索，
-    -- 由 AuctionQuery 在同一结果中确认数量与总价；只保留已支持的标量/币值/显式价格包装。
-    -- 有界递归避免异常自引用返回让共享报价 lane 栈溢出，最大4层，不追加 Native 探针。
     depth = tonumber(depth) or 0
     if depth > 4 then return nil end
     if type(value) == "number" then
@@ -323,20 +304,15 @@ end
 
 local function Publish(itemType, itemGrade, status, reason)
     if S.Events ~= nil and type(S.Events.Publish) == "function" then
-        -- （2026-09-25，price-quote-event-payload-1）完成事件必须携带稳定物品身份。
-        -- 旧 Topic 只有“有报价变化”这一事实，Trade 若要自愈迟到/共享请求只能全表扫描；更严重的是
-        -- requester callback 被取消/换代后，Feature 完全不知道哪个 quoteState 已从 inflight 进入终态。
-        -- itemType/itemGrade 只来自本 Authority 的 pending/request，不接受 UI 名称推断；旧监听器忽略额外参
-        -- 数仍兼容。
+        -- 完成事件带本请求的 itemType/itemGrade，供迟到或共享回调定位，不要求 Feature 全表扫描。
+        -- 身份只取 pending/request，不能从 UI 名称推断；旧监听器可忽略新增参数。
         S.Events:Publish(Q.Topic, itemType, itemGrade, status, reason)
     end
 end
 
--- 有界区分探测只在会话内对控制 itemType 显式取证，不进报价热路径。RU .18.172 证据显示普通材料
--- GetLowestPrice 全槽 nil 且 ok=true；参数品质语义、拍卖 UI/搜索缓存预热和真实无货三种可能不能靠原始日志区
--- 分。控制物品也 nil 不能证明报价不可用：旧正常实现以名称搜索首行 bid 作成本，GetLowestPrice 全 nil 可能只
--- 是预期中间步骤。诊断必须结合 fallback 结果，不能仅凭三行 nil 宣布 API 损坏。
-local PROBE_CONTROL_ITEM_TYPES = { 3545, 3712, 3603 } -- 控制材料：燕麦/干草捆/鸡蛋。
+-- GetLowestPrice 成功但全 nil 可能是协议中间态、缓存未预热或无货，不能只凭 nil 判 API 损坏。
+-- 显式控制探针用燕麦/干草捆/鸡蛋，并结合名称 fallback 结果解释。
+local PROBE_CONTROL_ITEM_TYPES = { 3545, 3712, 3603 }
 local ProbeState = { done = false, results = {}, attempts = 0, maxAttempts = 6 }
 
 -- 同步原生读取只记录 RU 返回精确形状，不参与价格、不修改读模型，也不在单位或行循环运行。
@@ -377,8 +353,7 @@ function Q:GetProtocolProbe()
     return Copy({ done = ProbeState.done, attempts = ProbeState.attempts, results = ProbeState.results })
 end
 
--- 稳定 ID 直接查询耗尽后只用一次有界拍卖名称搜索兜底。AUCTION_ITEM_SEARCHED 仍归 AuctionQueryV3，本服务只消
--- 费分离快照。
+-- 稳定 ID 梯度耗尽后只发一次名称搜索；原生完成事件仍由 AuctionQueryV3 管理。
 local function BeginSearchFallback(pending)
     local query = S.Services and S.Services.AuctionQueryV3 or nil
     if type(query) ~= "table" or type(query.Search) ~= "function" then return false, "auction_query_unavailable" end
@@ -390,12 +365,8 @@ local function BeginSearchFallback(pending)
     if type(describe) == "table" and describe.pending == true then return false, "auction_query_busy" end
     pending.fallbackState = "searching"
     pending.fallbackDeadlineAt = pending.fallbackDeadlineAt or (NowMs() + 12000)
-    -- （2026-09-24，quote-fallback-identity-match-1）旧实现 resultLimit=1 后只读 rows[1]。
-    -- SearchAuctionArticle 是名称搜索，首条并不保证就是目标材料；因此“拍卖行有货”也会被错误判成身份不匹配。
-    -- 这里仍只发 ONE 次服务器搜索，但有界读取最多 20 条，再按 stable itemType 优先、精确名称次之匹配。
-    -- （2026-10-02，material-name-candidates-1）requireListing 约束价格来源，不是 Native 的名称
-    -- 精确匹配开关。名称只负责召回候选；返回后仍由既有 SelectFallbackRow/FallbackRowPrice 核对事实。
-    -- 不为同一材料追加重试/翻页，拍卖助手自己的显式精确搜索继续尊重其设置。
+    -- 名称搜索首条未必是目标，单次请求最多读 20 条，先匹配 itemType，再匹配精确名称。
+    -- requireListing 限制价格来源，不是 Native exactMatch 开关；返回后仍核实身份，不追加翻页或重试。
     local ok, err = query:Search("price_quote_fallback", keyword, { resultLimit = Q.fallbackSearchLimit, background = true, exactMatch = false })
     if ok ~= true then pending.fallbackState = "queued" end
     return ok == true, err
@@ -403,10 +374,7 @@ end
 
 local function FallbackRowPrice(row, requireListing)
     if type(row) ~= "table" then return nil, nil, "row_unavailable" end
-    -- （2026-09-25，trade-fallback-unit-price-1）AuctionQueryV3 的 directPrice/bidPrice
-    -- 是整条 listing 的总价。旧实现直接把总价乘配方数量，例如“谷物细粉 x300”会再放大 300 倍，
-    -- 产生 -10万金级假毛利。PriceQuoteQueue 作为价格 Authority 必须消费 unit* 字段；为了兼容同版本
-    -- 内的旧 detached snapshot，可在 quantity 存在时本地重算，但 quantity 缺失时绝不猜测。
+    -- directPrice/bidPrice 是整单总价，不能再乘材料数量；只取 unit*，旧快照有 quantity 时可重算，缺数量绝不猜。
     local quantity = tonumber(row.quantity)
     if quantity == nil or quantity ~= quantity or quantity == math.huge or quantity < 1 or quantity ~= math.floor(quantity) then return nil, nil, "listing_quantity_unavailable" end
     local directUnit = ToMoney(row.unitDirectPrice)
@@ -514,8 +482,7 @@ local function CompletePending(status, quote, err, origin, waitingRequest)
     local observedPrice = quote and quote.value or nil
     local priceHeld, referenceStored, priceDecision = false, false, nil
     if status == "ready" and quote ~= nil and pending.itemType ~= nil then
-        -- 价格服务独占接受/隔离权威；一次 Native 回包只登记一次 ObserveConfirmedPrice，成功接受后才能写
-        -- session/TTL。隔离候选不入缓存，也不延长旧参考价新鲜度。
+        -- 每个 Native 回包只向价格服务登记一次，接受后才写 session/TTL；候选隔离不延长旧价新鲜度。
         referenceStored, priceDecision = Q:RecordReferencePrice(pending.itemType,
             pending.resolvedGrade or pending.itemGrade, quote.value, quote.source)
         priceHeld = referenceStored ~= true and priceDecision == "anomaly_candidate_held"
@@ -571,8 +538,7 @@ local function CompletePending(status, quote, err, origin, waitingRequest)
         errorCode = pending.failureCode,
     }
     snapshot.at = snapshot.completedAt
-    -- 共享 itemType 生命周期的 ready 镜像 pricesByItemType；其他终态记录缺价原因，让投影显示询价失败而非永
-    -- 久待询价。
+    -- ready 同步单价缓存，其它终态保留缺价原因，避免 UI 永久待询价。
     if pending.itemType ~= nil then
         if status == "ready" and quote ~= nil then
             Q.quoteStateByItemType[pending.itemType] = {
@@ -606,8 +572,7 @@ local function CompletePending(status, quote, err, origin, waitingRequest)
         marketError = pending.marketError,
     })
     if #Q.recent > Q.recentMax then table.remove(Q.recent) end
-    -- 完成 ready 报价按 itemType 索引供其他 Feature 读取单价；failed/unavailable 不覆盖旧有效价。失败封闭意
-    -- 味着保留可信值，不能清成可能被表现误当零的 unknown。
+    -- 失败/不可用不覆盖旧有效价；保留可信参考值，不能清成会被误当 0 的缺价。
     if status == "ready" and quote ~= nil and pending.itemType ~= nil and not priceHeld then
         Q.pricesByItemType[pending.itemType] = {
             price = quote.value, source = quote.source, itemGrade = pending.resolvedGrade or pending.itemGrade,
@@ -644,9 +609,8 @@ local function CompletePending(status, quote, err, origin, waitingRequest)
     return true
 end
 
--- 严格路径只拥有一次 Search；默认前台总计五秒，
--- 跑商有界排队与发包后五秒分别计时；后台仅未发包时可等待准入。
--- 完成/取消先解绑自身通知，再让出自己的无 token Native 请求；原 AuctionQuery timeout 继续隔离晚包。
+-- 严格路径只发一次 Search：默认前台共五秒，跑商可分本地等待和发包后五秒，后台仅发包前可等待准入。
+-- 完成/取消先解绑通知；无 token 在途请求仍由 AuctionQuery 原 timeout 隔离。
 local function FinishSingle(request, status, quote, reason)
     if request.finished == true then return false end
     request.finished = true
@@ -735,11 +699,8 @@ local function StartSingle(request)
     end
     Q.lastNativeCallAt = NowMs()
     request.dispatchedAt=Q.lastNativeCallAt
-    -- （2026-10-02，material-name-candidates-1）211943 实机证明搜索返回空且事件不含行数据；
-    -- 中文静态显示名并不是已核验的 Native 完整索引名，强制 exactMatch 可能在 ID 校验前排除候选。
-    -- 单次材料查询用普通名称筛选；firstValidBuyout 要求真实 ID/品质、正数量和有效一口价，
-    -- 并在本页最多三条样本中选较低单价，作为参考价；不声称是全市场最低。
-    -- 不靠同名或默认品质接受报价。等级参数/单包上限/玩家拍卖优先级保持既有契约。
+    -- 中文静态名不一定是 Native 完整索引名，强制 exactMatch 曾让有效候选在 ID 校验前被排除。
+    -- 单次材料搜索用普通名称召回，随后验真实 ID/品质、正数量和一口价；本页最多三样本取较低参考单价，不代表全市场最低。
     local ok, err = query:Search(request.queryRequester, request.searchName, {
         background = true, exactMatch = false, resultLimit = 3,
         firstValidBuyout = { itemType = request.itemType, itemGrade = request.itemGrade },
@@ -899,11 +860,9 @@ local function ReadLowestPrice(request, grade, phase)
 end
 
 local function Drain()
-    -- RU 官方 2025-08-12 同批开放 AskMarketPrice(itemType,itemGrade,askMarketPriceUi) 和
-    -- GetLowestPrice(itemType,itemGrade)，两者均 500ms 冷却。实机直接 GetLowestPrice 成功却全 nil 时，
-    -- 显式 Ask -> 下一有节奏轮转 Read，无值才名称搜索。无未验证事件或轮询；Ask/Read/Search 共用一个
-    -- Scheduler 通道，每轮最多一次服务器调用。now 必须是 Drain 本次调用的局部快照，不能改为模块缓存
-    -- 或 Tick 外共享时间；生成源码须用真实换行，字面 \n 留在 -- 注释中会吞掉后续 local now 并导致 nil 计算。
+    -- RU 2025-08-12 开放 AskMarketPrice 和 GetLowestPrice，均 500ms 冷却。Get 全 nil 时先 Ask，下一轮再 Read，无值才名称搜索。
+    -- 三步共用一个通道，每轮最多一次服务器调用。now 使用本次 Drain 局部时间。
+    -- 生成源码须用真实换行，字面 \n 留在 -- 注释里会吞掉后续 local now。
     local now = NowMs()
     if Q.pending and Q.pending.singleQuery == true then
         Q:_CheckSingle(Q.pending)
@@ -1071,7 +1030,7 @@ function Q:_StopLane()
     if Q.running == true and S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(Q.taskName) end
     Q.running = false
     Q.resumeAfter = nil
-    Q:_SetPaused(false) -- 最后一个需求取消/完成后，不遗留暂停提示或额外观察任务。
+    Q:_SetPaused(false)
 end
 
 function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName, requestKey, priority, requireListing)
@@ -1079,9 +1038,7 @@ function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName
         if request and request.requestKey==requestKey then
             request.watchers=request.watchers or {}
             request.watchers[requester]={callback=callback}
-            -- （2026-09-25，quote-request-identity-dedup-1）searchName 只是稳定 ItemType 查询失败后的
-            -- fallback 元数据，绝不能参与请求身份。两个货物共用同 itemType/grade 时必须合并成一个 Native 请求；
-            -- 如果第一个 watcher 没有可用本地化名称，后加入 watcher 可以补全 fallback 名，但不能改写稳定身份。
+            -- 同 itemType/grade 共用一个请求，searchName 不参与身份；后加入 watcher 可补缺名称，不能改稳定键。
             if (request.searchName==nil or request.searchName=="") and searchName~=nil and searchName~="" then request.searchName=searchName end
             if requireListing == true and request.requireListing ~= true then
                 request.requireListing = true
@@ -1124,9 +1081,7 @@ function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName
         priority = tostring(priority or "normal"), requireListing = requireListing == true,
     }
     if #Q.queue + #Q.admissionWaiting + (Q.pending ~= nil and 1 or 0) >= Q.maxQueue then return false, "报价队列已满，请稍后再试" end
-    -- （2026-09-25，material-price-swr-priority-1）后台 stale-while-revalidate 只能占用等待队列尾部；
-    -- 用户明确双击/批量询价属于交互高优先级，必须插到尚未开始的 background 请求之前。当前 pending Native
-    -- 调用不可抢占，因为 AUCTION_ITEM_SEARCHED/市场价协议没有 request-id；这里仅调整本地等待顺序。
+    -- 用户显式询价排在尚未开始的后台 SWR 前；当前 Native 请求无 request-id，不能抢占。
     if request.priority == "user" then
         local inserted = false
         for index = 1, #Q.queue do
@@ -1288,9 +1243,8 @@ local function NormalizeReferenceState(value, preserveLegacyFallback)
     return out
 end
 
--- 2026-10-05 导出证明：旧 schema1 曾把 name_search_direct 的整单价计入原章。
--- 旧投影仅用于精确校验（含原有 updatedAt 取整）；Apply 仍过滤这些已证实错误的价格来源。
--- 不清档、不白名单放行 Hash；Core 必须验证旧候选与原章完全相同才能迁移并重新保存。
+-- 旧 schema1 曾将整单价计入原章；历史投影只供精确验旧章，Apply 仍过滤已确认错误来源。
+-- Core 命中原章后才可迁移，不能白名单放行任意 Hash。
 local function RebuildLegacyReferenceCanonical(value,_,_,raw)
     local meta=type(raw)=="table" and raw.__rsmeta or nil
     if type(meta)~="table" or meta.store~=Q.StoreId or meta.owner~=Q.StoreId or tonumber(meta.schema)~=1
@@ -1356,9 +1310,8 @@ end
 -- 记录已确认报价；稳定 ID 直接结果可持久化，名称搜索 bid 只是不同挂单估计，不能洗成长期事实。
 function Q:RecordReferencePrice(itemType, itemGrade, price, source)
     source = tostring(source or "auction")
-    -- （2026-09-25，material-price-authority-1）18.317 起长期材料单价由 MaterialPriceServiceV3
-    -- 独占。PriceQuoteQueueV3 只拥有 Native 请求串行/回调状态；旧 v3.trade_reference_prices 仅作为升级迁移
-    -- 来源保留。混装旧包时继续走下方 legacy fallback，避免 Queue 因新 Service 缺失直接失效。
+    -- 长期单价由 MaterialPriceServiceV3 保存，Queue 管串行与回调；旧 reference Store 留作迁移来源。
+    -- 缺新服务时保留 legacy fallback，避免混装直接使 Queue 失效。
     local materialPrices = S.Services and S.Services.MaterialPriceServiceV3 or nil
     if type(materialPrices) == "table" and type(materialPrices.ObserveConfirmedPrice) == "function" then
         return materialPrices:ObserveConfirmedPrice(itemType, itemGrade, price, source)
@@ -1417,11 +1370,9 @@ function Q:GetReferencePrice(itemType, itemGrade)
     }
 end
 
--- 显式入口每次接收一个材料，串行且有节奏原生调用。callback(snapshot) 每请求完成一次，缓存命中同步，否则按节
--- 奏；调用前须先建立批次状态。requester 是快照查找和交付路由稳定 token，gradeCandidates 可选有序梯度 0..20
--- 、最多 8，单品质 nil 有效，耗尽后才失败。options.searchName 允许整梯度无货后走已验证名称兜底，否则诚实失
--- 败。singleQuery=true 仅一次 ID+grade 验证的首个有效 buyout 搜索，无 Ask/Get/梯度/重试；前台
--- deadlineAt<=now+5s，后台可等安全准入后拥有 5s 结果期。取消仍保留 Native 隔离。
+-- 一次接收一材料，callback 每请求完成一次；缓存命中可同步回调，调用前先建批次状态。
+-- gradeCandidates 为有序 0..20，最多 8 项，单品质 nil 可继续；options.searchName 允许梯度耗尽后名称兜底。
+-- singleQuery=true 只做一次精确 ID/grade 的 buyout 搜索，不走 Ask/Get/梯度/重试。前台最多五秒，后台准入后五秒，取消仍保留 Native 隔离。
 function Q:RequestQuote(requester, itemType, itemGrade, callback, gradeCandidates, options)
     requester = tostring(requester or "")
     itemType = PositiveInt(itemType)
@@ -1450,8 +1401,7 @@ function Q:RequestQuote(requester, itemType, itemGrade, callback, gradeCandidate
         AddGrade(itemGrade)
     end
     local parts={};for _,grade in ipairs(grades) do parts[#parts+1]=tostring(grade) end
-    -- （2026-09-25，quote-request-identity-dedup-1）requestKey 只由稳定 itemType + grade ladder 构成。
-    -- localized searchName 不属于业务身份；把它拼进 key 会让同一红薯仅因两个调用者的显示名不同而重复查服务器。
+    -- requestKey 只含 itemType+grade 梯度；本地化显示名不能让同材料重复查询。
     local requestKey=tostring(itemType)..":"..table.concat(parts,",")
     -- 显式force只跳过缓存，仍遵守串行/去重。正常点击不反复查询刚完成/刚失败的材料。
     if options.force ~= true and options.requireListing ~= true and not HasCurrentListingRequest(requestKey) then
@@ -1512,12 +1462,8 @@ function Q:CancelRequester(requester)
         if not next(r.watchers) and r.singleQuery then
             FinishSingle(r, "cancelled", nil, "requesters_released")
         elseif not next(r.watchers) and r.fallbackState~="searching" then
-            -- （2026-09-25，quote-pending-cancel-state-1）pending 与 queue 必须遵守同一生命周期收敛。
-            -- 18.307 只把 self.pending 清空，却没有把 quoteStateByItemType 的 queued/inflight 状态撤销；
-            -- Trade 的材料投影因此会在批次已经取消、队列已经为空后仍永久渲染“询价中…”。这里仅在最后
-            -- 一个 watcher 被移除且请求确实被丢弃时标记 cancelled；共享 watcher 仍存在时不得改写共享事实。
-            -- fallbackState==searching 仍保留 pending 占位，因为 AuctionQueryV3 的完成事件没有请求 token，必须
-            -- 消费晚到结果/超时后再释放 lane，不能为了 UI 状态提前复用未归属清晰的 Native 查询。
+            -- 末 watcher 取消且请求丢弃时，同步把 queued/inflight 标成 cancelled，避免界面永久询价中。
+            -- 仍在 searching 的无 token 请求须占位到完成/超时，不能为更新 UI 提前复用 lane。
             self.quoteStateByItemType[r.itemType]={
                 status="cancelled",itemGrade=r.itemGrade,requester=requester,at=NowMs(),
             }
@@ -1530,7 +1476,6 @@ function Q:CancelRequester(requester)
     return true,removed
 end
 
--- 只读 requester 最后结果，不发服务器查询。
 function Q:GetSnapshot(requester)
     requester = tostring(requester or "")
     return Copy(Q.snapshots[requester] or { requester = requester, status = "idle", price = nil, error = nil })
@@ -1540,8 +1485,7 @@ end
 function Q:GetPriceByItemType(itemType, itemGrade)
     itemType = PositiveInt(itemType)
     if itemType == nil then return nil end
-    -- 优先会话新鲜价，否则立即回放最后已知成本；调用者须标为参考，见 GetPriceWithProvenance，无需等有节奏拍
-    -- 卖搜索才可使用该行。
+    -- 先用会话新鲜价，否则返回已知参考价及来源，无需等搜索才显示。
     local entry = Q.pricesByItemType[itemType]
     if type(entry) ~= "table" then
         local reference, meta = Q:GetReferencePrice(itemType, itemGrade)
@@ -1588,8 +1532,7 @@ function Q:GetPriceWithProvenance(itemType, itemGrade)
     return nil, "none"
 end
 
--- 读取 itemType 最新生命周期，本会话未显式请求过时返回 nil，不伪造状态。与 GetPriceByItemType 软品质过滤一
--- 致，品质不符报告无状态，不能借用其他品质结果。
+-- 只返回本会话实际请求过且品质匹配的生命周期；没有就 nil，不能借其它品质状态。
 function Q:GetQuoteStateByItemType(itemType, itemGrade)
     itemType = PositiveInt(itemType)
     if itemType == nil then return nil end

@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 工作区主题测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 真实 Theme 及 Color/Tokens；绘制替身断言不创建新背景，不用 SetColor 擦掉渐变。
-------------------------------------------------------------------------
 local p,f=0,0
 local function T(n,fn)local ok,e=xpcall(fn,debug.traceback);if ok then p=p+1;print('PASS '..n)else f=f+1;print('FAIL '..n..' '..e)end end
 local function Boot()
@@ -16,7 +13,7 @@ local function Boot()
  local h={drawables=0}
  function h:Widget(id,gradient)
   local w={style={SetColor=function(self,...)self.rgba={...}end,SetShadow=function(self,v)self.shadow=v end}}
-  -- 中文维护（2026-10-09）：原生按钮状态文字是独立色槽，style.SetColor 不会覆盖 pressed/highlighted 默认浅字。
+  -- 原生按钮状态文字是独立色槽，style.SetColor 不会覆盖 pressed/highlighted 默认浅字。
   w.nativeTextColors={normal={1,1,1,1},highlighted={1,1,1,1},pushed={1,1,1,1},disabled={1,1,1,1}}
   for method,state in pairs({SetTextColor='normal',SetHighlightTextColor='highlighted',SetPushedTextColor='pushed',SetDisabledTextColor='disabled'})do
    local key=state;w[method]=function(self,...)self.nativeTextColors[key]={...}end
@@ -70,7 +67,7 @@ T('light semantic buttons preserve active hover and opacity without allocations'
  local S,h=Boot();local w=h:Widget('green',true);S.Theme:StyleButton(w,80,24,11,true,true);S.Theme:SetButtonStatusTone(w,'green');S.Theme:SetButtonHovered(w,true);S.Theme:SetBackgroundOpacity(w,.4)
  local before=w.rsButtonBgs[1].bands[2][2];local count=h.drawables
  assert(S.Theme:ApplyWorkspacePalette('light'));assert(w.rsButtonStatusTone=='green' and w.rsButtonActive and w.rsButtonHovered)
- -- 中文维护（2026-10-09）：.4 背景走透明文字策略，仍保持绿色语义/阴影与原有 hover/分配数量。
+ -- .4 背景走透明文字策略，仍保持绿色语义/阴影与原有 hover/分配数量。
  assert(w.rsButtonBgs[1].bands[2][2]>.7 and w.style.rgba[2]>w.style.rgba[1] and w.style.shadow==true and h.drawables==count and w.rsBackgroundOpacity==.4)
  assert(S.Theme:ApplyWorkspacePalette('dark'));assert(w.rsButtonBgs[1].bands[2][2]==before)
 end)

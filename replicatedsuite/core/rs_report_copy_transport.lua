@@ -1,15 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 无损报告复制编码
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 本地无损报告复制传输，不属于 SaveData。实机证据：2026-09-12 完整报告 108833 字节且 Clipboard unavailable
--- ；原生输入框可能截断后清空，因此这里只压缩复制文本，不删证据、不改原报告，不参与业务指纹或恢复，不访问
--- Native/磁盘/剪贴板。报告权威归 Diagnostics，纯编码器之后 Presentation 仍须 Set/GetText 回读。保留旧
--- RS-SELF-CHECK-1 原文，新增 RS-REPORT-COPY-1 由 tools 逐字节解码。LZB1 使用 65536 字节窗口/65536 哈希槽，
--- 每位置一个候选，最长 259 字节，仅显式打印时调用。Adler32 只检查复制损坏，不是认证或加密；敏感字段仍在编码
--- 中，不得公开发布。
-------------------------------------------------------------------------
+-- 只编码复制文本，原报告由 Diagnostics 保留；不访问 Native、磁盘或剪贴板，展示端仍须 Set/GetText 回读。
+-- RS-REPORT-COPY-1 由离线工具逐字节解码，旧 RS-SELF-CHECK-1 原文仍兼容。
+-- LZB1 窗口/哈希槽均为 65536，每位置一候选、最长 259 字节。Adler32 只检测复制损坏，编码仍含敏感字段。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local T = {version=1, MaxInputBytes=1048576, PreferredCopyBytes=32768}
@@ -90,15 +84,9 @@ function T:Encode(text)
     return out,{codec=codec,rawBytes=#text,packedBytes=#packed,copyBytes=#out}
 end
 
-------------------------------------------------------------------------
--- （2026-09-12，RU报告框容量）真实接收端回报9215，而上一版测试只覆盖32KiB
--- 或极易压缩正文，导致38011字节复制包直接被TEXT_LIMIT挡住。压缩不保证任意输入变短；
--- 因此保持原LZB1/RAW64不变，在交付层提供有界分段，而非删证据/增大未经验证的Native容量。
--- Authority：本模块只持有本次复制包和分段描述；页面拥有当前段/键盘/生命周期，Diagnostics
--- 仍拥有原报告。每段含身份、偏移、长度、段校验和整包校验，离线工具集齐后才允许还原。
--- 不写SaveData、不触碰业务FP、不引入Native/轮询；Adler32只检测复制错误，不是身份认证。
--- 旧原文/RS-REPORT-COPY-1接收兼容保留。限制最多256段、每段最多32KiB；离页释放session。
-------------------------------------------------------------------------
+-- 实机输入框只接收 9215 字节，而复制包曾达 38011 字节；压缩无法保证缩短，需有限分段。
+-- 每段附身份、偏移、长度及分段/整包校验，集齐后才还原。最多 256 段，每段 <=32KiB，离页释放 session。
+-- 页面管理当前段和键盘，编码器不调用 Native 或写 SaveData。
 T.MaxEditorBytes=32768
 T.UnknownEditorBytes=8192
 T.MaxParts=256
@@ -158,13 +146,8 @@ function T:GetDeliveryPart(session,index)
 end
 
 
-------------------------------------------------------------------------
--- （2026-09-12 TEXT_READBACK）MaxTextLength不构成SetText/GetText往返承诺；
--- 原实现只试一次就清空，且没有输出长度/首差异/调用结果，导致无法区分截断与换行变化。
--- 此处只提供无损重分帧和比较；Presentation仍是Native读写、段号提交和生命周期Authority。
--- 只在首段尚未交付时协商预算，已交付段不重编号；失败不允许改变reportId/正文或重读Store。
--- 复用已有编码字符串，不在缩容重试中再次压缩；业务指纹/SaveData/模型归一化均不参与。
-------------------------------------------------------------------------
+-- MaxTextLength 不保证 SetText/GetText 往返无损。这里只重分帧和比较，Native 交付由 Presentation 处理。
+-- 仅首段交付前协商预算，已交付段不重编号；缩容复用原编码包，不改 reportId 或重采证据。
 T.MaxWriteAttempts=8
 T.MinEditorBytes=512
 function T:ReframeDelivery(session,capacity,wire)
@@ -223,13 +206,8 @@ function T:FormatReadback(trace)
         ..(trace.difference and trace.difference>0 and (' hex='..expected..'/'..actual) or '')
 end
 
-------------------------------------------------------------------------
--- （2026-09-12，明确分页工作流）用户已选择逐页复制完整错误字符串，不再以3500
--- 字节摘要预算删除原档，也不把“打印”复用成下一页。这里仅划分不可变文本，编辑框
--- 实际写入/回读和页码由Presentation拥有；翻页零Native存档调用，零重新采集。
--- \n/\r/反斜杠转义是可逆纯文本，不压缩；规避RU多行框吞换行，中文仍可阅读。分页按
--- UTF-8边界切分；校验用于复制完整性，不是授权或存档恢复。旧复制协议保留供历史报告。
-------------------------------------------------------------------------
+-- 将冻结的完整文本按 UTF-8 边界分页；翻页不重新采集或读取存档。
+-- 换行、回车和反斜杠可逆转义，规避 RU 多行框吞换行。校验只用于复制完整性，旧协议保留兼容。
 T.TextPageContractVersion=1
 function T:BuildTextPages(text,capacity,reportId)
     if type(text)~='string' or #text>self.MaxInputBytes then return nil,'text_page_input_limit' end

@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 动态HUD性能测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 使用真实 Lua 5.1 功能和表现层，原生边界为测试替身；测试不证明 RU 帧率。
 -- 从 replicatedsuite 目录运行：lua tools/rs_dynamic_hud_performance_tests.lua。
-------------------------------------------------------------------------
 local pass,fail=0,0
 local function Test(n,fn)local ok,e=xpcall(fn,debug.traceback);if ok then pass=pass+1;print('PASS dynamic-hud '..n)else fail=fail+1;print('FAIL dynamic-hud '..n..': '..tostring(e))end end
 local Host=dofile('tools/rs_pvp_hud_test_host.lua')

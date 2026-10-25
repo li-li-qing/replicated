@@ -1,20 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态显示导入与导出
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并前必须清除冲突标记，核对源码与加载清单完整性。
--- Authority、调用数据流与存档协议保持下方实现的原有责任，
--- 禁止通过清配置、跳过加载或恢复Legacy绕过故障；源码与toc.g、UI实现必须成套，
--- 合并后先检查Lua语法，再做运行时验收。
--- 原因：schema8 将追踪 Authority 从全局 buff/debuff/auto 拆成
--- player/target × buff/debuff/auto 六个独立通道；旧 v1/v2 文本仍必须可导入。
--- 权威边界：本文件只负责纯文本解析/规范化/预览；真正写入仍由 Feature:ImportAll
--- 的单一 Persistence 事务完成。任何解析/容量错误都在事务前整体拒绝。
--- 数据流：文本 -> scoped draft -> PrepareTrackingImport -> ImportAll -> Store schema8。
--- 兼容：旧 BUFF/DEBUFF/AUTO 复制到 player 与 target，保留旧版本“两个 HUD 同时显示”语义。
--- 性能：导入导出是用户冷路径；不新增 Native 读取、Scheduler、Aura Consumer 或热路径缓存。
-------------------------------------------------------------------------
+-- 纯文本解析、归一化和预览，写入由 Feature:ImportAll 事务完成；解析/容量错误在提交前整体拒绝。
+-- schema8 使用 player/target 六通道；旧 v1/v2 的 BUFF/DEBUFF/AUTO 复制到两侧，保留旧显示行为。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local F=S.Features and S.Features.BuffDisplay
@@ -199,9 +187,7 @@ function F:PrepareTrackingImport(data,mode)
     for _,field in ipairs({"tracked","trackedCooldowns","classification","components","hud","settings"}) do
         if data[field]~=nil and type(data[field])~="table" then return nil,"导入字段不是表："..field end
     end
-    -- NormalizeInputTracked 负责兼容形状转换，不负责吞掉
-    -- 错类型。直接 API/未来 UI 若传 player.auto="..."，必须在任何 merge/overwrite 前整体拒绝；
-    -- 否则“坏字段 -> 空列表”会在覆盖模式合法清空用户通道。旧 flat 三桶仍允许，但桶本身必须是 table。
+    -- 兼容形状转换不能吞错类型；桶不是 table 就在 merge/overwrite 前整体拒绝，避免坏字段被当空列表清掉用户选择。
     if type(data.tracked)=="table" then
         local rawTracked=data.tracked
         local nested=type(rawTracked.player)=="table" or type(rawTracked.target)=="table"

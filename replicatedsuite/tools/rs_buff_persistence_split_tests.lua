@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · Buff持久化拆分测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 中文维护注释：这些用例只验证冷启动/持久化 Authority；Native SaveData/LoadData 为内存模拟，
--- 不宣称可替代 ArcheRage RU 实机。生产目标是证明：旧 v3.buff_display 不再是运行时写 Authority，
--- tracking 必须通过 inactive A/B + manifest 最终提交，当前已批准的 A 方案只用于首次迁移。
-------------------------------------------------------------------------
+-- 检查冷启动和追踪存档提交：旧大 Store 只作迁移来源，
+-- 追踪必须先写 inactive A/B 再提交 manifest；方案 A 只用于首次迁移。
 local passed, failed = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, function(e) return tostring(e) .. '\n' .. debug.traceback() end)

@@ -1,12 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 状态显示只读投影
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 无Native/API访问，将AuraObservationV3 StatusMap和Feature通道数据转为有界独立页面/Widget行。
--- 分类契约：category为buff/debuff/unknown，Auto是追踪桶；hidden/special_rule为共享StatusClassificationV3检测来源，不能作用户分类；传入预建索引时追踪查询为O(1)。
--- 合并后须核对冲突标记、toc.g完整性和Lua语法，再验收；禁止清配置、跳加载或恢复Legacy绕过原Authority/存档协议。
-------------------------------------------------------------------------
+-- 把 StatusMap 和 Feature 通道转为有界副本，不读 Native。
+-- category 为 buff/debuff/unknown，Auto 是追踪桶；hidden/special_rule 是检测来源，不能当用户分类。预建索引查询为 O(1)。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Features = S.Features or {}
@@ -113,8 +109,8 @@ function F.ProjectStatusMap(statusMap, meta, settings, scope, limit, trackedInde
     }
 end
 
--- 头顶投影的 laneData 来自 Feature 通道：{ buffRows, debuffRows, distance, class, gearScore, mainHand={icon,gradeIconPath,name}, offHand, ranged, wings, cast={casting,spellName,currMs,totalMs} }。
--- 只返回启用组件，各组件追踪行有上界。headShowAll 是显式选项，可展示普通未追踪 Buff/Debuff，但 Hidden 来源始终不能绕过显式追踪白名单；观察 Hidden 与展示 Hidden 必须分开。
+-- laneData 提供 Aura、距离、职业、装分、装备和施法事实；只投影启用组件及有界追踪行。
+-- headShowAll 可放行普通未追踪状态，Hidden 始终需要显式白名单。
 local function BoundedTracked(rows, settings, category, trackedIndex, scope)
     rows = type(rows) == "table" and rows or {}
     trackedIndex = type(trackedIndex) == "table" and trackedIndex or BuildTrackedIndex(settings)
@@ -159,10 +155,8 @@ local function CopyComponents(components)
     return out
 end
 
--- 目标装备 API 可能实际返回自己装备，不能用于敌人。
--- 这里的 Authority 仅是本次 Aura 实时事实 -> 中央 ID 类型关系；不读 API、不读留存/追踪列表。
--- 两类各六个固定候选 O(1)；同类兼容 ID 可合并，不同类型同时存在则拒绝推断并保留冲突标志。
--- 图标只用实际 Buff 元数据；缺图标保留类型名，不伪造具体装备/品阶。缓存/存档由上层拥有。
+-- 目标装备 API 可能返回自身装备；此处仅由当前 Aura 与中央 ID 关系推断类型。
+-- 每类固定六候选，同类兼容 ID 可合并，异类冲突拒绝；图标只用真实 Buff 元数据，不造装备或品阶。
 function F.ProjectTargetLoadout(statusMap)
     statusMap = type(statusMap) == "table" and statusMap or {}
     local ids = S.GameIds and S.GameIds.Plates or {}
@@ -228,9 +222,7 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
     if out.distance==nil and type(settings.placement)=='table'and settings.placement.mode=='fixed'then out.distance={value='--m',unknown=true}end
     out.buffs = BoundedTracked(laneData.buffRows, settings, "buff", trackedIndex, scope)
     out.debuffs = BoundedTracked(laneData.debuffRows, settings, "debuff", trackedIndex, scope)
-    -- cooldownRows 已由 CooldownObservationV3
-    -- 过滤成“当前真正处于 CD”的本机 Native 事实。这里只做有界 detached copy，不查询 API、
-    -- 不把静态 expectedSec 当 Authority，也绝不把 player CD 复制到 target scope。
+    -- 只复制 CooldownObservationV3 已确认处于 CD 的本机行，不以 expectedSec 推算，也不复制到 target。
     if scope == "player" and type(laneData.cooldownRows) == "table" then
         local cfg = type(components.cooldowns) == "table" and components.cooldowns or {}
         local maxPerRow = math.max(1, math.min(16, math.floor(tonumber(cfg.maxPerRow) or 8)))
@@ -253,9 +245,7 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
     -- 别名已在 TARGET_CHANGED/用户操作边由 Store O(1) 解析；
     -- Projection 仅复制字符串，严禁在 HUD 热路径读取 UnitName 或遍历持久化备注表。
     if scope == "target" and type(laneData.targetAlias) == "string" and laneData.targetAlias ~= "" then
-        -- 别名几何随 scope settings 的小快照进入 Projection；
-        -- Renderer 只消费 detached 值，不直接访问 Persistence。enabled=false 时 Resolve 已让 alias 为空，
-        -- 这里仍携带 hud 只是为了校准/兼容调用保持同一数据结构，不增加 Native 查询。
+        -- 别名几何来自 scope 设置副本；关闭时仍保留 hud 结构供校准使用，不额外读 Native/Store。
         local hud = type(settings.targetAlias) == "table" and settings.targetAlias or {}
         out.alias = {
             value = tostring(laneData.targetAlias),

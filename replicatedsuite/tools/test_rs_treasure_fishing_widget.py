@@ -1,8 +1,6 @@
-# ---------------------------------------------------------------------
 # Replicated Suite · 宝藏钓鱼控件测试
 # 作者：Replicated
 # QQ群：1104129461
-# ---------------------------------------------------------------------
 from pathlib import Path
 import unittest
 
@@ -30,7 +28,7 @@ class TreasureFishingSurfaceContractTests(unittest.TestCase):
         self.assertIn('if armed then', block)
 
     def test_treasure_scan_uses_shared_inventory_authority_not_fixed_bag_zero_name_filter(self):
-        # 中文维护注释（2026-09-28，Phase 2 Step 1）：life_treasure 已拆到独立文件，探针随之重定向。
+        # life_treasure 已拆到独立文件，探针随之重定向。
         text = read("features/life/treasure/rs_treasure_feature.lua")
         block = text
         self.assertIn("InventorySnapshotV3", block)

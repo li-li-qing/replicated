@@ -1,7 +1,5 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 海上点位只读目录
 -- DMS -> 全局 XY 与寻宝一致；目标区域组来自原包显式映射，地图标记复用寻宝原生箭头。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local data = S.Data and S.Data.TreasureSeaPoints

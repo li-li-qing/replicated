@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · PVP信息面板测试宿主
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 中文维护（2026-10-07）：完整 Native 替身/真实 Runtime 宿主恢复自 044ffed；
--- 只有 runtimeHud=true 显式使用，防止领域/CD 回归被额外 Renderer 和 Native 生命周期污染。
--- 维护（pvp-hud-1）：开发期宿主。保留真实 Store/Demand/Events/Scheduler/FrameBudget/
--- Feature/Renderer；只替换 Native 图形、游戏事实与内存磁盘。不进入 toc.g，不声称 RU 实测。
-------------------------------------------------------------------------
+-- 只有 runtimeHud=true 时才启用完整 HUD，避免普通冷却测试被渲染器生命周期干扰。
+-- Store、租约、事件、调度和渲染器用真实实现，原生图形、游戏事实及磁盘使用替身。
 local function BootHudRuntime(options)
     options=options or {}
     local h=dofile('tools/rs_gear_page_test_host.lua')({width=1280,height=768})

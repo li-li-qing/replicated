@@ -1,15 +1,10 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 头顶状态与装备标记
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 合并约束：先检查冲突标记、toc.g 加载清单完整性与 Lua 语法，再做运行时验收。
--- 权威归属、调用链和存档协议由实现负责，不能通过清配置、跳过加载或恢复 Legacy 绕过错误。
 -- 头顶层以血条为布局锚点；分组件固定层只消费 Feature 的独立屏幕坐标：
 -- InfoRow（职业、装备、距离）：固定语义槽；BuffRow(s)：血条上方，最多 maxRows 向上堆叠；[LeftEquip] [plate] [RightEquip]：装备位于血条两侧；
 -- DebuffRow(s)：血条下方，最多 maxRows 向下堆叠；CastBar：血条下方固定语义槽。
 -- Feature 持有全部调度通道；presenter 仅持有有界控件池，按渲染计算缓存布局并应用差异。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local Feature = S.Features and S.Features.BuffDisplay or nil
@@ -33,14 +28,16 @@ P.calibrationRestoreCount = tonumber(P.calibrationRestoreCount) or 0
 P.LiveHudSuppressionContractVersion = 1
 P.EquipmentIndependentOffsetContractVersion = 1
 P.RangedWeaponVisualOrderContractVersion = 1
-P.SplitInfoTextLayoutContractVersion = 3 -- 约束（.18.264）：自身/目标使用同一套稳定语义槽位；复制 HUD 不再因 scope 走不同几何分支。
-P.TargetDistanceStableSlotContractVersion = 1 -- 仅 Presentation 几何契约；target 距离不随职业/装分字段缺失重排。
-P.MirroredInfoSlotContractVersion = 1 -- player/target 同 profile + 同 facts 必须得到同一 info 几何。
-P.IndependentHudSlotContractVersion = 1 -- 组件显隐/数据多少/兄弟尺寸不得改变其它组件的基础槽位。
-P.GearScoreFormatContractVersion = 1 -- 只格式化现有 Projection 数值，full/compact 不新增事实读取。
-P.TargetAliasHudContractVersion = 2 -- 目标别名升级为可独立校准的 target-only 固定语义槽；Renderer 仍只消费 Projection。
--- Contract 11：目标别名是 target-only 固定语义槽，独立于 Info/Buff/Cast 几何；开关/名单变化只触发 Reconcile，不新增 Native 热路径。
--- 维护（pvp-hud-1）：内容dirty与运动分离；指标固定规模，不保存/逐帧打印。
+P.SplitInfoTextLayoutContractVersion = 3 -- 自身和目标共用固定槽位；同 profile、同事实应得到相同几何。
+-- 显隐、缺失字段、兄弟尺寸只影响自身；别名是 target-only 独立槽。
+-- 内容更新与运动分开，指标只留固定规模计数。
+P.TargetDistanceStableSlotContractVersion = 1
+P.MirroredInfoSlotContractVersion = 1
+P.IndependentHudSlotContractVersion = 1
+P.GearScoreFormatContractVersion = 1
+P.TargetAliasHudContractVersion = 2
+
+
 P.PvpPatch = "pvp-hud-1"
 P.contentDirty = true
 P.dynamicDirty = {distance=false,cast=false}
@@ -53,9 +50,7 @@ local SCOPES = { "player", "target" }
 local POOL_KEYS = { "player", "target", "player_fixed", "target_fixed" }
 local function UnitScope(scope) return (scope == "target" or scope == "target_fixed") and "target" or "player" end
 local function FixedLayer(scope) return scope == "player_fixed" or scope == "target_fixed" end
--- 约束（2026-09-19，cooldown-only-render-1）：cooldowns 是独立固定槽位，也是合法的
--- HUD 启动理由。旧列表漏掉它，用户只开启“技能 CD”而关闭其它组件时 BuffHeadMarkers 不会 Acquire
--- Feature Consumer，进而连 CooldownObservationV3 都不会启动。加入启动 gate 不改变其它组件布局/几何。
+-- CD 是独立启动理由；漏掉它会让“仅开技能 CD”时不取 Consumer，冷却观察也无法启动。
 local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar", "cooldowns" }
 local UNKNOWN_ICON = "ui/icon/icon_unknown_item.dds"
 
@@ -75,11 +70,8 @@ local function Settings()
 end
 local scopeLayoutCache,scopeLayoutRevision={},nil
 local function ScopeSettings(scope)
-    -- 约束（双 HUD Presentation 读取，2026-09-11）：renderer 不再直接把
-    -- player settings.components 套到 target。Feature 是 scope profile 的投影边界；
-    -- Presentation 只消费 detached snapshot，避免 Proxy/Presentation 反向改 Authority。
-    -- 约束（performance-snapshot-1）：只复用Renderer拥有的独立设置快照，固定两个scope。
-    -- 设置代际变化才重新复制；实时单位事实仍每次读取，缺代际的旧宿主保留不缓存路径。
+    -- 两个 scope 从 Feature 各取独立设置快照，设置代际变化才重复制；
+    -- 实时单位事实仍每次读取，旧宿主没有代际时不缓存。
     local revision=tonumber(Feature.settingsRevision)
     if revision==nil or revision~=scopeLayoutRevision then
         scopeLayoutCache,scopeLayoutRevision={},revision
@@ -122,9 +114,7 @@ local function HasRenderableComponents(settings, scope)
             if type(settings.targetAlias)=='table' and settings.targetAlias.enabled==true then return true end
         elseif type(Feature.IsTargetAliasHeadEnabled) == "function" and Feature:IsTargetAliasHeadEnabled() then return true end
     end
-    -- plate 是“原生血条代理锚点”，renderer 从不绘制它，不能把
-    -- plate.enabled 当作启动理由；否则用户把所有可视组件关掉后仍会持有 Consumer，
-    -- 进而让 Aura lane 因 consumerCount>0 继续运行。真正可见能力只由组件开关决定。
+    -- plate 只是原生血条的代理锚点，不绘制；不能用它启动 Consumer，否则全关后 Aura lane 仍会运行。
     for _, key in ipairs(RENDERABLE_KEYS) do
         local component = components[key]
         -- 名称没有 component.enabled；职业图标关闭时，文字仍可独立启动 HUD Consumer。
@@ -132,10 +122,8 @@ local function HasRenderableComponents(settings, scope)
             local info=type(settings.info)=="table" and settings.info or {}
             if info.enabled~=false and (info.showClass~=false or (component~=nil and component.enabled~=false)) then return true end
         elseif component == nil or component.enabled ~= false then
-            -- 约束（Info 可见性门，2026-09-11）：distance/gearScore 没有
-            -- 独立绘制区域，info 关闭后它们不能作为 Renderer/Consumer 的启动理由。职业的双显示门见上方。这样
-            -- 与 Feature 的 scope lane gate 保持同一 Authority，避免隐藏 HUD 仍保持 50ms
-            -- 数据路径；其他组件继续按自己的 enabled 独立启停。
+            -- distance/gearScore 属于 info 区，info 关闭后不能单独启动 Consumer；
+            -- 职业图标与文字另按各自开关判断，避免隐藏 HUD 仍保持 50ms 数据通道。
             if key ~= "distance" and key ~= "gearScore" then return true end
             local info = type(settings.info) == "table" and settings.info or {}
             if info.enabled ~= false then
@@ -147,9 +135,6 @@ local function HasRenderableComponents(settings, scope)
     return false
 end
 
-------------------------------------------------------------------------
--- 对象池。
-------------------------------------------------------------------------
 
 local function MakeIcon(scope, index)
     local root, err = S.UI:CreateEmptyWidget(P.pools[scope].root, "v3_buff_head_" .. scope .. "_icon_" .. tostring(index), 0, 0, 40, 40, false, P.owner)
@@ -247,7 +232,7 @@ local function RequiredIconCount(settings)
         end
         return total
     end
-    -- 约束（2026-09-19，图标池容量）：CD 与 Buff/Debuff 共用既有 marker pool，
+    -- CD 与 Buff/Debuff 共用既有 marker pool，
     -- 只按用户可见几何上限预分配，不为 256 个收藏技能建控件；装备仍保留 8 个固定余量。
     return buffMax + debuffMax + cooldownMax + 8
 end
@@ -268,7 +253,7 @@ function P:EnsurePools(settings)
         if not pool then pool={icons={},labels={}};self.pools[scope]=pool end
         pool.unitScope,pool.layer=UnitScope(scope),FixedLayer(scope) and 'fixed' or 'head'
         local required=layerSettings.componentLayer==true and RequiredIconCount(layerSettings) or iconCount
-        -- 维护：新建时就固定父链，绝不reparent已有Native控件。所有子项落在union正坐标内，
+        -- 新建时就固定父链，绝不reparent已有Native控件。所有子项落在union正坐标内，
         -- 避免小父容器裁剪；移动只写这个无命中父容器，职业/装备/Buff不会逐个追赶血条。
         if pool.root == nil then
             pool.root = S.UI:CreateEmptyWidget(UIParent, "v3_buff_head_" .. scope .. "_plate_root", 0, 0, 1, 1, false, self.owner)
@@ -333,11 +318,8 @@ function P:HideAll()
     return true
 end
 
-------------------------------------------------------------------------
--- 布局辅助函数。
-------------------------------------------------------------------------
 
--- 维护：内容布局以单位原点(0,0)计算，先记录所有子项边界再统一平移到父容器的正坐标。
+-- 内容布局以单位原点(0,0)计算，先记录所有子项边界再统一平移到父容器的正坐标。
 -- 只在内容/设置变更时执行，不在每渲染帧构建表；每个placement对象在池里复用。
 local function Place(pool, widget, x, y, w, h, component)
     local n = (pool.placementCount or 0) + 1
@@ -377,7 +359,7 @@ local function CommitPlacements(pool)
     pool.offsetX, pool.offsetY = left, top
     pool.width = math.max(1, math.ceil(pool.maxX or 1)-left)
     pool.height = math.max(1, math.ceil(pool.maxY or 1)-top)
-    -- 维护：父容器与子锚点必须整体被接受。部分拒写时隐藏该组并重试，不能提交半新半旧的布局。
+    -- 父容器与子锚点必须整体被接受。部分拒写时隐藏该组并重试，不能提交半新半旧的布局。
     local accepted = true
     if type(S.UI.EnsureExtent)=="function" then
         accepted = S.UI:EnsureExtent(pool.root,pool.width,pool.height,P.owner) == true
@@ -394,7 +376,7 @@ local function CommitPlacements(pool)
         P.textureRetryAt=(S.NowMs and S.NowMs() or 0)+50
     end
 end
--- 维护：SetIconTexture的false也可能是diff无变化，所以通过Ensure契约区分成功与拒写。
+-- SetIconTexture的false也可能是diff无变化，所以通过Ensure契约区分成功与拒写。
 -- 路径缓存只能在确认提交后改变；失败先隐藏旧武器并50ms后重试，不能把旧图当新事实。
 local function Texture(cache, field, drawable, path)
     if cache[field] == path then return true end
@@ -409,11 +391,8 @@ local function Texture(cache, field, drawable, path)
     return false
 end
 
--- 约束（Buff/Debuff 字体 Authority，2026-09-11）：旧 Renderer 虽然 Store/校准器都
--- 保存 component.fontSize，但正式渲染始终用 icon size × 固定比例重算字体，造成“校准预览能改、
--- 保存成功、实机字体却不动”。字体 Authority 应来自当前 scope 的组件配置；plateScale 只负责把
--- 逻辑字体映射到最终视觉尺寸。fontSize<=0 时保留旧比例回退，兼容装备池等没有字体配置的调用。
--- 该函数是纯数值计算，不读取 Store/Native，不增加 50ms VisualTick 的对象分配。
+-- 字体取当前 scope 的 component.fontSize，再乘 plateScale；旧代码总按图标比例重算，
+-- 曾导致校准保存后正式字体不变。fontSize<=0 才保留比例回退，供无字体配置的装备池使用。
 local function ResolveIconFontSize(cfg, scale, size, role)
     local configured = tonumber(type(cfg) == "table" and cfg.fontSize or nil) or 0
     if configured > 0 then
@@ -465,10 +444,8 @@ local function PairedNameWidth(text,font)
     return math.max(2,math.ceil(width)+2)
 end
 
--- 约束（2026-09-27，target-alias-hud-2）：自定义名字与职业名称/装分/距离一样是
--- 独立 HUD 组件，但只属于 target。其几何只依赖目标血条中心、target plateScale 与自身 cfg，
--- 兄弟组件显隐/行数/文字长度绝不能推动它。校准器和正式 Renderer 共用本纯函数，避免“预览一处、
--- 实机另一处”。这里不访问 Store、不调用 Native API，也不分配持久缓存。
+-- 目标别名只由目标血条中心、plateScale 和自身配置定位；与正式 Renderer、校准器共用此纯函数，
+-- 不能让兄弟显隐、行数或文字长度推动它。
 function P.ComputeTargetAliasLayout(text, cfg, centerX, centerY, scale)
     text = tostring(text or "")
     cfg = type(cfg) == "table" and cfg or {}
@@ -526,22 +503,44 @@ local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, sca
 end
 
 -- 渲染组件的横向图标行并返回已用槽数；整行作为一组限制边界，各图标保持精确间距。
-local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, showTime, slotOffset, size, gap, scale,channel)
+local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, showTime, slotOffset, size, gap, scale,channel,firstIndex,rowCount)
     local used = 0
     size = math.max(8, math.floor(tonumber(size) or N(cfg.size, 24)))
     gap = math.max(0, math.floor(tonumber(gap) or N(cfg.spacing, 2)))
-    local count = math.min(#rows, 16)
+    -- 旧横排直接消费本次 detached 行的区间，避免每排复制临时 slice；不留存实时行引用。
+    firstIndex = firstIndex or 1
+    local count = math.min(rowCount or #rows, 16, #rows-firstIndex+1)
     local totalW = count * size + math.max(0, count - 1) * gap
     local startX = math.floor(centerX + N(cfg.x, 0) - totalW / 2)
-    -- 维护：整个血条附着组在移动父容器时统一裁剪，不能单独拉回每一排图标。
+    -- 整个血条附着组在移动父容器时统一裁剪，不能单独拉回每一排图标。
     local startY = math.floor(tonumber(rowY) or 0)
     for index = 1, count do
         local marker = pool.icons[slotOffset + index]
         if marker == nil then break end
-        ApplyIcon(marker, rows[index], size, cfg, startX + (index - 1) * (size + gap), startY, showStacks, showTime, scale,channel)
+        ApplyIcon(marker, rows[firstIndex+index-1], size, cfg, startX + (index - 1) * (size + gap), startY, showStacks, showTime, scale,channel)
         used = used + 1
     end
     return used
+end
+
+-- 每个 pool/channel 只保留一套相对网格，最多四个 pool × 三个通道。
+-- 不缓存 Buff/计时/元数据或 Native 提交；中心与裁剪仍用本轮值。公共纯布局继续返回独立快照。
+local iconGridCache, iconGridRevision = {}, nil
+local function CachedIconGrid(scope,channel,count,size,spacing,perRow,maxRows,vertical,growUp)
+    local revision=tonumber(Feature.settingsRevision)
+    if revision==nil or revision~=iconGridRevision then iconGridCache,iconGridRevision={},revision end
+    local calculate=Feature.ComputeHudIconGrid
+    if revision==nil then return calculate(count,size,spacing,perRow,maxRows,vertical,growUp)end
+    local scoped=iconGridCache[scope]
+    local entry=scoped and scoped[channel]
+    if entry and entry.calculate==calculate and entry.count==count and entry.size==size
+        and entry.spacing==spacing and entry.perRow==perRow and entry.maxRows==maxRows
+        and entry.vertical==vertical and entry.growUp==growUp then return entry.grid end
+    local grid=calculate(count,size,spacing,perRow,maxRows,vertical,growUp)
+    if not scoped then scoped={};iconGridCache[scope]=scoped end
+    scoped[channel]={calculate=calculate,count=count,size=size,spacing=spacing,perRow=perRow,maxRows=maxRows,
+        vertical=vertical,growUp=growUp,grid=grid}
+    return grid
 end
 
 -- 多行 Buff/debuff 从血条边缘分别向上/向下堆叠，由 MaxPerRow 与 MaxRows 限制。
@@ -551,7 +550,7 @@ local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStac
     local total = math.min(#all, maxPerRow * maxRows)
     if total <= 0 then return 0 end
     if (cfg.orientation=='horizontal'or cfg.orientation=='vertical')and type(Feature.ComputeHudIconGrid)=='function' then
-        local grid=Feature.ComputeHudIconGrid(total,size,spacing,maxPerRow,maxRows,cfg.orientation=='vertical',direction<0)
+        local grid=CachedIconGrid(scope,channel,total,size,spacing,maxPerRow,maxRows,cfg.orientation=='vertical',direction<0)
         local xOffset=N(cfg.x,0)*(channel=='cooldown'and scale or 1)
         local left=math.floor(centerX+xOffset+grid.left)
         local top=math.floor(firstRowTop+grid.top)
@@ -567,18 +566,12 @@ local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStac
         local count = math.min(maxPerRow, total - r * maxPerRow)
         if count <= 0 then break end
         local rowTop = firstRowTop + direction * (r * rowGap)
-        local slice = {}
-        for i = 1, count do slice[i] = all[start + i - 1] end
-        used = used + RenderIconRow(scope, pool, slice, cfg, centerX, rowTop, showStacks, showTime, slotOffset + used, size, spacing, scale,channel)
+        used = used + RenderIconRow(scope, pool, all, cfg, centerX, rowTop, showStacks, showTime, slotOffset + used, size, spacing, scale,channel,start,count)
     end
     return used
 end
 
-------------------------------------------------------------------------
--- 纯布局几何。
-------------------------------------------------------------------------
-
--- 默认视觉间距源于已验证的 Professional Plates 分段布局，并加宽以明确层次。Buff/Debuff/Info/装备均只由血条矩形计算；间距常量按 1.2 倍匹配新默认图标尺寸。
+-- 间距取已验证的 Plates 布局，按默认图标尺寸放大 1.2 倍；位置均相对血条矩形计算。
 local BUFF_TO_BAR = 8        -- 首行 Buff 底边到 bar.top。
 local BUFF_ROW_GAP = 4       -- Buff 行间距。
 local DEBUFF_TO_BAR = 8      -- 首行 debuff 顶边到 bar.bottom。
@@ -588,28 +581,17 @@ local INFO_TO_BAR = 9        -- 无 Buff 时 Info 底边到 bar.top。
 local EQUIP_TO_BAR = 7       -- 装备内侧边到血条侧边。
 local EQUIP_GAP = 4          -- 两个装备图标间距。
 
--- 约束（HUD 独立固定槽位 Authority，2026-09-19）：
--- 维护原因：不能用实际 Buff/debuff 行数或装备存在性
--- 推导 Info、Cast 与装备兄弟的位置，所以同一套 HUD 配置在玩家/NPC/Boss、0/多 Buff、
--- 有/无副手之间会发生视觉跳位；这违反“每个组件只由自己的配置决定位置”的校准语义。
--- 权威归属/数据流：HealthBarProxy 仍是唯一总锚点；以下常量只定义发行版基础语义槽，
--- 每个组件最终位置 = 自己的基础槽 + 自己的 x/y。运行时事实只决定 Show/Hide，绝不参与兄弟
--- 槽位计算。plateScale 是整套 HUD 的全局缩放，允许统一缩放全部槽位，不属于兄弟挤压。
--- 兼容边界：不改 Store schema、不改已有 x/y 数值。Info 固定在“默认两行 Buff”时的历史
--- 基准位置，Cast 固定在“默认两行 Debuff”时旧公式的基准位置；这样优先保留常见已有视觉，
--- 代价是用户把单个区域尺寸调得极端时可能产生重叠，但其它组件不会被自动推走，用户可用
--- 该组件自己的 x/y 校准。后续禁止重新用 actualRows/visibleSlots 参与兄弟位置。
+-- 每个组件的位置 = 血条基础槽 + 自身 x/y，实际 Buff 行数、装备有无只决定显示。
+-- Info、Cast 保留历史默认两行时的基线；plateScale 统一缩放。
+-- 极端尺寸允许重叠，由用户调自身偏移，不能自动推走兄弟组件。
 local INFO_RESERVED_BUFF_ROWS = 2
 local INFO_RESERVED_BUFF_SIZE = 29
 local CAST_RESERVED_DEBUFF_ROWS = 2
 local CAST_TO_BAR = 6
 local CLASS_TEXT_RESERVED_WIDTH = 96
 
--- 纯布局计算：不创建控件、不读 Native、不修改 Store。输入为投影锚点（单位屏幕位置）、设置和实际可见行/装备数；返回渲染器原样应用的几何表，是位置计算唯一权威层。
---
--- anchorX/anchorY：单位屏幕投影点（ScreenProjectionV3 空间）；settings：BuffDisplay 设置投影（plate/info/components）；
--- buffCount：已限制的可见 Buff 行数；debuffCount：可见 debuff 行数；
--- equip：{ mainHand=bool, offHand=bool, ranged=bool, wings=bool }。
+-- 纯布局输入为投影锚点、设置、受限 Buff/Debuff 数量和装备存在性，返回可直接应用的几何。
+-- equip = {mainHand, offHand, ranged, wings}，各项为 bool。
 local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, equip)
     settings = type(settings) == "table" and settings or {}
     local plateCfg = type(settings.plate) == "table" and settings.plate or {}
@@ -668,12 +650,8 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
             if enabled then
                 local size = math.max(8, math.floor(N(cfg.size, 26) * scale))
                 local gap = math.max(1, math.floor(EQUIP_GAP * scale))
-                -- 约束（装备固定语义槽位，2026-09-19）：
-                -- 旧实现只遍历“当前存在”的装备并逐项推进 edge，导致缺副手/缺远程时主手会
-                -- 自动补位；同时内侧装备改 size 会继续推动外侧兄弟。现在 semanticIndex 由
-                -- preset 固定，baseX 只依赖“本组件自己的 size + 固定 slot index”，运行时存在性
-                -- 只决定是否返回/绘制该槽，不再改变任何兄弟位置。公式在所有左侧装备尺寸相同
-                -- 时与旧全装备布局完全一致，保护默认视觉；不同尺寸时允许局部重叠但禁止挤压。
+                -- 装备 semanticIndex 由 preset 固定，baseX 只取自身 size 与槽号。
+                -- 缺副手、远程或改变图标尺寸不能移动兄弟；等尺寸时保持旧全装备布局，不同尺寸允许局部重叠。
                 local baseX
                 if direction < 0 then
                     baseX = edgeStart - semanticIndex * (size + gap)
@@ -687,10 +665,8 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
         end
         return slots
     end
-    -- 约束（装备排列版本化）：EquipSlots(direction=-1) 的 keys 是“从血条向外”顺序，
-    -- 所以 v4 传 ranged→offHand→mainHand 后，屏幕从左到右正好是 mainHand→offHand→ranged。
-    -- v3 继续使用历史顺序，保护曾主动调过 ranged 的旧用户；只有 fresh/reset 或“旧默认未动”
-    -- 的兼容升级会进入 v4。单项 cfg.x 仍只影响自己，不恢复旧联动。
+    -- EquipSlots(direction=-1) 的键顺序从血条向外；v4 的 ranged→offHand→mainHand
+    -- 在屏幕上呈 mainHand→offHand→ranged。v3 保留旧顺序，只有新建、重置或未改旧默认才升到 v4。
     local presetVersion = math.floor(tonumber(settings.layoutPresetVersion) or 3)
     local leftOrder = presetVersion >= 4 and { "ranged", "offHand", "mainHand" } or { "offHand", "mainHand", "ranged" }
     local leftSlots = EquipSlots(bar.left, -1, leftOrder)
@@ -724,7 +700,7 @@ end
 P.ComputePlateLayout = ComputePlateLayout
 P.CastYOffsetContractVersion = 1
 
--- 维护：四个 Renderer 池各留一份纯几何；图标/倒计时/位置仍每轮读取，Native 提交仍走完整重试。
+-- 四个 Renderer 池各留一份纯几何；图标/倒计时/位置仍每轮读取，Native 提交仍走完整重试。
 -- 只按已版本化的独立 settings、图标数量与装备存在性复用；旧宿主无 revision 时维持原计算路径。
 local plateLayoutCache, plateLayoutRevision = {}, nil
 local function CachedPlateLayout(scope, anchorX, anchorY, settings, buffCount, debuffCount, equip)
@@ -742,11 +718,8 @@ local function CachedPlateLayout(scope, anchorX, anchorY, settings, buffCount, d
     return layout
 end
 
-------------------------------------------------------------------------
--- 渲染。
-------------------------------------------------------------------------
 
--- 约束（dynamic-hud-1）：只提交变化的文字/进度；明确false或异常不提交缓存。
+-- 只提交变化的文字/进度；明确false或异常不提交缓存。
 -- 失败先隐藏旧内容，由既有50ms内容重试恢复，不增加任务或Native采集。
 local function CommitDynamicText(widget, cache, key, text)
     if cache[key]==text then return true end
@@ -785,16 +758,13 @@ local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     local showText = cfg.showText ~= false
     local alpha = math.max(0.1, math.min(1, N(cfg.alpha, 1)))
     local x = math.floor(centerX + N(cfg.x, 0) * scale - barW / 2)
-    -- 约束（施法条 Y Authority，2026-09-11）：旧 renderer 读取 castBar.x 却
-    -- 完全忽略 castBar.y，导致 HUD 校准器的上下拖动/方向键“保存成功但画面不动”。
-    -- castBar.y 与其余 equipment 微调一致，以 plateScale 后的局部像素解释；这里只在
-    -- Presentation 几何阶段应用，不改变 CastingObservation 数据或高频采集路径。
+    -- castBar.y 是乘 plateScale 后的局部偏移；旧渲染遗漏它，曾导致上下校准保存后画面不动。
     y = N(y, 0) + N(cfg.y, 0) * scale
     local cache = bar.layout
     if cache.alpha ~= alpha then S.UI:SetAlpha(bar.root, alpha, P.owner); cache.alpha = alpha end
     if cache.barW ~= barW then cache.barW = barW end
     cache.barH,cache.showText=barH,showText
-    -- 维护：施法条/文字也归属同一个单位容器；总高度包含文字，避免父裁剪。
+    -- 施法条/文字也归属同一个单位容器；总高度包含文字，避免父裁剪。
     local totalH = barH + (showText and 15 or 0)
     Place(pool, bar.root, x, math.floor(y), barW, totalH)
     S.UI:SetExtent(bar.root, barW, totalH, P.owner)
@@ -818,7 +788,7 @@ local function RecordAnchorFailure(scope, reason)
     entry.lastErr = tostring(reason or "anchor_unavailable")
 end
 
--- 维护：装备沿用局部布局。只由外层整组容器执行屏幕边缘约束，不能让装备/
+-- 装备沿用局部布局。只由外层整组容器执行屏幕边缘约束，不能让装备/
 -- Buff/职业各自夹紧到不同位置；这样移动与屏幕边缘的相对几何始终一致。
 local function ApplyEquipGroup(scope, pool, plates, components, group, slotStart, scale)
     local slots = type(group) == "table" and group.slots or nil
@@ -836,20 +806,13 @@ local function ApplyEquipGroup(scope, pool, plates, components, group, slotStart
     return used
 end
 
--- 约束（HUD 信息拆分几何 Authority，2026-09-17）：
--- Store schema6 已经持久化 info、components.gearScore、components.distance 三套几何字段；
--- schema7 只在 info 增加 gearScoreFormat，不改变这些几何 Authority。旧 Renderer 把文本先拼成一个
--- label，后两套字段事实上从未参与正式 HUD。职业名称继续使用 info.x/y/fontSize；装备分数使用
--- gearScore.x/y/fontSize/alpha；距离使用 distance.x/y/fontSize/alpha；职业图标仍只使用
--- class.x/y/size/alpha。历史 schema6 canonical 由 Store 冻结验真；schema7 只新增文字格式，
--- 不会把“图标微调”重新耦合到职业名字。ComputePlateLayout 会把 info.y 预先加进固定
--- info.top，因此本函数先还原 baseY，再分别应用三项 Y，确保移动职业名称不拖着装分/距离。
--- 正式 player/target 使用固定语义槽：职业在左、装分居中、距离在右；字段缺失只隐藏自身。
+-- 职业文字取 info，装分取 gearScore，距离取 distance，图标取 class；各用自己的几何和透明度。
+-- 旧 renderer 合成单个 label，曾使装分、距离的已存字段无效。
+-- ComputePlateLayout 已把 info.y 加入 top，此处先还原 baseY 再应用各自 Y，避免文字联动。
+-- 固定槽为职业居左、装分居中、距离居右；字段缺失只隐藏自身。
 
--- 约束（装备分数显示格式，2026-09-17）：
--- Renderer 只格式化 Projection 已提供的 gearScore，不读取 Native、不缓存第二份数值 Authority。
--- compact 只在 >=1000 时使用 K，一位小数四舍五入并去掉 .0；full 保持整数文本。
--- 非数字输入 fail-soft 原样显示，避免未来诊断占位被错误吞掉。
+-- 只格式化投影装分：compact 在 >=1000 时用 K，保留一位小数并去掉 .0；full 用整数。
+-- 非数字占位原样显示。
 function P.FormatGearScoreValue(value, mode)
     local raw = tostring(value == nil and "" or value)
     local n = tonumber(raw)
@@ -868,8 +831,7 @@ function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontS
     local classCfg = components.class or {}
     local gearCfg = components.gearScore or {}
     local distanceCfg = components.distance or {}
-    -- 约束（职业名称/图标独立 Authority）：showClass 只控制职业名称；class.enabled 只控制
-    -- 职业图标。旧合并 label 曾把二者绑定，拆分后若继续复用同一门会导致“关图标=名字也没了”。
+    -- showClass 控制职业文字，class.enabled 控制图标；不能复用开关，否则关图标会连名字一起隐藏。
     local classValue = tostring(class.value or "")
     local classText = infoCfg.showClass ~= false and classValue or ""
     local rawGearText = infoCfg.showGear ~= false and gearCfg.enabled ~= false and type(plates.gearScore)=="table" and tostring(plates.gearScore.value or "") or ""
@@ -884,10 +846,7 @@ function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontS
     if gearText ~= "" then specs[#specs+1] = { key="gearScore", raw=gearText, font=gearFont } end
     if distanceText ~= "" then specs[#specs+1] = { key="distance", raw=distanceText, font=distanceFont } end
     for index, item in ipairs(specs) do
-        -- 约束（2026-09-19，目标距离文案）：信息行仅用几何间距分隔职业/装分/距离，
-        -- 不再把“· ”写进任何真实显示文本。权威归属/数据流：Projection 仍只提供原始 value，
-        -- Renderer 只负责排版；去掉装饰字符不会改变距离/装分读取、缓存或存档。兼容边界：
-        -- 老配置的 x/y/font/alpha 全部继续生效，零偏移时仍保持原有顺序与视觉间距。
+        -- 职业、装分、距离用几何间距分隔，不把装饰符写入真实文本；已有局部微调仍生效。
         item.gapBefore = index > 1 and math.max(3, math.floor(item.font * 0.25)) or 0
         item.text = item.raw
         item.width = TextWidth(item.text, item.font)
@@ -903,17 +862,8 @@ function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontS
     local cursorX = rowStartX + iconGap
     local baseY = math.floor(N(y, 0) - N(infoCfg.y, 0) * scale)
 
-    -- 约束（自身/目标 HUD 稳定槽位统一，2026-09-19）：
-    -- 维护原因：player 与 target 必须共用固定
-    -- 语义槽位；校准器“复制自身 → 目标”完整复制 profile 时，
-    -- Renderer 不能按 scope 使用两套几何而让相同配置在实机错位。
-    -- 权威归属/数据流：CalibrationDraft/Store 仍只保存一组 component x/y/size/font/alpha；
-    -- Renderer 对真实 player/target scope 统一使用同一套语义槽位：装分居中、距离固定右侧、职业
-    -- 向左延展，职业图标跟随职业槽。缺少事实只隐藏内容，不回收槽位。这样复制 HUD 后，同 profile
-    -- + 同 facts 必须得到同几何，同时保持目标距离稳定。
-    -- 兼容边界：不改 Store schema、不改 Native 读取、不补造缺失字段；player/target 已保存的局部
-    -- x/y/font/alpha 微调全部继续生效。无 scope 的只读兼容调用仍保留旧流式布局，避免历史外部
-    -- 工具在未声明 scope 时突然换语义；正式 Renderer/校准预览始终显式传 player/target。
+    -- 正式 player/target 和校准预览必须显式传 scope，共用固定槽；复制 profile 后应得到同一几何。
+    -- 缺少事实不回收槽位。未声明 scope 的旧只读调用保留流式布局，兼容外部工具。
     local runtimeScope = tostring(scope or "")
     if runtimeScope == "target" or runtimeScope == "player" then
         local gap = math.max(3, math.floor(math.max(classFont, gearFont, distanceFont) * 0.25))
@@ -952,11 +902,8 @@ function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontS
             AddBounds(x, width)
         end
         local size = N(classCfg.size,0)>0 and math.max(8,math.floor(N(classCfg.size,0)*scale)) or automaticSize
-        -- 约束（职业图标固定槽位，2026-09-19）：
-        -- 旧实现把 iconBaseX 锚到 `out.classText.x`，职业名称字数变化就会推动图标；若用户隐藏
-        -- 职业名称，图标又退回另一套基准。现在职业名称仍以 classRight 右对齐，图标则占用
-        -- classRight 左侧固定 96px 语义槽，二者显隐/文字长度互不改变位置。class.x/y 仍只属于
-        -- 图标本身；极长职业名可以覆盖预留区但不能推走图标/装分/距离。
+        -- 职业文字以 classRight 右对齐，图标占其左侧固定 96px 槽。
+        -- 名字长度和显隐不能移动图标；长文字可覆盖预留区，不能推走装分、距离。
         local classReservedWidth = math.floor(CLASS_TEXT_RESERVED_WIDTH * scale)
         local iconBaseX = classRight - classReservedWidth - 4 - automaticSize
         out.iconX = math.floor(iconBaseX + N(classCfg.x,0)*scale)
@@ -1054,9 +1001,7 @@ local function RenderInfo(scope, plates, infoCfg, components, centerX, y, fontSi
     end
 end
 
--- 目标自定义名字拥有独立 target-only 固定槽位；位置/字号/透明度由 HUD 校准器维护，
--- 不再借用 info.x/info.y/fontSize。这样用户可以像职业名称、装分一样单独拖动它，同时名字显隐
--- 不会改变任何兄弟组件几何。Renderer 只消费 Projection 中已脱离 Store 的 hud 快照。
+-- 目标别名独占 target 槽，位置、字号和透明度来自独立配置，不借用 info 或推动其它组件。
 local function RenderTargetAlias(scope, plates, centerX, centerY, scale, settings)
     local pool = P.pools[scope]
     local info = pool and pool.info or nil
@@ -1088,7 +1033,7 @@ local function RenderScope(scope, settings)
     if ScopeEnabled(unitScope, settings) ~= true then HideScope(scope); return end
     if unitScope=='target'and type(Feature.IsTargetSelf)=='function'and Feature:IsTargetSelf()then HideScope(scope);return end
     local plates = Feature:GetPlatesProjection(unitScope, settings)
-    -- 维护：所有内容在单位原点生成；屏幕移动留给MotionTick，绝不在这里重读投影Native。
+    -- 所有内容在单位原点生成；屏幕移动留给MotionTick，绝不在这里重读投影Native。
     local anchorX, anchorY = 0, 0
     pool.placementCount, pool.minX, pool.minY, pool.maxX, pool.maxY = 0, nil, nil, nil, nil
     pool.componentPlacements=FixedLayer(scope) and settings.componentLayer==true and settings.componentPlacements or nil
@@ -1194,14 +1139,8 @@ local function RenderScope(scope, settings)
     CommitPlacements(pool)
 end
 
--- 约束（HUD 校准 Presentation suppression，2026-09-11）：
--- 维护原因：校准预览期间必须抑制正式 BuffHeadMarkers 绘制，避免同时看到
--- 自己/目标 Buff 与装备旧图标而无法辨认 Draft。
--- Authority：Feature/Store/Aura/位置 Lane 继续运行，本开关只属于 Renderer Presentation；禁止用
--- Feature disable/ReleaseConsumer 来“隐藏”，否则校准器会失去真实单位锚点并改变高频数据生命周期。
--- 数据流：Calibration Open -> SetCalibrationSuppressed(true) -> VisualTick 只 HideAll；Exit -> false ->
--- 立即 VisualTick 恢复正式 HUD。兼容边界：不持久化、不进入 schema5、不改变 Consumer 数；模块热重载
--- 后默认 false。后续任何校准 Overlay 都应复用此 Presentation gate，而不是直接改 Store 开关。
+-- 校准时只隐藏正式 HUD，不能 Disable 或释放 Consumer，否则会丢真实锚点并改变采集生命周期。
+-- 打开校准设 suppression，退出立即重绘；此开关只属会话，重载默认 false。
 function P:SetCalibrationSuppressed(value, reason)
     local nextValue = value == true
     if self.calibrationSuppressed == nextValue then
@@ -1222,7 +1161,7 @@ function P:SetCalibrationSuppressed(value, reason)
 end
 function P:IsCalibrationSuppressed() return self.calibrationSuppressed == true end
 
--- 维护：raw投影与raw视口只转换一次。组内子项全部不动，边缘裁剪平移整个union，
+-- raw投影与raw视口只转换一次。组内子项全部不动，边缘裁剪平移整个union，
 -- 禁止逐图标clamp/插值（会引入空间误导）；原生点不可用或在屏幕后时立即隐藏整组。
 local function MoveRoots()
     local w,h
@@ -1291,7 +1230,7 @@ local function MoveRoots()
     end
 end
 
--- 约束（dynamic-hud-1）：动态事件不重投影所有图标/装备/布局。只有已提交的布局、
+-- 动态事件不重投影所有图标/装备/布局。只有已提交的布局、
 -- 相同设置代际、相同距离字宽和施法可见性才局部更新；结构边沿回到原VisualTick。
 local function UpdateDynamicContent()
     if type(Feature.GetDynamicPlatesProjection)~="function" then return false end
@@ -1388,7 +1327,7 @@ function P:Start()
     -- 内容lane只置脏，在下一次位置提交时合并渲染，而非每个位置回调重建内容。
     if type(S.Events.SubscribeInternal) == "function" then
         S.Events:UnsubscribeInternalOwner(self)
-        -- 维护：多个数据lane同一帧发布只置一次dirty；身份失效立即清屏，不能等内容轮询。
+        -- 多个数据lane同一帧发布只置一次dirty；身份失效立即清屏，不能等内容轮询。
         S.Events:SubscribeInternal("v3.buff_display.plates.updated", self, function(_,reason)
             if reason=="distance" then P.dynamicDirty.distance=true
             elseif reason=="cast" then P.dynamicDirty.cast=true
@@ -1413,6 +1352,7 @@ function P:Stop(reason)
     self.running = false
     self.contentDirty, self.textureRetryAt = true, nil
     plateLayoutCache, plateLayoutRevision = {}, nil -- 停用释放旧配置引用；下次启动重新确认几何。
+    iconGridCache, iconGridRevision = {}, nil
     self:HideAll()
     self.metrics.stops = self.metrics.stops + 1
     -- 释放失败时保持 consumerHeld=true，供诊断/协调保留泄漏租约证据，并让后续 Stop 重试。
@@ -1480,7 +1420,7 @@ function P:GetDiagnostics()
     }
 end
 
--- 约束（CD 显示链诊断）：复用模块导出的冷路径，仅取服务/Feature/Renderer缓存。
+-- 复用模块导出的冷路径，仅取服务/Feature/Renderer缓存。
 -- 不创建控件、不取 Consumer、不调用 Native 可见性读回，也不写用户存档。
 if S.ModuleDiagnosticsHub and type(S.ModuleDiagnosticsHub.RegisterProvider)=="function" then
     S.ModuleDiagnosticsHub:RegisterProvider("combat_buff_display","cooldown_hud_pipeline",function()
@@ -1498,10 +1438,7 @@ if type(S.Events.SubscribeInternal) == "function" then
     S.Events:SubscribeInternal("v3.buff_display.target_alias.config", P.lifecycleOwner, function() P:Reconcile("target_alias_config") end)
 end
 
--- 血条代理锚点通过纯 ComputePlateLayout 布局；职业提供精确目录角色图标与本地化文字。主手/副手/可选远程共用左侧，翅膀/背饰在右侧；x/y 均为局部偏移。
--- Buff/Debuff 必须消费权威 fontSize，启动验收同时检查 BuffIconFontSizeContractVersion，避免旧渲染器接受校准 UI 却忽略字体。
--- 装备默认槽位与局部偏移分离，移动任一装备不能改变兄弟基线。每个 HUD 组件均为固定语义槽，运行 Buff/debuff 数量、装备存在、职业字宽和兄弟图标大小只改变自身渲染；校准消费同一几何。
--- 约束（enemy-loadout-1）：目标武器/防具是可见 Buff 类型投影；现有布局/存档契约不变。
+-- 校准与正式 HUD 共用固定槽位几何和组件 fontSize；目标武器、防具来自可见 Buff 类型投影。
 P.TargetLoadoutPatch = "enemy-loadout-1"
 Feature.BuffHeadMarkerContractVersion = 11
 P:Reconcile("load")

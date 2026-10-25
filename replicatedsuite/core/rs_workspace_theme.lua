@@ -1,13 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 工作区主题配置
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 工作台配色预设（2026-09-18）。Theme owns 色彩；Workspace 仅保存预设名。
--- 不修改 AppState 老存档/Canonical，不覆盖用户字号/透明度/几何。色表原位更新，
--- 保持 UITokens 引用。只在初始化/显式切换遍历当前 UI.controls，先查代内可用性，
--- 不追 Native 父子节点、不创建/销毁 Drawable，渐变仅用现有 ChangeColor1/2/3。
-------------------------------------------------------------------------
+-- Workspace 只保存预设名，Theme 管色表。切换时原位更新以保留 UITokens 引用，不改字号、透明度或几何。
+-- 只遍历当前已登记控件和 Drawable，不追 Native 子树；渐变复用 ChangeColor1/2/3。
 if ReplicatedSuite==nil or ReplicatedSuite.BootError~=nil then return end
 local S=ReplicatedSuite;local T=S.Theme;local C=S.Constants and S.Constants.Color
 if not T or not C then return end
@@ -71,8 +66,7 @@ local function LightBand(base)
  local function Shift(delta)local v={};for i=1,3 do v[i]=math.max(0,math.min(1,base[i]+delta))end;return v end
  return {Shift(.008),Shift(0),Shift(-.012)}
 end
--- （2026-10-05）参考 Nord / Catppuccin / Rosé Pine 的表面层次，按游戏小字号加深浅色文字、调亮深色状态字。
--- 仅扩充既有 Theme 的常量色表；旧四种主题原样保留。所有新主题为轻渐变，交互/滚动/输入仍由原组件所有。
+-- 参考 Nord / Catppuccin / Rosé Pine 的层次，针对游戏小字号调整文字明暗；仅更新色表，保留旧主题。
 local paletteModes={light='light',nord='dark',dusk='dark',dawn='light',sage='light'}
 local legacyTokens=Copy(tokenDefaults)
 -- 纯色按钮取自旧版 Theme:StyleButton；输入框及滑杆原色与现有深色 token 一致。

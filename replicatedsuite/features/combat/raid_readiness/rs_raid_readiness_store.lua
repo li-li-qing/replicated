@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 团队准备检查设置存储
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅持久化账号偏好；扫描结果是会话事实。必需 Aura ID 来自用户输入/导入，本 Store 禁止预置猜测 Buff ID。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P = S.Persistence

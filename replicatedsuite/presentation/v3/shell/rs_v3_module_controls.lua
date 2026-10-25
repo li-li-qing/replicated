@@ -1,15 +1,9 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 共享功能开关与诊断入口
 -- 作者：Replicated
 -- QQ群：1104129461
---
--- 约束（module-controls-diag-2）：页面开关与诊断统一由 PageHost 提供。
--- PageHost 在滚动正文外为每个路由创建一个左上角控制条；业务页只领取同一按钮引用，
--- 不重设 Native parent、不复制 Enabled 状态、不复制 Consumer 启停流程。原页面 Command/
--- ActionRunner 仍拥有启停事务；FeatureRuntime 是运行状态 Authority，Registry 是性能预估元数据。
--- 只在构建、路由切换、生命周期事件、显式点击后刷新薄状态；无 Tick、Native 扫描或后台取证。
--- 诊断可观察关闭/故障模块；创建或点击诊断绝不能顺带 Initialize/Enable/AcquireConsumer。
-------------------------------------------------------------------------
+-- PageHost 在滚动正文外创建一个控制条，业务页复用按钮，不改父级或复制 Enabled 状态。
+-- 启停仍交给页面 Command/ActionRunner，状态取 FeatureRuntime。
+-- 只在构建、导航、生命周期和点击时刷新；诊断可看关闭模块，但不能顺带启用或取 Consumer。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
@@ -66,10 +60,8 @@ function M:Create(parent, route, meta)
     local controlMeta = bar.featureId and S.FeatureRegistry and S.FeatureRegistry:Get(bar.featureId) or meta
     bar.controlMeta = controlMeta
     if bar.featureId then
-        -- 约束（2026-09-20，module-toggle-native-trampoline-1）：和同一控制条里一直可用的
-        -- “诊断”按钮保持一致，启动按钮在 Native Button 创建当下就必须拥有 OnClick 逻辑。后续页面
-        -- 只替换 bar.invoke 指向的业务动作，不再依赖“按钮创建后再装回调”。这样 Authority 仍是
-        -- FeatureRuntime，但 Native 事件入口在整个控件生命周期内保持稳定。无 Tick/轮询，仅用户点击执行。
+        -- Native Button 创建时就绑定稳定 trampoline，后续页面只替换 bar.invoke。
+        -- 避免先建按钮、稍后安装回调时留下无法点击的控件。
         bar.trampoline = function(...)
             local metrics = bar.actionMetrics
             metrics.clicks = (tonumber(metrics.clicks) or 0) + 1
@@ -129,10 +121,8 @@ function M:Finish(bar, page)
     if not bar.toggle then return true end
     local button = bar.toggle
 
-    -- 约束（2026-09-20，module-toggle-native-trampoline-1）：页面存在三种历史绑定方式：
-    -- DesignSystem 传入 onClick、直接写 component.onClick、只写 component.spec.onClick。这里全部
-    -- 兼容，但必须排除 Create() 自己安装的 trampoline；最终 Native/RSUI Button 仍保持 trampoline，
-    -- 真正业务动作放在 bar.invoke 后面。这样不会修改页面业务语义，也不会把共享控制条强耦合到模块。
+    -- 兼容构造器 onClick、component.onClick 和 spec.onClick 三种旧绑定。
+    -- 排除 Create 安装的 trampoline，业务动作转存 bar.invoke，Native 入口始终保留 trampoline。
     local directAction = button.onClick
     local specAction = type(button.spec) == "table" and button.spec.onClick or nil
     local action = type(bar.pageAction) == "function" and bar.pageAction or nil

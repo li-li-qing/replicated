@@ -1,10 +1,7 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 诊断导出测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 模拟真实 SaveData 传输边界，报告导出必须验证完整回读，且不得写业务 Store。
-------------------------------------------------------------------------
 local disk, writes, maxPhysicalBytes = {}, 0, 0
 ReplicatedSuite = { Persistence = {}, DiagnosticsManager = {}, Generation = 3, ReportCopyTransport = nil }
 local S = ReplicatedSuite

@@ -1,17 +1,12 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 死亡复盘契约验收
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 死亡复盘契约验收。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
--- 本文件是 DeathReview 的
--- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
--- 独立契约检查；这里必须**无条件注册** case，并在实现缺失时明确失败。
+-- 验收必须注册；实现缺失时明确失败，不能静默跳过。
 local F = S.Features and S.Features.DeathReview or nil
 
 local function Fail(message) return false, tostring(message or "death_review_acceptance_failed") end
@@ -33,7 +28,7 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function(runtimeOnly)
         or tonumber(store.schemaVersion) ~= 2 -- `.18.193` 将 codec1 + FloatingSurface v11 canonical generation 正式划入 schema2，旧 schema1 只读迁移。
         or (tonumber(F.PersistenceIndexSchemaContractVersion) or 0) < 2 then -- 要求 Feature 同步声明 schema2，防止注册与 Acceptance 版本漂移。
         return Fail("store_contract") -- Index schema/owner/scope 任一漂移都必须 fail-closed，不能靠页面默认值继续运行。
-    end -- 结束 DeathReview Index 基础 Store 契约。
+    end
     local normalizedWindow = type(store.migrate) == "function" and store.migrate({ widgetWindow = { width = 470, height = 330 } }) or nil -- 只执行纯 migrate normalizer 验证当前 canonical 形状，不触发 Native/UI 或磁盘写入。
     normalizedWindow = type(normalizedWindow) == "table" and normalizedWindow.widgetWindow or nil -- 只抽取当前窗口投影用于契约检查，settings/history 不在此测试中改写。
     if (tonumber(F.PersistenceCanonicalWindowContractVersion) or 0) < 7 -- v7 表示 DeathReview Store 已冻结自己的窗口字段白名单，未来 Foundation 演进必须再升 schema。
@@ -50,7 +45,7 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function(runtimeOnly)
         or normalizedWindow.minimized ~= false or normalizedWindow.locked ~= false -- false 默认必须由 canonical normalizer 稳定恢复，RU 省略 false 不能改变逻辑值。
         or normalizedWindow.userMoved ~= false or tonumber(normalizedWindow.overallOpacity) ~= 0.96 then -- 用户移动标记与透明度仍按既有 Store policy 规范化。
         return Fail("widget_window_canonical_contract") -- 窗口 canonical/recovery 任一契约缺失都阻断，避免再次演化为 Toggle binding/page transaction 故障。
-    end -- 结束 DeathReview schema2 canonical/recovery Acceptance 门禁。
+    end
 
     -- `.18.199` 增加真正执行恢复 hook 的合成契约，而不只检查版本号。
     -- 场景模拟 Framework2/schema2 在 RU SaveData 往返后吞掉 free 布局的 x=0 与 normalizedCenterX=0：
@@ -95,7 +90,7 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function(runtimeOnly)
             or tostring(recoveredWindow.coordinateSpace or "") ~= "logical-free-v2" then
             return Fail("framework2_zero_exact_recovery")
         end
-    end -- 结束 Framework2/schema2 合法 0 exact-recovery 合成验收。
+    end
 
     if F.Demand == nil or type(F.Demand.Acquire) ~= "function" or type(F.Demand.Release) ~= "function"
         or type(F.ReconcileDemand) ~= "function" or type(F.GetSettings) ~= "function" or type(F.SetMaxHistory) ~= "function"

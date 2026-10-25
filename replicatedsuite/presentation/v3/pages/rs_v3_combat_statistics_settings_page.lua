@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 战斗统计设置页面
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 统一统计的低频配置页：只读 Feature 投影，经原 Commands/Binding 写既有 Store。
 -- 指标按任务分组；不读取 Native、不持有 Combat Consumer、不生成另一套设置默认值。
-------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local UI,D,H=S.RSUI,S.UIV3Design,S.UIV3 and S.UIV3.PageHost

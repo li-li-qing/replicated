@@ -1,11 +1,8 @@
-------------------------------------------------------------------------
 -- Replicated Suite · 功能加载就绪测试
 -- 作者：Replicated
 -- QQ群：1104129461
---
 -- 仅供开发期使用，运行真实 Persistence 和 Feature Slice Factory。
 -- 模拟功能启动前修改设置，不写游戏 UDF 文件。
-------------------------------------------------------------------------
 local passed,failed=0,0
 local function Test(name,fn)
     local ok,err=pcall(fn)
