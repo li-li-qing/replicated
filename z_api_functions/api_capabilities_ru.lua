@@ -1,15 +1,15 @@
 -- ArcheRage RU addon API capability overlay
--- Maintained 2026-10-05; official update index checked through 2026-10-05.
--- Latest update body directly verified: EN maintenance 2026-09-29 (RU restart 2026-09-30).
+-- Maintained 2026-10-26; official update index checked through 2026-10-26.
+-- Latest body verified: EN 2026-10-20. EN 10-06/10-13 had no API changes.
 -- status reflects official announcements; runtime_verified=false means the project has not yet
 -- independently sampled the function on the current client in this update pass.
 return {
   meta = {
-    updated = "2026-10-05",
-    checked_through = "2026-10-05",
-    latest_api_change = "2026-09-29",
-    latest_official_update_seen = "2026-09-30",
-    latest_update_body_verified_this_pass = "2026-09-29",
+    updated = "2026-10-26",
+    checked_through = "2026-10-26",
+    latest_api_change = "2026-10-20",
+    latest_official_update_seen = "2026-10-20",
+    latest_update_body_verified_this_pass = "2026-10-20",
     server = "ArcheRage RU",
     policy = "official announcements overlay bundled snapshot; runtime evidence may override for safety",
     date_key_note = "Historical keys preserve the date label used by the source pass; EN maintenance posts can be one calendar day earlier than the RU/MSK restart date. Treat keys as chronology labels, not timezone-normalized timestamps.",
@@ -17,6 +17,21 @@ return {
   },
 
   changes = {
+    ["2026-10-20"] = {
+      -- Source: https://ru.archerage.to/forums/threads/server-update-20-10-2026.17643/
+      -- Official permission only; no return schema or runtime verification is inferred.
+      { api="X2Quest:RewardHonorPoint", status="official_enabled" },
+      { api="X2Quest:RewardLivingPoint", status="official_enabled" },
+      { api="X2Quest:RewardLeadershipPoint", status="official_enabled" },
+      { api="X2Quest:GetQuestContextRewardItemIconType", status="official_enabled" },
+      { api="X2Quest:GetQuestContextRewardItemName", status="official_enabled" },
+      { api="X2Quest:GetQuestContextRewardItemCount", status="official_enabled" },
+      { api="X2Quest:GetQuestContextRewardItemAllCount", status="official_enabled" },
+      { api="X2Item:GetItemInfoByType", status="official_enabled" },
+      { api="X2Warp:GetPortalList", status="official_enabled" },
+      { api="X2Warp:GetReturnList", status="official_enabled" },
+      { api="X2Warp:GetFavoritePortalList", status="official_enabled" },
+    },
     ["2026-09-29"] = {
       { api="X2Map:ShowWorldmapLocation", status="official_changed", note="Optional fifth isGlobal argument added; default true. Existing four-argument callers remain compatible. Source: https://ru.archerage.to/forums/threads/technical-restart-29-09-2026.17596/" },
     },

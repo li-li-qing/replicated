@@ -38,7 +38,6 @@ assert(byRoute["life.craft_planner"] == nil, "制作规划已按用户要求删�
 
 local hiddenRoutes = {
     ["tools.market_analysis"] = true,
-    ["tools.craft_assist"] = true,
     ["tools.social"] = true,
     ["life.housing"] = true,
 }
@@ -46,6 +45,9 @@ for route in pairs(hiddenRoutes) do
     local row = assert(byRoute[route], "missing hidden route: " .. route)
     assert(row.navigationVisible == false, route .. " must be removed from main navigation")
 end
+
+-- 制作计划已接入旧制作台助手页，用户应能从左侧打开；开发态仍等待 RU 验证。
+assert(byRoute["tools.craft_assist"].navigationVisible == true, "制作计划入口不得继续隐藏")
 
 local checked = 0
 for route, want in pairs(expected) do

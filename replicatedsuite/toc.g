@@ -212,6 +212,8 @@ features/combat/buff_cap/rs_buff_cap_feature.lua
 features/combat/raid_recruitment/rs_raid_recruitment_feature.lua
 features/combat/team_tools/rs_team_tools_feature.lua
 features/tools/craft/rs_craft_feature.lua
+features/tools/craft/rs_craft_plan_domain.lua
+features/tools/craft/rs_craft_plan_feature.lua
 features/tools/auction/rs_auction_feature.lua
 features/tools/bag/rs_bag_feature.lua
 features/combat/unit_lines/rs_unit_lines_feature.lua
@@ -245,6 +247,7 @@ presentation/v3/widgets/rs_v3_bag_settings_floating.lua
 presentation/v3/widgets/rs_v3_bag_quick_overlay.lua
 presentation/v3/widgets/rs_v3_auction_sidecar.lua
 presentation/v3/widgets/rs_v3_craft_sidecar.lua
+presentation/v3/widgets/rs_v3_craft_entry.lua
 presentation/v3/widgets/rs_v3_player_notes_sidecar.lua
 presentation/v3/widgets/rs_v3_quest_detail_floating.lua
 presentation/v3/widgets/rs_v3_activity_lists.lua
@@ -288,6 +291,7 @@ presentation/v3/pages/rs_v3_nameplate_visuals_page.lua
 presentation/v3/pages/rs_v3_activity_page.lua
 presentation/v3/pages/rs_v3_task_page.lua
 presentation/v3/pages/rs_v3_life_m16_pages.lua
+presentation/v3/widgets/rs_v3_craft_plan_editor.lua
 presentation/v3/pages/rs_v3_business_pages.lua
 presentation/v3/pages/rs_v3_feature_profiles_page.lua
 presentation/v3/pages/rs_v3_instance_page.lua

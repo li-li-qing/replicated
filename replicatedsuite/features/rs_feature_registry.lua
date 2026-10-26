@@ -498,17 +498,16 @@ Add("tools_market_analysis", "tools.market_analysis", "拍卖行情", "tools", 2
     apiDependencies = { "X2Auction:SearchAuctionArticle", "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo", "X2Auction:GetLowestPrice", "X2Auction:AskMarketPrice" },
     apiReadiness = "official", apiPolicy = "explicit_server_query", evidence = "Retained rs_auction_service.lua 9-parameter SearchInteractive + AuctionQueryV3 serialized completion ownership; history remains explicitly unclaimed",
 })
-Add("tools_craft", "tools.craft_assist", "制作台助手", "tools", 30, "制作台上下文的材料、持有量与缺口辅助；生命周期与跑商解耦，批量市场报价不在普通刷新执行。", {
-    -- 制作台 Sidecar/CraftSurface 仍可能被原生制作窗口使用，
-    -- 因此只删除主导航可见性，不物理删除 Feature/Service/Store；兼容现有设置且避免回退成强耦合。
-    navigationVisible = false,
-    navigationDevelopmentState = "incomplete", -- 制作台助手当前功能覆盖仍不全面，继续标记“未完成”。现有原生窗口观察、Sidecar 生命周期和无后台询价边界保持不变。
+Add("tools_craft", "tools.craft_assist", "配方制作", "tools", 30, "通用配方与材料清单：导入装备、消耗品、家具和材料等配方，展开多层材料，统一抵扣库存并比较购买/制作成本。", {
+    -- 制作计划复用此页面，必须恢复左侧入口；沿用原路由和存档身份。
+    navigationVisible = true,
+    navigationDevelopmentState = "incomplete", -- 配方制作当前功能覆盖仍不全面；入口采用屏幕按钮与手动小窗，仍禁止后台询价。
     status = "migrated_partial", lifecycle = "independent", authority = "v3.craft", widgetCapable = true, settingsCapable = true,
-    apiDependencies = { "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "ADDON:GetContent", "ADDON:GetContentMainScriptPosVis" },
-    apiReadiness = "official_mixed_pending_runtime", verification = "local_contract_verified_pending_ru_runtime", apiPolicy = "on_demand_read_only_plus_native_surface_observation",
-    currentImplementation = "用户从已核制作物目录选择，不输入 doodadId/craftType；bounded product/material、held/shortage 与 known-record graph；Native 材料不可读时可回退已核静态贸易配方；.18.121 新增 CraftSurfaceV3 + 独立 tools.craft_sidecar：仅在功能启用且自动侧窗打开时以 400ms bounded watcher 观察 UIC_MAKE_CRAFT_ORDER/UIC_CRAFT_ORDER/UIC_CRAFT_BOOK，原生制作窗可见时复用同一 Craft Authority 显示材料侧窗；不订阅未验证 Craft Event，不后台询价。",
-    remainingCapability = "非贸易制作目录、原生制作窗口几何/可见性的 RU Fresh Reload 证明，以及更精确的制作台/区域业务上下文仍待验证；未验证 Craft Event 继续不接入",
-    evidence = "z_api_functions exports three craft UIC constants + governed ADDON read-only calls; retained production CraftAssist behavior used only as visibility/sidecar UX evidence; Active V3 CraftSurfaceContract v1 is event-free and fail-closed on geometry-only visibility",
+    apiDependencies = { "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" },
+    apiReadiness = "official_mixed_pending_runtime", verification = "local_contract_verified_pending_ru_runtime", apiPolicy = "on_demand_read_only_plus_explicit_screen_entry",
+    currentImplementation = "启用后默认显示屏幕配方按钮，点击打开配方小窗；按钮左把手、小窗标题可拖动并分别保存位置。小窗首次居中、默认解锁，采用共享视口边界且重开不强制贴边；制作页可显隐/恢复按钮和恢复小窗。导入使用限时接收本人配方分享（无需聊天命令），已收录配方可按名称搜索或直接选择加入。支持多目标、多层材料、库存抵扣、混合买做、显式报价和路线比较；未知产量保留人工校准。两次实机确认 O 页 Getter 全 nil，已停止自动窗口观察及该直接读取入口；旧自动偏好保留。小窗位置修复待实机验证。",
+    remainingCapability = "当前客户端 O 页自动侧栏/所选配方读取不可用；全游戏配方目录搜索、特殊配方形态、仓库身份和挂单覆盖仍待核验；不调用未允许的 GetListBySearching，不自动购买或制作",
+    evidence = "RS-20261026-225543 and RS-20261027-001830 exports: all three craft content/position getters return nil; automatic observation stopped. Explicit screen button uses WidgetHost/Windowing with zero demand/tasks; manual window and one-shot share receiver are independent of native window exposure",
 })
 Add("tools_instance_browser", "tools.instance_browser", "副本目录", "tools", 40, "浏览客户端当前副本分类、入场次数与运行时副本ID；静态数据库区域ID与运行时副本ID严格分离。", {
     status = "migrated_m1", lifecycle = "page_scoped", authority = "v3.instances", settingsCapable = false,

@@ -142,7 +142,8 @@ local function Build(parent, route, id)
         if hint == nil then return nil, "unit_line_settings_summary_failed" end
     else
         D:PageHeader(root, "v3_business_" .. id .. "_header", meta and meta.name or id,
-            meta and meta.description or "V3 业务功能页；数据读取由独立 Authority 完成。", id=="tools_bag" and "刷新背包" or "刷新", function()
+            meta and meta.description or "V3 业务功能页；数据读取由独立 Authority 完成。", id=="tools_bag" and "刷新背包" or (id=="tools_craft" and "刷新计划" or "刷新"), function()
+                if id=="tools_craft" then root:Refresh();return true end
                 local ok, refreshErr = feature.Commands:Refresh("page_manual")
                 if ok == true then root:Refresh() end
                 return ok, refreshErr
@@ -175,7 +176,6 @@ local function Build(parent, route, id)
         end
         return root:Refresh()
     end
-    local craftRecipeDropdown, craftActionStatus, craftQuoteButton
     local specialFields = {}
     local function TrackField(field) if field ~= nil then specialFields[#specialFields + 1] = field end return field end
     -- 范围圆使用稳定列表和单一选中编辑器。按 #circles 在 Build 时生成卡片，
@@ -935,51 +935,30 @@ local function Build(parent, route, id)
             prev:SetEnabled(auctionPage>1); next:SetEnabled(auctionPage<pagesCount)
         end
     end
-    -- 共享制作页只服务 tools_craft，不能为已删除的制作规划创建控件或消费者。
+    -- 通用配方计划是本页主体；不再要求先从贸易货物目录挑选制作物。
     if id == "tools_craft" then
-        local craftRow = RSUI:HorizontalBox({ id = "v3_business_" .. id .. "_recipe_row", parent = root, gap = 6,
-            slot = { size = "fixed", height = 32, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_business_" .. id .. "_recipe_label", parent = craftRow, text = "制作物", fontSize = 9, tone = "strong",
-            slot = { size = "fixed", width = 46 } })
-        local initialProjection = feature:GetProjection() or {}
-        craftRecipeDropdown = RSUI:Dropdown({ id = "v3_business_" .. id .. "_recipe_select", parent = craftRow,
-            items = type(initialProjection.recipeOptions)=="table" and initialProjection.recipeOptions or {}, maxVisible = 12, popupWidth = 310,
-            get = function() return (feature:GetProjection() or {}).selectedRecipeKey end,
-            set = function(value)
-                local ok, commandErr = feature.Commands:SelectRecipe(value)
-                if ok == true then root:Refresh() end
-                return ok, commandErr
-            end, placeholder = "选择已核制作物", slot = { size = "fill", fill = 1, minWidth = 220 } })
-        local refreshButton = RSUI:Button({ id = "v3_business_" .. id .. "_recipe_refresh", parent = craftRow, text = "刷新材料", compact = true,
-            slot = { size = "fixed", width = 78 } })
-        craftQuoteButton = RSUI:Button({ id = "v3_business_" .. id .. "_material_quote", parent = craftRow, text = "材料询价", compact = true, enabled = false,
-            slot = { size = "fixed", width = 92 } })
-        craftActionStatus = RSUI:Text({ id = "v3_business_" .. id .. "_context_status", parent = root,
-            text = "从制作物列表选择配方；内部配方编号和物品编号只用于诊断，不要求用户输入。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
-            slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
-        refreshButton.onClick = function()
-            local ok, refreshErr = feature.Commands:Refresh("craft_page_manual")
-            if ok == true then root:Refresh()
-            elseif craftActionStatus ~= nil then craftActionStatus:SetText("刷新失败：" .. tostring(refreshErr or "未执行")) end
-            return ok, refreshErr
-        end
-        craftQuoteButton.onClick = function()
-            if type(feature.Commands.QuotePendingMaterials) ~= "function" then return false, "材料批量询价命令不可用" end
-            local ok, quoteMessage = feature.Commands:QuotePendingMaterials()
-            if craftActionStatus ~= nil then craftActionStatus:SetText(ok == true and tostring(quoteMessage or "询价已提交") or ("询价失败：" .. tostring(quoteMessage or "未执行"))) end
-            if ok == true then root:Refresh() end
-            return ok, quoteMessage
-        end
-        if type(feature.Commands.SetAutoSidecar) == "function" then
+        if S.UIV3 == nil or type(S.UIV3.CreateCraftPlanEditor) ~= "function" then return nil, "配方制作编辑器不可用" end
+        local editor, editorErr = S.UIV3.CreateCraftPlanEditor(root, feature)
+        if editor == nil then return nil, editorErr or "配方制作编辑器创建失败" end
+        root.craftPlanEditor = editor
+        if type(feature.Commands.SetScreenButtonVisible) == "function" then
             local sidecarRow = RSUI:HorizontalBox({ id = "v3_business_tools_craft_sidecar_row", parent = root, gap = 6,
                 slot = { size = "fixed", height = 31, hAlign = "fill" } })
-            TrackField(RSUI:Toggle({ id = "v3_business_tools_craft_auto_sidecar", parent = sidecarRow,
-                onText = "制作台侧窗：自动", offText = "制作台侧窗：关闭",
-                get = function() return (feature:GetProjection() or {}).autoSidecar ~= false end,
-                set = function(value) return feature.Commands:SetAutoSidecar(value == true) end,
-                slot = { size = "fixed", width = 142 } }))
+            TrackField(RSUI:Toggle({ id = "v3_business_tools_craft_screen_button", parent = sidecarRow,
+                onText = "屏幕配方按钮：显示", offText = "屏幕配方按钮：隐藏",
+                get = function() return feature:GetScreenButtonState().visible end,
+                set = function(value) return feature.Commands:SetScreenButtonVisible(value == true) end,
+                slot = { size = "fixed", width = 160 } }))
+            RSUI:Button({id='v3_business_tools_craft_reset_button',parent=sidecarRow,text='恢复按钮',compact=true,
+                slot={size='fixed',width=76},onClick=function()return feature.Commands:ResetScreenButtonPosition()end})
+            RSUI:Button({id='v3_business_tools_craft_reset_window',parent=sidecarRow,text='恢复小窗',compact=true,
+                slot={size='fixed',width=76},onClick=function()
+                    local controller=S.UIV3.CraftSidecar
+                    if not controller or type(controller.ResetPosition)~='function' then return false,'配方小窗位置恢复不可用' end
+                    return controller:ResetPosition()
+                end})
             RSUI:Text({ id = "v3_business_tools_craft_sidecar_hint", parent = sidecarRow,
-                text = "只观察原生制作窗口；打开时显示材料侧窗，普通刷新不会后台询价。", fontSize = 8, tone = "muted", overflow = "ellipsis",
+                text = "屏幕按钮点击打开小窗，左侧把手可拖动。O 自动入口当前不可用。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
                 slot = { size = "fill", fill = 1 } })
         end
     end
@@ -1376,6 +1355,13 @@ local function Build(parent, route, id)
             end
         return true
     end
+    if id == "tools_craft" then tableView:SetVisibility("collapsed") end
+    function root:RefreshCraftSurfaceStatus(snapshot)
+        if id ~= "tools_craft" then return end
+        local status = "O 自动入口不可用；点击屏幕配方按钮或打开配方小窗。"
+        hint:SetText(S.FeatureRuntime:IsEnabled(id) == true and ("通用配方计划 · " .. tostring(self.craftTargetCount or 0) .. " 个目标 · " .. status)
+            or "功能已关闭；已有计划保留，启用后可导入和核对配方。")
+    end
     function root:Refresh()
         local projection = feature:GetProjection() or {}
         local rows = id == "tools_bag" and BuildBagSettingsRows(projection)
@@ -1424,34 +1410,7 @@ local function Build(parent, route, id)
             auctionStatus:SetText(statusZh .. " · 当前结果 " .. tostring(projection.resultCount or 0) .. quotePart .. (projection.queryError and (" · " .. tostring(projection.queryError)) or "") .. (id=="tools_market_analysis" and " · 非历史成交价" or ""))
         end
         if id == "tools_craft" then
-            local craft = type(projection.craft) == "table" and projection.craft or {}
-            local craftStatus = tostring(craft.status or projection.status or "empty")
-            local craftError = craft.error or projection.error
-            if craftRecipeDropdown ~= nil then
-                craftRecipeDropdown.items = type(projection.recipeOptions)=="table" and projection.recipeOptions or {}
-                if type(craftRecipeDropdown.Render)=="function" then craftRecipeDropdown:Render() end
-            end
-            local statusZh = ({ ready="可用", partial="部分可用", empty="等待选择", unavailable="不可用", failed="读取失败", idle="等待选择" })[craftStatus] or craftStatus
-            local pendingQuotes = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
-            if craftQuoteButton ~= nil then
-                craftQuoteButton:SetEnabled(S.FeatureRuntime:IsEnabled(id) == true and pendingQuotes > 0)
-                craftQuoteButton:SetText(pendingQuotes > 0 and ("询价(" .. tostring(pendingQuotes) .. ")") or "材料询价")
-            end
-            local costText = ""
-            if (tonumber(projection.pricedMaterialCount) or 0) > 0 then
-                local rawCost = tonumber(projection.quotedMaterialCostCopper) or 0
-                local cost = tostring(math.floor(rawCost + 0.5))
-                if S.Utils ~= nil and type(S.Utils.FormatMoney) == "function" then
-                    local okMoney, moneyText = pcall(S.Utils.FormatMoney, rawCost)
-                    if okMoney == true and type(moneyText) == "string" and moneyText ~= "" then cost = moneyText end
-                end
-                costText = " · 已报价材料 " .. tostring(projection.pricedMaterialCount) .. " 项 / 当前小计 " .. cost
-            end
-            if pendingQuotes > 0 then costText = costText .. " · 待询价 " .. tostring(pendingQuotes) .. " 项" end
-            if craftActionStatus ~= nil then
-                craftActionStatus:SetText(craftError and (statusZh .. "：" .. tostring(craftError)) or (statusZh .. " · " .. tostring(#rows) .. " 条材料/产物信息" .. costText))
-                if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then S.Theme:SetLabelTone(craftActionStatus, craftError and "warn" or "muted") end
-            end
+            if self.craftPlanEditor ~= nil then self.craftPlanEditor:Refresh(projection) end
         end
         if id == "tools_bag" and type(self.RefreshBlacklistEditor) == "function" then self:RefreshBlacklistEditor(projection) end
         if id=="tools_bag" then self:RefreshBagQuickStatus(projection)end
@@ -1533,6 +1492,10 @@ local function Build(parent, route, id)
         elseif id == "combat_buff_cap" then
             hint:SetText("普通/隐藏分别计数，不推断共享容量或顶替规则。0关闭该类提醒；本次启用峰值仅覆盖实际采样。"
                 .. (enabled ~= true and " 功能已关闭，设置仍可保存。" or " 关闭页面后仅个人提醒继续观察；关闭功能全部停止。"))
+        elseif id == "tools_craft" then
+            local plan = type(projection.plan) == "table" and projection.plan or {}
+            self.craftTargetCount = #(plan.targets or {})
+            self:RefreshCraftSurfaceStatus(projection.craftSurface)
         elseif id == "tools_bag" then
             if enabled ~= true then
                 hint:SetText("功能已关闭；黑名单配置会保留，重新启用后继续生效。")
@@ -1667,6 +1630,13 @@ local function Build(parent, route, id)
                 end
             end
         end
+        if id == "tools_craft" then
+            local surface = S.Services and S.Services.CraftSurfaceV3
+            if surface and type(surface.topic) == "string" then
+                -- 仅刷新状态文字，避免开关原生窗口时重绘编辑器或覆盖输入草稿。
+                S.Events:SubscribeInternal(surface.topic, self, function(_, snapshot) return root:RefreshCraftSurfaceStatus(snapshot) end)
+            end
+        end
         -- 功能方案可在页面可见时启停模块；disabled 同步已释放的 lease，enabled 重取同一 token。
         local lifecycleOk, lifecycleErr = Host:BindFeatureConsumerLifecycle(self, consumerBinding)
         if lifecycleOk ~= true then
@@ -1697,6 +1667,9 @@ local function Build(parent, route, id)
         -- 离开设置页只退出鼠标校准，保留已启用机制的后台观察，避免 HUD 截获战斗点击。
         if id == "combat_boss_alerts" and type(feature.Commands.SetHudEditing) == "function" then feature.Commands:SetHudEditing(false) end
         self:UnbindFeatureUpdates()
+        if id=='tools_craft' and type(feature.Commands.PlanCancelReceiveShare)=='function' then
+            feature.Commands:PlanCancelReceiveShare('page:tools_craft')
+        end
         return Host:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end
     root.route, root.tableView = route, tableView

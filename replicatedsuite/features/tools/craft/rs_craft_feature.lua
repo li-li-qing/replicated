@@ -21,7 +21,7 @@ local CRAFT_MAX_ROWS = 64
 local CRAFT_MAX_NODES = 256
 local CRAFT_TEXT_LIMIT = 768
 local CRAFT_ITEM_TYPE_KEYS = { "itemType", "itemTypeId", "item_type", "typeId" }
-local CRAFT_NAME_KEYS = { "name", "itemName", "displayName", "title" }
+local CRAFT_NAME_KEYS = { "name", "item_name", "itemName", "displayName", "title" }
 local CRAFT_COUNT_KEYS = { "count", "amount", "requiredCount", "requireCount", "needCount", "itemCount", "stackCount", "quantity", "num" }
 local CRAFT_GRADE_KEYS = { "itemGrade", "grade", "item_grade", "gradeId" }
 
@@ -37,10 +37,10 @@ local function CraftText(value, fallback)
     return text:sub(1, CRAFT_TEXT_LIMIT) .. "…", true
 end
 
-local function CraftNumberField(value, keys)
+local function CraftNumberField(value, keys, allowZero)
     if type(value) ~= "table" then return nil end
     for _, key in ipairs(keys or {}) do
-        local number = CraftInteger(value[key], false)
+        local number = CraftInteger(value[key], allowZero == true)
         if number ~= nil then return number end
     end
     return nil
@@ -59,26 +59,33 @@ local function CraftRecord(value, inheritedCount)
     if type(value) ~= "table" then return nil end
     local itemType = CraftNumberField(value, CRAFT_ITEM_TYPE_KEYS)
     local name = CraftTextField(value, CRAFT_NAME_KEYS)
-    local count = CraftNumberField(value, CRAFT_COUNT_KEYS) or inheritedCount
-    local grade = CraftNumberField(value, CRAFT_GRADE_KEYS)
-    for _, key in ipairs({ "itemInfo", "item", "info", "productInfo", "materialInfo" }) do
+    -- 参考插件实际消费的 item_info 形态中，amount 为每次用量，count 为持有量。
+    -- 不能让背包有 200 个材料变成配方每次需要 200 个。
+    local itemInfoShape = type(value.item_info) == "table"
+    local count = itemInfoShape and CraftInteger(value.amount, false) or nil
+    if not itemInfoShape then count = CraftNumberField(value, CRAFT_COUNT_KEYS) or inheritedCount end
+    local grade = CraftNumberField(value, CRAFT_GRADE_KEYS, true)
+    local recipeHint = CraftInteger(value.craftType, false)
+    for _, key in ipairs({ "item_info", "itemInfo", "item", "info", "productInfo", "materialInfo" }) do
         local child = value[key]
         if type(child) == "table" then
             itemType = itemType or CraftNumberField(child, CRAFT_ITEM_TYPE_KEYS)
             name = name or CraftTextField(child, CRAFT_NAME_KEYS)
-            count = count or CraftNumberField(child, CRAFT_COUNT_KEYS)
-            grade = grade or CraftNumberField(child, CRAFT_GRADE_KEYS)
+            if not itemInfoShape then count = count or CraftNumberField(child, CRAFT_COUNT_KEYS) end
+            grade = grade or CraftNumberField(child, CRAFT_GRADE_KEYS, true)
+            recipeHint = recipeHint or CraftInteger(child.craftType, false)
         end
     end
     -- 部分Native绑定返回{itemType,count}元组而非命名字段；仅首个标量为正ID时接受。
     if itemType == nil and type(value[1]) ~= "table" then itemType = CraftInteger(value[1], false) end
-    if count == nil and type(value[2]) ~= "table" then count = CraftInteger(value[2], true) end
+    if not itemInfoShape and count == nil and type(value[2]) ~= "table" then count = CraftInteger(value[2], true) end
     if itemType == nil and name == nil and count == nil then return nil end
     return {
         itemType = itemType,
         name = name,
         count = count,
         grade = grade,
+        recipeHint = recipeHint,
         status = itemType ~= nil and name ~= nil and count ~= nil and "ready" or "missing",
     }
 end
@@ -101,7 +108,7 @@ local function CraftCollectRecords(payload)
             if type(child) == "table" then visit(child, CraftNumberField(value, CRAFT_COUNT_KEYS), depth + 1) end
         end
         for key, child in pairs(value) do
-            if type(child) == "table" and type(key) ~= "number" and key ~= "itemInfo" and key ~= "item" and key ~= "info" and key ~= "productInfo" and key ~= "materialInfo" then
+            if type(child) == "table" and type(key) ~= "number" and key ~= "item_info" and key ~= "itemInfo" and key ~= "item" and key ~= "info" and key ~= "productInfo" and key ~= "materialInfo" then
                 visit(child, CraftNumberField(value, CRAFT_COUNT_KEYS), depth + 1)
             end
         end
@@ -670,7 +677,7 @@ end
 
 local CRAFT_API_DEPENDENCIES = { "X2Craft:GetCraftBaseInfo", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Craft:GetCraftTypeByItemType", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" }
 -- tools_craft 继续使用 CraftRead/CraftProjection；不注册已移除的 life_craft_planner Store/Demand/Runtime，旧磁盘键保留。
-local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands(),
+local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType", "screenButtonVisible", "screenButtonPlacement", "craftWindowState" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands(),
     -- 最后一个消费端关闭时释放静态工作缓存；重开由
     -- consumer_acquire 完整采样，不让无需求的 Feature 保留配方副本，也不增加任何任务。
     reconcileDemand = function(feature, before, after)
@@ -679,3 +686,43 @@ local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_D
     end,
 })
 CraftAssistant.CraftUserSelectionContractVersion = 1
+
+-- 计划复用同一个原生解析边界，返回独立数据；不做报价、背包扫描或 UI 刷新。
+function CraftAssistant:ReadPlanRecipe(craftType, options)
+    if CraftInteger(craftType, false) == nil then return nil, "配方编号无效" end
+    local okP, product, errP = Call("X2Craft:GetCraftProductInfo", CraftApi, "GetCraftProductInfo", craftType)
+    local okM, materials, errM = Call("X2Craft:GetCraftMaterialInfo", CraftApi, "GetCraftMaterialInfo", craftType, 0)
+    local p = CraftSection("product", okP, product, errP, craftType, 0)
+    local m = CraftSection("materials", okM, materials, errM, craftType, 0)
+    if p.status ~= "ready" or m.status ~= "ready" or #p.items ~= 1 or p.truncated or m.truncated then
+        return nil, "配方产量/材料字段待核；不支持未明确分摊的多产物配方"
+    end
+    local function Item(row)
+        if CraftInteger(row.itemType, false) == nil or CraftInteger(row.count, false) == nil then return nil end
+        return { itemType=row.itemType, count=row.count, grade=row.grade, name=row.name, recipeHint=row.recipeHint }
+    end
+    local productItem = Copy(p.items[1])
+    local outputSource = "X2Craft"
+    if CraftInteger(productItem.count, false) == nil and type(options) == "table" and CraftInteger(options.outputCount, false) ~= nil then
+        productItem.count = CraftInteger(options.outputCount, false); outputSource = "manual"
+    end
+    local output = Item(productItem)
+    if output == nil then return nil, "产物身份或每次产量未知；可对照制作界面填写每次产出后重试" end
+    local rows = {}
+    for _, row in ipairs(m.items) do
+        local item = Item(row)
+        if item == nil then return nil, "材料身份或数量未知" end
+        rows[#rows+1] = item
+    end
+    -- BaseInfo 没有已验证的有效劳动力/费用字段契约，保留未知，由用户校准。
+    return { id=tostring(craftType), product=output, materials=rows, source="X2Craft", outputSource=outputSource }
+end
+
+function CraftAssistant:ReadPlanRecipeTypes(itemType)
+    local ok, first, err, second, third, fourth = Call("X2Craft:GetCraftTypeByItemType", CraftApi, "GetCraftTypeByItemType", itemType)
+    if ok ~= true then return nil, err end
+    local ids, seen = {}, {}
+    -- 各返回位置分别处理，不能让中间的 nil 截断后续值。
+    for _, value in pairs({ first, second, third, fourth }) do CraftCollectTypeIds(value, ids, seen, 0) end
+    return ids, #ids == 0 and "recipe_identity_unknown" or nil
+end
