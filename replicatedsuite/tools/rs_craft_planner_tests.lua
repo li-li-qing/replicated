@@ -432,7 +432,7 @@ Test("C12: Generic share and native quantities keep craft and item identities se
     assert(not feature:ReadPlanRecipe(7450, {outputCount=5}), "held count cannot fill a missing recipe amount")
 end)
 
-Test("C13: Full recipe page uses generic shares without a trade catalog gate", function()
+Test("C13: Craft tools page exposes advanced settings and popup recovery", function()
     local host = dofile("tools/rs_gear_page_test_host.lua")({width=680, height=680})
     local suite = host.S
     dofile("ui/framework/rs_ui_forms.lua")
@@ -441,10 +441,11 @@ Test("C13: Full recipe page uses generic shares without a trade catalog gate", f
     dofile("presentation/v3/widgets/rs_v3_craft_plan_editor.lua")
     local plan = {revision=1, activeId="p1", plans={{value="p1", text="家具计划"}}, targets={},
         catalog={}, recipes={}, choices={}, allocations={}, evaluation=suite.CraftPlanDomain.Evaluate({}, {})}
-    local importedCount,screenVisible,resets,windowResets=nil,true,0,0
+    local importedCount,screenVisible,resets,windowResets,laborValue=nil,true,0,0,nil
     suite.Features.tools_craft = {
         Commands={Refresh=function()error("generic page refresh must not read legacy craft context")end,
             PlanReceiveShare=function(_,count)importedCount=count;return true end,
+            PlanSetLaborValue=function(_,value)laborValue=value;plan.laborValueCopper=value;return true end,
             SetScreenButtonVisible=function(_,value)screenVisible=value;return true end,
             ResetScreenButtonPosition=function()resets=resets+1;return true end},
         GetScreenButtonState=function()return {visible=screenVisible}end,
@@ -464,18 +465,19 @@ Test("C13: Full recipe page uses generic shares without a trade catalog gate", f
         for _, child in ipairs(node.children or {}) do Visit(child) end
     end
     Visit(page)
-    assert(nodes.craft_plan_share_text and page.craftPlanEditor.view == "tree")
+    assert(nodes.craft_advanced_labor_value and not nodes.craft_plan_table,
+        "the tools page must expose advanced settings rather than a second daily planner")
+    local labor=nodes.craft_advanced_labor_value
+    assert(labor.input:BeginEditing('labor_value'));labor.input.root.text='12'
+    assert(labor.apply:Click() and laborValue==12)
+    assert(nodes.craft_advanced_clear_labor:Click() and laborValue==nil)
     assert(nodes.v3_business_tools_craft_screen_button:SetValue(false) and screenVisible==false)
     assert(nodes.v3_business_tools_craft_screen_button:SetValue(true) and screenVisible==true)
     assert(nodes.v3_business_tools_craft_reset_button:Click() and resets==1)
     suite.UIV3.CraftSidecar={ResetPosition=function()windowResets=windowResets+1;return true end}
     assert(nodes.v3_business_tools_craft_reset_window:Click() and windowResets==1)
     assert(not nodes.v3_business_tools_craft_auto_sidecar and not nodes.craft_plan_add_selected)
-    assert(nodes.craft_plan_more_imports.visibility == "collapsed", "chat imports must be a backup flow")
-    assert(nodes.craft_plan_receive_share.onClick() and importedCount == 1)
-    assert(nodes.craft_plan_toggle_imports.onClick())
-    page:Layout(0, 0, 680, 680)
-    assert(nodes.craft_plan_more_imports.visibility == "visible")
+    assert(not nodes.craft_plan_more_imports and not nodes.craft_plan_receive_share)
     assert(not nodes.v3_business_tools_craft_recipe_select)
     assert(page.tableView.visibility == "collapsed")
     assert(nodes.v3_business_tools_craft_hint.text:find("通用配方计划", 1, true))

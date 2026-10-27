@@ -75,6 +75,9 @@ Test('a valid late material hint in a shared DAG is still read and scan failures
     F.ReadPlanRecipe=function(_,id)return records[id] end
     F.ReadPlanRecipeTypes=function()return {} end
     assert(C:PlanImportLink('|if1;合成共享材料链|r',1));h.drain()
+    assert(C:PlanSetAllocation('2:*:*','craft'))
+    assert(C:PlanSetAllocation('3:*:*','craft'))
+    assert(C:PlanSetAllocation('4:*:*','craft'))
     local p=h.projection()
     assert(p.recipes['4'] and p.choices['4:*:*']=='4','late hint must not be lost because the key was already seen')
     assert(p.evaluation.byKey['5:*:*'].demand==6,'both branches must expand into the shared child quantity')
@@ -124,7 +127,9 @@ Test('deleted unused recipes release capacity without dropping shared subrecipes
     assert(C:RecipeDelete('1'))
     assert(C:RecipeImportLink('|if129;新增配方|r',1),'deleting an unused root must release a recipe slot')
     assert(h.projection().recipes['9999'],'shared subrecipe is still referenced and must survive collection')
-    assert(C:RecipeOpen('2') and h.projection().evaluation.byKey['8888:*:*'])
+    assert(C:RecipeOpen('2'))
+    assert(C:PlanSetAllocation('9999:*:*','craft'))
+    assert(h.projection().evaluation.byKey['8888:*:*'])
 end)
 Test('ten cloth expands into thirty wool and material-only import does not add another root',function()
     local h=Boot();local F,C=h.F,h.C
@@ -135,6 +140,7 @@ Test('ten cloth expands into thirty wool and material-only import does not add a
     F.ReadPlanRecipe=function(_,id)return records[id] end
     F.ReadPlanRecipeTypes=function()return {}end
     assert(C:RecipeImportLink('|if11;亮纹布料|r',1));h.drain()
+    assert(C:PlanSetAllocation('12:*:*','craft'))
     local p=h.projection()
     assert(p.evaluation.byKey['12:*:*'].demand==10 and p.evaluation.byKey['14:*:*'].demand==30)
     assert(p.evaluation.byKey['13:*:*'].demand==1 and #p.targets==1)
@@ -168,10 +174,167 @@ Test('opening an interrupted recipe resumes its material read and does not cance
     local done=h.projection().scan.done
     assert(C:RecipeOpen('11') and h.projection().scan.done==done,'opening the active entry must not cancel its read')
     h.drain()
+    assert(C:PlanSetAllocation('12:*:*','craft'))
     assert(h.projection().evaluation.byKey['13:*:*'].demand==6)
     assert(C:RecipeImportLink('|if22;合成乙|r',1));h.drain()
     assert(C:RecipeDelete('22') and h.projection().scan,'deletion fallback must resume the active recipe read')
     h.drain();assert(h.projection().evaluation.byKey['13:*:*'].demand==6)
+end)
+Test('adding a saved recipe to a recipe sheet creates a multi-target plan without changing the sheet',function()
+    local h=Boot();local C=h.C
+    assert(C:RecipeImportLink('|if11;配方甲|r',2))
+    local original=h.projection().activeId
+    assert(C:RecipeImportLink('|if22;配方乙|r',1))
+    assert(C:RecipeOpen('11'))
+    assert(type(C.PlanAppendSavedRecipe)=='function','the popup needs an atomic add-to-plan command')
+    h.failSave=true
+    assert(not C:PlanAppendSavedRecipe('22',3) and h.projection().activeId==original,
+        'failed durable save must keep the original independent recipe selected')
+    h.failSave=false
+    assert(C:PlanAppendSavedRecipe('22',3))
+    local combined=h.projection()
+    assert(combined.activeId~=original and #combined.targets==2)
+    local amounts={};for _,target in ipairs(combined.targets)do amounts[target.itemType]=target.count end
+    assert(amounts[11]==2 and amounts[22]==3)
+    assert(C:RecipeOpen('11'))
+    assert(h.projection().activeId==original and #h.projection().targets==1 and h.projection().targets[1].count==2)
+    assert(type(C.PlanAppendCatalogItem)=='function')
+    assert(C:PlanAppendCatalogItem('22:*:*',4))
+    local catalogPlan=h.projection();local catalogAmounts={}
+    for _,target in ipairs(catalogPlan.targets)do catalogAmounts[target.itemType]=target.count end
+    assert(catalogAmounts[11]==2 and catalogAmounts[22]==4)
+end)
+Test('quoting a preview ingredient neither interrupts recipe discovery nor requires an active demand',function()
+    local h=Boot();local F,C=h.F,h.C
+    local records={
+        [1]={id='1',product={itemType=1,count=1,name='成品'},materials={{itemType=2,count=3,name='木材',recipeHint=2}}},
+        [2]={id='2',product={itemType=2,count=1,name='木材'},materials={{itemType=3,count=4,name='原木'}}},
+    }
+    F.ReadPlanRecipe=function(_,id)return records[id]end
+    F.ReadPlanRecipeTypes=function()return {}end
+    assert(C:RecipeImportLink('|if1;成品|r',1));h.drain()
+    assert(not h.projection().evaluation.byKey['3:*:*'])
+    assert(C:PlanReadRecipes() and h.projection().scan)
+    local requested
+    h.S.Services.PriceQuoteQueueV3={RequestQuote=function(_,_,id)requested=id;return true end}
+    assert(C:PlanCalibrate('3:*:*'))
+    assert(requested==3 and h.projection().scan,'quote must preserve the active recipe scan')
+    for _,row in ipairs(h.projection().evaluation.rows)do
+        assert(row.key~='3:*:*','a preview price request must not create a demand row')
+    end
+end)
+Test('a bag-only scan does not claim that the bank is known or the total cost complete',function()
+    local h=Boot();local F,C=h.F,h.C
+    F.ReadPlanRecipe=function()return {id='1',product={itemType=1,count=1,name='成品'},
+        materials={{itemType=2,count=3,name='原木'}},labor=5,feeCopper=0}end
+    local bankCount,bankCapacity=2,20
+    h.S.Services.InventorySnapshotV3={BuildSnapshot=function(_,scope)
+        return {rows={{itemType=2,stack=scope=='bag' and 4 or bankCount}},
+            capacity=scope=='bank' and bankCapacity or 20,truncated=false,readErrors=0,unknown=0,fallback=0}
+    end}
+    h.S.ApiImports={Acquire=function()return true end}
+    local bankVisible=true
+    h.S.Features=h.S.Features or {};h.S.Features.tools_bag={GetStorageWindowContext=function()
+        return {status='ready',visible=bankVisible}
+    end}
+    h.S.Services.MaterialPriceServiceV3={GetPrice=function(_,id)if id==2 then return 10,{freshness='fresh'} end end}
+    assert(C:RecipeImportLink('|if1;成品|r',2))
+    assert(C:PlanRefreshInventory(false))
+    local partial=h.projection()
+    assert(partial.inventoryScope=='bag' and not partial.inventoryComplete)
+    assert(partial.evaluation.byKey['2:*:*'].owned==4 and not partial.evaluation.costComplete)
+    assert(C:PlanRefreshInventory(true))
+    local complete=h.projection()
+    assert(complete.inventoryScope=='bag_bank' and complete.inventoryComplete)
+    assert(complete.evaluation.byKey['2:*:*'].owned==6 and complete.evaluation.byKey['2:*:*'].shortage==0)
+    assert(C:PlanRefreshInventory(true) and h.projection().evaluation.byKey['2:*:*'].owned==6,
+        'repeated scans must replace the snapshots rather than double-count them')
+    bankVisible=false
+    assert(not C:PlanRefreshInventory(true) and not h.projection().inventoryComplete,
+        'cached bank capacity is not proof that the bank window is open')
+    bankVisible=true
+    bankCapacity=0
+    assert(not C:PlanRefreshInventory(true) and not h.projection().inventoryComplete,
+        'an unreadable or closed bank must not be treated as a confirmed empty bank')
+end)
+Test('recommendation evaluates crafting an intermediate that defaults to buying',function()
+    local h=Boot();local D=h.S.CraftPlanDomain
+    local facts={inventoryComplete=true,inventory={},catalog={['3:*:*']={base=true}},
+        recipes={['1:*:*']={id='1',product={itemType=1,count=1},materials={{itemType=2,count=3}},labor=5,feeCopper=0},
+            ['2:*:*']={id='2',product={itemType=2,count=1},materials={{itemType=3,count=4}},labor=2,feeCopper=0}},
+        prices={['1:*:*']={price=100},['2:*:*']={price=10},['3:*:*']={price=1}}}
+    local plan={targets={{itemType=1,count=2}},allocations={}}
+    local comparison=D.Compare(plan,facts)
+    assert(comparison.manual.cashCopper==60 and comparison.manual.byKey['2:*:*'].buy==6)
+    assert(comparison.recommendation.evaluation.cashCopper==24)
+    assert(comparison.recommendation.allocations['2:*:*'].mode=='craft' and not plan.allocations['2:*:*'])
+end)
+Test('cash recommendation remains available with unknown labor when labor is not priced',function()
+    local h=Boot();local D=h.S.CraftPlanDomain
+    local facts={inventoryComplete=true,inventory={},catalog={['3:*:*']={base=true}},
+        recipes={['1:*:*']={id='1',product={itemType=1,count=1},materials={{itemType=2,count=3}},feeCopper=0},
+            ['2:*:*']={id='2',product={itemType=2,count=1},materials={{itemType=3,count=4}},feeCopper=0}},
+        prices={['1:*:*']={price=100},['2:*:*']={price=10},['3:*:*']={price=1}}}
+    local comparison=D.Compare({targets={{itemType=1,count=2}},allocations={}},facts)
+    assert(comparison.recommendation.available and comparison.recommendation.evaluation.cashCopper==24)
+    assert(not comparison.recommendation.evaluation.laborComplete)
+end)
+Test('an incomplete comparison cannot be applied as a recommendation',function()
+    local h=Boot();local ok,comparison=h.C:PlanCompare()
+    assert(ok and comparison.result.recommendation.available==false)
+    assert(not h.C:PlanApplyRecommendation(comparison.revision))
+end)
+Test('route comparisons disclose stale prices while retaining the saved estimate',function()
+    local h=Boot();local D=h.S.CraftPlanDomain
+    local facts={inventoryComplete=true,inventory={},recipes={
+        ['1:*:*']={id='1',product={itemType=1,count=1},materials={{itemType=2,count=3}},labor=5,feeCopper=0},
+    },prices={['2:*:*']={price=10,freshness='stale'}}}
+    local result=D.Evaluate({targets={{itemType=1,count=2}},allocations={}},facts)
+    assert(result.cashCopper==60 and result.costComplete and result.priceStale==true)
+end)
+Test('a purchased material does not need a known subrecipe for a complete cost',function()
+    local h=Boot();local D=h.S.CraftPlanDomain
+    local result=D.Evaluate({targets={{itemType=1,count=2}},allocations={}},
+        {inventoryComplete=true,inventory={},recipes={
+            ['1:*:*']={id='1',product={itemType=1,count=1},materials={{itemType=2,count=3}},labor=5,feeCopper=0},
+        },prices={['2:*:*']={price=10}}})
+    assert(result.complete and result.costComplete and result.cashCopper==60)
+    assert(result.byKey['2:*:*'].recipeUnknown and result.byKey['2:*:*'].buy==6)
+end)
+Test('wildcard materials consume graded inventory without counting it twice',function()
+    local D=Boot().S.CraftPlanDomain
+    local facts={inventoryComplete=true,inventory={['2:1:*']=4,['2:2:*']=2},bagInventory={['2:1:*']=3},
+        recipes={['1:*:*']={id='1',product={itemType=1,count=1},materials={{itemType=2,count=3}},labor=0,feeCopper=0}},prices={}}
+    local result=D.Evaluate({targets={{itemType=1,count=2}}},facts)
+    assert(result.byKey['2:*:*'].owned==6 and result.byKey['2:*:*'].fromBank==3)
+    assert(not result.costComplete and result.byKey['2:*:*'].inventoryUncertain,
+        'unverified grade matching must remain provisional')
+    facts.inventory={['2:*:*']=6};facts.bagInventory={['2:*:*']=3}
+    local known=D.Evaluate({targets={{itemType=1,count=2}}},facts)
+    assert(known.costComplete and known.cashCopper==0 and known.valueComplete==false)
+    facts.inventory={['2:1:*']=4,['2:2:*']=2}
+    local conflicting=D.Evaluate({targets={{itemType=1,count=2},{itemType=2,grade=1,count=2}},allocations={['2:1:*']={mode='buy'}}},facts)
+    assert(not conflicting.complete,'overlapping graded and wildcard demands must not double consume stock')
+end)
+Test('finished targets default to crafting and intermediate materials default to buying',function()
+    local h=Boot();local D=h.S.CraftPlanDomain
+    local facts={inventoryComplete=true,inventory={},catalog={['3:*:*']={base=true}},
+        recipes={
+            ['1:*:*']={id='1',product={itemType=1,count=1},materials={{itemType=2,count=3}},labor=5,feeCopper=0},
+            ['2:*:*']={id='2',product={itemType=2,count=1},materials={{itemType=3,count=4}},labor=2,feeCopper=0},
+        },prices={['1:*:*']={price=100},['2:*:*']={price=10},['3:*:*']={price=2}}}
+    local plan={targets={{itemType=1,count=2}},allocations={}}
+    local result=D.Evaluate(plan,facts)
+    assert(result.byKey['1:*:*'].craft==2 and result.byKey['1:*:*'].buy==0)
+    assert(result.byKey['2:*:*'].buy==6 and result.byKey['2:*:*'].craft==0)
+    assert(not result.byKey['3:*:*'] and result.cashCopper==60 and result.labor==10)
+    plan.allocations['2:*:*']={mode='craft'}
+    result=D.Evaluate(plan,facts)
+    assert(result.byKey['2:*:*'].craft==6 and result.byKey['3:*:*'].buy==24)
+    assert(result.cashCopper==48 and result.labor==22)
+    plan.allocations['1:*:*']={mode='buy'}
+    result=D.Evaluate(plan,facts)
+    assert(result.byKey['1:*:*'].buy==2 and not result.byKey['2:*:*'] and result.labor==0)
 end)
 print('CRAFT LIBRARY RESULT '..passed..' passed / '..failed..' failed')
 if failed>0 then os.exit(1)end

@@ -1859,6 +1859,11 @@ BagTools.QuickRunSelfHealContractVersion = 1
 BagTools.QuickTwoButtonContractVersion = 1
 BagTools.AllDepositContractVersion = 1
 BagTools.NativeBagAnchorContractVersion = 1
+-- 供库存核对复用同一套仓储窗口可见性判断。
+function BagTools:GetStorageWindowContext(target)
+    if target~='bank' and target~='coffer' then return nil end
+    return ReadStorageWindowContext(target)
+end
 function BagTools:GetQuickBagAnchor()
     if self.enabled == true and type(self._quickOverlay) == "table" and self._quickOverlay.visible == true then return self._quickBagAnchor end
     return nil

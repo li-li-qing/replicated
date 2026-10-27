@@ -384,3 +384,27 @@ function S.UIV3.CreateCraftPlanEditor(parent,feature)
     E.root=root
     return E
 end
+
+-- 工具页保留低频设置，日常材料操作由配方小窗承担。
+function S.UIV3.CreateCraftAdvancedSettings(parent,feature)
+    local root=R:VerticalBox({id='craft_advanced_settings',parent=parent,gap=5,slot={size='auto',hAlign='fill'}})
+    if not root then return nil,'制作高级设置不可用' end
+    local info=R:Text({id='craft_advanced_info',parent=root,text='配方、材料、拍卖搜索与成本比较在悬浮小窗操作。此处设置劳力折价；关闭后只分别显示金币和劳力。',
+        fontSize=9,tone='muted',overflow='wrap',maxLines=3,slot={size='fixed',height=42,hAlign='fill'}})
+    local row=R:HorizontalBox({id='craft_advanced_labor_row',parent=root,gap=5,slot={size='fixed',height=48,hAlign='fill'}})
+    local labor=R:NumericField({id='craft_advanced_labor_value',parent=row,label='劳力折价（铜/点）',
+        min=0,max=1000000000,hardMin=0,hardMax=1000000000,integer=true,slider=false,inline=true,applyButton=true,
+        get=function()local p=(feature:GetProjection() or {}).plan or {};return p.laborValueCopper or 0 end,
+        set=function(value)return feature.Commands:PlanSetLaborValue(value)end,
+        slot={size='fill',fill=1,minWidth=220}})
+    local clear=R:Button({id='craft_advanced_clear_labor',parent=row,text='关闭折价',compact=true,
+        slot={size='fixed',width=76},onClick=function()return feature.Commands:PlanSetLaborValue(nil)end})
+    local open=R:Button({id='craft_advanced_open_window',parent=row,text='打开小窗',compact=true,
+        slot={size='fixed',width=80},onClick=function()
+            local controller=S.UIV3 and S.UIV3.CraftSidecar
+            if not controller or type(controller.OpenManual)~='function' then return false,'配方小窗暂不可用' end
+            return controller:OpenManual()
+        end})
+    if not info or not row or not labor or not clear or not open then return nil,'制作高级设置控件创建失败' end
+    return {root=root,Refresh=function()labor:Render();return true end}
+end

@@ -10,7 +10,8 @@ local STORE='v3.craft_plans'
 local OWNER='v3.tools_craft.plan'
 local TASK='tools_craft_plan_recipes'
 local state, revision, generation, cached = nil,0,0,nil
-local inventory, inventoryComplete, inventoryNote = {},false,'库存未核对'
+local quoteGeneration=0
+local inventory, inventoryComplete, inventoryNote, inventoryScope = {},false,'库存未核对',nil
 local bagInventory={}
 local priceOwner={}
 local scan, quoteBatch, recommendation, undo = nil,nil,nil,nil
@@ -118,7 +119,7 @@ local function Running()
     return true
 end
 local function Cancel()
-    generation=generation+1;scan=nil;quoteBatch=nil
+    generation=generation+1;quoteGeneration=quoteGeneration+1;scan=nil;quoteBatch=nil
     if S.Scheduler then S.Scheduler:RemoveTask(TASK) end
     local queue=S.Services and S.Services.PriceQuoteQueueV3
     if queue and type(queue.CancelRequester)=='function' then
@@ -132,7 +133,7 @@ ResetSession=function()
     importFeedback=nil
     pendingShare=nil
     scanResult=nil
-    Cancel();inventory={};bagInventory={};inventoryComplete=false;inventoryNote='角色/存档重新载入，库存待核对'
+    Cancel();inventory={};bagInventory={};inventoryComplete=false;inventoryScope=nil;inventoryNote='角色/存档重新载入，库存待核对'
     undo=nil;recommendation=nil;revision=revision+1
 end
 local function AddTarget(plan,item,count)
@@ -265,8 +266,8 @@ local function Projection()
     end
     contextRecipes=LibraryEntries()
     cached={revision=revision,sessionRevision=sessionRevision,activeId=state.active,name=plan.name,plans=plans,targets=targets,
-        rows=result.rows,evaluation=result,catalog=options,allocations=Copy(plan.allocations),
-        laborValueCopper=plan.laborValueCopper,inventoryNote=inventoryNote,inventoryComplete=inventoryComplete,
+        rows=result.rows,evaluation=result,catalog=options,allocations=Copy(plan.allocations),prices=Copy(facts.prices),
+        laborValueCopper=plan.laborValueCopper,inventoryNote=inventoryNote,inventoryComplete=inventoryComplete,inventoryScope=inventoryScope,
         recipeCatalog=Copy(state.catalog),recipes=Copy(state.recipes),choices=EffectiveChoices(),
         shareCaptureActive=shareCaptureActive,pendingShare=Copy(pendingShare),importFeedback=Copy(importFeedback),
         contextRecipeOptions=contextRecipes,
@@ -428,6 +429,56 @@ function C:PlanAddSavedRecipe(id,count)
         local ok,why=AddTarget(plan,recipe.product,D.Integer(count));if not ok then return false,why end
         state.choices[D.Key(recipe.product)]=recipe.id;return true
     end)
+end
+-- 从独立配方加入新目标时复制为手动计划，原配方条目保持不变。
+local function AppendTarget(plan,item,count,recipeId)
+        local key=D.Key(item)
+        local root=plan.sourceRecipeId and state.recipes[plan.sourceRecipeId]
+        if recipeId and root and D.Key(root.product)==key and root.id~=recipeId then
+            return false,'同一物品的不同配方不能混入同一目标'
+        end
+        if plan.recipeSheet then
+            local manualCount=0
+            for _,saved in pairs(state.plans)do if not saved.recipeSheet then manualCount=manualCount+1 end end
+            if manualCount>=12 or Count(state.plans)>=140 then return false,'最多保存 12 份手动计划' end
+            local newId='p'..state.nextPlan;state.nextPlan=state.nextPlan+1
+            local combined=Copy(plan);combined.id=newId;combined.name=Name(plan.name..' · 组合') or ('组合计划 '..newId)
+            combined.recipeSheet=nil;combined.sourceRecipeId=nil
+            state.plans[newId]=combined;state.active=newId;plan=combined
+            if root then state.choices[D.Key(root.product)]=root.id end
+        end
+        for _,target in pairs(plan.targets)do
+            if recipeId and D.Key(target)==key and state.choices[key] and state.choices[key]~=recipeId then
+                return false,'同一目标已有不同配方，请先确认配方选择'
+            end
+        end
+        local added,err=AddTarget(plan,item,count);if not added then return false,err end
+        state.catalog[key]=state.catalog[key] or {item=Copy(item)}
+        if recipeId then state.choices[key]=recipeId end
+        return true
+end
+function C:PlanAppendSavedRecipe(id,count)
+    id=tostring(id or '');count=D.Integer(count)
+    if not count then return false,'目标数量须为正整数' end
+    local loaded,why=Load();if not loaded then return false,why end
+    local recipe=state.recipes[id]
+    if not recipe then return false,'配方尚未收录' end
+    Cancel()
+    local ok,err=Mutate('plan_append_saved_recipe',function(plan)return AppendTarget(plan,recipe.product,count,id)end,true)
+    if ok then return true,'已加入目标'..ResumeRecipeRead() end
+    return false,err
+end
+function C:PlanAppendCatalogItem(key,count)
+    count=D.Integer(count)
+    if not count then return false,'目标数量须为正整数' end
+    local loaded,why=Load();if not loaded then return false,why end
+    local item
+    for _,option in ipairs(Projection().catalog or {})do if option.value==key then item=option.item;break end end
+    if not item then return false,'物品不在本地已收录目录' end
+    Cancel()
+    local ok,err=Mutate('plan_append_catalog_item',function(plan)return AppendTarget(plan,item,count)end,true)
+    if ok then return true,'已加入目标'..ResumeRecipeRead() end
+    return false,err
 end
 -- 删除只回收不再被任何配方条目或手动计划引用的缓存；共享下级与可选配方仍保留。
 local function CollectUnusedRecipes()
@@ -604,10 +655,10 @@ function C:PlanReceiveShare(count,outputCount,owner,mode,materialKey)
     ImportReceipt(true,message,'plan_share_receive_armed');return true,message
 end
 function C:RecipeReceive(count,outputCount,owner)return C:PlanReceiveShare(count,outputCount,owner,'recipe')end
-function C:RecipeReceiveMaterial(key,owner)
+function C:RecipeReceiveMaterial(key,owner,outputCount)
     local ok,why=Load();if not ok then return false,why end
     if not state.catalog[key] then return false,'先选择需要补配方的材料' end
-    return C:PlanReceiveShare(1,nil,owner,'material',key)
+    return C:PlanReceiveShare(1,outputCount,owner,'material',key)
 end
 function C:PlanImportOwnChat(sender,message)
     if type(message)~='string' then return false,'not_recipe_command' end
@@ -760,21 +811,34 @@ function C:PlanRefreshInventory(includeBank)
     -- 不与历史箱子相加：同一次明确操作重读背包和可读银行；通用保管箱无稳定身份，暂不纳入。
     local ledger={};local complete=true
     if includeBank then
-        if not S.ApiImports or not S.ApiImports:Acquire(OWNER,{'X2Bank:Capacity','X2Bank:GetBagItemInfo'}) then return false,'银行读取能力不可用' end
+        if not S.ApiImports or not S.ApiImports:Acquire(OWNER,{'X2Bank:Capacity','X2Bank:GetBagItemInfo','ADDON:GetContent','ADDON:GetContentMainScriptPosVis'}) then
+            inventoryComplete=false;inventoryScope=nil;inventoryNote='银行读取能力不可用，请重新核对'
+            Notify('plan_inventory_unavailable');return false,inventoryNote
+        end
+        local bag=S.Features and S.Features.tools_bag
+        local window=bag and type(bag.GetStorageWindowContext)=='function' and bag:GetStorageWindowContext('bank') or nil
+        if not window or window.status~='ready' or window.visible~=true then
+            inventoryComplete=false;inventoryScope=nil;inventoryNote='请打开银行并等待窗口可见后重新核对'
+            Notify('plan_inventory_unavailable');return false,inventoryNote
+        end
     end
     for _,scope in ipairs(includeBank and {'bag','bank'} or {'bag'})do
         local snapshot,why=service:BuildSnapshot(scope)
-        if not snapshot or snapshot.truncated or snapshot.readErrors~=0 or snapshot.unknown~=0 or snapshot.fallback~=0 then
-            complete=false;inventoryNote=tostring(why or '库存字段不完整')
+        if not snapshot or snapshot.truncated or snapshot.readErrors~=0 or snapshot.unknown~=0 or snapshot.fallback~=0 or snapshot.fallbackUsed==true
+            or (scope=='bank' and (not tonumber(snapshot.capacity) or tonumber(snapshot.capacity)<=0)) then
+            complete=false;inventoryNote=tostring(why or (scope=='bank' and '银行未打开或容量不可确认' or '库存字段不完整'))
         else
             local rows={}
             for _,row in ipairs(snapshot.rows)do rows[#rows+1]={itemType=tonumber(row.itemType),grade=row.grade,count=row.stack}end
             if not D.ReplaceSnapshot(ledger,scope,revision+1,rows,true) then complete=false end
         end
     end
-    inventory=D.Inventory(ledger);inventoryComplete=complete
+    inventory=D.Inventory(ledger)
+    -- 背包读取成功不代表银行为空；只在两处都核对后宣称库存完整。
+    inventoryScope=complete and (includeBank and 'bag_bank' or 'bag') or nil
+    inventoryComplete=complete and includeBank==true
     bagInventory=ledger.bag and Copy(ledger.bag.counts) or {}
-    if complete then inventoryNote=includeBank and '本次核对：背包＋银行；移动后请重新核对' or '本次核对：背包；银行/保管箱未纳入' end
+    if complete then inventoryNote=includeBank and '本次核对：背包＋银行；不含保管箱，移动后请重新核对' or '本次核对：背包；银行/保管箱未纳入' end
     Notify('plan_inventory');return complete,inventoryNote
 end
 function C:PlanCompare()
@@ -787,6 +851,7 @@ end
 function C:PlanApplyRecommendation(expected,key)
     Projection()
     if not recommendation or expected~=revision or recommendation.revision~=revision then return false,'建议已失效，请重新比较' end
+    if not recommendation.result.recommendation.available then return false,'缺少有效成本，无法采纳建议' end
     local allocation=Copy(recommendation.result.recommendation.allocations)
     undo=Copy(Active().allocations)
     return Mutate('plan_recommendation_apply',function(plan)
@@ -815,12 +880,19 @@ function C:PlanCalibrate(key)
     if quoteBatch then return false,'校准进行中，可先取消' end
     local queue=S.Services and S.Services.PriceQuoteQueueV3
     if not queue then return false,'报价队列不可用' end
-    local rows=Projection().rows
-    Cancel();local token=generation
+    local rows=Copy(Projection().rows)
+    -- 当前不采购的下级仍可查看和校准；查价不能中断正在进行的配方读取。
+    if key then
+        local found=false
+        for _,row in ipairs(rows)do if row.key==key then found=true;break end end
+        local entry=not found and state.catalog[key]
+        if entry and entry.item then rows[#rows+1]={key=key,item=Copy(entry.item)} end
+    end
+    quoteGeneration=quoteGeneration+1;local token=quoteGeneration
     local batch={requested=0,completed=0,failed=0,submitting=true}
     quoteBatch=batch
     local function Done(snapshot)
-        if token~=generation or quoteBatch~=batch then return end
+        if token~=quoteGeneration or quoteBatch~=batch then return end
         batch.completed=batch.completed+1
         if type(snapshot)=='table' and snapshot.status~='ready' then
             batch.failed=batch.failed+1;batch.error=tostring(snapshot.error or snapshot.reason or snapshot.status)
@@ -833,10 +905,12 @@ function C:PlanCalibrate(key)
             batch.requested=batch.requested+1
             local owner=OWNER..':quote:'..token..':'..row.key
             quoteOwners[owner]=true
-            local accepted=queue:RequestQuote(owner,row.item.itemType,row.item.grade,Done,nil,
+            local accepted=queue:RequestQuote(owner,row.item.itemType,row.item.grade,function(snapshot)
+                quoteOwners[owner]=nil;Done(snapshot)
+            end,nil,
                 {force=true,priority='user',singleQuery=true,searchName=row.item.name,waitForDispatch=true,
                  deadlineAt=(S.NowMs and S.NowMs() or 0)+600000})
-            if accepted~=true then batch.requested=batch.requested-1;batch.failed=batch.failed+1 end
+            if accepted~=true then quoteOwners[owner]=nil;batch.requested=batch.requested-1;batch.failed=batch.failed+1 end
         end
     end
     batch.submitting=false
@@ -846,7 +920,7 @@ end
 function C:PlanCancel()Cancel();Notify('plan_cancel');return true end
 local baseDisable=F.Disable
 function F:Disable(reason)
-    Cancel();inventory={};bagInventory={};inventoryComplete=false;inventoryNote='库存待重新核对';undo=nil
+    Cancel();inventory={};bagInventory={};inventoryComplete=false;inventoryScope=nil;inventoryNote='库存待重新核对';undo=nil
     if S.Events and type(S.Events.UnsubscribeInternalOwner)=='function' then S.Events:UnsubscribeInternalOwner(priceOwner) end
     if S.Events and type(S.Events.UnsubscribeOwner)=='function' then S.Events:UnsubscribeOwner(shareOwner) end
     shareCaptureActive=false;pendingShare=nil

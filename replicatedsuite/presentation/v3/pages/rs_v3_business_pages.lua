@@ -935,11 +935,11 @@ local function Build(parent, route, id)
             prev:SetEnabled(auctionPage>1); next:SetEnabled(auctionPage<pagesCount)
         end
     end
-    -- 通用配方计划是本页主体；不再要求先从贸易货物目录挑选制作物。
+    -- 日常制作流程在小窗完成，本页只放低频设置与窗口恢复。
     if id == "tools_craft" then
-        if S.UIV3 == nil or type(S.UIV3.CreateCraftPlanEditor) ~= "function" then return nil, "配方制作编辑器不可用" end
-        local editor, editorErr = S.UIV3.CreateCraftPlanEditor(root, feature)
-        if editor == nil then return nil, editorErr or "配方制作编辑器创建失败" end
+        if S.UIV3 == nil or type(S.UIV3.CreateCraftAdvancedSettings) ~= "function" then return nil, "配方高级设置不可用" end
+        local editor, editorErr = S.UIV3.CreateCraftAdvancedSettings(root, feature)
+        if editor == nil then return nil, editorErr or "配方高级设置创建失败" end
         root.craftPlanEditor = editor
         if type(feature.Commands.SetScreenButtonVisible) == "function" then
             local sidecarRow = RSUI:HorizontalBox({ id = "v3_business_tools_craft_sidecar_row", parent = root, gap = 6,
