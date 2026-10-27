@@ -16,6 +16,7 @@ if type(RSUI) ~= "table" or type(Host) ~= "table" or type(Floating) ~= "table"
 local WIDGET_ID = "tools.craft_sidecar"
 local OWNER = "v3:widget:craft_sidecar"
 local WIDTH, HEIGHT = 360, 430
+local MAX_WIDTH, MAX_HEIGHT = 1600, 1200
 -- 成本不能使用省略铜币的紧凑格式，否则不同方案的实际金额会被显示成相同。
 local function Money(value)
     local n=math.max(0,math.floor(tonumber(value) or 0))
@@ -26,15 +27,45 @@ local function Money(value)
     if silver>0 then return string.format('%d银%02d铜',silver,copper) end
     return tostring(copper)..'铜'
 end
+local function QuoteFailure(query)
+    local code=tostring(query.code or query.reason or '')
+    if code=='strict_grade_mismatch' then return '品质不符' end
+    if code=='strict_item_mismatch' then return '物品不符' end
+    if code=='strict_search_grade_invalid' then return '品质待核' end
+    if code=='auction_listing_unverified' then return '字段待核' end
+    if code=='strict_buyout_unavailable' then return '无一口价' end
+    if code=='strict_sample_unmatched' or code=='strict_buyout_not_found' then return '样本未匹配' end
+    if code:find('deadline',1,true) or code:find('timeout',1,true) then return '查询超时' end
+    return '查询失败'
+end
 
 local Controller = { nativeVisible = false, manualVisible = false, dismissed = false, snapshot = nil, observations = 0, showAttempts = 0, showFailures = 0 }
 S.UIV3 = S.UIV3 or {}
 S.UIV3.CraftSidecar = Controller
 function Controller:Describe()
+    local instance=Host and type(Host.GetInstance)=='function' and Host:GetInstance(WIDGET_ID) or nil
+    local split=instance and instance.bodySplit
+    local evidence=split and split.dragEvidence
+    local divider=evidence and {starts=evidence.starts,stops=evidence.stops,updates=evidence.updates,raises=evidence.raises,
+        inputSurface=evidence.inputSurface,dragEnabled=evidence.dragEnabled,dragConditionAvailable=evidence.dragConditionAvailable,dragConditionApplied=evidence.dragConditionApplied,
+        clicks=evidence.clicks or 0,clickHandler=evidence.clickHandler,lastInput=evidence.lastInput,
+        nativeEnabled=evidence.nativeEnabled,nativeVisible=evidence.nativeVisible,nativeMouseOver=evidence.nativeMouseOver,
+        status=evidence.status,reason=evidence.reason,handlers=evidence.handlers,hovers=evidence.hovers or 0,delta=evidence.delta,unitScale=evidence.unitScale,limited=evidence.limited,startPrimary=evidence.startPrimary,
+        finalPrimary=evidence.finalPrimary,raiseError=evidence.raiseError,primarySize=split.primarySize,
+        minPrimary=split.minPrimary,minSecondary=split.minSecondary,height=split.height,
+        degraded=split.rsUiDegraded,degradedReason=split.rsUiDegradedReason} or nil
     return { nativeVisible = self.nativeVisible == true, manualVisible = self.manualVisible == true, dismissed = self.dismissed == true,
         observations = self.observations, showAttempts = self.showAttempts, showFailures = self.showFailures,
         lastDecision = self.lastDecision, lastSource = self.lastSource, lastReason = self.lastReason,
-        lastShowError = self.lastShowError }
+        lastShowError = self.lastShowError,actionAttempts=self.actionAttempts or 0,
+        lastAction=self.lastAction,lastActionResult=self.lastActionResult,lastActionError=self.lastActionError,divider=divider,render=instance and instance.renderEvidence,
+        priceAction=instance and instance.quote and {text=instance.quote.text,enabled=instance.quote.enabled,
+            visibility=instance.quote.visibility,x=instance.quote.x,y=instance.quote.y,width=instance.quote.width,height=instance.quote.height,
+            rowWidth=instance.quote.parent and instance.quote.parent.width} or nil,
+        recipeReadAction=instance and instance.readChain and {text=instance.readChain.text,enabled=instance.readChain.enabled,
+            visibility=instance.readChain.visibility,x=instance.readChain.x,y=instance.readChain.y,
+            width=instance.readChain.width,height=instance.readChain.height,
+            rowWidth=instance.readChain.parent and instance.readChain.parent.width} or nil }
 end
 function Controller:OpenManual()
     if not S.FeatureRuntime or S.FeatureRuntime:IsEnabled('tools_craft')~=true then return false,'请先开启配方制作。' end
@@ -80,15 +111,32 @@ local function MaterialRows(projection,instance)
                 local item=row and row.item or previewItem
                 local isPreview=preview==true or row==nil
                 local recipe=plan.recipes[(plan.choices or {})[key] or '']
+                local catalog=(plan.recipeCatalog or {})[key]
+                local unresolved=not recipe and catalog and catalog.status=='recipe_fields_unknown'
+                local canExpand=type(recipe)=='table' and type(recipe.materials)=='table' and #recipe.materials>0
+                local labor=recipe and tonumber(recipe.labor)
+                local quote=(plan.prices or {})[key] or (row and row.priceMeta)
+                local price=type(quote)=='table' and tonumber(quote.price) or row and tonumber(row.price)
+                local priceText='—'
+                if price and price==price and price>=0 and price<=1000000000 then
+                    local source=type(quote)=='table' and tostring(quote.source or ''):gsub('^legacy:','') or ''
+                    local stale=not quote or quote.freshness~='fresh' or quote.candidatePrice~=nil or source=='name_search_direct_unit'
+                    priceText=(stale and '~' or '')..Money(price)
+                end
+                local query=(plan.quoteItems or {})[key]
+                if query and query.status=='none' then priceText='无'
+                elseif query and query.status=='failed' then priceText=QuoteFailure(query)
+                elseif query and query.status=='querying' then priceText='查询中' end
                 -- 购买分支仍可看配方，但预览数量不进入当前采购和库存抵扣。
                 local parents=row and type(row.parents)=='table' and #row.parents or 0
                 local shared=row and (parents>1 or (roots[key] and parents>0))
                 local aggregate=shared or sharedParent
                 local bagOnly=plan.inventoryScope=='bag'
-                rows[#rows+1]={key=path,itemKey=key,targetId=targetId,isTarget=depth==0,item=item,preview=isPreview,name=string.rep('  ',depth)..
-                    (recipe and (instance.expanded[path]==false and '+ ' or '- ') or (row and row.recipeUnknown and '? ' or ''))..
+                rows[#rows+1]={key=path,itemKey=key,targetId=targetId,isTarget=depth==0,item=item,preview=isPreview,canExpand=canExpand,
+                    labor=labor and labor>=0 and (tostring(labor)..'/次') or '—',unitPrice=priceText,name=string.rep('  ',depth)..
+                    (canExpand and (instance.expanded[path]==false and '[+] ' or '[-] ') or ((unresolved or row and row.recipeUnknown) and '? ' or ''))..
                     (item.name or ('物品 '..item.itemType))..(aggregate and '（库存合计）' or ''),
-                    need=row and tostring(branchNeed or row.demand) or (tostring(item.count or '?')..'/次'),
+                    need=row and tostring(branchNeed or row.demand) or (branchNeed and ('预'..tostring(branchNeed)) or (tostring(item.count or '?')..'/次')),
                     held=row and (row.inventoryUncertain and '?' or (plan.inventoryComplete or bagOnly) and ((bagOnly and '包' or aggregate and '合' or '')..tostring(row.owned)) or '?') or '-',
                     shortage=row and (row.inventoryUncertain and '?' or plan.inventoryComplete and ((aggregate and '合' or '')..tostring(row.shortage))
                         or (bagOnly and row.shortage==0 and '0' or '?')) or '-',
@@ -98,10 +146,21 @@ local function MaterialRows(projection,instance)
                 visiting[key]=true
                 for i,item in ipairs(recipe.materials or {})do
                     local child=tostring(item.itemType)..':'..tostring(item.grade==nil and '*' or item.grade)..':'..tostring(item.variant or '*')
+                    local batches=row and tonumber(row.batches)
                     local childPreview=isPreview or (row and row.craft~=nil and (tonumber(row.craft) or 0)<=0)
+                        or (row and row.craft and row.craft>0 and batches~=nil and batches<=0)
                     local childNeed
-                    if not childPreview and not aggregate and row and tonumber(row.batches) and tonumber(item.count) then
-                        childNeed=row.batches*item.count
+                    if not childPreview and not aggregate and batches and batches>0 and tonumber(item.count) then
+                        childNeed=batches*item.count
+                    elseif childPreview then
+                        -- 购买分支仅展示假设制作的用量，不进入实际采购或成本；数量跟随目标并标为预览。
+                        local parentNeed=tonumber(branchNeed or (row and row.demand))
+                        local output=recipe.product and tonumber(recipe.product.count)
+                        local amount=tonumber(item.count)
+                        if parentNeed and output and output>0 and amount and amount>0 then
+                            local previewNeed=math.ceil(parentNeed/output)*amount
+                            if previewNeed<=1000000000 then childNeed=previewNeed end
+                        end
                     end
                     Walk(child,path..':'..i,depth+1,visiting,item,childPreview,targetId,childNeed,aggregate)
                 end
@@ -117,21 +176,7 @@ local function MaterialRows(projection,instance)
         end
         return rows
     end
-    local craft = type(projection) == "table" and type(projection.craft) == "table" and projection.craft or {}
-    local rows = {}
-    for _, recipe in ipairs(type(craft.recipes) == "table" and craft.recipes or {}) do
-        local materials = type(recipe.materials) == "table" and recipe.materials.items or nil
-        for _, item in ipairs(type(materials) == "table" and materials or {}) do
-            rows[#rows + 1] = {
-                key = "craft-sidecar:" .. tostring(recipe.craftType or 0) .. ":" .. tostring(item.itemType or #rows + 1),
-                name = tostring(item.name or (item.itemType ~= nil and ("物品 " .. tostring(item.itemType)) or "材料")),
-                need = item.count ~= nil and tostring(item.count) or "?",
-                held = item.held ~= nil and tostring(item.held) or "?",
-                shortage = item.shortage ~= nil and tostring(item.shortage) or "?",
-            }
-        end
-    end
-    return rows
+    return {}
 end
 
 local function CreateSidecar()
@@ -146,11 +191,11 @@ local function CreateSidecar()
     local instance = { visible = false, acquired = false, subscribed = false, state = state,expanded={},searchText='' }
     local surface, surfaceErr = Floating:Create({
         id = "v3_craft_sidecar", owner = OWNER, title = "配方制作", status = "当前制作计划",
-        width = WIDTH, height = HEIGHT, minWidth = WIDTH, minHeight = HEIGHT, maxWidth = WIDTH, maxHeight = HEIGHT,
-        resizable = false, movable = true, footer = true, closeButton = true, appearanceControls = false,
-        -- 固定工具尺寸与内部固定按钮同一 logical 单位；不能只缩外框、使 0.75 倍时按钮排出窗外。
+        width = WIDTH, height = HEIGHT, minWidth = WIDTH, minHeight = HEIGHT, maxWidth = MAX_WIDTH, maxHeight = MAX_HEIGHT,
+        resizable = true, movable = true, footer = true, closeButton = true, appearanceControls = false,
+        -- 窗口与内部固定按钮使用同一 logical 单位，避免缩放时按钮排出窗外。
         scaleWithAddon = false, minimizeMode = "compact", boundaryMode = "strict",
-        statePolicy = { defaultWidth = WIDTH, defaultHeight = HEIGHT, minWidth = WIDTH, minHeight = HEIGHT, maxWidth = WIDTH, maxHeight = HEIGHT,
+        statePolicy = { defaultWidth = WIDTH, defaultHeight = HEIGHT, minWidth = WIDTH, minHeight = HEIGHT, maxWidth = MAX_WIDTH, maxHeight = MAX_HEIGHT,
             defaultLocked = false, defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 },
         getState = function() return instance.state end,
         setState = function(value)
@@ -159,7 +204,9 @@ local function CreateSidecar()
         end,
         persist = function()
             if type(Feature.Commands.SetCraftWindowState)~='function' then return false,'配方小窗位置保存不可用' end
-            return Feature.Commands:SetCraftWindowState(instance.state)
+            local split=instance.bodySplit
+            local primary=split and split.height and select(1,split:ResolvePrimary(split.height)) or nil
+            return Feature.Commands:SetCraftWindowState(instance.state,primary)
         end,
         onClosed = function(_, reason)
             Controller.manualVisible = false
@@ -169,16 +216,60 @@ local function CreateSidecar()
     })
     if surface == nil then return nil, surfaceErr or "配方制作侧窗创建失败" end
     instance.surface, instance.shell, instance.windowController = surface, surface.shell, surface.windowController
+    local bodySplit,controlArea,bottomArea
+    local function Relayout()
+        if bodySplit and bottomArea then
+            local _,height=bottomArea:Measure(bodySplit.width or WIDTH,nil)
+            bodySplit.minSecondary=math.max(80,tonumber(height) or 80)
+        end
+        return instance.shell:Layout()
+    end
 
     local content = surface:GetContentRoot()
-    local root = RSUI:VerticalBox({ id = "v3_craft_sidecar_content", parent = content, gap = 5,
+    local root = RSUI:VerticalBox({ id = "v3_craft_sidecar_content", parent = content, gap = 2,
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+    controlArea=RSUI:VerticalBox({id='v3_craft_sidecar_controls',parent=root,gap=2,slot={size='auto',hAlign='fill'}})
+    local committedSplit=type(Feature.GetCraftListSplit)=='function' and Feature:GetCraftListSplit()
+        or (170+math.max(0,(tonumber(state.height) or HEIGHT)-HEIGHT)*0.6)
+    bodySplit=RSUI:SplitView({id='v3_craft_sidecar_split',parent=root,orientation='vertical',mode='fixed',primarySize=committedSplit,
+        minPrimary=80,minSecondary=110,dividerSize=10,slot={size='fill',fill=1,hAlign='fill',vAlign='fill'},
+        onSplitChanged=function(split,_,_,final)
+            if final~=true then return end
+            local size=select(1,split:ResolvePrimary(split.height or 0))
+            if type(Feature.Commands.SetCraftListSplit)=='function' then
+                local saved,err=Feature.Commands:SetCraftListSplit(size)
+                if saved~=true then
+                    split:SetPrimarySize(committedSplit,false)
+                    if instance.status then instance.status:SetText('分隔线保存失败：'..tostring(err or '未知原因')) end
+                    return false,err or 'split_save_failed'
+                end
+            end
+            committedSplit=size;return true
+        end})
+    local listArea=RSUI:VerticalBox({id='v3_craft_sidecar_list_area',parent=bodySplit,gap=2,slot={size='fill',fill=1}})
+    bottomArea=RSUI:VerticalBox({id='v3_craft_sidecar_selection_area',parent=bodySplit,gap=2,slot={size='fill',fill=1}})
+    local layoutSplit=bodySplit.Layout
+    function bodySplit:Layout(x,y,width,height)
+        -- 外窗增长的高度交给材料表；不能让固定分隔位置把新增空间全留成底部空白。
+        if instance.visible and not self.dragging and tonumber(height) and tonumber(self.height) and height~=self.height then
+            self.primarySize=math.max(0,self:ResolvePrimary(self.height)+height-self.height)
+        end
+        return layoutSplit(self,x,y,width,height)
+    end
+    instance.bodySplit=bodySplit
+    local function PlanError(value)
+        local reason=tostring(value or '原因未知')
+        if reason:find('integrity_failed',1,true) or reason:find('fingerprint_mismatch',1,true) or reason:find('write_fenced',1,true) then
+            return '制作计划存档损坏，已保护原数据；请打开诊断'
+        end
+        return reason
+    end
     local function Action(command,...)
         local fn=Feature.Commands[command]
         if type(fn)~='function' then return false,'配方管理命令不可用' end
         local ok,why=fn(Feature.Commands,...)
         instance:Refresh()
-        instance.status:SetText(ok and tostring(why or '已更新') or ('未完成：'..tostring(why)))
+        instance.status:SetText(ok and tostring(why or '已更新') or ('未完成：'..PlanError(why)))
         if instance.status.SetTone then instance.status:SetTone(ok and 'muted' or 'warn') end
         return ok,why
     end
@@ -188,7 +279,7 @@ local function CreateSidecar()
         local count=value:match('^%s*%d+%s*$') and tonumber(value) or nil
         return count,count~=nil and count>=1 and count<=1000000000
     end
-    local searchRow=RSUI:HorizontalBox({id='v3_craft_sidecar_search_row',parent=root,gap=4,slot={size='fixed',height=29,hAlign='fill'}})
+    local searchRow=RSUI:HorizontalBox({id='v3_craft_sidecar_search_row',parent=controlArea,gap=4,slot={size='fixed',height=29,hAlign='fill'}})
     instance.search=RSUI:TextInput({id='v3_craft_sidecar_search',parent=searchRow,value='',placeholder='筛选本地配方和物品',maxLength=96,submitOnLostFocus=false,
         slot={size='fill',fill=1,minWidth=100}})
     RSUI:Button({id='v3_craft_sidecar_filter',parent=searchRow,text='筛选',compact=true,slot={size='fixed',width=48},onClick=function()
@@ -198,7 +289,7 @@ local function CreateSidecar()
         instance.addRecipeId=nil;instance.searchText='';instance.search:SetValue('',false);return instance:Refresh()
     end})
     searchRow:SetVisibility('collapsed')
-    local recipeRow = RSUI:HorizontalBox({ id = "v3_craft_sidecar_recipe_row", parent = root, gap = 4,
+    local recipeRow = RSUI:HorizontalBox({ id = "v3_craft_sidecar_recipe_row", parent = controlArea, gap = 4,
         slot = { size = "fixed", height = 31, hAlign = "fill" } })
     instance.recipe = RSUI:Dropdown({ id = "v3_craft_sidecar_recipe", parent = recipeRow, items = {}, maxVisible = 12, popupWidth = 300,
         get = function()
@@ -206,19 +297,16 @@ local function CreateSidecar()
             if projection.plan then
                 return projection.plan.libraryActiveId or instance.savedRecipeId
             end
-            return projection.selectedRecipeKey
+            return nil
         end,
         set = function(value)
             if (Feature:GetProjection() or {}).plan then
                 if type(Feature.Commands.RecipeOpen)=='function' then return Action('RecipeOpen',value) end
                 instance.savedRecipeId=value;return true
             end
-            local command=type(Feature.Commands.PlanAddSavedRecipe)=='function' and Feature.Commands.PlanAddSavedRecipe or Feature.Commands.SelectRecipe
-            if type(command) ~= "function" then return false, "配方选择命令不可用" end
-            local ok, err = command(Feature.Commands,value,1)
-            if ok == true then instance.savedRecipeId=value;instance:Refresh() end; return ok, err
+            instance.status:SetText('制作计划未就绪，无法选择配方');return false,'制作计划未就绪'
         end,
-        placeholder = "选择配方，仅显示选中这一份", slot = { size = "fill", fill = 1, minWidth = 136 } })
+        placeholder = "选择已接收配方", slot = { size = "fill", fill = 1, minWidth = 100 } })
     instance.addSaved=RSUI:Button({id='v3_craft_sidecar_add_saved',parent=recipeRow,text='打开',compact=true,
         slot={size='fixed',width=44},onClick=function()
             local selected=(Feature:GetProjection().plan or {}).libraryActiveId or instance.savedRecipeId
@@ -227,10 +315,13 @@ local function CreateSidecar()
             local ok,why=Feature.Commands:PlanAddSavedRecipe(instance.savedRecipeId,1)
             instance.status:SetText(ok and '已加入当前计划' or tostring(why));if ok then instance:Refresh() end;return ok,why
         end})
+    instance.addSaved:SetVisibility('collapsed') -- 下拉选择即打开，无需再点一次打开。
     instance.refresh = RSUI:Button({ id = "v3_craft_sidecar_refresh", parent = recipeRow, text = "核对", compact = true, slot = { size = "fixed", width = 52 } })
-    instance.quote = RSUI:Button({ id = "v3_craft_sidecar_quote", parent = recipeRow, text = "材料询价", compact = true, enabled = false, slot = { size = "fixed", width = 76 } })
+    -- 读取子配方是主流程入口，紧凑布局也必须保留；与数量/价格行分开放，避免窄窗挤出按钮。
+    instance.readChain=RSUI:Button({id='v3_craft_sidecar_read_chain',parent=recipeRow,text='获取子配方',compact=true,
+        enabled=false,slot={size='fixed',width=88},onClick=function()return Action('PlanReadRecipes')end})
 
-    local editRow=RSUI:HorizontalBox({id='v3_craft_sidecar_edit_row',parent=root,gap=4,slot={size='fixed',height=29,hAlign='fill'}})
+    local editRow=RSUI:HorizontalBox({id='v3_craft_sidecar_edit_row',parent=controlArea,gap=4,slot={size='fixed',height=29,hAlign='fill'}})
     instance.nameInput=RSUI:TextInput({id='v3_craft_sidecar_name',parent=editRow,value='',placeholder='配方名称',maxLength=96,submitOnLostFocus=false,
         slot={size='fill',fill=1,minWidth=120}})
     RSUI:Button({id='v3_craft_sidecar_rename',parent=editRow,text='改名',compact=true,slot={size='fixed',width=48},onClick=function()
@@ -248,36 +339,43 @@ local function CreateSidecar()
     RSUI:Button({id='v3_craft_sidecar_bank',parent=editRow,text='核对银行',compact=true,slot={size='fixed',width=72},
         onClick=function()return Action('PlanRefreshInventory',true)end})
     editRow:SetVisibility('collapsed')
-    local quantityRow=RSUI:HorizontalBox({id='v3_craft_sidecar_quantity_row',parent=root,gap=4,slot={size='fixed',height=31,hAlign='fill'}})
+    local quantityRow=RSUI:HorizontalBox({id='v3_craft_sidecar_quantity_row',parent=controlArea,gap=4,slot={size='fixed',height=31,hAlign='fill'}})
     local function ActiveTarget()
         local p=Feature:GetProjection().plan or {}
         for _,target in ipairs(p.targets or {})do if target.id==instance.activeTargetId then return target end end
         return p.targets and p.targets[1] or nil
     end
     instance.quantity=RSUI:NumericField({id='v3_craft_sidecar_quantity',parent=quantityRow,label='制作件数',inline=true,slider=false,integer=true,
-        min=1,max=1000000000,hardMin=1,hardMax=1000000000,applyButton=true,labelWidth=52,inputWidth=62,
+        min=1,max=1000000000,hardMin=1,hardMax=1000000000,applyButton=true,commitOnLostFocus=true,labelWidth=52,inputWidth=62,
         get=function()local target=ActiveTarget();return target and target.count or 1 end,
         set=function(value)
             local target=ActiveTarget()
             if not target then return false,'先选择配方' end
             return Action('PlanSetQuantity',target.id,value)
-        end,slot={size='fill',fill=1,minWidth=200}})
-    RSUI:Button({id='v3_craft_sidecar_read_chain',parent=quantityRow,text='重读下级',compact=true,slot={size='fixed',width=76},onClick=function()return Action('PlanReadRecipes')end})
+        end,slot={size='fill',fill=1,minWidth=170}})
+    instance.quote = RSUI:Button({ id = "v3_craft_sidecar_quote", parent = quantityRow, text = "获取全部价格", compact = true,
+        enabled = false, slot = { size = "fixed", width = 108 } })
 
-    local planRow = RSUI:HorizontalBox({ id = "v3_craft_sidecar_plan_row", parent = root, gap = 4,
+    local planRow = RSUI:HorizontalBox({ id = "v3_craft_sidecar_plan_row", parent = controlArea, gap = 4,
         slot = { size = "fixed", height = 29, hAlign = "fill" } })
-    local addPlan = RSUI:Button({ id = "v3_craft_sidecar_add_plan", parent = planRow, text = "接收新配方", compact = true,
-        slot = { size = "fixed", width = 112 } })
+    local addPlan = RSUI:Button({ id = "v3_craft_sidecar_add_plan", parent = recipeRow, text = "接收配方", compact = true,
+        slot = { size = "fixed", width = 64 } })
+    RSUI:Button({id='v3_craft_sidecar_settings',parent=quantityRow,text='高级',compact=true,slot={size='fixed',width=44},onClick=function()
+        local shell=S.UIV3 and S.UIV3.shell
+        if shell and type(shell.Navigate)=='function' then return shell:Navigate('tools.craft_assist',{source='craft_sidecar'}) end
+        return false,'高级设置页面暂不可用'
+    end})
+    planRow:SetVisibility('collapsed')
     local managementOpen=false
     local laborRow,planManagerRow,shareRow
     local management=RSUI:Button({id='v3_craft_sidecar_manage',parent=planRow,text='管理',compact=true,
-        slot={size='fixed',width=48},onClick=function()
+        slot={size='fixed',width=76},onClick=function()
             return instance:SetManagementMode(not managementOpen)
         end})
     local targetRow,comparisonArea
     RSUI:Button({id='v3_craft_sidecar_add_target',parent=planRow,text='加入目标',compact=true,slot={size='fixed',width=72},onClick=function()
         if managementOpen then instance:SetManagementMode(false) end
-        instance:SetComparisonMode(false);searchRow:SetVisibility('visible');targetRow:SetVisibility('visible');return true
+        instance:SetComparisonMode(false);searchRow:SetVisibility('visible');targetRow:SetVisibility('visible');Relayout();return true
     end})
     RSUI:Button({id='v3_craft_sidecar_compare',parent=planRow,text='比较',compact=true,slot={size='fixed',width=48},onClick=function()
         if managementOpen then instance:SetManagementMode(false) end
@@ -315,12 +413,17 @@ local function CreateSidecar()
         if not valid then instance.status:SetText('每次产出须为正整数');return false end
         local ok, err = fn(Feature.Commands,1,output,'widget:craft_sidecar')
         if ok and instance.outputCount then instance.outputCount:SetValue('',false) end
-        instance.status:SetText(ok and tostring(err or '等待下一条配方分享') or ("未接收：" .. tostring(err)))
+        instance.status:SetText(ok and tostring(err or '等待下一条配方分享') or ("未接收：" .. PlanError(err)))
         if type(instance.status.SetTone) == "function" then instance.status:SetTone(ok and "muted" or "warn") end
         return ok, err
     end end
 
-    planManagerRow=RSUI:HorizontalBox({id='v3_craft_sidecar_plan_manager',parent=root,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
+    local resetRow=RSUI:HorizontalBox({id='v3_craft_sidecar_reset_row',parent=controlArea,gap=4,slot={size='fixed',height=29,hAlign='fill'}})
+    RSUI:Button({id='v3_craft_sidecar_reset_corrupt',parent=resetRow,text='清空损坏计划并重建',compact=true,
+        slot={size='fixed',width=176},onClick=function()return Action('PlanResetCorrupt')end})
+    resetRow:SetVisibility('collapsed')
+
+    planManagerRow=RSUI:HorizontalBox({id='v3_craft_sidecar_plan_manager',parent=controlArea,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
     instance.planSelector=RSUI:Dropdown({id='v3_craft_sidecar_plan_select',parent=planManagerRow,items={},placeholder='切换计划',
         get=function()return ((Feature:GetProjection() or {}).plan or {}).activeId end,
         set=function(value)return Action('PlanSelect',value)end,slot={size='fill',fill=1,minWidth=110}})
@@ -331,7 +434,7 @@ local function CreateSidecar()
     RSUI:Button({id='v3_craft_sidecar_copy_plan',parent=planManagerRow,text='复制',compact=true,slot={size='fixed',width=52},
         onClick=function()return Action('PlanCopy','计划副本')end})
     planManagerRow:SetVisibility('collapsed')
-    shareRow=RSUI:HorizontalBox({id='v3_craft_sidecar_share_row',parent=root,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
+    shareRow=RSUI:HorizontalBox({id='v3_craft_sidecar_share_row',parent=controlArea,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
     instance.shareInput=RSUI:TextInput({id='v3_craft_sidecar_share_input',parent=shareRow,value='',placeholder='粘贴配方分享链接',maxLength=2048,
         submitOnLostFocus=false,slot={size='fill',fill=1,minWidth=120}})
     RSUI:Button({id='v3_craft_sidecar_import_link',parent=shareRow,text='导入',compact=true,slot={size='fixed',width=52},onClick=function()
@@ -343,14 +446,17 @@ local function CreateSidecar()
         return ok,why
     end})
     shareRow:SetVisibility('collapsed')
-    laborRow=RSUI:HorizontalBox({id='v3_craft_sidecar_labor_row',parent=root,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
-    instance.manualLabor=RSUI:TextInput({id='v3_craft_sidecar_manual_labor',parent=laborRow,value='',placeholder='劳力/次',maxLength=10,
+    laborRow=RSUI:HorizontalBox({id='v3_craft_sidecar_labor_row',parent=bottomArea,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
+    RSUI:Text({id='v3_craft_sidecar_labor_label',parent=laborRow,text='劳力/次',fontSize=9,slot={size='fixed',width=48}})
+    instance.manualLabor=RSUI:TextInput({id='v3_craft_sidecar_manual_labor',parent=laborRow,value='',placeholder='待核',maxLength=10,
         submitOnLostFocus=false,slot={size='fill',fill=1,minWidth=50}})
-    instance.manualFee=RSUI:TextInput({id='v3_craft_sidecar_manual_fee',parent=laborRow,value='',placeholder='手续费铜/次',maxLength=10,
+    RSUI:Text({id='v3_craft_sidecar_fee_label',parent=laborRow,text='费/次铜',fontSize=9,slot={size='fixed',width=48}})
+    instance.manualFee=RSUI:TextInput({id='v3_craft_sidecar_manual_fee',parent=laborRow,value='',placeholder='待核',maxLength=10,
         submitOnLostFocus=false,slot={size='fill',fill=1,minWidth=50}})
     instance.currentLabor=RSUI:TextInput({id='v3_craft_sidecar_current_labor',parent=laborRow,value='',placeholder='当前劳力',maxLength=10,
         submitOnLostFocus=false,slot={size='fill',fill=1,minWidth=50}})
-    RSUI:Button({id='v3_craft_sidecar_save_labor',parent=laborRow,text='校准',compact=true,slot={size='fixed',width=48},onClick=function()
+    instance.currentLabor:SetVisibility('collapsed')
+    RSUI:Button({id='v3_craft_sidecar_save_labor',parent=laborRow,text='保存',compact=true,slot={size='fixed',width=48},onClick=function()
         local function Number(input)
             local value=tostring(input:GetDraftValue() or '')
             if value=='' then return nil,true end
@@ -360,20 +466,20 @@ local function CreateSidecar()
         local labor,validLabor=Number(instance.manualLabor)
         local fee,validFee=Number(instance.manualFee)
         local current,validCurrent=Number(instance.currentLabor)
-        if not validLabor or not validFee or not validCurrent or ((labor~=nil or fee~=nil) and (labor==nil or fee==nil)) then
-            instance.status:SetText('请填写非负整数；配方劳力和手续费需同时确认');return false
+        if not validLabor or not validFee or not validCurrent then
+            instance.status:SetText('请填写非负整数，未知项留空');return false
         end
-        if labor~=nil then
+        if labor~=nil or fee~=nil then
             local row=instance.selectedMaterial
-            if not row or row.preview then instance.status:SetText('先选择要校准的制作配方');return false end
+            if not row then instance.status:SetText('先选择要校准的制作配方');return false end
             local ok,why=Action('PlanSetRecipeCosts',row.itemKey,labor,fee)
             if not ok then return false,why end
+        elseif current==nil then instance.status:SetText('先选配方并填写劳力或手续费');return false
         end
         instance.availableLabor=current
-        instance:Refresh();return true
+        instance:Refresh();instance.status:SetText('已保存所选配方消耗；空白项保留原值或待核');return true
     end})
-    laborRow:SetVisibility('collapsed')
-    local candidateRow=RSUI:HorizontalBox({id='v3_craft_sidecar_candidate_row',parent=root,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
+    local candidateRow=RSUI:HorizontalBox({id='v3_craft_sidecar_candidate_row',parent=controlArea,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
     instance.materialRecipe=RSUI:Dropdown({id='v3_craft_sidecar_material_recipe',parent=candidateRow,items={},placeholder='选中材料的候选配方',
         get=function()
             local row=instance.selectedMaterial;local p=(Feature:GetProjection() or {}).plan or {}
@@ -385,14 +491,14 @@ local function CreateSidecar()
             local ok,why=Action('PlanChooseRecipe',row.itemKey,id)
             if ok and type(Feature.Commands.PlanReadRecipes)=='function' then
                 local started=Feature.Commands:PlanReadRecipes()
-                if not started then instance.status:SetText('配方已选择；可点击重读下级') end
+                if not started then instance.status:SetText('配方已选择；可点获取子配方重读') end
             end
             return ok,why
         end,slot={size='fill',fill=1,minWidth=130}})
     RSUI:Button({id='v3_craft_sidecar_cancel_work',parent=candidateRow,text='停止查询',compact=true,
         slot={size='fixed',width=72},onClick=function()return Action('PlanCancel')end})
     candidateRow:SetVisibility('collapsed')
-    targetRow=RSUI:HorizontalBox({id='v3_craft_sidecar_target_row',parent=root,gap=4,slot={size='fixed',height=29,hAlign='fill'}})
+    targetRow=RSUI:HorizontalBox({id='v3_craft_sidecar_target_row',parent=controlArea,gap=4,slot={size='fixed',height=29,hAlign='fill'}})
     instance.addRecipe=RSUI:Dropdown({id='v3_craft_sidecar_target_recipe',parent=targetRow,items={},placeholder='选择已保存配方',
         get=function()return instance.addRecipeId end,set=function(value)instance.addRecipeId=value;return true end,
         slot={size='fill',fill=1,minWidth=120}})
@@ -405,6 +511,7 @@ local function CreateSidecar()
         if ok then
             targetRow:SetVisibility('collapsed')
             if not managementOpen then searchRow:SetVisibility('collapsed') end
+            Relayout()
         end
         return ok,why
     end})
@@ -414,20 +521,24 @@ local function CreateSidecar()
         return Action('PlanRemoveTarget',row.targetId)
     end})
     targetRow:SetVisibility('collapsed')
-    comparisonArea=RSUI:VerticalBox({id='v3_craft_sidecar_comparison_area',parent=root,gap=2,slot={size='fixed',height=110,hAlign='fill'}})
+    comparisonArea=RSUI:VerticalBox({id='v3_craft_sidecar_comparison_area',parent=listArea,gap=2,slot={size='fixed',height=110,hAlign='fill'}})
     instance.compareText=RSUI:Text({id='v3_craft_sidecar_compare_text',parent=comparisonArea,text='',fontSize=8,tone='muted',
         overflow='wrap',maxLines=4,slot={size='fixed',height=79,hAlign='fill'}})
     local compareActions=RSUI:HorizontalBox({id='v3_craft_sidecar_compare_actions',parent=comparisonArea,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
     RSUI:Button({id='v3_craft_sidecar_apply_all',parent=compareActions,text='采纳建议',compact=true,slot={size='fixed',width=76},onClick=function()
         local c=instance.comparison
-        if not c or not c.result or not c.result.recommendation or not c.result.recommendation.available then return false,'缺少有效成本，无法采纳建议' end
+        if not c or not c.result or not c.result.recommendation or not c.result.recommendation.available then
+            instance.status:SetText('缺少有效成本，无法采纳建议');return false
+        end
         local ok,why=Action('PlanApplyRecommendation',c.revision)
         if ok then instance.comparison=nil;instance:SetComparisonMode(false) end
         return ok,why
     end})
     RSUI:Button({id='v3_craft_sidecar_apply_one',parent=compareActions,text='采纳此项',compact=true,slot={size='fixed',width=76},onClick=function()
         local c,row=instance.comparison,instance.selectedMaterial
-        if not c or not row or not c.result or not c.result.recommendation or not c.result.recommendation.available then return false,'请先比较并选择有效建议' end
+        if not c or not row or not c.result or not c.result.recommendation or not c.result.recommendation.available then
+            instance.status:SetText('请先选择材料并确认有效建议');return false
+        end
         local ok,why=Action('PlanApplyRecommendation',c.revision,row.itemKey)
         if ok then instance.comparison=nil;instance:SetComparisonMode(false) end
         return ok,why
@@ -437,10 +548,9 @@ local function CreateSidecar()
     end})
     comparisonArea:SetVisibility('collapsed')
 
-    local treeActions=RSUI:HorizontalBox({id='v3_craft_sidecar_tree_actions',parent=root,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
+    local treeActions=RSUI:HorizontalBox({id='v3_craft_sidecar_tree_actions',parent=controlArea,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
     RSUI:Button({id='v3_craft_sidecar_expand',parent=treeActions,text='展开/收起',compact=true,slot={size='fixed',width=84},onClick=function()
-        local row=instance.selectedMaterial;if not row then instance.status:SetText('先选材料行');return false end
-        instance.expanded[row.key]=instance.expanded[row.key]==false;return instance:Refresh()
+        return instance:ToggleBranch(instance.selectedMaterial,true)
     end})
     RSUI:Button({id='v3_craft_sidecar_receive_material',parent=treeActions,text='补子配方',compact=true,slot={size='fixed',width=80},onClick=function()
         local row=instance.selectedMaterial;if not row then instance.status:SetText('先选待补的材料');return false end
@@ -455,7 +565,7 @@ local function CreateSidecar()
         return Action('PlanMarkBase',row.itemKey)
     end})
 
-    local materialActions=RSUI:HorizontalBox({id='v3_craft_sidecar_material_actions',parent=root,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
+    local materialActions=RSUI:HorizontalBox({id='v3_craft_sidecar_material_actions',parent=bottomArea,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
     local function SelectedAction(command,mode)
         local row=instance.selectedMaterial
         if not row or not row.itemKey then instance.status:SetText('先选择材料');return false end
@@ -476,11 +586,11 @@ local function CreateSidecar()
         instance.mixedKey=row.itemKey
         instance.mixedBuy:SetValue(tostring(allocation and allocation.mode=='mixed' and allocation.buy or detail.shortage or 0),false)
         instance.mixedCraft:SetValue(tostring(allocation and allocation.mode=='mixed' and allocation.craft or 0),false)
-        mixedRow:SetVisibility('visible');return true
+        mixedRow:SetVisibility('visible');Relayout();return true
     end})
     RSUI:Button({id='v3_craft_sidecar_search_auction',parent=materialActions,text='搜索拍卖',compact=true,slot={size='fixed',width=72},onClick=function()return SelectedAction('PlanSearch')end})
     RSUI:Button({id='v3_craft_sidecar_quote_one',parent=materialActions,text='校准此项',compact=true,slot={size='fixed',width=72},onClick=function()return SelectedAction('PlanCalibrate')end})
-    mixedRow=RSUI:HorizontalBox({id='v3_craft_sidecar_mixed_row',parent=root,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
+    mixedRow=RSUI:HorizontalBox({id='v3_craft_sidecar_mixed_row',parent=bottomArea,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
     instance.mixedBuy=RSUI:TextInput({id='v3_craft_sidecar_mixed_buy',parent=mixedRow,value='0',placeholder='购买数量',maxLength=10,
         submitOnLostFocus=false,slot={size='fill',fill=1,minWidth=60}})
     instance.mixedCraft=RSUI:TextInput({id='v3_craft_sidecar_mixed_craft',parent=mixedRow,value='0',placeholder='制作数量',maxLength=10,
@@ -499,14 +609,14 @@ local function CreateSidecar()
             instance.status:SetText('购买与制作数量须为整数，合计等于当前缺口');return false
         end
         local ok,why=Action('PlanSetAllocation',row.itemKey,'mixed',buy,craft)
-        if ok then mixedRow:SetVisibility('collapsed');instance.mixedKey=nil end
+        if ok then mixedRow:SetVisibility('collapsed');instance.mixedKey=nil;Relayout() end
         return ok,why
     end})
     mixedRow:SetVisibility('collapsed')
 
     -- WindowShell footer 占用 v3_craft_sidecar_status，业务反馈须用独立 ID，否则首次构建会被隔离。
-    instance.status = RSUI:Text({ id = "v3_craft_sidecar_action_status", parent = root,
-        text = "点接收后分享并发送配方；问号材料可选中后补子配方，或确认为原料。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
+    instance.status = RSUI:Text({ id = "v3_craft_sidecar_action_status", parent = bottomArea,
+        text = "点击带 [+] / [-] 的材料可展开或收起；拖动分隔线调整列表。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
         slot = { size = "fixed", height = 30, hAlign = "fill" } })
 
     local function ShowSelection(row,resetDraft)
@@ -522,8 +632,22 @@ local function CreateSidecar()
             elseif quote.freshness~='fresh' then priceText=priceText..'（旧参考）' end
             if quote.ageMinutes then priceText=priceText..' · '..tostring(quote.ageMinutes)..'分钟前' end
         end
+        local query=(p.quoteItems or {})[row.itemKey]
+        if query and query.status=='none' then priceText='本次查询无记录'
+        elseif query and query.status=='failed' then
+            priceText=QuoteFailure(query)..'：'..tostring(query.reason or query.code or '原因待核')..'；未更新参考价'
+            if query.quoteGrade~=nil then priceText=priceText..'（查询品质 '..tostring(query.quoteGrade)..'）' end
+        elseif query and query.status=='querying' then priceText='正在查询价格' end
         local reason=''
         for _,issue in ipairs(p.scanResult and p.scanResult.issues or {})do if issue.key==row.itemKey then reason='；'..issue.reason;break end end
+        local entry=(p.recipeCatalog or {})[row.itemKey]
+        if reason=='' and entry and entry.status=='recipe_fields_unknown' then reason='；下级配方待核，可点获取子配方重读' end
+        local recipe=(p.recipes or {})[(p.choices or {})[row.itemKey] or '']
+        if recipe and recipe.product and row.item and row.item.grade~=nil and recipe.product.grade==nil then
+            local domain=S.CraftPlanDomain
+            local certain=domain and select(2,domain.ProductMatches(row.item,recipe.product))
+            if certain~=true then reason=reason..'；产物品质待核，下级仅供预览' end
+        end
         if detail and detail.inventoryUncertain then reason=reason..'；库存品质或归属待核' end
         local source=detail and (' · 买'..tostring(detail.buy or 0)..'/做'..tostring(detail.craft or 0)) or ''
         instance.status:SetText((row.item and row.item.name or row.name)..' · '..(row.preview and '配方预览' or ('需求 '..row.need))..source..' · '..priceText..reason)
@@ -539,9 +663,20 @@ local function CreateSidecar()
             instance.manualFee:SetValue(recipe and recipe.feeCopper~=nil and tostring(recipe.feeCopper) or '',false)
         end
     end
+    function instance:ToggleBranch(row,explain)
+        if not row then if explain then self.status:SetText('先选材料行') end;return false end
+        if not row.canExpand then
+            if explain then self.status:SetText('该材料暂无可展开配方，请先点击获取子配方') end
+            return false
+        end
+        local key=row.key
+        self.expanded[key]=self.expanded[key]==false;self:Refresh()
+        self.status:SetText(self.expanded[key] and '已展开下级材料' or '已收起下级材料')
+        return true
+    end
     instance.table = RSUI:TableView({
-        id = "v3_craft_sidecar_table", parent = root, items = {}, rowHeight = 27, headerHeight = 26,
-        desiredRows = 10, overscan = 1, scrollbar = true, selectable = true, columnResize = false, headerInteractive = false,
+        id = "v3_craft_sidecar_table", parent = listArea, items = {}, rowHeight = 27, headerHeight = 26,
+        desiredRows = 10, overscan = 1, scrollbar = true, selectable = true, columnResize = true, headerInteractive = false,
         onSelectionChanged=function(index,_,view)
             instance.selectedMaterial=index and view:GetItem(index) or nil
             local row=instance.selectedMaterial
@@ -552,6 +687,7 @@ local function CreateSidecar()
             end
             if instance.mixedKey and (not row or row.itemKey~=instance.mixedKey) then
                 mixedRow:SetVisibility('collapsed');instance.mixedKey=nil
+                Relayout()
                 if instance.mixedBuy.CancelEditing then instance.mixedBuy:CancelEditing('material_changed') end
                 if instance.mixedCraft.CancelEditing then instance.mixedCraft:CancelEditing('material_changed') end
             end
@@ -559,47 +695,56 @@ local function CreateSidecar()
                 ShowSelection(row,true)
             end
         end,
+        onItemActivated=function(row)return instance:ToggleBranch(row,false)end,
         getKey = function(item) return item and item.key or nil end,
         columns = {
-            { id = "name", title = "材料", field = "name", size = "fill", minWidth = 132, fill = 1.6,
+            { id = "name", title = "材料", field = "name", size = "fill", minWidth = 96, fill = 1.6,
                 getTone=function(row)return row and row.tone or 'muted'end },
-            { id = "need", title = "需", field = "need", size = "fixed", width = 44, minWidth = 36 },
-            { id = "held", title = "有", field = "held", size = "fixed", width = 44, minWidth = 36 },
-            { id = "shortage", title = "缺", field = "shortage", size = "fixed", width = 44, minWidth = 36,
+            { id = "need", title = "需", field = "need", size = "fixed", width = 32, minWidth = 30 },
+            { id = "held", title = "有", field = "held", size = "fixed", width = 32, minWidth = 30 },
+            { id = "shortage", title = "缺", field = "shortage", size = "fixed", width = 32, minWidth = 30,
                 getTone=function(row)return row and row.tone or 'muted'end },
+            { id = "labor", title = "劳/次", field = "labor", size = "fixed", width = 44, minWidth = 40 },
+            { id = "unitPrice", title = "单价", field = "unitPrice", size = "fixed", width = 92, minWidth = 78 },
         },
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
     })
-    instance.summary=RSUI:Text({id='v3_craft_sidecar_summary',parent=root,text='费用与劳力待计算',fontSize=8,tone='muted',
-        overflow='wrap',maxLines=2,slot={size='fixed',height=28,hAlign='fill'}})
-    instance.laborStatus=RSUI:Text({id='v3_craft_sidecar_labor_status',parent=root,text='当前劳力待核',fontSize=8,tone='muted',
+    instance.summary=RSUI:Text({id='v3_craft_sidecar_summary',parent=bottomArea,text='费用与劳力待计算',fontSize=8,tone='muted',
+        overflow='wrap',maxLines=3,slot={size='fixed',height=44,hAlign='fill'}})
+    instance.laborStatus=RSUI:Text({id='v3_craft_sidecar_labor_status',parent=bottomArea,text='当前劳力待核',fontSize=8,tone='muted',
         overflow='wrap',maxLines=1,slot={size='fixed',height=18,hAlign='fill'}})
     function instance:SetManagementMode(open)
         managementOpen=open==true
+        management:SetText(managementOpen and '返回材料' or '管理')
         local settingsVisibility=managementOpen and 'visible' or 'collapsed'
-        for _,section in ipairs({searchRow,editRow,laborRow,planManagerRow,shareRow,candidateRow})do section:SetVisibility(settingsVisibility) end
+        for _,section in ipairs({searchRow,editRow,planManagerRow,shareRow,candidateRow,treeActions})do section:SetVisibility(settingsVisibility) end
         local workflowVisibility=managementOpen and 'collapsed' or 'visible'
-        for _,section in ipairs({quantityRow,treeActions,materialActions,self.table,self.summary,self.laborStatus})do
+        for _,section in ipairs({quantityRow,materialActions,self.summary,self.laborStatus})do
             section:SetVisibility(workflowVisibility)
         end
+        self.table:SetVisibility('visible')
         if managementOpen then
             targetRow:SetVisibility('collapsed');comparisonArea:SetVisibility('collapsed');mixedRow:SetVisibility('collapsed')
             self.mixedKey=nil
         end
+        Relayout()
         return true
     end
     function instance:SetComparisonMode(open)
         comparisonArea:SetVisibility(open and 'visible' or 'collapsed')
         local visibility=(open or managementOpen) and 'collapsed' or 'visible'
-        for _,section in ipairs({quantityRow,treeActions,materialActions,self.table,self.summary,self.laborStatus})do
+        for _,section in ipairs({quantityRow,materialActions,self.summary,self.laborStatus})do
             section:SetVisibility(visibility)
         end
+        self.table:SetVisibility(open and 'collapsed' or 'visible')
+        treeActions:SetVisibility(not open and managementOpen and 'visible' or 'collapsed')
         if open then mixedRow:SetVisibility('collapsed');self.mixedKey=nil end
+        Relayout()
         return true
     end
     if root == nil or instance.recipe == nil or instance.addSaved == nil or instance.refresh == nil or instance.quote == nil
         or instance.search == nil or instance.nameInput == nil or instance.quantity == nil or instance.deleteButton == nil
-        or addPlan == nil or instance.status == nil or instance.table == nil then
+        or addPlan == nil or instance.readChain == nil or instance.status == nil or instance.table == nil or bodySplit == nil or controlArea == nil or listArea == nil then
         return nil, "配方制作侧窗控件构建失败"
     end
 
@@ -612,6 +757,8 @@ local function CreateSidecar()
         return ok, err
     end
     instance.quote.onClick = function()
+        local quote=(Feature:GetProjection().plan or {}).quote
+        if quote and quote.status=='querying' then return Action('PlanCancelPrices') end
         local command=Feature.Commands.PlanCalibrate or Feature.Commands.QuotePendingMaterials
         if type(command) ~= "function" then return false, "材料询价命令不可用" end
         local ok, message = command(Feature.Commands)
@@ -619,6 +766,65 @@ local function CreateSidecar()
         instance.status:SetText(ok == true and tostring(message or "询价已提交") or ("询价失败：" .. tostring(message or "未执行")))
         return ok, message
     end
+
+    -- 只记录按钮回调是否到达与完成，不记录输入内容，也不改动 Native 绑定。
+    local tips={
+        add_plan='开始等待本人在 O 页分享的配方；再次点击取消。',
+        manage='展开或收起配方管理和高级设置。',settings='在工具页打开高级设置，不改变小窗材料列表。',
+        add_target='将已保存的配方或物品加入当前多目标计划。',
+        compare='比较购买成品与从原材料制作的成本和劳力；未知数据会标为待核。',
+        add_saved='打开下拉框中选择的配方。',
+        refresh='核对背包库存；银行库存需在管理中另行核对。',
+        quote='逐个查询当前配方和子材料的价格；查询中再次点击停止。打开拍卖行也会停止本轮，不自动恢复。',
+        read_chain='读取当前配方及材料的子配方，完成后更新材料列表。',
+        quantity_apply='应用制作件数；按回车或离开输入框也会提交。',
+        filter='按输入的名称筛选本地配方和物品。',clear_filter='清除筛选，显示全部本地结果。',
+        rename='将当前计划改为输入的名称。',delete='删除当前配方；需要再次点击确认。',
+        bank='核对已打开的银行和背包库存。',new_plan='新建可容纳多个目标的计划。',copy_plan='复制当前计划，生成一份独立计划。',
+        import_link='导入输入框中的配方分享链接。',save_labor='保存选中配方的每次劳力和手续费；当前劳力仅用于显示。',
+        cancel_work='停止当前下级配方读取和价格校准。',confirm_target='将所选配方或物品作为目标加入当前计划。',
+        remove_target='从当前多目标计划移除选中的目标。',apply_all='采用完整比较后给出的整份计划建议。',
+        apply_one='只采用所选材料的比较建议。',close_compare='关闭成本比较并返回材料列表。',
+        expand='展开或收起选中的材料；也可直接点击材料行。',receive_material='接收本人分享的配方，补充给选中的材料。',
+        mark_base='确认选中材料是原料，原料路线将按购买计算。',
+        buy='将选中材料设置为拍卖行购买。',craft='将选中材料设置为自己制作，需要可用子配方。',
+        mixed='为选中材料分别输入购买数量和制作数量。',search_auction='在拍卖行搜索选中的材料，不会自动购买。',
+        quote_one='重新查询并校准选中材料的价格。',apply_mixed='保存购买和制作数量，两者之和须等于缺口。',
+        reset_corrupt='清空当前角色损坏的制作计划并重建，其他功能的存档不受影响。',
+    }
+    local function BindTip(component,text)
+        if component and text and RSUI.Tooltip and type(RSUI.Tooltip.Bind)=='function' then
+            RSUI.Tooltip:Bind(component,{text=text,maxWidth=320})
+        end
+    end
+    BindTip(instance.quantity.input,'输入目标数量；按回车、点击应用或离开输入框后重新计算材料。')
+    BindTip(instance.recipe,'选择已接收的配方；列表只显示本地保存的配方。')
+    if bodySplit and bodySplit.dividerDrag then
+        if RSUI.Tooltip and type(RSUI.Tooltip.Bind)=='function' then
+            RSUI.Tooltip:Bind(bodySplit.dividerDrag,{provider=function()
+                bodySplit:CapturePointerEvidence('hover')
+                return '按住左键上下拖动：向下扩大材料列表，向上扩大下方操作区。'
+            end,allowRaw=true,maxWidth=320})
+        end
+    end
+    local function TraceButtons(node)
+        if type(node)~='table' then return end
+        if node.kind=='Button' and type(node.onClick)=='function' and tostring(node.id):find('v3_craft_sidecar_',1,true)==1 then
+            local callback,id=node.onClick,node.id
+            local tipKey=tostring(id):gsub('^v3_craft_sidecar_','')
+            BindTip(node,tips[tipKey])
+            node.onClick=function(...)
+                Controller.actionAttempts=(Controller.actionAttempts or 0)+1
+                Controller.lastAction=tostring(id):sub(1,96);Controller.lastActionResult='entered';Controller.lastActionError=nil
+                local ok,why=callback(...)
+                Controller.lastActionResult=ok==false and 'rejected' or 'completed'
+                if ok==false and why~=nil then Controller.lastActionError=tostring(why):sub(1,256) end
+                return ok,why
+            end
+        end
+        for _,child in ipairs(node.children or {})do TraceButtons(child) end
+    end
+    TraceButtons(root)
 
     function instance:ApplyAnchor(snapshot)
         if type(snapshot) == "table" then Controller.snapshot = snapshot end
@@ -650,16 +856,11 @@ local function CreateSidecar()
             self.quantity:Render()
         end
         local receipt = plan and plan.importFeedback
-        local receiptId = receipt and (tostring(plan.sessionRevision) .. ":" .. tostring(receipt.id))
-        if receipt and receiptId ~= self.lastImportFeedback then
-            self.lastImportFeedback = receiptId
-            self.status:SetText(tostring(receipt.message or ""))
-            if type(self.status.SetTone) == "function" then self.status:SetTone(receipt.ok and "muted" or "warn") end
-        end
+        local receiptId = receipt and (tostring(plan.sessionRevision) .. ":" .. tostring(receipt.id) .. ":" .. tostring(not not plan.pendingShare))
         self.recipe.items={}
         self.addRecipe.items={}
         self.planSelector.items=plan and plan.plans or {}
-        for _,option in ipairs(plan and (plan.libraryEntries or plan.contextRecipeOptions) or projection.recipeOptions or {})do
+        for _,option in ipairs(plan and (plan.libraryEntries or plan.contextRecipeOptions) or {})do
             if self.searchText=='' or option.text:find(self.searchText,1,true) then
                 self.recipe.items[#self.recipe.items+1]=option
                 self.addRecipe.items[#self.addRecipe.items+1]=option
@@ -674,16 +875,56 @@ local function CreateSidecar()
         if type(self.addRecipe.Render) == "function" then self.addRecipe:Render() end
         if type(self.planSelector.Render) == "function" then self.planSelector:Render() end
         local rows = MaterialRows(projection,self)
-        self.table:SetItems(rows, "craft-sidecar:" .. tostring(projection.revision or 0))
+        local selectedKey=self.selectedMaterial and self.selectedMaterial.key
+        -- 计划与界面展开各自变化；让列表生成新版本，确保同一池行重新绑定可见文字。
+        self.table:SetItems(rows)
+        local evidence={planRevision=plan and plan.revision,baseRevision=projection.revision,rowCount=#rows,rows={}}
+        local list=self.table:GetListView()
+        for index=1,math.min(8,#rows)do
+            local item=rows[index];local visible=list and list:GetRowForIndex(index)
+            evidence.rows[#evidence.rows+1]={itemKey=item.itemKey,need=item.need,
+                visibleNeed=visible and visible.cells and visible.cells[2] and visible.cells[2].text or nil}
+        end
+        self.renderEvidence=evidence
+        if selectedKey then
+            for index,row in ipairs(rows)do if row.key==selectedKey then self.table:SetSelectedIndex(index);break end end
+        end
         self.selectedMaterial=self.table:GetSelectedIndex() and self.table:GetItem(self.table:GetSelectedIndex()) or nil
         if self.selectedMaterial then ShowSelection(self.selectedMaterial,false) end
-        if #rows == 0 then self.table:SetViewState("empty", { title = "暂无制作目标", detail = "接收一次配方分享，或从上方打开已保存配方。" }) else self.table:SetViewState("ready") end
+        local showReset=plan and plan.status=='unavailable' and plan.canResetCorrupt==true
+        local nextResetVisibility=showReset and 'visible' or 'collapsed'
+        if resetRow.visibility~=nextResetVisibility then resetRow:SetVisibility(nextResetVisibility);Relayout() end
+        if not plan then
+            self.planReadUnavailable=true
+            self.status:SetText('制作计划未就绪，请稍后重试')
+            self.table:SetViewState('empty',{title='制作计划未就绪',detail='等待计划数据加载。'})
+        elseif plan.status=='unavailable' then
+            self.planReadUnavailable=true
+            self.status:SetText('计划读取失败：'..PlanError(plan.error))
+            self.table:SetViewState('empty',{title='制作计划不可用',detail=showReset and '可清空损坏计划并重新接收配方。' or '请查看读取失败原因，原存档已保留。'})
+        else
+            if self.planReadUnavailable then
+                self.planReadUnavailable=nil
+                if not self.selectedMaterial then self.status:SetText('制作计划已就绪') end
+            end
+            if #rows == 0 then self.table:SetViewState("empty", { title = "暂无制作目标", detail = "接收一次配方分享，或从上方打开已保存配方。" }) else self.table:SetViewState("ready") end
+        end
+        -- 材料行刷新也会更新状态栏；接收回执必须后显示，等待中的失败不能被背景刷新掩盖。
+        if plan and plan.status~='unavailable' and receipt
+            and (receiptId~=self.lastImportFeedback or (plan.pendingShare and receipt.ok==false)) then
+            self.lastImportFeedback=receiptId
+            self.status:SetText(tostring(receipt.message or ''))
+            if type(self.status.SetTone)=='function' then self.status:SetTone(receipt.ok and 'muted' or 'warn') end
+        end
         local result=plan and plan.evaluation
         if result then
-            self.summary:SetText((result.costComplete and '还需参考 ' or '已知支出 ')..Money(result.cashCopper)..
-                (result.priceStale and '（旧价）' or '')..
-                ' · '..(result.valueComplete~=false and result.costComplete and '估值 ' or '已知估值 ')..Money(result.valueCopper)..
-                ' · 劳力 '..tostring(result.labor or 0)..(result.laborComplete and '' or '+待核')..
+            local material=result.materialCopper or math.max(0,(tonumber(result.cashCopper) or 0)-(tonumber(result.feeCopper) or 0))
+            local missing=#(result.missingPrices or {})
+            self.summary:SetText((result.materialCostComplete and result.feeComplete~=false and '金币估算 ' or '已知合计 ')..Money(result.cashCopper)..
+                (missing>0 and (' · 缺价 '..missing..'项未计入') or '')..
+                '\n材料 '..Money(material)..' + 制作费 '..Money(result.feeCopper or 0)..(result.feeComplete==false and '+待填' or '')..
+                '\n劳力 '..tostring(result.labor or 0)..(result.laborComplete and '' or '+待填')..
+                ' · 有价 '..tostring(result.pricedPurchaseCount or 0)..'/'..tostring(result.purchaseCount or 0)..(result.priceStale and '（旧参考）' or '')..
                 (not plan.inventoryComplete and '（库存待核）' or plan.inventoryScope=='bag_bank' and '（不含保管箱）' or '')..
                 (result.combinedCopper~=nil and (' · 含劳力 '..Money(result.combinedCopper)) or ''))
             if self.availableLabor~=nil and result.laborComplete and plan.inventoryComplete then
@@ -696,11 +937,26 @@ local function CreateSidecar()
             end
         end
         local pending = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
-        self.quote:SetEnabled(projection.plan and #rows>0 or pending > 0)
-        self.quote:SetText(projection.plan and '校准价格' or (pending > 0 and ("询价(" .. tostring(pending) .. ")") or "材料询价"))
+        local reading=plan and plan.scan~=nil
+        self.readChain:SetText(reading and '读取中' or '获取子配方')
+        self.readChain:SetEnabled(not reading and plan~=nil and plan.status~='unavailable'
+            and #(plan.targets or {})>0 and type(Feature.Commands.PlanReadRecipes)=='function')
+        local quote=plan and plan.quote
+        local querying=quote and quote.status=='querying'
+        self.quote:SetEnabled(querying or projection.plan and #rows>0 or pending > 0)
+        self.quote:SetText(querying and '查询中' or '获取全部价格')
         local craft = type(projection.craft) == "table" and projection.craft or {}
         local status = tostring(craft.status or projection.status or "idle")
-        self.surface:SetStatus(projection.plan and ('当前计划 · '..tostring(#rows)..' 个条目') or (status..' · 材料 '..tostring(#rows)), (status == "failed" or status == "unavailable") and "orange" or "muted")
+        local queryStatus
+        if querying then queryStatus='查询中 '..tostring(quote.completed or 0)..'/'..tostring(quote.total or 0)..' · '..tostring(quote.currentName or '')
+        elseif quote and quote.status=='stopped' then
+            queryStatus=quote.reason=='native_auction_visible' and '已停止查询：玩家正在使用拍卖行'
+                or quote.reason=='native_auction_visibility_unknown' and '已停止查询：无法确认拍卖行已关闭' or '已停止价格查询'
+        elseif quote and quote.status=='completed' then
+            queryStatus='查询完成 '..tostring(quote.completed or 0)..'项 · 无记录 '..tostring(quote.empty or 0)..' · 失败 '..tostring(quote.failed or 0)
+                ..(quote.truncated and '（配方树超限，未全部查询）' or '')
+        end
+        self.surface:SetStatus(queryStatus or (projection.plan and ('当前计划 · '..tostring(#rows)..' 个条目') or (status..' · 材料 '..tostring(#rows))), (status == "failed" or status == "unavailable") and "orange" or "muted")
         return true
     end
 
@@ -731,6 +987,7 @@ local function CreateSidecar()
         self.visible = true; return true
     end
     function instance:Hide()
+        if self.bodySplit then self.bodySplit:CancelDrag('window_hidden') end
         local hidden, hideErr = self.surface:Show(false)
         if hidden ~= true then return false, hideErr end
         Controller.manualVisible = false
@@ -742,6 +999,7 @@ local function CreateSidecar()
         return true
     end
     function instance:OnWindowClosed()
+        if self.bodySplit then self.bodySplit:CancelDrag('window_closed') end
         Controller.manualVisible = false
         if self.acquired == true and Feature:HasConsumer("widget:craft_sidecar") then Feature:ReleaseConsumer("widget:craft_sidecar") end
         self.acquired = false; self.visible = false; self:Unsubscribe()

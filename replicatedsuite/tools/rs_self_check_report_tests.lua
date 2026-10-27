@@ -182,6 +182,15 @@ Test('paged fault report preserves full runtime physical-repair probe outside th
     assert(text:find('fallback_player_catalog_no_candidate',1,true),'physical fallback reason missing')
     assert(text:find('PHYSICAL_PROBE_TAIL',1,true),'runtime physical probe was pre-clipped before paging')
 end)
+Test('paged fault report includes cached craft scan evidence without triggering a scan',function()
+    local S,D=Boot();local calls=0
+    S.Features=S.Features or {};S.Features.tools_craft={GetRecipeReadDiagnostics=function()
+        calls=calls+1;return {traces={'43483:0:* candidate=88 productCount=unknown'}}
+    end}
+    local text=assert(D:BuildPagedSelfCheckReport())
+    assert(text:find('CRAFT_RECIPE_READ',1,true) and text:find('43483:0:*',1,true) and text:find('candidate=88',1,true),text)
+    assert(calls==1,'report must collect cached evidence once')
+end)
 Test('hiding page clears editor and releases focus without reading another snapshot',function()
     local S,D,io=Boot();Ready(D);local root,h=Page(S);assert(h.widgets.v3_diag_output.onClick())
     root:OnDeactivated();assert(h.edit.text==''and h.deactivations==1)

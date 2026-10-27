@@ -646,6 +646,7 @@ function P:RegisterStore(def)
         encodedBudget = NormalizeEnvelopeBudget(def.budget, def.encodedBudget),
         verifyAfterSave = def.verifyAfterSave == true,
         recoverableReplacement = def.recoverableReplacement == true,
+        requireFailureBarrier = def.requireFailureBarrier == true,
         registrationBudgetOk = true,
         dirty = false,
         dueAt = 0,
@@ -2412,7 +2413,7 @@ function P:SaveValue(id, value, options)
     if ok ~= true then
         -- SaveData 返回失败不能证明物理键未被触碰。journal 分片单独通过指针提交，失败非活动 bank 可安全成为
         -- 孤儿；其他 Store 必须在下一耐久屏障核对或恢复，之后才允许 Reload/Stop。
-        if store.recoverableReplacement ~= true then store.needsBarrierVerify = true end
+        if store.recoverableReplacement ~= true or store.requireFailureBarrier == true then store.needsBarrierVerify = true end
         store.lastError = tostring(saveErr or "save failed")
         self.stats.saveFailures = (tonumber(self.stats.saveFailures) or 0) + 1
         Count("STORE_SAVE_FAILED", 1)

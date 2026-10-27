@@ -278,6 +278,11 @@ Test("C8: Explicit material quote queue integration", function()
     Assist:Refresh("test_quote_refresh")
     assert(#quoteCalls == 0, "ordinary craft Refresh must never fan out auction quotes")
 
+    -- 这个用例验证已知品质材料的队列接入；缺失品质的拒绝另有故障模型，不能依赖服务默认为 1。
+    for _,recipe in ipairs(Assist.CraftProjection.recipes or {})do
+        for _,material in ipairs(recipe.materials.items or {})do material.grade=material.grade or 1 end
+    end
+
     local projection = Assist:GetProjection() or {}
     if (tonumber(projection.pendingQuoteCount) or 0) > 0 then
         local ok, message = Assist.Commands:QuotePendingMaterials()
@@ -414,6 +419,7 @@ Test("C12: Generic share and native quantities keep craft and item identities se
     local outputCount, materialAmount = 3, 2
     suite.Api.CallCapability = function(_, capability)
         if capability == "X2Craft:GetCraftProductInfo" then return true, {itemType=90001, itemGrade=0, count=outputCount} end
+        if capability == "X2Craft:GetCraftBaseInfo" then return false,nil,'fixture base fields unavailable' end
         if capability == "X2Craft:GetCraftMaterialInfo" then
             return true, {{amount=materialAmount, count=200, item_info={itemType=90002, itemGrade=0, craftType=7452}}}
         end
@@ -425,11 +431,35 @@ Test("C12: Generic share and native quantities keep craft and item identities se
     assert(recipe.materials[1].count == 2 and recipe.materials[1].recipeHint == 7452,
         "inventory count must not become recipe amount; craftType is only a recipe hint")
     outputCount = nil
-    assert(not feature:ReadPlanRecipe(7450), "unknown output yield must not default to one")
+    local missing,missingWhy,details=feature:ReadPlanRecipe(7450)
+    assert(not missing and missingWhy and details and details.productItemType==90001 and details.productCount==nil
+        and details.materialFields:find('90002',1,true) and details.materialFields:find('count=2',1,true),
+        "unknown output yield must report the observed item and missing count")
     local manual = assert(feature:ReadPlanRecipe(7450, {outputCount=5}))
     assert(manual.product.count == 5 and manual.outputSource == "manual")
     materialAmount = nil
     assert(not feature:ReadPlanRecipe(7450, {outputCount=5}), "held count cannot fill a missing recipe amount")
+    suite.Api.CallCapability = function(_,capability)
+        if capability=='X2Craft:GetCraftProductInfo' then return true,{{itemType=90001,amount=1,useGrade=true,productGrade=0}} end
+        return true,{{amount=1,item_info={itemType=90002,itemGrade=0}}}
+    end
+    local explicit,_,qualityEvidence=feature:ReadPlanRecipe(7450)
+    assert(explicit and qualityEvidence and qualityEvidence.productUseGrade==true and qualityEvidence.nativeProductGrade==0)
+    assert(explicit.product.grade==0,'explicit native productGrade must be used when useGrade is true')
+    suite.Api.CallCapability = function(_,capability)
+        if capability=='X2Craft:GetCraftProductInfo' then return true,{{itemType=90001,amount=1,useGrade=false,productGrade=3}} end
+        return true,{{amount=1,item_info={itemType=90002,itemGrade=0}}}
+    end
+    local dynamic,_,dynamicEvidence=feature:ReadPlanRecipe(7450)
+    assert(dynamic and dynamicEvidence.productUseGrade==false and dynamic.product.grade==nil,
+        'unused productGrade cannot be treated as the crafted quality')
+    suite.Api.CallCapability = function(_,capability)
+        if capability=='X2Craft:GetCraftProductInfo' then return true,{{itemType=90001,amount=1,useGrade=false,productGrade=3}} end
+        return true,{{amount=1,mainGrade=true,item_info={itemType=90002,itemGrade=0}}}
+    end
+    local fromMain,_,mainEvidence=feature:ReadPlanRecipe(7450)
+    assert(fromMain.product.grade==0 and mainEvidence.materialFields:find('mainGrade=true',1,true),
+        'native mainGrade material determines dynamic output quality and is recorded')
 end)
 
 Test("C13: Craft tools page exposes advanced settings and popup recovery", function()
@@ -550,6 +580,8 @@ Test("C15: Craft module export retains cached window evidence without probing Na
     assert(surface:Refresh("synthetic_observer", true))
     local feature = { Id="tools_craft", storeId="v3.business.tools_craft", enabled=true, consumerCount=1,
         State={autoSidecar=true}, Commands={}, GetProjection=function()error("diagnostics must not read a projection")end,
+        GetPriceReadDiagnostics=function()return {batch={status='stopped'},results={['46156:0:*']={name='新月石晶',quoteGrade=2,code='strict_grade_mismatch'}}}end,
+        GetPriceListingDiagnostics=function()return {requests={{searchGeneration=4,listingDetails={{normalized={itemType=46156,itemGrade=2}}}}}}end,
         Enable=function()return true end, Disable=function()return true end }
     suite.Features.tools_craft=feature
     suite.FeatureRuntime.implementations={tools_craft=feature}
@@ -559,6 +591,10 @@ Test("C15: Craft module export retains cached window evidence without probing Na
     local report, err, exported = suite.ModuleDiagnosticsHub:BuildReport("tools_craft", {detailed=true})
     assert(report, err)
     assert(exported and exported:find("craft_surface_runtime",1,true))
+    assert(exported:find('strict_grade_mismatch',1,true) and exported:find('新月石晶',1,true),
+        'per-material lookup failures must be included in craft module TXT')
+    assert(exported:find('craft_price_listing_samples',1,true) and exported:find('searchGeneration',1,true),
+        'retained listing samples must be exported with their request generation')
     assert(exported:find("nil,nil,nil,nil,nil",1,true),"native shape must survive full TXT serialization")
     assert(exported:find("UIC_CRAFT_BOOK",1,true))
     assert(nativeReads==beforeReads and host.writes==beforeWrites and host.reads==beforeStorage,
@@ -632,7 +668,7 @@ Test("C17: Manual window survives unknown native visibility and saved recipes ca
     suite.Services.CraftSurfaceV3={topic="v3.craft_surface.updated",GetSnapshot=function()return {status="unknown"}end}
     suite.RSUI.FloatingSurface={Create=function()
         local root=suite.RSUI:VerticalBox({id="craft_manual_window_test_root",parent=host.page})
-        return {GetContentRoot=function()return root end,SetStatus=function()end,Show=function()return true end}
+        return {shell={Layout=function()return true end},GetContentRoot=function()return root end,SetStatus=function()end,Show=function()return true end}
     end}
     dofile("presentation/v3/widgets/rs_v3_craft_sidecar.lua")
     assert(suite.UIV3.CraftSidecar:OpenManual() and visible)
@@ -757,7 +793,17 @@ Test("C20: Real Layout position intent survives durable save, rejection and cold
     assert(not resetFeature.Commands:SetCraftWindowState(window))
     assert(resetFeature:GetCraftWindowState().locked==false,'window state must roll back a refused durable save')
     resetHost.failSave=false
+    assert(resetFeature.Commands:SetCraftListSplit(225))
+    resetHost.failSave=true;assert(not resetFeature.Commands:SetCraftListSplit(300));resetHost.failSave=false
+    assert(resetFeature:GetCraftListSplit()==225,'failed divider save must roll back')
+    window.height=620;window.locked=false
+    assert(resetFeature.Commands:SetCraftWindowState(window,300))
+    resetHost.failSave=true;window.height=650
+    assert(not resetFeature.Commands:SetCraftWindowState(window,350));resetHost.failSave=false
+    assert(resetFeature:GetCraftWindowState().height==620 and resetFeature:GetCraftListSplit()==300,
+        'window and material height must roll back together')
     local windowHost,windowFeature=Load(resetHost.disk)
+    assert(windowFeature:GetCraftListSplit()==300,'divider size must survive a cold reload')
     local savedWindow=windowFeature:GetCraftWindowState()
     assert(savedWindow.coordinateSpace=='logical-edge-v1' and savedWindow.offsetX==window.offsetX and savedWindow.offsetY==window.offsetY)
     savedWindow.offsetX=9999

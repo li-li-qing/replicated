@@ -10,16 +10,63 @@ local function Integer(v, zero)
 end
 D.Integer = Integer
 -- craftinglist 分享入口使用 |if<craftType>;名称|r；只解码明确配方链接，不执行导入文本。
-function D.ParseRecipeShare(value)
-    if type(value)~='string' or value=='' or #value>2048 then return nil,'请粘贴一条配方分享链接（最多 2048 字节）' end
-    local id,name,count=nil,nil,0
-    for candidate,label in value:gmatch('|if(%d+)[;:]([^|]*)')do
-        count=count+1;id=Integer(candidate);name=label
+function D.ParseRecipeShare(value,allowLinkedItems)
+    local summary={bytes=type(value)=='string' and #value or 0,linkCount=0,ids={},tags={}}
+    local limit=allowLinkedItems==true and 8192 or 2048
+    if type(value)~='string' or value=='' or #value>limit then
+        summary.code='share_size_invalid';return nil,'请粘贴配方分享链接（最多 '..limit..' 字节）',summary
     end
-    if count~=1 or not id then return nil,'需要一条有效配方链接，不能把物品编号直接作为配方编号' end
-    name=tostring(name or ''):match('^%s*(.-)%s*$')
-    if #name>192 or name:find('[%c]') then name='' end
-    return {craftType=id,name=name~='' and name or nil,source='craft_share_link'}
+    local kinds={}
+    for tag in value:gmatch('|([%a]+)')do
+        summary.hasMarkup=true;tag=tag:sub(1,16)
+        if not kinds[tag] and #summary.tags<8 then summary.tags[#summary.tags+1]=tag;kinds[tag]=true end
+    end
+    local links={}
+    for candidate,label in value:gmatch('|if(%d+)[;:]([^|%]]*)')do
+        summary.linkCount=summary.linkCount+1
+        if summary.linkCount>66 then summary.code='share_link_limit';return nil,'分享链接数量超过本轮上限',summary end
+        local id=Integer(candidate)
+        if not id then summary.code='share_id_invalid';return nil,'分享链接编号无效',summary end
+        if #summary.ids<16 then summary.ids[#summary.ids+1]=id end
+        label=tostring(label or ''):match('^%s*(.-)%s*$')
+        if #label>192 or label:find('[%c]') then label='' end
+        links[#links+1]={id=id,name=label~='' and label or nil}
+    end
+    if #links==0 or (#links~=1 and allowLinkedItems~=true) then
+        summary.code=#links==0 and 'share_link_missing' or 'share_multiple_links'
+        return nil,'需要一条有效配方链接，不能把物品编号直接作为配方编号',summary
+    end
+    summary.code='parsed'
+    local linkedItems={};for index=2,#links do linkedItems[#linkedItems+1]=links[index] end
+    return {craftType=links[1].id,name=links[1].name,source='craft_share_link',linkedItems=linkedItems},nil,summary
+end
+-- 完整分享可能带产物/材料链接；只有原生配方能核实这些附带链接时才接受，不能随意取多个配方中的第一个。
+function D.ValidateRecipeShare(reference,recipe)
+    if type(reference.linkedItems)~='table' or #reference.linkedItems==0 then return true end
+    local function Label(value)
+        if type(value)~='string' then return nil end
+        value=value:match('^%s*(.-)%s*$'):gsub('^%[',''):gsub('%]$','')
+        return value~='' and value or nil
+    end
+    local sharedName,nativeName=Label(reference.name),Label(recipe.product and recipe.product.name)
+    if sharedName and nativeName and sharedName~=nativeName then
+        return false,'分享包含多个链接，首个链接与配方产物名称不匹配'
+    end
+    local allowed={}
+    local function Add(item)
+        if type(item)=='table' and Integer(item.itemType) then
+            local id=Integer(item.itemType);allowed[id]=allowed[id] or {}
+            local name=Label(item.name);if name then allowed[id][name]=true end
+        end
+    end
+    Add(recipe.product);for _,item in ipairs(recipe.materials or {})do Add(item) end
+    for _,link in ipairs(reference.linkedItems)do
+        local names=allowed[link.id]
+        if not names or (next(names)~=nil and not names[Label(link.name) or '']) then
+            return false,'分享包含无法核对的附带链接；请单独分享一张配方'
+        end
+    end
+    return true
 end
 local function Copy(v)
     if type(v) ~= 'table' then return v end
@@ -31,6 +78,42 @@ function D.Key(item)
     if item.grade ~= nil and not Integer(item.grade, true) then return nil end
     return tostring(Integer(item.itemType)) .. ':' .. tostring(item.grade == nil and '*' or item.grade) .. ':' .. tostring(item.variant or '*')
 end
+-- 查询/匹配身份与持久化键分开：不能因补齐固定品质使已保存的计划键失效。
+function D.ResolveItemGrade(item)
+    local grade=type(item)=='table' and tonumber(item.grade) or nil
+    if type(item)=='table' and item.grade~=nil and (not Integer(grade,true) or grade>20) then return nil,'invalid_grade' end
+    if grade~=nil and grade~=0 then return grade,'explicit' end
+    local catalog=ReplicatedSuite.Data and ReplicatedSuite.Data.CraftRecipeCatalog
+    local record=catalog and catalog.items and type(item)=='table' and catalog.items[tonumber(item.itemType)]
+    local fixed=type(record)=='table' and Integer(record.fixedGrade,true) or nil
+    if fixed and fixed<=20 then return fixed,'fixed_item_catalog' end
+    return grade,grade==0 and 'unverified_zero' or 'unspecified'
+end
+-- 同物品产物品质未返回时允许查看配方，但不能当作已验证的制作方案。
+function D.ProductMatches(required,product)
+    if not D.Key(required) or not D.Key(product) or tonumber(required.itemType)~=tonumber(product.itemType) then return false,false end
+    if required.variant~=nil and required.variant~='*' and required.variant~=product.variant then return false,false end
+    local requiredGrade,requiredSource=D.ResolveItemGrade(required)
+    local productGrade,productSource=D.ResolveItemGrade(product)
+    if requiredSource=='invalid_grade' or productSource=='invalid_grade' then return false,false end
+    if requiredGrade~=nil then
+        if productGrade==nil then return true,false end
+        if requiredGrade~=productGrade then return false,false end
+    end
+    return true,true
+end
+function D.ResolveRequirementGrade(item,product,observedGrade)
+    local grade,source=D.ResolveItemGrade(item)
+    if grade==nil and type(item)=='table' and item.grade==nil and select(2,D.ProductMatches(item,product)) then
+        grade=D.ResolveItemGrade(product)
+        if grade~=nil then source='selected_recipe_product' end
+    end
+    local observed=Integer(observedGrade,true)
+    if grade==nil and type(item)=='table' and item.grade==nil and observed and observed<=20 then
+        grade,source=observed,'native_recipe_product'
+    end
+    return grade,source
+end
 local function Keys(t)
     local r={}; for k in pairs(t or {}) do r[#r+1]=k end; table.sort(r); return r
 end
@@ -39,7 +122,7 @@ function D.Evaluate(plan, facts, route)
     plan, facts = plan or {}, facts or {}
     local result = { rows={}, byKey={}, purchases={}, steps={}, issues={}, missingPrices={},
         complete=true, costComplete=true, valueComplete=true, laborComplete=true, priceStale=false, cashCopper=0, valueCopper=0,
-        ownedValueCopper=0, labor=0, feeCopper=0, route=route or 'manual' }
+        ownedValueCopper=0, labor=0, feeCopper=0,feeComplete=true,purchaseCount=0,pricedPurchaseCount=0, route=route or 'manual' }
     local function Issue(code, key)
         result.issues[#result.issues+1]={code=code,key=key}; result.complete=false
     end
@@ -90,16 +173,36 @@ function D.Evaluate(plan, facts, route)
     for _,key in ipairs(Keys(demands)) do Visit(key,1) end
     local remaining=Copy(facts.inventory or {})
     local remainingBag=Copy(facts.bagInventory or facts.inventory or {})
+    local requirementKeys,stockIdentities={},{}
+    local function MatchKey(key,isRequirement)
+        local identities=isRequirement and requirementKeys or stockIdentities
+        if identities[key] then return identities[key] end
+        local id,grade,variant=key:match('^([^:]+):([^:]+):(.+)$')
+        if grade=='0' or grade=='*' then
+            local resolved
+            if isRequirement and items[key] then
+                resolved=D.ResolveRequirementGrade(items[key],recipes[key] and recipes[key].product,(facts.itemGrades or {})[key])
+            else
+                -- 选中配方只能明确需求；不能给品质缺失的背包物品强套该品质。
+                resolved=D.ResolveItemGrade({itemType=tonumber(id),grade=tonumber(grade)})
+            end
+            if resolved~=nil then identities[key]=id..':'..tostring(resolved)..':'..variant end
+        end
+        identities[key]=identities[key] or key;return identities[key]
+    end
     local function Matches(requirement,stock)
-        local rt,rg,rv=requirement:match('^([^:]+):([^:]+):(.+)$')
-        local st,sg,sv=stock:match('^([^:]+):([^:]+):(.+)$')
+        local rt,rg,rv=MatchKey(requirement,true):match('^([^:]+):([^:]+):(.+)$')
+        local st,sg,sv=MatchKey(stock):match('^([^:]+):([^:]+):(.+)$')
         return rt~=nil and rt==st and (rg=='*' or rg==sg) and (rv=='*' or rv==sv)
     end
     local stockKeys=Keys(remaining)
     local matchCounts={}
     for _,stock in ipairs(stockKeys)do
-        local count=0
-        for key in pairs(items)do if Matches(key,stock) then count=count+1 end end
+        local count,seen=0,{}
+        for key in pairs(items)do
+            local identity=MatchKey(key,true)
+            if not seen[identity] and Matches(key,stock) then count=count+1;seen[identity]=true end
+        end
         matchCounts[stock]=count
     end
     local function Consume(key,need)
@@ -110,8 +213,8 @@ function D.Evaluate(plan, facts, route)
                 local ambiguous=matchCounts[stock]>1
                 if ambiguous then uncertain=true;Issue('inventory_match_ambiguous',key)
                 else
-                    local _,requestedGrade=key:match('^([^:]+):([^:]+):')
-                    local _,stockGrade=stock:match('^([^:]+):([^:]+):')
+                    local _,requestedGrade=MatchKey(key,true):match('^([^:]+):([^:]+):')
+                    local _,stockGrade=MatchKey(stock):match('^([^:]+):([^:]+):')
                     if requestedGrade=='*' and stockGrade~='*' then uncertain=true end
                     local take=math.min(count,need-owned)
                     local bag=math.min(take,Integer(remainingBag[stock],true) or 0)
@@ -152,7 +255,7 @@ function D.Evaluate(plan, facts, route)
             if row.craft>0 then
                 if not recipe and ((facts.catalog or {})[key] or {}).base and route=='raw' then
                     row.buy,row.craft=row.buy+row.craft,0; result.purchases[#result.purchases+1]=row
-                elseif type(recipe)~='table' or D.Key(recipe.product)~=key or not Integer(recipe.product.count)
+                elseif type(recipe)~='table' or not select(2,D.ProductMatches(item,recipe.product)) or not Integer(recipe.product.count)
                     or type(recipe.materials)~='table' or #recipe.materials==0 or recipe.incomplete then
                     Issue('recipe_incomplete',key)
                 elseif cyclic[key] then Issue('cycle',key)
@@ -174,7 +277,7 @@ function D.Evaluate(plan, facts, route)
                     else result.laborComplete=false; result.issues[#result.issues+1]={code='labor_unknown',key=key} end
                     local fee=Integer(recipe.feeCopper,true)
                     if fee and result.feeCopper+row.batches*fee<=9000000000000 then result.feeCopper=result.feeCopper+row.batches*fee
-                    else result.costComplete=false; result.issues[#result.issues+1]={code='fee_unknown',key=key} end
+                    else result.costComplete=false;result.feeComplete=false; result.issues[#result.issues+1]={code='fee_unknown',key=key} end
                     result.steps[#result.steps+1]=row
                 end
             end
@@ -182,6 +285,10 @@ function D.Evaluate(plan, facts, route)
             local price=type(quote)=='table' and tonumber(quote.price) or nil
             if not price or price~=price or price<0 or price>D.MaxQuantity then price=nil end
             row.price,row.priceMeta=price,Copy(quote)
+            if row.buy>0 then
+                result.purchaseCount=result.purchaseCount+1
+                if price then result.pricedPurchaseCount=result.pricedPurchaseCount+1 end
+            end
             if row.buy+owned>0 then
                 if price then
                     local source=tostring(quote.source or ''):gsub('^legacy:','')
@@ -204,15 +311,18 @@ function D.Evaluate(plan, facts, route)
     end
     -- 先做底层原料，再做上层产物。
     local reversed={}; for i=#result.steps,1,-1 do reversed[#reversed+1]=result.steps[i] end; result.steps=reversed
+    result.materialCopper=result.cashCopper
+    result.materialCostComplete=result.complete and #result.missingPrices==0
     result.cashCopper=result.cashCopper+result.feeCopper
     result.valueCopper=result.cashCopper+result.ownedValueCopper
-    result.valueComplete=result.valueComplete and result.costComplete
     if facts.inventoryComplete~=true then Issue('inventory_unknown') end
+    result.costComplete=result.costComplete and result.complete
+    result.valueComplete=result.valueComplete and result.costComplete
     local laborValue=tonumber(plan.laborValueCopper)
-    if laborValue and laborValue>=0 and result.laborComplete then
+    -- 未知库存或缺价时，部分现金合计不能被当作完整的含劳力成本。
+    if result.costComplete and laborValue and laborValue>=0 and result.laborComplete then
         result.combinedCopper=result.cashCopper+result.labor*laborValue
     end
-    result.costComplete=result.costComplete and result.complete
     return result
 end
 

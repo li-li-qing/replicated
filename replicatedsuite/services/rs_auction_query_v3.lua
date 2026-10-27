@@ -268,8 +268,13 @@ function Q:DescribePriceEvidence(itemTypes)
         sampleLimit = 3, sampleBytes = 512, requestLimit = 8, ringLimit = 16 }
 end
 
-function Q:DescribePriceEvidenceDetail()
-    return { patch='auction-search-packet-evidence-1', requests=Copy(self.priceEvidence), ringLimit=16,
+function Q:DescribePriceEvidenceDetail(itemTypes, generations)
+    local rows={}
+    for _,evidence in ipairs(self.priceEvidence)do
+        if (itemTypes==nil or itemTypes[evidence.itemType]==true)
+            and (generations==nil or generations[evidence.searchGeneration]==true) then rows[#rows+1]=Copy(evidence) end
+    end
+    return { patch='auction-search-packet-evidence-1', requests=rows, ringLimit=16,
         coverage='strict_quote_reads_at_most_three_current_page_rows; not_a_global_market_minimum',
         rawLimits={nodesPerRow=128,depth=4,keys=64,stringBytes=512},
         -- 回包取证不追加搜索或 getter；超限由 Detach 明确写出 OMITTED，而不是声称完整无遗漏。
@@ -377,7 +382,7 @@ function Q:_Complete(status, rows, err)
     if type(pending) ~= "table" then return false end
     local requester = pending.requester
     if pending.discarded == true then status, rows, err = "interrupted", {}, pending.discardReason end
-    local errorCode
+    local errorCode=pending.errorCode
     if pending.evidence ~= nil then
         pending.evidence.status, pending.evidence.error = status, err
         pending.evidence.errorCode = errorCode
@@ -490,6 +495,20 @@ function Q:_OnSearched(expected, ...)
         or (failures > 0 and (#rows > 0 and "partial" or "failed") or "ready")
     if pending.evidence then pending.evidence.unreadRows = math.max(0, sourceCount-pending.evidence.readCount) end
     local err = failures > 0 and ("有 " .. tostring(failures) .. " 条结果字段不可读") or nil
+    if pending.firstValidBuyout~=nil and #rows==0 then
+        local reasons=pending.evidence and pending.evidence.reasons or {}
+        if reasons.grade_mismatch==limit then
+            pending.errorCode,err='strict_grade_mismatch','已读挂单品质与所需品质不符'
+        elseif reasons.id_mismatch==limit then
+            pending.errorCode,err='strict_item_mismatch','已读挂单物品与所需物品不符'
+        elseif reasons.buyout_invalid==limit then
+            pending.errorCode,err='strict_buyout_unavailable','已读挂单没有有效一口价'
+        elseif reasons.id_missing or reasons.grade_missing or reasons.quantity_invalid or reasons.info_shape_invalid or reasons.info_call_failed then
+            pending.errorCode,err='auction_listing_unverified','已读挂单身份、数量或价格字段待核'
+        else
+            pending.errorCode,err='strict_sample_unmatched','已读挂单样本未匹配，尚不能确认无货'
+        end
+    end
     return self:_Complete(status, rows, err)
 end
 

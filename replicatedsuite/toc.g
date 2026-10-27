@@ -9,6 +9,7 @@ native/rs_native_capabilities.lua
 native/rs_native_recovery.lua
 data/rs_data_registry.lua
 data/rs_static_data_v2.lua
+data/rs_craft_recipe_catalog.lua
 data/ids/rs_item_ids.lua
 data/ids/rs_zone_ids.lua
 data/ids/rs_trade_craft_ids.lua

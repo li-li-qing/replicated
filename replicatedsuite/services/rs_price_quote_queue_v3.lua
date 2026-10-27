@@ -101,6 +101,11 @@ local function PositiveInt(value)
     local n = tonumber(value); if n == nil or n ~= math.floor(n) or n < 1 then return nil end
     return math.floor(n)
 end
+local function ValidGrade(value)
+    local n=tonumber(value)
+    if not n or n~=n or n<0 or n>20 or n~=math.floor(n) then return nil end
+    return n
+end
 
 -- 暂停/恢复用独立 topic；completed 会推进 RowJob 完成数，不能用它发送 paused/resumed。
 local PAUSE_REASONS = {
@@ -1350,6 +1355,7 @@ end
 
 -- 没有实时报价前读取最后已知成本，同时返回年龄与来源，供调用者标成参考而非当前市场价。
 function Q:GetReferencePrice(itemType, itemGrade)
+    if itemGrade~=nil and ValidGrade(itemGrade)==nil then return nil end
     local materialPrices = S.Services and S.Services.MaterialPriceServiceV3 or nil
     if type(materialPrices) == "table" and type(materialPrices.GetPrice) == "function" then
         local price, meta = materialPrices:GetPrice(itemType, itemGrade)
@@ -1378,9 +1384,12 @@ function Q:RequestQuote(requester, itemType, itemGrade, callback, gradeCandidate
     itemType = PositiveInt(itemType)
     if requester == "" then return false, "报价来源不能为空" end
     if itemType == nil then return false, "物品类型无效" end
-    itemGrade = tonumber(itemGrade)
-    if itemGrade==nil or itemGrade~=math.floor(itemGrade) or itemGrade<0 or itemGrade>20 then itemGrade=1 end
     options = type(options) == "table" and options or {}
+    itemGrade = ValidGrade(itemGrade)
+    if itemGrade==nil then
+        if options.singleQuery==true then return false,'strict_search_grade_invalid' end
+        itemGrade=1
+    end
     if options.singleQuery == true then return self:_RequestSingle(requester, itemType, itemGrade, callback, options) end
     local searchName = TrimToKeyword(options.searchName)
     local grades = {}
@@ -1485,18 +1494,16 @@ end
 function Q:GetPriceByItemType(itemType, itemGrade)
     itemType = PositiveInt(itemType)
     if itemType == nil then return nil end
+    if itemGrade~=nil and ValidGrade(itemGrade)==nil then return nil end
     -- 先用会话新鲜价，否则返回已知参考价及来源，无需等搜索才显示。
     local entry = Q.pricesByItemType[itemType]
-    if type(entry) ~= "table" then
+    if type(entry) ~= "table" or (itemGrade~=nil and tonumber(entry.itemGrade)~=tonumber(itemGrade)) then
         local reference, meta = Q:GetReferencePrice(itemType, itemGrade)
         if reference ~= nil then return reference, "reference:" .. tostring(meta and meta.source or "stored"), meta and meta.updatedAt or nil end
         return nil
     end
     -- grade 是软过滤：官方 GetLowestPrice(itemType,itemGrade) 区分品质，但调用者省略 grade 时仍返回该
     -- itemType 最后已知单价。
-    if itemGrade ~= nil and entry.itemGrade ~= nil and tonumber(entry.itemGrade) ~= tonumber(itemGrade) then
-        return nil
-    end
     return entry.price, entry.source, entry.completedAt
 end
 
@@ -1574,6 +1581,7 @@ function Q:Describe()
             deadlineAt=self.pending.deadlineAt, queueDeadlineAt=self.pending.queueDeadlineAt,
             deadlinePhase=self.pending.deferDeadline and 'queue_wait' or 'response_or_default',
             itemType = self.pending.itemType, itemGrade = self.pending.itemGrade, gradeIndex = self.pending.gradeIndex,
+            requester=self.pending.requester,searchGeneration=self.pending.searchGeneration,queryRequester=self.pending.queryRequester,
             searchName = self.pending.searchName, fallbackState = self.pending.fallbackState, priority = self.pending.priority,
             marketPriceState = self.pending.marketPriceState, marketPriceGrade = self.pending.marketPriceGrade,
             requestedAt = self.pending.requestedAt, marketError = self.pending.marketError,

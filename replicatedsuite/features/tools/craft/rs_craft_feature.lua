@@ -207,13 +207,21 @@ local function CraftItemText(item)
     return name .. " × " .. count .. held .. shortage .. quote
 end
 
+local function CraftItemGrade(item)
+    local grade=item.grade
+    if grade==nil then grade=item.itemGrade end
+    local domain=S.CraftPlanDomain
+    if domain then return domain.ResolveItemGrade({itemType=item.itemType,grade=grade}) end
+    return CraftInteger(grade,true)
+end
 local function CraftQuote(item)
     if item == nil or item.itemType == nil then return nil, "identity_unknown" end
     -- GetLowestPrice 有服务器冷却，询价仅由用户显式 QuoteMaterial 经共享串行队列执行；普通 Refresh 只读结果。
     local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
     local price
-    if type(queue) == "table" and type(queue.GetPriceByItemType) == "function" then
-        price = queue:GetPriceByItemType(item.itemType, item.itemGrade)
+    local grade=CraftItemGrade(item)
+    if grade~=nil and type(queue) == "table" and type(queue.GetPriceByItemType) == "function" then
+        price = queue:GetPriceByItemType(item.itemType, grade)
     end
     if price ~= nil then return price, "quoted" end
     return nil, "explicit_quote_required", "最低价需显式询价"
@@ -573,8 +581,8 @@ local function CraftProjection(feature)
         local materials = type(recipe.materials) == "table" and recipe.materials.items or nil
         for _, item in ipairs(type(materials) == "table" and materials or {}) do
             local itemType = CraftInteger(item.itemType, false)
-            local itemGrade = CraftInteger(item.itemGrade, false)
-            local key = itemType and (tostring(itemType) .. ":" .. tostring(itemGrade or 0)) or nil
+            local itemGrade = CraftItemGrade(item)
+            local key = itemType and (tostring(itemType) .. ":" .. tostring(itemGrade==nil and '*' or itemGrade)) or nil
             if item.costStatus == "explicit_quote_required" and key ~= nil and seen[key] ~= true then
                 seen[key], pending = true, pending + 1
             end
@@ -628,6 +636,8 @@ local function CraftCommands()
         QuoteMaterial = function(feature, itemType, itemGrade)
             local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
             if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
+            itemGrade=CraftItemGrade({itemType=itemType,grade=itemGrade})
+            if itemGrade==nil then return false,'物品品质待核，不能按默认品质询价' end
             local ok, status = queue:RequestQuote(feature.Id .. ":craft", itemType, itemGrade, function()
                 if feature.enabled == true and (tonumber(feature.consumerCount) or 0) > 0 then feature:Refresh("craft_quote_completed") end
             end)
@@ -638,23 +648,26 @@ local function CraftCommands()
         QuotePendingMaterials = function(feature)
             local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
             if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
-            local targets, seen = {}, {}
+            local targets, seen, qualityUnknown = {}, {}, 0
             local craft = type(feature.CraftProjection) == "table" and feature.CraftProjection or nil
             for _, recipe in ipairs(craft and type(craft.recipes) == "table" and craft.recipes or {}) do
                 local materials = type(recipe.materials) == "table" and recipe.materials.items or nil
                 for _, item in ipairs(type(materials) == "table" and materials or {}) do
                     local itemType = CraftInteger(item.itemType, false)
-                    local itemGrade = CraftInteger(item.itemGrade, false)
-                    local key = itemType and (tostring(itemType) .. ":" .. tostring(itemGrade or 0)) or nil
+                    local itemGrade = CraftItemGrade(item)
+                    local key = itemType and (tostring(itemType) .. ":" .. tostring(itemGrade==nil and '*' or itemGrade)) or nil
                     if item.costStatus == "explicit_quote_required" and key ~= nil and seen[key] ~= true then
                         seen[key] = true
-                        targets[#targets + 1] = { itemType = itemType, itemGrade = itemGrade }
+                        if itemGrade~=nil then targets[#targets + 1] = { itemType = itemType, itemGrade = itemGrade }
+                        else qualityUnknown=qualityUnknown+1 end
                     end
                 end
             end
-            if #targets == 0 then return false, "当前制作物没有待询价材料" end
+            if #targets == 0 then
+                return false,qualityUnknown>0 and ('有 '..qualityUnknown..' 项材料品质待核，本轮未发起拍卖查询') or '当前制作物没有待询价材料'
+            end
             local limit = math.max(1, tonumber(queue.maxQueue) or 64)
-            local requested, skipped, completed = 0, 0, 0
+            local requested, skipped, completed = 0, qualityUnknown, 0
             local function OnComplete()
                 completed = completed + 1
                 if completed >= requested and requested > 0 and feature.enabled == true and (tonumber(feature.consumerCount) or 0) > 0 then
@@ -677,7 +690,7 @@ end
 
 local CRAFT_API_DEPENDENCIES = { "X2Craft:GetCraftBaseInfo", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Craft:GetCraftTypeByItemType", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" }
 -- tools_craft 继续使用 CraftRead/CraftProjection；不注册已移除的 life_craft_planner Store/Demand/Runtime，旧磁盘键保留。
-local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType", "screenButtonVisible", "screenButtonPlacement", "craftWindowState" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands(),
+local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType", "screenButtonVisible", "screenButtonPlacement", "craftWindowState", "craftListSplit" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands(),
     -- 最后一个消费端关闭时释放静态工作缓存；重开由
     -- consumer_acquire 完整采样，不让无需求的 Feature 保留配方副本，也不增加任何任务。
     reconcileDemand = function(feature, before, after)
@@ -688,37 +701,266 @@ local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_D
 CraftAssistant.CraftUserSelectionContractVersion = 1
 
 -- 计划复用同一个原生解析边界，返回独立数据；不做报价、背包扫描或 UI 刷新。
+local itemGradeCache,itemGradeCacheCount={},0
+local function ReadDefaultItemGrade(itemType)
+    itemType=CraftInteger(itemType,false)
+    if not itemType or itemType>1000000000 then return nil,{status='unavailable',reason='metadata_item_type_invalid'} end
+    local cached=itemGradeCache[itemType]
+    if cached then local probe=Copy(cached.probe);probe.cached=true;return cached.grade,probe end
+    local probe={itemType=itemType,status='unavailable',capability='X2Item:GetItemInfoByType'}
+    local imports=S.ApiImports
+    if not imports or type(imports.Acquire)~='function' then probe.reason='metadata_import_unavailable';return nil,probe end
+    local acquired,why=imports:Acquire('feature:tools_craft:item_metadata',{'X2Item:GetItemInfoByType'})
+    if acquired~=true then probe.reason=tostring(why or 'metadata_import_failed');return nil,probe end
+    -- Api.Call 的 error 槽位在首个原生返回之后；后续返回可能包含资料表，中间的 nil 不能让它们移位。
+    local ok,first,err,second,third,fourth=Call('X2Item:GetItemInfoByType',nil,'GetItemInfoByType',itemType)
+    local values={[1]=first,[2]=second,[3]=third,[4]=fourth}
+    probe.callOk=ok==true;probe.returnShape=type(first);probe.error=err and tostring(err):sub(1,192) or nil
+    probe.slotCount=4;probe.returnCoverage='Api.Call visible native return slots 1..4';probe.returnTypes={}
+    for index=1,4 do probe.returnTypes[index]=type(values[index]) end
+    local function Detach(value)
+        if S.DiagnosticDetail and type(S.DiagnosticDetail.Detach)=='function' then
+            return S.DiagnosticDetail:Detach(value,{nodes=96,depth=3,keys=24,stringBytes=256,
+                excludeKeys={sellerName=true,seller=true,ownerName=true,characterName=true}})
+        end
+        -- 诊断器不可用时仍保留标量证据，不复制未知大小的原生资料表。
+        local brief={}
+        for index=1,4 do
+            local item=value[index];local kind=type(item)
+            if kind=='table' then brief[index]='<table>'
+            elseif kind=='string' then brief[index]=item:sub(1,256)
+            elseif kind=='number' or kind=='boolean' then brief[index]=item end
+        end
+        return brief
+    end
+    probe.returns=Detach(values)
+    if ok~=true then probe.reason='metadata_result_unavailable';return nil,probe end
+    local selected,grade=nil,nil
+    probe.candidates={}
+    for index=1,4 do
+        local value=values[index]
+        if type(value)=='table' then
+            local candidate={returnIndex=index};probe.candidates[#probe.candidates+1]=candidate
+            local fields={}
+            for key in pairs(value)do
+                if #fields>=24 then break end
+                if type(key)=='string' then fields[#fields+1]=key:sub(1,40) end
+            end
+            table.sort(fields);candidate.fields=table.concat(fields,',')
+            local observedId=CraftNumberField(value,CRAFT_ITEM_TYPE_KEYS)
+            candidate.observedItemType=observedId
+            local hasIdentity=false
+            for _,key in ipairs(CRAFT_ITEM_TYPE_KEYS)do if value[key]~=nil then hasIdentity=true;break end end
+            local candidateGrade=CraftNumberField(value,CRAFT_GRADE_KEYS,true)
+            if hasIdentity and observedId==nil then candidate.reason='metadata_item_type_invalid'
+            elseif observedId~=nil and observedId~=itemType then candidate.reason='metadata_item_mismatch'
+            elseif candidateGrade==nil or candidateGrade>20 then candidate.reason='metadata_grade_missing_or_invalid'
+            else
+                candidate.grade=candidateGrade
+                candidate.identitySource=observedId and 'returned_item_type' or 'requested_item_type'
+                if selected and grade~=candidateGrade then probe.reason='metadata_grade_ambiguous';return nil,probe end
+                selected=selected or index;grade=candidateGrade
+            end
+        end
+    end
+    if not selected then
+        probe.reason=probe.candidates[1] and probe.candidates[1].reason or 'metadata_result_unavailable'
+        return nil,probe
+    end
+    -- 只从经 ID/字段校验的资料表取品质；独立数字返回的语义尚未核实，不能当成品质。
+    for _,candidate in ipairs(probe.candidates)do
+        if candidate.returnIndex==selected then
+            probe.fields=candidate.fields;probe.observedItemType=candidate.observedItemType;probe.identitySource=candidate.identitySource;break
+        end
+    end
+    probe.selectedReturn=selected
+    if S.DiagnosticDetail and type(S.DiagnosticDetail.Detach)=='function' then probe.raw=Detach(values[selected]) end
+    probe.grade=grade;probe.status='ready'
+    -- 只缓存已验证的静态资料；失败留给下次明确读取重试，不在 Refresh 或诊断中调用 Native。
+    if itemGradeCacheCount>=128 then itemGradeCache[next(itemGradeCache)]=nil
+    else itemGradeCacheCount=itemGradeCacheCount+1 end
+    itemGradeCache[itemType]={grade=grade,probe=Copy(probe)}
+    return grade,probe
+end
+local function ReadFixedRecipe(craftType)
+    local catalog=S.Data and S.Data.CraftRecipeCatalog
+    local records=type(catalog)=='table' and catalog.schemaVersion==1 and catalog.records
+    if type(records)~='table' or records[tostring(craftType)]==nil then return nil end
+    local raw=records[tostring(craftType)]
+    local function Item(value)
+        if type(value)~='table' then return nil end
+        local id,count=CraftInteger(value.itemType,false),CraftInteger(value.count,false)
+        local grade=value.grade~=nil and CraftInteger(value.grade,true) or nil
+        if not id or not count or id>1000000000 or count>1000000000 or (value.grade~=nil and grade==nil) then return nil end
+        return {itemType=id,count=count,grade=grade,name=type(value.name)=='string' and value.name:sub(1,192) or nil,
+            recipeHint=CraftInteger(value.recipeHint,false),variant=type(value.variant)=='string' and value.variant or nil}
+    end
+    local product=type(raw)=='table' and Item(raw.product)
+    if not product or type(raw.materials)~='table' or #raw.materials==0 or #raw.materials>64 then return false,'本地配方产物/材料无效' end
+    local recipe={id=tostring(craftType),product=product,materials={},source='local_file',costSource='local_file',outputSource='local_file'}
+    local materialCount=0
+    for index in pairs(raw.materials)do
+        if type(index)~='number' or index~=math.floor(index) or index<1 or index>#raw.materials then return false,'本地配方材料索引无效' end
+        materialCount=materialCount+1
+    end
+    if materialCount~=#raw.materials then return false,'本地配方材料列表缺项' end
+    for _,value in ipairs(raw.materials)do
+        local item=Item(value);if not item then return false,'本地配方材料身份/用量无效' end
+        recipe.materials[#recipe.materials+1]=item
+    end
+    for _,field in ipairs({'labor','feeCopper'})do
+        if raw[field]~=nil then
+            local value=CraftInteger(raw[field],true)
+            if value==nil or value>1000000000 then return false,'本地配方成本字段无效：'..field end
+            recipe[field]=value
+            recipe[field=='labor' and 'laborSource' or 'feeSource']='local_file'
+        end
+    end
+    return recipe
+end
+local function FixedProductMatches(product,expected)
+    if type(expected)~='table' then return true end
+    local domain=S.CraftPlanDomain
+    if domain then return select(2,domain.ProductMatches(expected,product)) end
+    if tonumber(expected.itemType)~=tonumber(product and product.itemType) then return false end
+    local expectedGrade,productGrade=CraftItemGrade(expected),CraftItemGrade(product)
+    if expectedGrade~=nil and expectedGrade~=productGrade then return false end
+    if expected.variant~=nil and expected.variant~='*' and expected.variant~=product.variant then return false end
+    return true
+end
 function CraftAssistant:ReadPlanRecipe(craftType, options)
     if CraftInteger(craftType, false) == nil then return nil, "配方编号无效" end
+    local fixed,fixedError=ReadFixedRecipe(craftType)
+    if fixed~=nil and not (options and options.forceNative)
+        and (fixed==false or FixedProductMatches(fixed.product,options and options.expectedProduct)) then
+        return fixed or nil,fixedError,{source='local_file',labor=fixed and fixed.labor or nil,feeCopper=fixed and fixed.feeCopper or nil}
+    end
     local okP, product, errP = Call("X2Craft:GetCraftProductInfo", CraftApi, "GetCraftProductInfo", craftType)
     local okM, materials, errM = Call("X2Craft:GetCraftMaterialInfo", CraftApi, "GetCraftMaterialInfo", craftType, 0)
+    local okB,base,errB=Call('X2Craft:GetCraftBaseInfo',CraftApi,'GetCraftBaseInfo',craftType)
     local p = CraftSection("product", okP, product, errP, craftType, 0)
     local m = CraftSection("materials", okM, materials, errM, craftType, 0)
+    local function Shape(value)
+        if type(value)~='table' then return type(value) end
+        local keys={};for key in pairs(value)do
+            if #keys>=24 then break end
+            if type(key)=='number' or type(key)=='string' then keys[#keys+1]=tostring(key):sub(1,40) end
+        end
+        table.sort(keys)
+        local child=type(value[1])=='table' and value[1] or type(value.item_info)=='table' and value.item_info or nil
+        local childKeys={};for key in pairs(child or {})do
+            if #childKeys>=24 then break end
+            if type(key)=='number' or type(key)=='string' then childKeys[#childKeys+1]=tostring(key):sub(1,40) end
+        end
+        table.sort(childKeys)
+        return table.concat(keys,',')..(#childKeys>0 and (';child='..table.concat(childKeys,',')) or '')
+    end
+    local first=p.items and p.items[1] or {}
+    local nativeProduct=type(product)=='table' and (type(product[1])=='table' and product[1] or product) or nil
+    local materialFields={}
+    for index,item in ipairs(m.items or {})do
+        if index>6 then materialFields[#materialFields+1]='more';break end
+        local raw=type(materials)=='table' and materials[index] or nil
+        local main=type(raw)=='table' and type(raw.mainGrade)=='boolean' and tostring(raw.mainGrade) or '?'
+        materialFields[#materialFields+1]='item='..tostring(item.itemType or '?')..'/grade='..tostring(item.grade or '?')..
+            '/count='..tostring(item.count or '?')..'/mainGrade='..main
+    end
+    local evidence={productStatus=p.status,materialStatus=m.status,productRows=#(p.items or {}),materialRows=#(m.items or {}),
+        productItemType=first.itemType,productGrade=first.grade,productCount=first.count,
+        productTruncated=p.truncated,materialTruncated=m.truncated,productError=p.error,materialError=m.error,
+        productShape=Shape(product),materialShape=Shape(materials),materialFields=table.concat(materialFields,','),
+        nativeProductGrade=type(nativeProduct)=='table' and CraftInteger(nativeProduct.productGrade,true) or nil}
+    local baseNumbers={}
+    if type(base)=='table' then
+        for key,value in pairs(base)do
+            if #baseNumbers>=12 then break end
+            if type(key)=='string' and type(value)=='number' and value==value and math.abs(value)<1000000000000 then
+                baseNumbers[#baseNumbers+1]=key:sub(1,40)..'='..tostring(value)
+            end
+        end
+        table.sort(baseNumbers)
+    end
+    evidence.baseStatus=okB and type(base) or 'unavailable'
+    evidence.baseShape=Shape(base);evidence.baseNumbers=table.concat(baseNumbers,',')
+    evidence.baseError=type(errB)=='string' and errB:sub(1,160) or nil
+    if type(nativeProduct)=='table' and type(nativeProduct.useGrade)=='boolean' then evidence.productUseGrade=nativeProduct.useGrade end
     if p.status ~= "ready" or m.status ~= "ready" or #p.items ~= 1 or p.truncated or m.truncated then
-        return nil, "配方产量/材料字段待核；不支持未明确分摊的多产物配方"
+        return nil, "配方产量/材料字段待核；不支持未明确分摊的多产物配方",evidence
     end
     local function Item(row)
         if CraftInteger(row.itemType, false) == nil or CraftInteger(row.count, false) == nil then return nil end
         return { itemType=row.itemType, count=row.count, grade=row.grade, name=row.name, recipeHint=row.recipeHint }
     end
     local productItem = Copy(p.items[1])
+    if type(nativeProduct)=='table' and nativeProduct.useGrade==true then
+        local declared=CraftInteger(nativeProduct.productGrade,true)
+        if declared~=nil then
+            if productItem.grade~=nil and productItem.grade~=0 and productItem.grade~=declared then
+                return nil,'配方产物品质字段冲突，保留原配方待核',evidence
+            end
+            productItem.grade=declared
+        end
+    end
+    if productItem.grade==nil and type(nativeProduct)=='table' and nativeProduct.useGrade==false then
+        local matched,grade,unknownInheritance,flagRows=0,nil,false,0
+        for _,material in ipairs(type(materials)=='table' and materials or {})do
+            flagRows=flagRows+1
+            if type(material)~='table' or type(material.mainGrade)~='boolean' then unknownInheritance=true end
+            if type(material)=='table' and material.mainGrade==true then
+                matched=matched+1
+                local info=material.item_info
+                grade=type(info)=='table' and CraftItemGrade({itemType=CraftNumberField(info,CRAFT_ITEM_TYPE_KEYS),
+                    grade=CraftNumberField(info,CRAFT_GRADE_KEYS,true)}) or nil
+            end
+        end
+        if flagRows~=#m.items then unknownInheritance=true end
+        if matched==1 and not unknownInheritance then productItem.grade=grade
+        elseif matched==0 and not unknownInheritance then
+            -- useGrade=false 且所有材料明确不继承品质：产物采用物品自身品质，不能把 productGrade=0 当作默认答案。
+            productItem.grade,evidence.itemInfo=ReadDefaultItemGrade(productItem.itemType)
+            if productItem.grade~=nil then evidence.productGradeSource='X2Item:GetItemInfoByType' end
+        end
+    end
     local outputSource = "X2Craft"
     if CraftInteger(productItem.count, false) == nil and type(options) == "table" and CraftInteger(options.outputCount, false) ~= nil then
         productItem.count = CraftInteger(options.outputCount, false); outputSource = "manual"
     end
     local output = Item(productItem)
-    if output == nil then return nil, "产物身份或每次产量未知；可对照制作界面填写每次产出后重试" end
+    if output == nil then return nil, "产物身份或每次产量未知；可对照制作界面填写每次产出后重试",evidence end
     local rows = {}
     for _, row in ipairs(m.items) do
         local item = Item(row)
-        if item == nil then return nil, "材料身份或数量未知" end
+        if item == nil then return nil, "材料身份或数量未知",evidence end
         rows[#rows+1] = item
     end
     -- BaseInfo 没有已验证的有效劳动力/费用字段契约，保留未知，由用户校准。
-    return { id=tostring(craftType), product=output, materials=rows, source="X2Craft", outputSource=outputSource }
+    return { id=tostring(craftType), product=output, materials=rows, source="X2Craft", outputSource=outputSource },nil,evidence
 end
 
-function CraftAssistant:ReadPlanRecipeTypes(itemType)
+local fixedIndexSource,fixedIndex=nil,{}
+function CraftAssistant:ReadPlanRecipeTypes(itemType,expectedProduct)
+    local catalog=S.Data and S.Data.CraftRecipeCatalog
+    if type(catalog)=='table' and catalog.schemaVersion==1 and fixedIndexSource~=catalog.records then
+        fixedIndexSource=catalog.records;fixedIndex={}
+        for id,recipe in pairs(catalog.records or {})do
+            if type(recipe)=='table' and type(recipe.product)=='table' then
+                local productId,n=CraftInteger(recipe.product.itemType,false),CraftInteger(id,false)
+                if productId and n then
+                    fixedIndex[productId]=fixedIndex[productId] or {};fixedIndex[productId][#fixedIndex[productId]+1]=n
+                end
+            end
+        end
+        for _,ids in pairs(fixedIndex)do table.sort(ids) end
+    end
+    local localIds=type(catalog)=='table' and catalog.schemaVersion==1 and fixedIndex[tonumber(itemType)]
+    if type(localIds)=='table' and #localIds>0 then
+        local matching={}
+        for _,id in ipairs(localIds)do
+            local record=catalog.records[tostring(id)]
+            if record and FixedProductMatches(record.product,expectedProduct) then matching[#matching+1]=id end
+        end
+        if #matching>0 then return matching end
+    end
     local ok, first, err, second, third, fourth = Call("X2Craft:GetCraftTypeByItemType", CraftApi, "GetCraftTypeByItemType", itemType)
     if ok ~= true then return nil, err end
     local ids, seen = {}, {}

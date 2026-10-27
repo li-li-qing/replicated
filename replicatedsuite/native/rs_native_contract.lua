@@ -38,6 +38,9 @@ S.NativeContract = {
         FAMILY               = { id = 17, nativeName = "X2Family",              feature = true },
         HOTKEY               = { id = 19, nativeName = "X2Hotkey",              feature = true },
         HOUSE                = { id = 20, nativeName = "X2House",               feature = true },
+        -- ITEM=23：用户 Addon1.2 的 apitypes.lua:70，SHA-256 08d3f2383908…；与现有 ABI 同源。
+        -- 方法权限另由官方 2026-10-20 公告确认，仅在明确读取物品资料时惰性导入。
+        ITEM                 = { id = 23, nativeName = "X2Item",                feature = true },
         PLAYER               = { id = 32, nativeName = "X2Player",              feature = true },
         QUEST                = { id = 33, nativeName = "X2Quest",               feature = true },
         -- SKILL=35 来自本机历史 Addon.zip / Addon1.2.zip 的 globals/apitypes.lua:82。

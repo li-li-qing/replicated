@@ -16,9 +16,46 @@ local bagInventory={}
 local priceOwner={}
 local scan, quoteBatch, recommendation, undo = nil,nil,nil,nil
 local quoteOwners, priceRevision = {}, nil
+local quoteResult,quoteItems=nil,{}
+local quoteGradeOverrides={}
+-- 最后一轮证据独立于小窗会话；撤销 Consumer 后仍可导出，下一轮显式询价才替换。
+local priceAudit={results={}}
+local costProbes={}
+local function RememberCostProbe(id,evidence)
+    if type(evidence)~='table' then return end
+    local key=tostring(id)
+    if not costProbes[key] then
+        local count=0;for _ in pairs(costProbes)do count=count+1 end
+        if count>=16 then costProbes[next(costProbes)]=nil end
+    end
+    costProbes[key]={baseStatus=evidence.baseStatus,baseShape=evidence.baseShape,baseNumbers=evidence.baseNumbers,
+        baseError=evidence.baseError,source=evidence.source,labor=evidence.labor,feeCopper=evidence.feeCopper,
+        itemInfo=Copy(evidence.itemInfo),productGradeSource=evidence.productGradeSource}
+end
+local function MergeRecipeCosts(record,old)
+    old=old or {}
+    if old.product and D.Key(old.product)~=D.Key(record.product) then return end
+    for _,field in ipairs({'labor','feeCopper'})do
+        local source=field=='labor' and 'laborSource' or 'feeSource'
+        if old[field]~=nil and (old[source]=='manual' or not record.costSource) then
+            record[field]=old[field];record[source]=old[source]
+        end
+    end
+    if record.laborSource=='manual' or record.feeSource=='manual' then record.costSource='manual'
+    elseif not record.costSource then record.costSource=old.costSource end
+end
 local sessionRevision=0
 local shareOwner={}
 local shareCaptureActive=false
+-- 仅保留阶段和计数，不记录聊天内容或发送者。
+local receiveTrace={attempts=0,events=0,accepted=0,ignored=0,stage="idle",history={}}
+local function TraceReceive(stage,reason)
+    receiveTrace.stage=stage
+    receiveTrace.reason=reason and tostring(reason):sub(1,256) or nil
+    local history=receiveTrace.history
+    history[#history+1]={stage=stage,reason=receiveTrace.reason,at=S.NowMs and S.NowMs() or nil}
+    if #history>12 then table.remove(history,1) end
+end
 local importFeedback=nil
 local importFeedbackSequence=0
 local pendingShare=nil
@@ -27,6 +64,38 @@ local ResetSession
 local function DefaultPlan(id,name) return {id=id,name=name,targets={},allocations={},nextTarget=1} end
 local function Default()
     return {active='p1',nextPlan=2,plans={p1=DefaultPlan('p1','制作计划')},recipes={},catalog={},choices={}}
+end
+-- 自动反查结果是可重建的会话缓存；只把用户明确保存/选择/校准的配方写入 Native。
+local function PersistentSnapshot()
+    local saved=Copy(state or Default())
+    local required={}
+    for _,plan in pairs(saved.plans or {})do
+        for _,target in pairs(plan.targets or {})do required[D.Key(target)]=true end
+        for key in pairs(plan.allocations or {})do required[key]=true end
+    end
+    for id,recipe in pairs(saved.recipes or {})do
+        if recipe.autoObserved==true and not recipe.shared and not recipe.userChosen
+            and (not recipe.costSource or recipe.costSource=='local_file') then
+            saved.recipes[id]=nil
+        end
+    end
+    for key,id in pairs(saved.choices or {})do
+        if not saved.recipes[id] then saved.choices[key]=nil else required[key]=true end
+    end
+    for _,recipe in pairs(saved.recipes or {})do
+        local key=D.Key(recipe.product);if key then required[key]=true end
+        for _,item in ipairs(recipe.materials or {})do key=D.Key(item);if key then required[key]=true end end
+    end
+    for key,entry in pairs(saved.catalog or {})do
+        if entry.autoObserved==true and not required[key] and entry.baseSource~='manual' then saved.catalog[key]=nil
+        else
+            local ids={}
+            for _,id in ipairs(entry.recipeIds or {})do if saved.recipes[id] then ids[#ids+1]=id end end
+            if entry.recipeIds then entry.recipeIds=ids end
+            if #ids==0 and entry.status=='ready' then entry.status=nil end
+        end
+    end
+    return saved
 end
 local function Load()
     local ok,err=P:PrepareRead(STORE)
@@ -63,8 +132,11 @@ end
 if P:GetStore(STORE)==nil then
     local store,err=P:RegisterV3Store({id=STORE,owner=OWNER,scope=P.Scope.Character,lifetime=P.Lifetime.Permanent,
         schemaVersion=1,legacySchemaVersion=0,key=P.V3KeyPrefix..'craft_plans',
+        nativeByteBudget=14336, -- Native 实测在 16383 字节截断；拒绝必须发生在写入前。
+        recoverableReplacement=true, -- 只允许用户显式清空本角色的损坏计划，Core 校验归属并回读。
+        requireFailureBarrier=true, -- 计划不是可丢弃的缓存，普通保存失败仍须耐久屏障。
         budget={maxDepth=10,maxNodes=16000,maxEntriesPerTable=256,maxStringBytes=65536},
-        default=Default,get=function()return Copy(state or Default())end,
+        default=Default,get=PersistentSnapshot,
         apply=function(value,reason)
             state=Copy(value);cached=nil
             if ResetSession and not tostring(reason or ''):find('^mutation_rollback:') then ResetSession() end
@@ -83,6 +155,7 @@ end
 local function LivePendingShare()
     if pendingShare and (not S.NowMs or S.NowMs()>=pendingShare.expiresAt
         or pendingShare.sessionRevision~=sessionRevision or not state or pendingShare.planId~=state.active) then
+        TraceReceive(S.NowMs and S.NowMs()>=pendingShare.expiresAt and 'expired' or 'context_changed')
         pendingShare=nil;cached=nil
     end
     return pendingShare
@@ -92,23 +165,55 @@ local function Active() return state.plans[state.active] end
 local function ChosenRecipe(key)
     local plan=Active()
     local root=plan.sourceRecipeId and state.recipes[plan.sourceRecipeId]
-    if root and D.Key(root.product)==key then return root.id end
+    local item=state.catalog[key] and state.catalog[key].item
+    if root and item and D.ProductMatches(item,root.product) then
+        for _,target in pairs(plan.targets or {})do if D.Key(target)==key then return root.id end end
+    end
     return state.choices[key]
 end
 local function EffectiveChoices()
     local choices=Copy(state.choices)
     local plan=Active();local root=plan.sourceRecipeId and state.recipes[plan.sourceRecipeId]
-    if root then choices[D.Key(root.product)]=root.id end
+    if root then
+        for _,target in pairs(plan.targets or {})do
+            if D.ProductMatches(target,root.product) then choices[D.Key(target)]=root.id end
+        end
+    end
     return choices
+end
+local function QuoteGrade(key,item)
+    local id=ChosenRecipe(key)
+    local recipe=state.recipes[id or '']
+    local observed=quoteGradeOverrides[key]
+    return D.ResolveRequirementGrade(item,recipe and recipe.product,observed and observed.recipeId==id and observed.grade or nil)
 end
 local function Count(t) local n=0;for _ in pairs(t or {})do n=n+1 end;return n end
 local function Sorted(t)
     local keys={};for k in pairs(t or {})do keys[#keys+1]=k end;table.sort(keys);return keys
 end
+local function CheckNativeBudget()
+    local store=P:GetStore(STORE);local transport=S.PersistenceTransport
+    if not store or not store.nativeByteBudget or not transport or type(transport.EstimateNativeBytes)~='function' then
+        return false,'存档物理预算检查不可用'
+    end
+    local physical,why=P:EncodePhysicalEnvelope({__rsmeta={framework=P.FrameworkVersion,transportVersion=store.transportVersion},
+        payload=PersistentSnapshot()})
+    if not physical then return false,'存档编码检查失败：'..tostring(why) end
+    -- 预留完整 Store 元数据及封印的空间；最终写入仍由 Core 对真实 envelope 再次检查。
+    local bytes=transport.EstimateNativeBytes(physical)+1024
+    if bytes>store.nativeByteBudget then return false,'native_byte_budget_exceeded:'..bytes..'>'..store.nativeByteBudget..'；计划过大，已保留原存档' end
+    return true
+end
 local function Mutate(reason,fn,durable)
     local ok,err=Load();if not ok then return false,err end
-    local changed,why=P:MutateStore(STORE,function()return fn(Active())end,{delayMs=300,reason=reason,durable=durable==true})
-    if changed~=true then cached=nil;return false,why or '计划保存失败，已回滚' end
+    -- Core 回滚的是可持久化快照；失败时也要保留本会话尚未写入的自动材料缓存。
+    local before=Copy(state)
+    local changed,why=P:MutateStore(STORE,function()
+        local accepted,detail=fn(Active())
+        if accepted~=true then return accepted,detail end
+        return CheckNativeBudget()
+    end,{delayMs=300,reason=reason,durable=durable==true})
+    if changed~=true then state=before;cached=nil;return false,why or '计划保存失败，已回滚' end
     if reason=='plan_create' or reason=='plan_select' or reason=='plan_delete'
         or reason=='recipe_select' or reason=='recipe_delete' then pendingShare=nil end
     if reason~='plan_recommendation_apply' and reason~='plan_undo' then undo=nil end
@@ -118,14 +223,38 @@ local function Running()
     if F.enabled~=true or (tonumber(F.consumerCount) or 0)<=0 then return false,'先启用并打开配方制作' end
     return true
 end
-local function Cancel()
-    generation=generation+1;quoteGeneration=quoteGeneration+1;scan=nil;quoteBatch=nil
-    if S.Scheduler then S.Scheduler:RemoveTask(TASK) end
+local function CancelQuotes(reason)
+    quoteGeneration=quoteGeneration+1
     local queue=S.Services and S.Services.PriceQuoteQueueV3
-    if queue and type(queue.CancelRequester)=='function' then
-        for owner in pairs(quoteOwners)do queue:CancelRequester(owner) end
+    if quoteBatch then
+        -- 未完成的查询不会再回调本会话；释放前冻结已有队列时序，避免关窗后丢失请求关联。
+        local current=quoteItems[quoteBatch.currentKey]
+        local health=queue and type(queue.Describe)=='function' and queue:Describe()
+        local pending=health and health.pendingDetail
+        if current and pending and pending.requester==current.requester then
+            for _,field in ipairs({'requestedAt','dispatchedAt','queueDeadlineAt','deadlineAt','searchGeneration'})do current[field]=pending[field] end
+        end
+        quoteResult=Copy(quoteBatch);quoteResult.status='stopped';quoteResult.reason=reason or 'cancelled'
+        quoteResult.completedAt=S.NowMs and S.NowMs() or 0
+        priceAudit.batch=quoteResult;priceAudit.currentRequester=nil
     end
-    quoteOwners={}
+    quoteBatch=nil
+    -- 先使回调失效再释放，CancelRequester 允许同步通知消费者。
+    local owners=quoteOwners;quoteOwners={}
+    if queue and type(queue.CancelRequester)=='function' then
+        for owner in pairs(owners)do queue:CancelRequester(owner) end
+    end
+    for _,item in pairs(quoteItems)do
+        if item.status=='querying' then
+            item.status='stopped';item.reason=reason or 'cancelled';item.code=item.reason;item.completedAt=S.NowMs and S.NowMs() or 0
+        end
+    end
+end
+local function Cancel()
+    generation=generation+1;scan=nil
+    if S.Scheduler then S.Scheduler:RemoveTask(TASK) end
+    CancelQuotes('cancelled')
+    quoteResult=nil
 end
 ResetSession=function()
     sessionRevision=sessionRevision+1
@@ -133,7 +262,8 @@ ResetSession=function()
     importFeedback=nil
     pendingShare=nil
     scanResult=nil
-    Cancel();inventory={};bagInventory={};inventoryComplete=false;inventoryScope=nil;inventoryNote='角色/存档重新载入，库存待核对'
+    Cancel();quoteResult=nil;quoteItems={};costProbes={};inventory={};bagInventory={};inventoryComplete=false;inventoryScope=nil;inventoryNote='角色/存档重新载入，库存待核对'
+    quoteGradeOverrides={}
     undo=nil;recommendation=nil;revision=revision+1
 end
 local function AddTarget(plan,item,count)
@@ -175,7 +305,7 @@ local function OpenRecipeSheet(record,count)
         local ok,why=AddTarget(sheet,record.product,count or 1);if not ok then return false,why end
     else
         for _,target in pairs(sheet.targets)do
-            if D.Key(target)~=D.Key(record.product) then return false,'配方产物身份发生变化，请核对后重新收录' end
+            if not D.ProductMatches(target,record.product) then return false,'配方产物身份发生变化，请核对后重新收录' end
         end
     end
     state.active=sheet.id;state.choices[D.Key(record.product)]=id
@@ -212,7 +342,7 @@ local function Snapshot()
     return plan
 end
 local function Facts(plan)
-    local facts={recipes={},catalog=Copy(state.catalog),inventory=Copy(inventory),bagInventory=Copy(bagInventory),inventoryComplete=inventoryComplete,prices={}}
+    local facts={recipes={},catalog=Copy(state.catalog),inventory=Copy(inventory),bagInventory=Copy(bagInventory),inventoryComplete=inventoryComplete,prices={},itemGrades={}}
     local all={}
     for key,entry in pairs(state.catalog)do
         all[key]=entry.item
@@ -229,16 +359,25 @@ local function Facts(plan)
     for _,item in ipairs(plan.targets)do all[D.Key(item)]=item end
     local prices=S.Services and S.Services.MaterialPriceServiceV3
     for key,item in pairs(all)do
-        if item and prices and type(prices.GetPrice)=='function' then
-            local price,meta=prices:GetPrice(item.itemType,item.grade)
-            if price~=nil then facts.prices[key]=Copy(meta or {});facts.prices[key].price=price end
+        local grade,source=QuoteGrade(key,item)
+        facts.itemGrades[key]=grade
+        if item and not (quoteItems[key] and quoteItems[key].status=='none') and prices and type(prices.GetPrice)=='function' then
+            local price,meta
+            if grade~=nil then price,meta=prices:GetPrice(item.itemType,grade) end
+            if price~=nil then
+                facts.prices[key]=Copy(meta or {});facts.prices[key].price=price
+                facts.prices[key].quoteGrade=grade;facts.prices[key].gradeSource=source
+            end
         end
     end
     return facts
 end
 local function Projection()
     local ok,err=Load()
-    if not ok then return {status='unavailable',error=tostring(err),targets={},plans={},rows={},revision=revision} end
+    if not ok then
+        local replaceable=P:CanReplaceCorrupt(STORE)==true
+        return {status='unavailable',error=tostring(err),canResetCorrupt=replaceable,targets={},plans={},rows={},revision=revision}
+    end
     local priceService=S.Services and S.Services.MaterialPriceServiceV3
     local nextPriceRevision=priceService and type(priceService.GetRevision)=='function' and priceService:GetRevision() or nil
     if nextPriceRevision~=priceRevision then
@@ -272,7 +411,7 @@ local function Projection()
         shareCaptureActive=shareCaptureActive,pendingShare=Copy(pendingShare),importFeedback=Copy(importFeedback),
         contextRecipeOptions=contextRecipes,
         libraryEntries=Copy(contextRecipes),libraryActiveId=plan.sourceRecipeId,
-        scan=Copy(scan),scanResult=Copy(scanResult),quote=Copy(quoteBatch),status=result.complete and 'ready' or 'incomplete'}
+        scan=Copy(scan),scanResult=Copy(scanResult),quote=Copy(quoteBatch or quoteResult),quoteItems=Copy(quoteItems),status=result.complete and 'ready' or 'incomplete'}
     return Copy(cached)
 end
 local baseProjection=F.GetProjection
@@ -280,7 +419,46 @@ function F:GetProjection()
     local projection=baseProjection(self) or {};projection.plan=Projection();return projection
 end
 function F:GetRecipeReadDiagnostics()
-    return {scan=Copy(scan),result=Copy(scanResult)}
+    local active=state and state.plans and state.plans[state.active] or nil
+    local targets={}
+    for _,item in pairs(active and active.targets or {})do
+        if #targets>=12 then break end
+        targets[#targets+1]=tostring(item.name or '')..' item='..tostring(item.itemType)..' count='..tostring(item.count)
+    end
+    table.sort(targets)
+    return {targets=targets,scan=Copy(scan),result=Copy(scanResult),costProbes=Copy(costProbes),
+        receive=Copy(receiveTrace),shareCaptureActive=shareCaptureActive,pendingShare=pendingShare~=nil,
+        traces=Copy((scan and scan.traces) or (scanResult and scanResult.traces) or {})}
+end
+function F:GetPriceReadDiagnostics()
+    local value=Copy(priceAudit)
+    value.currentSessionRevision=sessionRevision;value.sameSession=value.sessionRevision==sessionRevision
+    value.coverage='last_explicit_batch; cached_only; closing_popup_preserves_results'
+    local queue=S.Services and S.Services.PriceQuoteQueueV3
+    if queue and type(queue.Describe)=='function' then
+        local health=queue:Describe()
+        value.queue={pending=health.pending,queueLength=health.queueLength,intervalMs=health.intervalMs,
+            activity=Copy(health.activity),nativeAdmission=Copy(health.nativeAdmission),pendingDetail=Copy(health.pendingDetail)}
+    end
+    return value
+end
+function F:GetPriceListingDiagnostics()
+    local query=S.Services and S.Services.AuctionQueryV3
+    if not query or type(query.DescribePriceEvidenceDetail)~='function' then return {available=false} end
+    local types,generations={},{}
+    for _,row in pairs(priceAudit.results)do
+        types[row.itemType]=true
+        if row.searchGeneration then generations[row.searchGeneration]=true end
+    end
+    local queue=S.Services and S.Services.PriceQuoteQueueV3
+    local health=queue and type(queue.Describe)=='function' and queue:Describe()
+    local pending=health and health.pendingDetail
+    if pending and pending.requester==priceAudit.currentRequester and pending.searchGeneration then
+        types[pending.itemType]=true;generations[pending.searchGeneration]=true
+    end
+    local value=query:DescribePriceEvidenceDetail(types,generations)
+    value.coverage='current_batch_generations_still_in_shared_16_request_ring; no_native_reads'
+    return value
 end
 local C=F.Commands
 local function ResumeRecipeRead()
@@ -289,6 +467,17 @@ local function ResumeRecipeRead()
         return started and '；正在展开下级配方' or ('；下级可重读：'..tostring(readError))
     end
     return ''
+end
+-- 用户明确清空损坏计划后才写空值；仅本角色、同 Store 且物理回读通过才解除保护。
+function C:PlanResetCorrupt()
+    local running,why=Running();if not running then return false,why end
+    local replaceable,reason=P:CanReplaceCorrupt(STORE)
+    if replaceable~=true then return false,reason or '无法确认损坏计划归属' end
+    local fresh=Default()
+    local saved,err=P:SaveValue(STORE,fresh,{replaceCorrupt=true,allowUnloadedWrite=true,durable=true,reason='craft_plan_reset_corrupt'})
+    if saved~=true then return false,err or '计划重建失败' end
+    state=fresh;cached=nil;ResetSession();Notify('plan_reset_corrupt')
+    return true,'已清空损坏计划，请重新接收配方'
 end
 function C:PlanAddTarget(item,count)
     return Mutate('plan_add',function(plan)
@@ -324,13 +513,18 @@ function C:PlanSetLaborValue(value)
     return Mutate('plan_labor_value',function(plan)plan.laborValueCopper=value;return true end)
 end
 function C:PlanSetRecipeCosts(key,labor,fee)
+    if labor==nil and fee==nil then return false,'请至少填写劳力或手续费中的一项' end
+    if (labor~=nil and not D.Integer(labor,true)) or (fee~=nil and not D.Integer(fee,true)) then
+        return false,'每次劳力、手续费（铜）须为非负整数'
+    end
     labor,fee=D.Integer(labor,true),D.Integer(fee,true)
-    if not labor or not fee then return false,'每次劳力、手续费（铜）须为非负整数' end
     return Mutate('plan_recipe_costs',function()
         local recipe=state.recipes[ChosenRecipe(key) or '']
         if not recipe then return false,'先读取并选择配方' end
-        recipe.labor,recipe.feeCopper=labor,fee;recipe.costSource='manual';return true
-    end)
+        if labor~=nil then recipe.labor=labor;recipe.laborSource='manual' end
+        if fee~=nil then recipe.feeCopper=fee;recipe.feeSource='manual' end
+        recipe.costSource='manual';return true
+    end,true)
 end
 function C:PlanMarkBase(key)
     return Mutate('plan_base_confirmed',function()
@@ -410,10 +604,11 @@ function C:PlanImportCurrent(count,craftId)
 end
 function C:PlanChooseRecipe(key,id)
     return Mutate('plan_recipe_choice',function()
-        if not state.recipes[id] or D.Key(state.recipes[id].product)~=key then return false,'配方与物品不匹配' end
+        local item=state.catalog[key] and state.catalog[key].item
+        if not state.recipes[id] or not D.ProductMatches(item,state.recipes[id].product) then return false,'配方与物品不匹配' end
         local root=Active().sourceRecipeId and state.recipes[Active().sourceRecipeId]
         if root and D.Key(root.product)==key and id~=root.id then return false,'请从已保存配方中切换该根配方' end
-        state.choices[key]=id;return true
+        state.recipes[id].userChosen=true;state.choices[key]=id;return true
     end)
 end
 function C:PlanSelectContext(id)
@@ -563,10 +758,10 @@ local function StoreImportedRecipe(record,sharedRoot)
     local id=tostring(record.id)
     if not state.recipes[id] and Count(state.recipes)>=128 then return false,'已收录配方达到上限' end
     local old=state.recipes[id] or {}
-    local saved=Copy(record);saved.id=id
+    local saved=Copy(record);saved.id=id;saved.autoObserved=nil;saved.userChosen=old.userChosen
     saved.shared=sharedRoot or old.shared
     saved.libraryHidden=not sharedRoot and old.libraryHidden or nil
-    saved.labor,saved.feeCopper,saved.costSource=old.labor,old.feeCopper,old.costSource
+    MergeRecipeCosts(saved,old)
     local function Remember(item)
         local itemKey=D.Key(item)
         if not itemKey or not D.Integer(item.count) then return false,'材料身份/用量不完整' end
@@ -594,19 +789,30 @@ local function ImportRecipe(reference,count,outputCount,mode,materialKey)
     count=D.Integer(count);if not count then return false,'目标件数须为正整数' end
     if outputCount~=nil and not D.Integer(outputCount) then return false,'手填每次产量须为正整数' end
     if type(F.ReadPlanRecipe)~='function' then return false,'配方读取边界不可用' end
-    local recipe,readErr=F:ReadPlanRecipe(reference.craftType,{outputCount=outputCount})
+    local recipe,readErr,costEvidence=F:ReadPlanRecipe(reference.craftType,{outputCount=outputCount})
+    RememberCostProbe(reference.craftType,costEvidence)
     if not recipe then return false,readErr or '配方读取失败' end
+    local verified,shareError=D.ValidateRecipeShare(reference,recipe)
+    if not verified then return false,shareError end
     if reference.itemType and recipe.product.itemType~=reference.itemType then
         return false,'所选配方与制作页显示的产物不一致，请重新选中配方后再加入。'
     end
-    if mode=='material' and D.Key(recipe.product)~=materialKey then return false,'分享配方的产物与所选材料不匹配' end
+    if mode=='material' and not D.ProductMatches(state.catalog[materialKey] and state.catalog[materialKey].item,recipe.product) then
+        return false,'分享配方的产物与所选材料不匹配'
+    end
     if not recipe.product.name or recipe.product.name=='' or recipe.product.name=='已识别物品' then recipe.product.name=reference.name end
     if mode=='recipe' then Cancel();scanResult=nil end
     local saved,saveErr=Mutate('plan_generic_share_import',function(plan)
         local recorded,recordErr=StoreImportedRecipe(recipe,mode~='material')
         if not recorded then return false,recordErr end
         if mode=='recipe' then return OpenRecipeSheet(recipe,count) end
-        if mode=='material' then return true end
+        if mode=='material' then
+            local entry=state.catalog[materialKey];entry.recipeIds=entry.recipeIds or {}
+            local found=false;for _,id in ipairs(entry.recipeIds)do if id==recipe.id then found=true end end
+            if not found then entry.recipeIds[#entry.recipeIds+1]=recipe.id end
+            entry.status='ready';entry.base=false;state.choices[materialKey]=recipe.id
+            return true
+        end
         return AddTarget(plan,recipe.product,count)
     end,mode=='recipe' or mode=='material')
     if not saved then return false,saveErr end
@@ -619,7 +825,7 @@ local function ImportRecipe(reference,count,outputCount,mode,materialKey)
     return true,message
 end
 function C:PlanImportLink(text,count,outputCount,mode,materialKey)
-    local reference,why=D.ParseRecipeShare(text)
+    local reference,why=D.ParseRecipeShare(text,true)
     if not reference then return false,why end
     return ImportRecipe(reference,count,outputCount,mode,materialKey)
 end
@@ -640,17 +846,19 @@ function C:PlanCancelReceiveShare(owner)
     return true,'已取消此窗口的接收'
 end
 function C:PlanReceiveShare(count,outputCount,owner,mode,materialKey)
-    local ok,why=Running();if not ok then return false,why end
-    ok,why=Load();if not ok then return false,why end
+    receiveTrace.attempts=receiveTrace.attempts+1
+    local ok,why=Running();if not ok then TraceReceive('not_running',why);return false,why end
+    ok,why=Load();if not ok then TraceReceive('store_unavailable',why);return false,why end
     owner=owner or 'feature:tools_craft'
     if LivePendingShare() and pendingShare.owner==owner and pendingShare.mode==mode and pendingShare.materialKey==materialKey then
-        pendingShare=nil;ImportReceipt(true,'已取消接收配方分享','plan_share_receive_cancel');return true,'已取消接收配方分享'
+        pendingShare=nil;TraceReceive('cancelled');ImportReceipt(true,'已取消接收配方分享','plan_share_receive_cancel');return true,'已取消接收配方分享'
     end
-    if not shareCaptureActive then return false,'聊天分享事件不可用，请使用更多导入中的粘贴链接。' end
+    if not shareCaptureActive then TraceReceive('event_unavailable');return false,'聊天分享事件不可用，请使用更多导入中的粘贴链接。' end
     count=D.Integer(count)
     if not count or (outputCount~=nil and not D.Integer(outputCount)) then return false,'请检查目标件数和每次产量。' end
     if type(S.NowMs)~='function' then return false,'限时接收不可用，请粘贴配方链接。' end
     pendingShare={count=count,outputCount=outputCount,expiresAt=S.NowMs()+60000,planId=state.active,sessionRevision=sessionRevision,owner=owner,mode=mode,materialKey=materialKey}
+    TraceReceive('waiting')
     local message='等待本人配方分享（60秒）：在 O 页分享并发送，无需命令；再点可取消。'
     ImportReceipt(true,message,'plan_share_receive_armed');return true,message
 end
@@ -663,23 +871,37 @@ end
 function C:PlanImportOwnChat(sender,message)
     if type(message)~='string' then return false,'not_recipe_command' end
     local command=message:match('^/rsrecipe%s+')~=nil
-    if not command and (not LivePendingShare() or not D.ParseRecipeShare(message)) then return false,'not_recipe_command' end
-    local running,why=Running();if not running then return false,why end
+    local waiting=LivePendingShare()
+    if not command and not waiting then return false,'not_recipe_command' end
+    receiveTrace.events=receiveTrace.events+1
+    local reference,parseError,share=D.ParseRecipeShare(message,true)
+    if not reference and not command and not share.hasMarkup then
+        receiveTrace.ignored=receiveTrace.ignored+1;return false,'not_recipe_command'
+    end
+    local running,why=Running();if not running then TraceReceive('not_running',why);return false,why end
     local call=S.FeatureSliceFactory and S.FeatureSliceFactory.Call
-    if not call then return false,'player_identity_unavailable' end
+    if not call then TraceReceive('identity_unavailable');return false,'player_identity_unavailable' end
     local fullOk,fullName=call('X2Unit:UnitNameWithWorld',nil,'UnitNameWithWorld','player')
     local plainOk,plainName=call('X2Unit:UnitName',nil,'UnitName','player')
     if not ((fullOk and type(fullName)=='string' and sender==fullName) or
-        (plainOk and type(plainName)=='string' and sender==plainName)) then return false,'not_local_player' end
-    local loaded,loadError=Load();if not loaded then return false,loadError end
-    local waiting=not command and LivePendingShare() or nil
+        (plainOk and type(plainName)=='string' and sender==plainName)) then TraceReceive('sender_not_local');return false,'not_local_player' end
+    receiveTrace.lastShare=share
+    if not reference then
+        TraceReceive('link_not_recognized',parseError)
+        ImportReceipt(false,'未识别配方分享：'..tostring(parseError)..(waiting and '；仍在等待下一条分享' or ''),'plan_share_link_rejected')
+        return false,parseError
+    end
+    local loaded,loadError=Load();if not loaded then TraceReceive('store_unavailable',loadError);return false,loadError end
+    waiting=not command and LivePendingShare() or nil
     if not command and not waiting then return false,'recipe_receive_expired' end
     local ok,why=C:PlanImportLink(message,waiting and waiting.count or 1,waiting and waiting.outputCount or nil,
         command and 'recipe' or (waiting and waiting.mode),waiting and waiting.materialKey)
     if ok then
+        receiveTrace.accepted=receiveTrace.accepted+1;TraceReceive('imported')
         pendingShare=nil;cached=nil;Notify('plan_share_received')
     end
     if not ok then
+        TraceReceive('import_failed',why)
         ImportReceipt(false,why,'plan_share_import_failed')
     end
     return ok,why
@@ -705,7 +927,11 @@ function C:PlanReadRecipes()
     for _,target in pairs(Active().targets)do Queue(target) end
     if #pending==0 then return false,'先加入目标' end
     local token=generation
-    scan={done=0,pending=#pending,errors=0,failures={}};scanResult=nil
+    scan={done=0,pending=#pending,errors=0,failures={},traces={},traceOmitted=0};scanResult=nil
+    local function Trace(value)
+        if #scan.traces<32 then scan.traces[#scan.traces+1]=tostring(value):sub(1,768)
+        else scan.traceOmitted=scan.traceOmitted+1 end
+    end
     local function Finish(limited)
         local issues={}
         for _,key in ipairs(Sorted(scan.failures))do
@@ -713,7 +939,7 @@ function C:PlanReadRecipes()
             issues[#issues+1]=scan.failures[key]
         end
         scanResult={status=(limited or #issues>0) and 'partial' or 'complete',done=scan.done,pending=#pending,
-            truncated=limited==true,issues=issues}
+            truncated=limited==true,issues=issues,traces=Copy(scan.traces),traceOmitted=scan.traceOmitted}
         scan=nil;S.Scheduler:RemoveTask(TASK)
         ImportReceipt(#issues==0 and not limited,limited and '配方展开达到本轮上限；仍有下级待核对' or
             (#issues>0 and ('已收录配方；'..#issues..' 类下级待核对：'..issues[1].reason) or '配方材料链已展开'),
@@ -730,10 +956,10 @@ function C:PlanReadRecipes()
             seen[key]=seen[key] or {}
             for hint in pairs(job.hints)do seen[key][hint]=true end
             scan.done=scan.done+1
-            local ids,why=F:ReadPlanRecipeTypes(item.itemType)
+            local ids,why=F:ReadPlanRecipeTypes(item.itemType,item)
             local selected=state.recipes[ChosenRecipe(key) or '']
             -- 分享或手选配方优先保留；反查可能只列出另一种同产物配方，不能静默换方。
-            if selected and D.Key(selected.product)~=key then selected=nil end
+            if selected and not D.ProductMatches(item,selected.product) then selected=nil end
             local candidates,known={},{}
             local function Candidate(id)
                 id=D.Integer(id)
@@ -744,17 +970,28 @@ function C:PlanReadRecipes()
             for _,hint in ipairs(Sorted(seen[key]))do Candidate(hint) end
             for _,id in ipairs(ids or {})do Candidate(id) end
             if #candidates>0 or ids then ids=candidates end
+            Trace('item='..key..' name='..tostring(item.name or '')..' lookup='..tostring(why or 'ok')..
+                ' candidates='..table.concat(candidates,','))
             if ids then
                 local records={};local failure=why
                 for index,id in ipairs(ids)do
                     if index>8 then break end
                     local previous=state.recipes[tostring(id)]
-                    local options=previous and previous.outputSource=='manual' and {outputCount=previous.product.count} or nil
-                    local record,readError=F:ReadPlanRecipe(id,options)
+                    local options={expectedProduct=item}
+                    if previous and previous.outputSource=='manual' then options.outputCount=previous.product.count end
+                    local record,readError,evidence=F:ReadPlanRecipe(id,options)
+                    RememberCostProbe(id,evidence)
+                    local fields={}
+                    for _,field in ipairs({'productStatus','materialStatus','productRows','materialRows','productItemType','productGrade','productCount',
+                        'productUseGrade','nativeProductGrade','productTruncated','materialTruncated','productError','materialError','productShape','materialShape','materialFields'})do
+                        if evidence and evidence[field]~=nil then fields[#fields+1]=field..'='..tostring(evidence[field]) end
+                    end
+                    Trace('item='..key..' candidate='..tostring(id)..' result='..tostring(readError or (record and 'read' or 'unknown'))..
+                        (record and (' productKey='..tostring(D.Key(record.product))) or '')..' '..table.concat(fields,' '))
                     if not record then failure=tostring(readError or '配方字段不完整') end
                     if not record and selected and tostring(id)==selected.id then record=Copy(selected) end
                     if record and previous and (not record.product.name or record.product.name=='') then record.product.name=previous.product.name end
-                    if record and D.Key(record.product)==key then
+                    if record and D.ProductMatches(item,record.product) then
                         if record.product.name=='已识别物品' or not record.product.name then record.product.name=item.name end
                         records[#records+1]=record
                     elseif record then failure='配方产物身份/品质与材料不匹配' end
@@ -763,20 +1000,23 @@ function C:PlanReadRecipes()
                     local addedRecipes=0
                     for _,record in ipairs(records)do if not state.recipes[record.id] then addedRecipes=addedRecipes+1 end end
                     if Count(state.recipes)+addedRecipes>128 then return false,'配方缓存达到上限' end
-                    local entry=state.catalog[key] or {item=Copy(item)}
+                    local entry=state.catalog[key] or {item=Copy(item),autoObserved=true}
                     entry.recipeIds={};entry.status=#records>0 and 'ready' or ((#ids>0 and #records==0) and 'recipe_fields_unknown' or why)
                     -- Native 空返回尚无可靠无配方契约；只有用户明确确认的原料可作完整叶子。
                     entry.base=entry.baseSource=='manual' and entry.base==true
                     for _,record in ipairs(records)do
-                        local old=state.recipes[record.id] or {}
-                        record.labor,record.feeCopper,record.costSource=old.labor,old.feeCopper,old.costSource
+                        local old=state.recipes[record.id]
+                        record.autoObserved=old and old.autoObserved or (not old and true or nil)
+                        record.userChosen=old and old.userChosen or nil
+                        old=old or {}
+                        MergeRecipeCosts(record,old)
                         record.shared,record.libraryHidden=old.shared,old.libraryHidden
                         state.recipes[record.id]=Copy(record);entry.recipeIds[#entry.recipeIds+1]=record.id
                         for _,m in ipairs(record.materials)do
                             local k=D.Key(m)
                             if not state.catalog[k] then
                                 if Count(state.catalog)>=256 then return false,'物品目录达到上限' end
-                                state.catalog[k]={item=Copy(m)}
+                                state.catalog[k]={item=Copy(m),autoObserved=true}
                             end
                         end
                     end
@@ -787,7 +1027,9 @@ function C:PlanReadRecipes()
                 if saved then
                     local recipe=state.recipes[ChosenRecipe(key) or '']
                     if recipe then
-                        scan.failures[key]=nil
+                        local _,certain=D.ProductMatches(item,recipe.product)
+                        scan.failures[key]=not certain and {key=key,itemType=item.itemType,name=item.name,
+                            reason='产物品质待核，已显示下级预览'} or nil
                         for _,m in ipairs(recipe.materials)do Queue(m) end
                     elseif not (state.catalog[key] and state.catalog[key].base) then
                         scan.failures[key]={key=key,itemType=item.itemType,name=item.name,
@@ -877,46 +1119,100 @@ end
 function C:PlanCalibrate(key)
     local ok,err=Running();if not ok then return false,err end
     ok,err=Load();if not ok then return false,err end
-    if quoteBatch then return false,'校准进行中，可先取消' end
+    if quoteBatch then return false,'查询中，请等待完成或停止本轮查询' end
     local queue=S.Services and S.Services.PriceQuoteQueueV3
     if not queue then return false,'报价队列不可用' end
-    local rows=Copy(Projection().rows)
-    -- 当前不采购的下级仍可查看和校准；查价不能中断正在进行的配方读取。
-    if key then
-        local found=false
-        for _,row in ipairs(rows)do if row.key==key then found=true;break end end
-        local entry=not found and state.catalog[key]
-        if entry and entry.item then rows[#rows+1]={key=key,item=Copy(entry.item)} end
+    local plan=Projection();local rows,seen,truncated={},{},false
+    -- 查价遍历配方树，不能只取实际采购行，否则“购买”分支下面的预览材料永远查不到。
+    local function Walk(itemKey,depth)
+        if seen[itemKey] then return end
+        if depth>24 or #rows>=512 then truncated=true;return end
+        seen[itemKey]=true
+        local entry=state.catalog[itemKey]
+        if entry and entry.item then rows[#rows+1]={key=itemKey,item=Copy(entry.item)} end
+        if key then return end
+        local recipe=plan.recipes[(plan.choices or {})[itemKey] or '']
+        for _,material in ipairs(recipe and recipe.materials or {})do
+            local child=D.Key(material);if child then Walk(child,depth+1) end
+        end
     end
+    if key then Walk(key,0) else for _,target in ipairs(plan.targets or {})do Walk(target.key,0) end end
+    if #rows==0 then return false,'当前没有可查询的配方物品' end
     quoteGeneration=quoteGeneration+1;local token=quoteGeneration
-    local batch={requested=0,completed=0,failed=0,submitting=true}
-    quoteBatch=batch
-    local function Done(snapshot)
+    local batch={status='querying',total=#rows,requested=0,completed=0,failed=0,empty=0,truncated=truncated,
+        startedAt=S.NowMs and S.NowMs() or 0}
+    quoteBatch,quoteResult=batch,nil
+    priceAudit={batch=batch,results={},sessionRevision=sessionRevision,generation=token,planId=state.active}
+    local Next
+    Next=function()
         if token~=quoteGeneration or quoteBatch~=batch then return end
-        batch.completed=batch.completed+1
-        if type(snapshot)=='table' and snapshot.status~='ready' then
-            batch.failed=batch.failed+1;batch.error=tostring(snapshot.error or snapshot.reason or snapshot.status)
+        local row=rows[batch.completed+1]
+        if not row then
+            batch.status='completed';batch.completedAt=S.NowMs and S.NowMs() or 0
+            priceAudit.currentRequester=nil;quoteResult=Copy(batch);quoteBatch=nil;Notify('plan_price_complete');return
         end
-        if not batch.submitting and batch.completed>=batch.requested then quoteBatch=nil end
-        Notify('plan_price_complete')
-    end
-    for _,row in ipairs(rows)do
-        if (not key or row.key==key) and batch.requested<64 then
-            batch.requested=batch.requested+1
-            local owner=OWNER..':quote:'..token..':'..row.key
-            quoteOwners[owner]=true
-            local accepted=queue:RequestQuote(owner,row.item.itemType,row.item.grade,function(snapshot)
-                quoteOwners[owner]=nil;Done(snapshot)
-            end,nil,
-                {force=true,priority='user',singleQuery=true,searchName=row.item.name,waitForDispatch=true,
-                 deadlineAt=(S.NowMs and S.NowMs() or 0)+600000})
-            if accepted~=true then quoteOwners[owner]=nil;batch.requested=batch.requested-1;batch.failed=batch.failed+1 end
+        batch.currentName=row.item.name;batch.currentKey=row.key;batch.requested=batch.requested+1
+        local grade,gradeSource=QuoteGrade(row.key,row.item)
+        local gradeResolution
+        if grade==nil and row.item.grade==nil and type(F.ReadPlanRecipe)=='function' then
+            local id=ChosenRecipe(row.key)
+            if id then
+                -- 已保存计划可能只有产物 ID。明确询价时补读该根配方的品质，不改目标键、不重置数量或手工成本。
+                local record,why,evidence=F:ReadPlanRecipe(tonumber(id),{expectedProduct=row.item,forceNative=true})
+                if token~=quoteGeneration or quoteBatch~=batch then return end
+                RememberCostProbe(id,evidence)
+                gradeResolution={recipeId=id,error=why,itemInfo=Copy(evidence and evidence.itemInfo),
+                    productGrade=record and record.product and record.product.grade}
+                if record and select(2,D.ProductMatches(row.item,record.product)) then
+                    local observed=D.ResolveRequirementGrade(row.item,record.product)
+                    if observed~=nil then
+                        quoteGradeOverrides[row.key]={recipeId=id,grade=observed};cached=nil
+                        grade,gradeSource=QuoteGrade(row.key,row.item)
+                    end
+                end
+            end
         end
+        local owner=OWNER..':quote:'..token..':'..row.key
+        local result={status='querying',name=row.item.name,itemType=row.item.itemType,recipeGrade=row.item.grade,
+            quoteGrade=grade,gradeSource=gradeSource,gradeResolution=gradeResolution,requester=owner,requestedAt=S.NowMs and S.NowMs() or 0}
+        quoteItems[row.key]=result;priceAudit.results[row.key]=result;priceAudit.currentRequester=owner
+        Notify('plan_price_dispatch')
+        if token~=quoteGeneration or quoteBatch~=batch then return end
+        quoteOwners[owner]=true
+        local consumed=false
+        local function Done(snapshot)
+            if consumed or token~=quoteGeneration or quoteBatch~=batch then return end
+            consumed=true;quoteOwners[owner]=nil
+            local status=type(snapshot)=='table' and snapshot.status or 'failed'
+            local reason=type(snapshot)=='table' and tostring(snapshot.error or snapshot.reason or status) or 'invalid_result'
+            if type(snapshot)=='table' then
+                for _,field in ipairs({'requestedAt','dispatchedAt','queueDeadlineAt','deadlineAt','completedAt','searchGeneration',
+                    'price','observedPrice','priceAccepted','referenceStored','priceDecision','priceSource'})do result[field]=snapshot[field] end
+                result.code=snapshot.errorCode
+            end
+            result.reason=reason;result.code=result.code or (status~='ready' and reason or nil)
+            result.completedAt=result.completedAt or (S.NowMs and S.NowMs() or 0)
+            priceAudit.currentRequester=nil
+            if status=='blocked' and (reason=='native_auction_visible' or reason=='native_auction_visibility_unknown') then
+                result.status='stopped'
+                CancelQuotes(reason);Notify('plan_price_stopped');return
+            end
+            local empty=reason=='auction_search_empty'
+            result.status=status=='ready' and 'ready' or empty and 'none' or 'failed'
+            batch.completed=batch.completed+1
+            if empty then batch.empty=batch.empty+1 elseif status~='ready' then batch.failed=batch.failed+1 end
+            Next()
+        end
+        local accepted,why=queue:RequestQuote(owner,row.item.itemType,grade,Done,nil,
+            {force=true,priority='user',singleQuery=true,searchName=row.item.name,waitForDispatch=true,
+             deadlineAt=(S.NowMs and S.NowMs() or 0)+600000})
+        if accepted~=true then Done({status='failed',errorCode=why,
+            error=why=='strict_search_grade_invalid' and '物品品质待核，本项未发起拍卖搜索' or why or 'request_rejected'}) end
     end
-    batch.submitting=false
-    if batch.requested==0 or batch.completed>=batch.requested then quoteBatch=nil end
-    Notify('plan_calibration');return batch.requested>0,'校准 '..batch.requested..' 项；未入队 '..batch.failed..' 项'
+    Next()
+    return true,'开始逐个查询 '..#rows..' 个物品；打开拍卖行会停止本轮查询'
 end
+function C:PlanCancelPrices()CancelQuotes('cancelled');Notify('plan_price_stopped');return true,'已停止价格查询' end
 function C:PlanCancel()Cancel();Notify('plan_cancel');return true end
 local baseDisable=F.Disable
 function F:Disable(reason)
@@ -946,8 +1242,28 @@ function F:ReconcileDemand(lease,before,after)
     end
     if (tonumber(after and after.count) or 0)>0 and S.Events and type(S.Events.SubscribeOptional)=='function' then
         if type(S.Events.BindOwner)=='function' then S.Events:BindOwner(shareOwner,F.Id) end
-        shareCaptureActive=S.Events:SubscribeOptional('CHAT_MESSAGE',shareOwner,function(owner,channel,relation,sender,message)
-            if F.enabled then return C:PlanImportOwnChat(sender,message) end
+        shareCaptureActive=S.Events:SubscribeOptional('CHAT_MESSAGE',shareOwner,function(owner,...)
+            if F.enabled then
+                -- 只保留参数类型和链接 ID/标记，不保存聊天正文或发送者，便于区分参数错位与链接解析失败。
+                if LivePendingShare() then
+                    local packet={argCount=select('#',...),slots={}}
+                    for index=1,math.min(packet.argCount,8)do
+                        local value=select(index,...);local slot={kind=type(value)}
+                        if type(value)=='string' then
+                            slot.bytes=#value
+                            if index~=3 then local _,_,summary=D.ParseRecipeShare(value,true);slot.share=summary end
+                        end
+                        packet.slots[index]=slot
+                    end
+                    receiveTrace.lastPacket=packet
+                    local messageSlot=packet.slots[4]
+                    if messageSlot and messageSlot.share and messageSlot.share.hasMarkup then
+                        receiveTrace.lastCandidatePacket=packet
+                    end
+                end
+                local sender,message=select(3,...),select(4,...)
+                return C:PlanImportOwnChat(sender,message)
+            end
         end)==true
         cached=nil
     end

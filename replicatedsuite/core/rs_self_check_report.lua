@@ -206,6 +206,9 @@ local function BuildReport(self, mode)
     -- 32KiB section 预算而截掉尾部阻断。总数保留，失败逐项输出，未运行与异常独立标记。
     Section("SELF_CHECK",{status=check.status,blockers=check.blockers,warnings=check.warnings,
         checkCount=type(check.checks)=="table" and #check.checks or 0,error=check.error,sequences=check.sequences})
+    -- 只复制配方扫描已有证据，不因生成报告触发读取或新建消费端。
+    local craft=S.Features and S.Features.tools_craft
+    if craft and type(craft.GetRecipeReadDiagnostics)=='function' then Collect('CRAFT_RECIPE_READ',craft,'GetRecipeReadDiagnostics') end
     for _,row in ipairs(type(check.checks)=="table" and check.checks or {}) do
         if row.ok~=true then Section("FAILED_CHECK",row) end
     end

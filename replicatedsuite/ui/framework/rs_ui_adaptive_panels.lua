@@ -614,11 +614,29 @@ RSUI:RegisterType("SplitView", function(spec)
     c.dividerSize = math.max(2, N(spec.dividerSize, 6))
     c.onSplitChanged = spec.onSplitChanged
     c.dragging = false
+    c.dragEvidence={starts=0,stops=0,updates=0,raises=0,status="idle"}
     c.dragTaskName = "rsui_split_drag:" .. tostring(c.id)
 
     local dividerVisual = UI:CreateEmptyWidget(c.root, c.id .. "_divider_visual", 0, 0, c.dividerSize, 20, false)
-    local dividerDrag = UI:CreateEmptyWidget(c.root, c.id .. "_divider_drag", 0, 0, math.max(10, c.dividerSize + 6), 20, true)
+    -- 实机 emptywidget 已命中悬停却不派发拖动；沿用屏幕入口已使用的 Button 输入面。
+    -- 原生按钮不加入 SplitView slots，避免被当成第三个内容面板。
+    local dividerDrag = type(UI.CreateButton)=='function' and UI:CreateButton(c.root,c.id..'_divider_drag','',
+        0,0,math.max(10,c.dividerSize+6),20,10,false,false) or nil
+    c.dragEvidence.inputSurface='button'
     c.dividerVisual, c.dividerDrag = dividerVisual, dividerDrag
+    function c:CapturePointerEvidence(kind)
+        local evidence=self.dragEvidence
+        evidence.lastInput=kind
+        if kind=='click' then evidence.clicks=(evidence.clicks or 0)+1
+        elseif kind=='hover' then evidence.hovers=(evidence.hovers or 0)+1 end
+        -- 仅实际输入时采样，不让导出诊断重新访问 Native 或改变界面。
+        for field,method in pairs({nativeEnabled='IsEnabled',nativeVisible='IsVisible',nativeMouseOver='IsMouseOver'})do
+            if dividerDrag and type(dividerDrag[method])=='function' then
+                local ok,value=pcall(dividerDrag[method],dividerDrag)
+                evidence[field]=ok and type(value)=='boolean' and tostring(value) or 'unknown'
+            end
+        end
+    end
     if dividerVisual ~= nil and type(dividerVisual.CreateColorDrawable) == "function" then
         local color = (S.VisualTokens and S.VisualTokens:Color("separator")) or {0.08,0.28,0.31,0.72}
         local d = dividerVisual:CreateColorDrawable(color[1],color[2],color[3],color[4] or 0.72,"overlay")
@@ -627,32 +645,45 @@ RSUI:RegisterType("SplitView", function(spec)
     end
     if dividerDrag == nil then
         c.rsUiDegraded, c.rsUiDegradedReason = true, "split_divider_drag_create_failed"
-    elseif type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function" then
+    elseif type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function"
+        or type(UI.EnsureEnabled)~='function' or type(UI.EnsurePickable)~='function' then
         c.rsUiDegraded, c.rsUiDegradedReason = true, "critical_interaction_contract_unavailable"
     else
+        local enabled,_,enableErr=UI:EnsureEnabled(dividerDrag,true,c.owner)
+        local pickable,_,pickErr=UI:EnsurePickable(dividerDrag,true,c.owner)
+        if enabled~=true or pickable~=true then
+            c.rsUiDegraded,c.rsUiDegradedReason=true,'split_input_unavailable:'..tostring(enableErr or pickErr or 'rejected')
+        end
         local dragEnabled, dragErr = UI:TryInteractionCall(dividerDrag, "EnableDrag", true)
+        c.dragEvidence.dragEnabled=dragEnabled==true
+        c.dragEvidence.dragConditionAvailable=type(dividerDrag.SetDragCondition)=='function' and DC_ALWAYS~=nil
         if dragEnabled ~= true then
             c.rsUiDegraded, c.rsUiDegradedReason = true, "split_enable_drag_failed:" .. tostring(dragErr or "rejected")
         elseif type(dividerDrag.SetDragCondition) == "function" and DC_ALWAYS ~= nil then
             local conditionOk, conditionErr = UI:TryInteractionCall(dividerDrag, "SetDragCondition", DC_ALWAYS)
+            c.dragEvidence.dragConditionApplied=conditionOk==true
             if conditionOk ~= true then
                 c.rsUiDegraded, c.rsUiDegradedReason = true, "split_drag_condition_failed:" .. tostring(conditionErr or "rejected")
             end
         end
     end
 
-    local function EffectiveAxis(widget, horizontal)
-        if widget == nil then return nil end
-        local x, y
-        if type(widget.GetEffectiveOffset) == "function" then
-            local ok, ax, ay = pcall(function() return widget:GetEffectiveOffset() end)
-            if ok then x, y = tonumber(ax), tonumber(ay) end
+    local function LogicalAxis(widget, horizontal, pinnedScale)
+        local layout=S.Layout
+        if layout and type(layout.GetWindowLogicalRect)=='function' then
+            local ok,x,y,_,_,info=pcall(layout.GetWindowLogicalRect,layout,widget,pinnedScale)
+            local source=type(info)=='table' and tostring(info.source or '') or ''
+            -- 静态缓存可用于排版，不能用作 Native 正在移动的证据。
+            if ok and tonumber(x) and tonumber(y) and source~='native_state_anchor_chain_fallback' then
+                return horizontal and tonumber(x) or tonumber(y),type(info)=='table' and tonumber(info.effectiveScale) or nil
+            end
+            return nil
         end
-        if (x == nil and y == nil) and type(widget.GetOffset) == "function" then
-            local ok, ax, ay = pcall(function() return widget:GetOffset() end)
-            if ok then x, y = tonumber(ax), tonumber(ay) end
+        -- 无 Layout 的独立组件宿主仅沿同一个原生局部坐标源计算差值。
+        if widget and type(widget.GetOffset)=='function' then
+            local ok,x,y=pcall(widget.GetOffset,widget)
+            if ok then return horizontal and tonumber(x) or tonumber(y),nil end
         end
-        return horizontal and x or y
     end
 
     function c:GetPaneEntries()
@@ -758,6 +789,12 @@ RSUI:RegisterType("SplitView", function(spec)
                 UI:SetAnchor(self.dividerDrag,self.root,p.left,p.top+primary-(hit-divider)/2,self.owner); UI:SetExtent(self.dividerDrag,math.max(1,crossAvail),hit,self.owner)
             end
             UI:SetVisible(self.dividerDrag,first~=nil and second~=nil and divider>0,self.owner)
+            -- 面板子节点后创建，可能盖住分隔条；仅布局边沿提升命中面，拖动期间不改层级。
+            if first~=nil and second~=nil and divider>0 and type(self.dividerDrag.Raise)=='function' then
+                local ok,result=pcall(function()return self.dividerDrag:Raise()end)
+                if ok and result~=false then self.dragEvidence.raises=self.dragEvidence.raises+1
+                else self.dragEvidence.raiseError=tostring(result or 'raise_failed') end
+            end
         end
         self.measureDirty,self.layoutDirty=false,false
         return height
@@ -770,69 +807,155 @@ RSUI:RegisterType("SplitView", function(spec)
         end
         c.dragUpdateFallback = false
     end
-    local function SyncDrag(final)
-        if c.dragging ~= true and final ~= true then return false end
-        local current=EffectiveAxis(c.dividerDrag,c.orientation=="horizontal")
-        if current==nil or c.dragStartAxis==nil then return false end
-        local requested=(tonumber(c.dragStartPrimary) or 0)+(current-c.dragStartAxis)
+    local function ClearGesture()
+        c.dragStartAxis,c.dragStartPrimary,c.dragStartState,c.dragUnitScale=nil,nil,nil,nil
+    end
+    local function StopNativeMotion()
+        StopDragTask()
+        local ok,why=UI:TryInteractionCall(dividerDrag,'StopMovingOrSizing')
+        if c.geometryLeased then
+            local released,releaseErr=UI:EndNativeGeometryLease(dividerDrag,c.owner)
+            c.geometryLeased=false
+            if released~=true then ok,why=false,releaseErr end
+        end
+        c.dragging=false
+        return ok==true,why
+    end
+    local function RestoreSplit(before)
+        if before then c.mode,c.primarySize,c.ratio=before.mode,before.primarySize,before.ratio end
+        c:InvalidateLayout('split_drag_end')
+        if not c.released and c.width and c.height then c:Layout(c.x or 0,c.y or 0,c.width,c.height) end
+    end
+    function c:CancelDrag(reason)
+        local before=self.dragStartState
+        if not self.dragging and not self.geometryLeased then StopDragTask();return true end
+        local stopped,why=StopNativeMotion()
+        self.dragEvidence.status=stopped and 'cancelled' or 'stop_failed'
+        self.dragEvidence.reason=tostring(reason or why or 'cancelled')
+        ClearGesture();RestoreSplit(before)
+        return stopped,why
+    end
+    local function SyncDrag()
+        if not c.dragging then return false,'drag_not_active' end
+        local current=LogicalAxis(dividerDrag,c.orientation=='horizontal',c.dragUnitScale)
+        if current==nil or c.dragStartAxis==nil then return false,'axis_unavailable' end
+        c.dragEvidence.updates=c.dragEvidence.updates+1
+        c.dragEvidence.delta=current-c.dragStartAxis
+        local requested=c.dragStartPrimary+c.dragEvidence.delta
         local p=Pad(c.spec.padding)
-        local total=c.orientation=="horizontal" and math.max(0,(tonumber(c.width) or 0)-p.left-p.right) or math.max(0,(tonumber(c.height) or 0)-p.top-p.bottom)
+        local total=c.orientation=='horizontal' and math.max(0,(tonumber(c.width) or 0)-p.left-p.right)
+            or math.max(0,(tonumber(c.height) or 0)-p.top-p.bottom)
         local paneSpace=math.max(0,total-c.dividerSize)
-        if c.mode=="fixed" then c.primarySize=Clamp(requested,0,paneSpace)
+        if c.mode=='fixed' then c.primarySize=Clamp(requested,0,paneSpace)
         else c.ratio=paneSpace>0 and Clamp(requested/paneSpace,0,1) or 0.5 end
-        c:InvalidateLayout("split_drag")
+        local actual=c:ResolvePrimary(total)
+        if c.mode=='fixed' then c.primarySize=actual
+        else c.ratio=paneSpace>0 and actual/paneSpace or 0.5 end
+        c.dragEvidence.limited=math.abs(actual-requested)>0.5
+        c:InvalidateLayout('split_drag')
         if c.width and c.height then c:Layout(c.x or 0,c.y or 0,c.width,c.height) end
-        if type(c.onSplitChanged)=="function" then pcall(c.onSplitChanged,c,c.mode=="fixed" and c.primarySize or c.ratio,c.mode,final==true) end
+        if type(c.onSplitChanged)=='function' then
+            local ok,result,why=pcall(c.onSplitChanged,c,c.mode=='fixed' and c.primarySize or c.ratio,c.mode,false)
+            if not ok or result==false then return false,tostring(why or result or 'split_preview_failed') end
+        end
         return true
     end
-
-    if dividerDrag ~= nil then
-        local startBound, startErr = UI:RequireHandler(dividerDrag,"OnDragStart",function()
-            local axis=EffectiveAxis(dividerDrag,c.orientation=="horizontal")
-            if axis==nil then return false end
+    if dividerDrag~=nil then
+        c.dragEvidence.clickHandler=UI:SafeHandler(dividerDrag,'OnClick',function()
+            c:CapturePointerEvidence('click');return true
+        end,'rsui:'..c.id..':split_click')==true
+        local startBound,startErr=UI:RequireHandler(dividerDrag,'OnDragStart',function()
+            c.dragEvidence.starts=c.dragEvidence.starts+1
+            c:CapturePointerEvidence('drag_start')
+            if c.released or c.enabled==false or c.rsUiDegraded then return false,'split_unavailable' end
+            if c.dragging then return false,'drag_already_active' end
+            local axis,unitScale=LogicalAxis(dividerDrag,c.orientation=='horizontal')
+            if axis==nil then c.dragEvidence.status='start_axis_unavailable';return false end
+            if type(UI.BeginNativeGeometryLease)~='function' or type(UI.EndNativeGeometryLease)~='function' then
+                c.dragEvidence.status='geometry_lease_unavailable';return false
+            end
+            local leased,leaseErr=UI:BeginNativeGeometryLease(dividerDrag,c.owner,'split_drag')
+            if leased~=true then c.dragEvidence.status='geometry_lease_rejected';return false,leaseErr end
+            c.geometryLeased=true
+            local moving,moveErr=UI:TryInteractionCall(dividerDrag,'StartMoving')
+            if moving~=true then
+                StopNativeMotion();c.dragEvidence.status='start_moving_failed';return false,moveErr
+            end
             local p=Pad(c.spec.padding)
-            local total=c.orientation=="horizontal" and math.max(0,(tonumber(c.width) or 0)-p.left-p.right) or math.max(0,(tonumber(c.height) or 0)-p.top-p.bottom)
+            local total=c.orientation=='horizontal' and math.max(0,(tonumber(c.width) or 0)-p.left-p.right)
+                or math.max(0,(tonumber(c.height) or 0)-p.top-p.bottom)
             local primary=c:ResolvePrimary(total)
-            local moving = UI:TryInteractionCall(dividerDrag, "StartMoving")
-            if moving ~= true then return false end
-            c.dragging=true; c.dragStartAxis=axis; c.dragStartPrimary=primary
+            c.dragStartState={mode=c.mode,primarySize=c.primarySize,ratio=c.ratio}
+            c.dragging,c.dragStartAxis,c.dragStartPrimary,c.dragUnitScale=true,axis,primary,unitScale
+            c.dragEvidence.status,c.dragEvidence.reason='dragging',nil
+            c.dragEvidence.startPrimary,c.dragEvidence.unitScale=primary,unitScale
             StopDragTask()
-            local scheduled = false
-            if S.Scheduler~=nil and type(S.Scheduler.AddInteractiveTask)=="function" then
-                scheduled = S.Scheduler:AddInteractiveTask(c.dragTaskName,16,function() if c.dragging then SyncDrag(false) end return true end,true,c,"P0",1) == true
+            local function Pulse()
+                if c.dragging then
+                    local synced,why=SyncDrag()
+                    if not synced then c:CancelDrag(why) end
+                end
+                return true
             end
-            -- 专用分隔条仅在手势期间持有 OnUpdate 兜底，拖动停止即释放；启动/重载时 Scheduler 不可用也保持实时反馈，不形成永久 Tick。
-            if scheduled ~= true then
-                c.dragUpdateFallback = UI:SafeHandler(dividerDrag,"OnUpdate",function() if c.dragging then SyncDrag(false) end return true end,"rsui:"..c.id..":split_drag_update") == true
+            local scheduled=S.Scheduler and type(S.Scheduler.AddInteractiveTask)=='function'
+                and S.Scheduler:AddInteractiveTask(c.dragTaskName,16,Pulse,true,c,'P0',1)==true
+            if not scheduled then
+                c.dragUpdateFallback=UI:SafeHandler(dividerDrag,'OnUpdate',Pulse,'rsui:'..c.id..':split_drag_update')==true
             end
-            SyncDrag(false)
+            if not scheduled and not c.dragUpdateFallback then c:CancelDrag('drag_update_unavailable');return false end
+            local synced,why=SyncDrag()
+            if not synced then c:CancelDrag(why);return false,why end
             return true
-        end,"rsui:"..c.id..":split_drag_start")
-        local stopBound, stopErr = UI:RequireHandler(dividerDrag,"OnDragStop",function()
-            SyncDrag(true); StopDragTask()
-            if type(dividerDrag.StopMovingOrSizing)=="function" then pcall(function() dividerDrag:StopMovingOrSizing() end) end
-            c.dragging=false; c.dragStartAxis=nil; c.dragStartPrimary=nil
-            if c.width and c.height then c:Layout(c.x or 0,c.y or 0,c.width,c.height) end
-            return true
-        end,"rsui:"..c.id..":split_drag_stop")
-        if startBound ~= true or stopBound ~= true then
-            c.rsUiDegraded = true
-            c.rsUiDegradedReason = tostring(startErr or stopErr or "split_required_handler_failed")
+        end,'rsui:'..c.id..':split_drag_start')
+        local stopBound,stopErr=UI:RequireHandler(dividerDrag,'OnDragStop',function()
+            if not c.dragging then return true end -- 隐藏/取消后的迟到通知不能再保存。
+            c.dragEvidence.stops=c.dragEvidence.stops+1
+            local before=c.dragStartState
+            local synced,syncErr=SyncDrag()
+            local stopped,stopErr=StopNativeMotion()
+            ClearGesture()
+            local accepted,why=synced and stopped,syncErr or stopErr
+            if accepted and type(c.onSplitChanged)=='function' then
+                local called,result,err=pcall(c.onSplitChanged,c,c.mode=='fixed' and c.primarySize or c.ratio,c.mode,true)
+                accepted=called and result~=false;why=err or (not called and result or nil)
+            end
+            if not accepted then RestoreSplit(before) else RestoreSplit() end
+            c.dragEvidence.status=accepted and 'stopped' or 'commit_rejected'
+            c.dragEvidence.reason=why and tostring(why) or nil
+            c.dragEvidence.finalPrimary=c.mode=='fixed' and c.primarySize or nil
+            return accepted,why
+        end,'rsui:'..c.id..':split_drag_stop')
+        c.dragEvidence.handlers=startBound==true and stopBound==true
+        if not c.dragEvidence.handlers then
+            c.dragEvidence.status='handler_unavailable';c.rsUiDegraded=true
+            c.rsUiDegradedReason=tostring(startErr or stopErr or 'split_required_handler_failed')
         end
     end
-
+    local baseVisibility,baseViewport,baseEnabled=c.SetVisibility,c.SetViewportVisible,c.SetEnabled
+    function c:SetVisibility(value)
+        local changed,accepted,why=baseVisibility(self,value)
+        if accepted==true and self:GetVisibility()~=RSUI.Visibility.Visible and self.dragging then self:CancelDrag('hidden') end
+        return changed,accepted,why
+    end
+    function c:SetViewportVisible(value)
+        local changed,accepted,why=baseViewport(self,value)
+        if accepted==true and self.viewportVisible==false and self.dragging then self:CancelDrag('viewport_hidden') end
+        return changed,accepted,why
+    end
+    function c:SetEnabled(value)
+        local state,accepted,why=baseEnabled(self,value)
+        if accepted==true and self.enabled==false and self.dragging then self:CancelDrag('disabled') end
+        return state,accepted,why
+    end
     local baseRelease=c.Release
     function c:Release()
-        StopDragTask()
-        if self.dragging == true and self.dividerDrag ~= nil and type(self.dividerDrag.StopMovingOrSizing) == "function" then
-            pcall(function() self.dividerDrag:StopMovingOrSizing() end)
-        end
-        self.dragging=false; self.dragStartAxis=nil; self.dragStartPrimary=nil
-        if self.dividerDrag~=nil and type(self.dividerDrag.ReleaseHandler)=="function" then
-            pcall(function() self.dividerDrag:ReleaseHandler("OnDragStart") end); pcall(function() self.dividerDrag:ReleaseHandler("OnDragStop") end); pcall(function() self.dividerDrag:ReleaseHandler("OnUpdate") end)
+        self:CancelDrag('released')
+        if self.dividerDrag and type(self.dividerDrag.ReleaseHandler)=='function' then
+            for _,event in ipairs({'OnClick','OnDragStart','OnDragStop','OnUpdate'})do pcall(function()self.dividerDrag:ReleaseHandler(event)end)end
         end
         return baseRelease(self)
     end
+
     return c
 end)
 

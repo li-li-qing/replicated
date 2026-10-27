@@ -15,6 +15,70 @@ local function Strict(h,token,id,options,callback)
  options.priority=options.priority or 'user'
  return h.queue:RequestQuote(token,id,1,callback or function(r)h.deliveries[#h.deliveries+1]=r end,{0,1,2,3},options)
 end
+Test('RU item metadata capability is official and its verified namespace is imported only on demand',function()
+ local h=Boot();local S=h.S;local cap=S.ApiCapabilities:Describe('X2Item:GetItemInfoByType')
+ assert(cap and cap.OfficialState=='OfficialEnabled' and cap.SideEffectFree)
+ Eq(S.NativeContract:GetApi('ITEM').id,23);Eq(h.imports[23],nil)
+ local oldImport,oldItem=ADDON.ImportAPI,X2Item;local reads=0
+ ADDON.ImportAPI=function(self,id)
+  if id==23 then h.imports[id]=(h.imports[id] or 0)+1;X2Item={GetItemInfoByType=function(_,itemType)
+   reads=reads+1;return {itemType=itemType,itemGrade=0}end};return true end
+  return oldImport(self,id)
+ end
+ assert(S.ApiImports:Acquire('feature:tools_craft:item_metadata',{'X2Item:GetItemInfoByType'}))
+ local ok,info=S.Api:CallCapability('X2Item:GetItemInfoByType',nil,'GetItemInfoByType',32934)
+ ADDON.ImportAPI=oldImport;X2Item=oldItem
+ assert(ok and info.itemType==32934 and info.itemGrade==0);Eq(reads,1);Eq(h.imports[23],1)
+end)
+Test('RU ordinary material grade zero stays zero even when the display label says level one',function()
+ local h=Boot();h:loadMaterialPrices();h.syncComplete=true
+ h.onSearch=function()return {{itemType=30899,itemGrade=0,grade='Lv.1 普通',stackCount=9350,directPriceStr='21598500'}}end
+ assert(h.queue:RequestQuote('ru-basic',30899,0,function(r)h.deliveries[#h.deliveries+1]=r end,nil,
+  {singleQuery=true,searchName='浓缩的果汁',priority='user'}))
+ Eq(h.deliveries[1].status,'ready');Eq(h.deliveries[1].itemGrade,0);Eq(h.deliveries[1].price,2310)
+ Eq(h.queue:GetPriceByItemType(30899,0),2310);Eq(h:count('SearchAuctionArticle'),1)
+end)
+Test('strict query rejects missing or malformed grades without substituting basic quality or sending a search',function()
+ for _,grade in ipairs({false,'invalid',-1,21,1.5})do
+  local h=Boot();local ok,why=h.queue:RequestQuote('invalid',101,grade,function()error('no terminal for a rejected submission')end,nil,
+   {singleQuery=true,priority='user',searchName='材料'})
+  Eq(ok,false);Eq(why,'strict_search_grade_invalid');Eq(h:count('SearchAuctionArticle'),0)
+ end
+ local h=Boot();local ok,why=h.queue:RequestQuote('nil',101,nil,nil,nil,{singleQuery=true,searchName='材料'})
+ Eq(ok,false);Eq(why,'strict_search_grade_invalid');Eq(h:count('SearchAuctionArticle'),0)
+end)
+Test('reading one quality can recover its reference after another quality completed most recently',function()
+ local h=Boot();local prices=h:loadMaterialPrices()
+ assert(h.queue:RecordReferencePrice(101,2,70,'name_search_sampled_direct_unit'))
+ assert(h.queue:RecordReferencePrice(101,3,90,'name_search_sampled_direct_unit'))
+ h.queue.pricesByItemType[101]={itemGrade=3,price=90,source='name_search_sampled_direct_unit',completedAt=h.now}
+ Eq(h.queue:GetPriceByItemType(101,2),70);Eq(h.queue:GetPriceByItemType(101,3),90)
+ for _,grade in ipairs({false,'invalid',-1,21,1.5})do
+  Eq(h.queue:GetPriceByItemType(101,grade),nil);Eq(h.queue:GetReferencePrice(101,grade),nil)
+ end
+ Eq(h:count('SearchAuctionArticle'),0)
+end)
+Test('quality mismatch is a typed unpriced result and its native samples remain attributable',function()
+ local h=Boot();h.syncComplete=true;h.onSearch=function()return {Listing(46156,70,2)}end
+ assert(h.queue:RequestQuote('craft-grade-zero',46156,0,function(r)h.deliveries[#h.deliveries+1]=r end,nil,
+  {singleQuery=true,priority='user',searchName='新月石晶'}))
+ Eq(h.deliveries[1].status,'unavailable');Eq(h.deliveries[1].errorCode,'strict_grade_mismatch')
+ Eq(h.deliveries[1].price,nil);Eq(h:count('SearchAuctionArticle'),1)
+ local matching=h.query:DescribePriceEvidenceDetail({[46156]=true},{[1]=true})
+ Eq(#matching.requests,1);Eq(matching.requests[1].listingDetails[1].normalized.itemGrade,2)
+ local unrelated=h.query:DescribePriceEvidenceDetail({[999]=true},{[1]=true});Eq(#unrelated.requests,0)
+end)
+Test('fixed craft material quality accepts a real normalized listing once and caches only that quality',function()
+ local h=Boot();local prices=h:loadMaterialPrices()
+ dofile('data/rs_craft_recipe_catalog.lua');dofile('features/tools/craft/rs_craft_plan_domain.lua')
+ local grade=h.S.CraftPlanDomain.ResolveItemGrade({itemType=46156,grade=0});Eq(grade,2)
+ h.syncComplete=true;h.onSearch=function()return {Listing(46156,70,2,10)}end
+ assert(h.queue:RequestQuote('craft-fixed-grade',46156,grade,function(r)h.deliveries[#h.deliveries+1]=r end,nil,
+  {singleQuery=true,priority='user',searchName='新月石晶'}))
+ Eq(h.deliveries[1].status,'ready');Eq(h.deliveries[1].price,70);Eq(prices:GetPrice(46156,2),70)
+ Eq(prices:GetPrice(46156,0),nil);Eq(h:count('SearchAuctionArticle'),1);Eq(h:count('AskMarketPrice'),0)
+ local calls=#h.calls;h.query:DescribePriceEvidenceDetail({[46156]=true},{[1]=true});Eq(#h.calls,calls)
+end)
 -- 复现 MD1.3.life_trade 实机报告：两个受许可 getter 均成功，
 -- UIC_AUCTION 未创建/已关闭时内容对象与五个 MainScript 字段全为空。不得继续把这个现场当 API 故障。
 local function Absent(h)

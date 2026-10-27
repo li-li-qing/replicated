@@ -72,11 +72,28 @@ local function WindowState(value)
     if value.anchorV=='TOP' or value.anchorV=='BOTTOM' then out.anchorV=value.anchorV end
     return out
 end
+function Feature:GetCraftListSplit()
+    local n=tonumber(self.State.craftListSplit)
+    if n and n==n and n>=80 and n<=1600 then return n end
+end
+function Feature.Commands:SetCraftListSplit(value)
+    local n=tonumber(value)
+    if not n or n~=n or n<80 or n>1600 then return false,'分隔线位置无效' end
+    return ChangeEntry('craft_list_split',function()Feature.State.craftListSplit=n;return true end,'v3.craft.window.changed')
+end
 function Feature:GetCraftWindowState()return WindowState(self.State.craftWindowState)end
-function Feature.Commands:SetCraftWindowState(value)
+function Feature.Commands:SetCraftWindowState(value,listPrimary)
     local nextState=WindowState(value)
     if not nextState or not nextState.width or not nextState.height or nextState.width<=0 or nextState.height<=0 then return false,'配方小窗状态无效' end
-    return ChangeEntry('craft_window_state',function()Feature.State.craftWindowState=nextState;return true end,'v3.craft.window.changed')
+    if listPrimary~=nil and (type(listPrimary)~='number' or listPrimary~=listPrimary or listPrimary<80 or listPrimary>1600) then
+        return false,'分隔线位置无效'
+    end
+    -- 窗口缩放也会改变列表可用高度，两者须在同一个 Store 事务保存和回滚。
+    return ChangeEntry('craft_window_state',function()
+        Feature.State.craftWindowState=nextState
+        if listPrimary~=nil then Feature.State.craftListSplit=listPrimary end
+        return true
+    end,'v3.craft.window.changed')
 end
 function Feature.Commands:ResetCraftWindowState()
     return ChangeEntry('craft_window_reset',function()Feature.State.craftWindowState=nil;return true end,'v3.craft.window.changed')
@@ -125,11 +142,15 @@ if type(hub) == "table" and type(hub.RegisterProvider) == "function" then
             screenButton=Feature:GetScreenButtonState(),
             craftWindow=Feature:GetCraftWindowState(),
             recipeRead=type(Feature.GetRecipeReadDiagnostics)=='function' and Feature:GetRecipeReadDiagnostics() or nil,
+            prices=type(Feature.GetPriceReadDiagnostics)=='function' and Feature:GetPriceReadDiagnostics() or nil,
             entry=entry and type(entry.Describe)=='function' and entry:Describe() or {available=false},
             consumerCount = tonumber(Feature.consumerCount) or 0,
             surface = Surface:GetDiagnosticsSnapshot(),
             sidecar = controller and type(controller.Describe) == "function" and controller:Describe() or { available = false } }
     end, 30, { detailOnly = true })
+    hub:RegisterProvider(Feature.Id, 'craft_price_listing_samples', function()
+        return type(Feature.GetPriceListingDiagnostics)=='function' and Feature:GetPriceListingDiagnostics() or {available=false}
+    end, 31, {detailOnly=true,detailDeferred=true})
     if type(hub.RegisterStoreOwner) == "function" then
         hub:RegisterStoreOwner(Feature.Id, Feature.storeId)
         hub:RegisterStoreOwner(Feature.Id, "v3.craft_plans")

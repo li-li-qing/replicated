@@ -551,9 +551,8 @@ RSUI:RegisterType("NumericField", function(spec)
         suffix = c.unit, maxLength = tonumber(spec.maxLength) or 14,
         binding = c.binding, enabled = spec.enabled ~= false,
         commitOnFinal = spec.commitOnFinal == true,
-        -- 有明确“应用”按钮的 NumericField 不再把 RU LostFocus
-        -- 当成业务提交；输入草稿由 Lua 持有，只有 Apply/Enter 写 Authority。无 Apply 的旧字段保持 blur commit。
-        draftCommitMode = c.useApplyButton and "explicit" or "blur",
+        -- 带“应用”按钮时默认保留草稿；仅调用方明确选择失焦提交，才在 LostFocus 写 Binding。
+        draftCommitMode = c.useApplyButton and spec.commitOnLostFocus ~= true and "explicit" or "blur",
         format = spec.format,
         onChanged = function(value) Applied(value, "input") end,
         onInvalid = function()
