@@ -493,6 +493,164 @@ function T.DecodeV6(value)
     return CompactV6(decoded,true)
 end
 
+-- v7 压紧纯标量 map，避免长期历史被每个字段的类型标签和缩进撑满单 key。
+-- 保留键和值的类型及精确数字；只改变物理表示，不改变 Domain/schema/canonical。
+local V7_PREFIX='__rs_t7:'
+local function MapAtom(value)
+    local kind=type(value);local tag,text
+    if kind=='string' then tag,text='s',value
+    elseif kind=='boolean' then tag,text='b',value and '1' or '0'
+    elseif kind=='number' and value==value and value~=math.huge and value~=-math.huge then tag,text='n',string.format('%.17g',value)
+    else return nil end
+    return tag..#text..':'..text
+end
+local function PackScalarMap(value)
+    local keys={}
+    for key,child in pairs(value) do
+        if (type(key)~='string' and type(key)~='number') or not MapAtom(key) or not MapAtom(child) then return nil end
+        keys[#keys+1]=key;if #keys>64 then return nil end
+    end
+    if #keys<4 then return nil end
+    table.sort(keys,function(a,b)if type(a)~=type(b)then return type(a)<type(b)end;return a<b end)
+    local parts={V7_PREFIX..'m'..#keys..':'}
+    for _,key in ipairs(keys)do parts[#parts+1]=MapAtom(key);parts[#parts+1]=MapAtom(value[key])end
+    local packed=table.concat(parts)
+    if #packed<=4096 then return packed end
+end
+local function UnpackScalarMap(text)
+    if #text>4096 then return nil,'transport_map_limit_v7' end
+    local count,at=text:match('^__rs_t7:m([1-9]%d*):()')
+    count=tonumber(count)
+    if not count or count<4 or count>64 then return nil,'transport_map_count_v7' end
+    local function Atom()
+        local tail=text:sub(at)
+        local tag,length,offset=tail:match('^([snb])(%d+):()')
+        local size=tonumber(length)
+        if not size or size>4096 or tostring(size)~=length then return nil,'transport_map_atom_v7' end
+        local start=at+offset-1;local last=start+size-1
+        if last>#text then return nil,'transport_map_truncated_v7' end
+        local token=text:sub(start,last);at=last+1
+        if tag=='s' then return token end
+        if tag=='b' then
+            if token=='1' then return true elseif token=='0' then return false end
+        else
+            local number=tonumber(token)
+            if number and number==number and number~=math.huge and number~=-math.huge
+                and ComparableTransportNumberToken(string.format('%.17g',number))==ComparableTransportNumberToken(token) then return number end
+        end
+        return nil,'transport_map_value_v7'
+    end
+    local out={}
+    for _=1,count do
+        local key,err=Atom();if err then return nil,err end
+        if (type(key)~='string' and type(key)~='number') or out[key]~=nil then return nil,'transport_map_key_v7' end
+        local child,childErr=Atom();if childErr then return nil,childErr end
+        out[key]=child
+    end
+    if at~=#text+1 then return nil,'transport_map_tail_v7' end
+    return out
+end
+local function CompactV7(value,decode,seen,pack)
+    if type(value)=='string' then
+        if value:sub(1,#V7_PREFIX)~=V7_PREFIX then return value end
+        if not decode then return V7_PREFIX..'s'..value end
+        local tag=value:sub(#V7_PREFIX+1,#V7_PREFIX+1)
+        if tag=='s' then
+            local literal=value:sub(#V7_PREFIX+2)
+            if literal:sub(1,#V7_PREFIX)==V7_PREFIX then return literal end
+        elseif tag=='m' then return UnpackScalarMap(value) end
+        return nil,'transport_map_token_v7'
+    end
+    if type(value)~='table' then return value end
+    seen=seen or {};if seen[value] then return nil,'transport_cycle' end;seen[value]=true
+    if not decode and pack~=false then
+        local packed=PackScalarMap(value)
+        if packed then seen[value]=nil;return packed end
+    end
+    local out={}
+    for key,child in pairs(value)do
+        local k,ke=CompactV7(key,decode,seen);if ke then seen[value]=nil;return nil,ke end
+        -- 路由字段必须先于完整解码可读，metadata 不压成字符串。
+        local v,ve=CompactV7(child,decode,seen,key~='__rsmeta');if ve then seen[value]=nil;return nil,ve end
+        if (type(k)~='string' and type(k)~='number') or out[k]~=nil then seen[value]=nil;return nil,'transport_key_collision_v7' end
+        out[k]=v
+    end
+    seen[value]=nil;return out
+end
+function T.EncodeV7(value)
+    local compact,err=CompactV7(value,false);if err then return nil,err end
+    return TransportEncodeValueV3(compact)
+end
+function T.DecodeV7(value)
+    local decoded,err=TransportDecodeValueV3(value);if err then return nil,err end
+    return CompactV7(decoded,true)
+end
+
+-- 分页的 wire 只是有限类型树；长度前缀保留任意字符串字节，不执行存档内容。
+function T.PackPhysicalTree(value)
+    local seen,nodes={},0
+    local function Pack(v,depth)
+        nodes=nodes+1
+        if depth>16 or nodes>240000 then return nil,'paged_tree_budget' end
+        if type(v)~='table' then return MapAtom(v) end
+        if seen[v] then return nil,'paged_tree_cycle' end;seen[v]=true
+        local keys={}
+        for key in pairs(v)do
+            if type(key)~='string' and type(key)~='number' then return nil,'paged_tree_key' end
+            keys[#keys+1]=key
+        end
+        table.sort(keys,function(a,b)if type(a)~=type(b)then return type(a)<type(b)end;return a<b end)
+        local parts={'t'..#keys..':'}
+        for _,key in ipairs(keys)do
+            local k,ke=Pack(key,depth+1);if not k then return nil,ke or 'paged_tree_scalar' end
+            local child,err=Pack(v[key],depth+1);if not child then return nil,err or 'paged_tree_scalar' end
+            parts[#parts+1]=k;parts[#parts+1]=child
+        end
+        seen[v]=nil;return table.concat(parts)
+    end
+    local wire,err=Pack(value,0)
+    if wire and #wire>2097152 then return nil,'paged_tree_bytes' end
+    return wire,err
+end
+function T.UnpackPhysicalTree(text)
+    if type(text)~='string' or #text>2097152 then return nil,'paged_tree_bytes' end
+    local at,nodes=1,0
+    local function Read(depth)
+        nodes=nodes+1
+        if depth>16 or nodes>240000 then return nil,'paged_tree_budget' end
+        local start,finish,tag,length=text:find('([snbt])(%d+):',at)
+        local size=tonumber(length)
+        if start~=at or not size or tostring(size)~=length or size>2097152 then return nil,'paged_tree_header' end
+        at=finish+1
+        if tag=='t' then
+            if size>120000 then return nil,'paged_tree_entries' end
+            local out={}
+            for _=1,size do
+                local key,ke=Read(depth+1);if ke then return nil,ke end
+                if (type(key)~='string' and type(key)~='number') or out[key]~=nil then return nil,'paged_tree_key' end
+                local value,err=Read(depth+1);if err then return nil,err end
+                out[key]=value
+            end
+            return out
+        end
+        local last=at+size-1;if last>#text then return nil,'paged_tree_truncated' end
+        local token=text:sub(at,last);at=last+1
+        if tag=='s' then return token end
+        if tag=='b' then
+            if token=='0' then return false elseif token=='1' then return true end
+        else
+            local n=tonumber(token)
+            if n and n==n and n~=math.huge and n~=-math.huge
+                and ComparableTransportNumberToken(string.format('%.17g',n))==ComparableTransportNumberToken(token) then return n end
+        end
+        return nil,'paged_tree_scalar'
+    end
+    local value,err=Read(0)
+    if err then return nil,err end
+    if type(value)~='table' or at~=#text+1 then return nil,'paged_tree_tail' end
+    return value
+end
+
 -- Native 的文本标签、固定六位数、引号/转义、每层四空格均计入保守预算。
 -- 每个字段按最占空间的另起一行估算；在 SaveData 之前拒绝，不能等截断后才回滚 RAM。
 function T.EstimateNativeBytes(value, depth)

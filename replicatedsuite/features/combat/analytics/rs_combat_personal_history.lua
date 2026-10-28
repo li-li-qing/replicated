@@ -77,19 +77,44 @@ function H:NormalizeState(value)
 end
 -- schema1 没有 NPC 计数。只重建已知旧字段的原规范形式，原指纹精确匹配后由 Core 迁移。
 -- 不改写实际文件、不绕过写保护；未知损坏仍由 Persistence 拒绝。
-local function RebuildSchema1Canonical(value,_,_,raw)
+local function RebuildHistoryCanonical(value,stamp,canonical,raw)
     local meta=type(raw)=="table" and raw.__rsmeta or nil
-    if type(meta)~="table" or meta.store~=H.StoreId or meta.owner~=H.StoreId or tonumber(meta.schema)~=1 then return nil end
-    local historical=Normalize(value,LEGACY_KEYS)
-    -- 迁移值只能来自通过旧章校验的字段，不能采纳原schema未认证的新计数。
-    return historical,Normalize(historical)
+    if type(meta)~="table" or meta.store~=H.StoreId or meta.owner~=H.StoreId then return nil end
+    if tonumber(meta.schema)==1 then
+        local historical=Normalize(value,LEGACY_KEYS)
+        -- 迁移值只能来自通过旧章校验的字段，不能采纳原schema未认证的新计数。
+        return historical,Normalize(historical)
+    end
+    -- 2026-10-28 活动 UDF 的 126817 在第16383字节截断；126227完整记录证明丢失日的两个时间。
+    -- 只对该 old/new pair 补一个缺日及总起点。计数从总账减去现存日账/归档恢复，最终仍须逐字命中原章。
+    local store=P:GetStore(H.StoreId)
+    if tonumber(meta.schema)~=5 or tonumber(meta.framework)~=3 or tonumber(meta.transportVersion)~=3
+        or stamp~='624DEB3B' or P:FingerprintCanonicalValue(store,canonical)~='4AEB9230'
+        or type(value)~='table' or value.sync~=nil or value.firstAt~=nil
+        or type(value.days)~='table' or value.days['2026-10-24']~=nil then return nil end
+    local candidate=Normalize(value);local row=Counts(nil)
+    for _,key in ipairs(KEYS)do
+        local remaining=Counter(candidate.totals[key])-Counter(candidate.archive[key])
+        for _,existing in pairs(candidate.days)do remaining=remaining-Counter(existing[key])end
+        if remaining<0 then return nil end
+        if not OPTIONAL_KEYS[key] or remaining>0 then row[key]=remaining end
+    end
+    row.firstAt,row.lastAt='2026-10-24 10:30','2026-10-24 14:39'
+    candidate.days['2026-10-24']=row
+    for _,existing in pairs(candidate.days)do
+        if existing.firstAt and (not candidate.firstAt or existing.firstAt<candidate.firstAt)then candidate.firstAt=existing.firstAt end
+    end
+    if P:FingerprintCanonicalValue(store,candidate)~=stamp then return nil end
+    return candidate,candidate
 end
 local store,registerErr=P:RegisterV3Store({
     id=H.StoreId,owner=H.StoreId,scope=P.Scope.Character,lifetime=P.Lifetime.Permanent,
     -- schema3 将来源账本和合计放在同一个 Store，导入只需一次耐久提交，不能出现“金额已加、去重标记未存”。
     schemaVersion=5,legacySchemaVersion=0,key=(P.V3KeyPrefix or "rs.v3.").."combat_personal_history",
     budget={maxDepth=8,maxNodes=120000,maxStringBytes=1000000,maxEntriesPerTable=2048},
-    rebuildCanonicalForIntegrity=RebuildSchema1Canonical,
+    -- 单 key 的 Native 文本已实测在16383字节截断；压紧标量行并在写入前保守限额，不能靠回读发现后再覆盖旧档。
+    transportVersion=7,nativeByteBudget=15000,nativePaged=true,
+    rebuildCanonicalForIntegrity=RebuildHistoryCanonical,
     default=function() return H:NormalizeState(nil) end,get=function() return H:NormalizeState(H.state) end,
     apply=function(value) H.state=H:NormalizeState(value);H.lastDirtyAt=-10000;H.loaded=false;H.revision=H.revision+1 end,
     migrate=function(value) return H:NormalizeState(value) end,

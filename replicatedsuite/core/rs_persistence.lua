@@ -179,7 +179,7 @@ end
     if type(T) ~= "table" or type(T.EncodeV3) ~= "function" or type(T.DecodeV3) ~= "function" then
         error("PersistenceTransport unavailable for rs_persistence")
     end
-P.SupportedTransportContractVersion=6 -- 默认新写仍为3；v6 仅由死亡索引显式选择。
+P.SupportedTransportContractVersion=7 -- 默认新写仍为3；压缩格式由 Store 显式选择。
 
 function P:EncodePhysicalEnvelope(raw)
     if type(raw) ~= "table" then return nil, "transport_raw_type:" .. tostring(type(raw)) end
@@ -192,6 +192,7 @@ function P:EncodePhysicalEnvelope(raw)
     elseif version == 4 then encoded, err = T.EncodeV4(raw)
     elseif version == 5 then encoded, err = T.EncodeV5(raw)
     elseif version == 6 then encoded, err = T.EncodeV6(raw)
+    elseif version == 7 then encoded, err = T.EncodeV7(raw)
     else return nil, "transport_contract:" .. tostring(version) .. ">" .. tostring(self.SupportedTransportContractVersion) end
     if encoded == nil then return nil, err end
     -- DecodePhysicalEnvelope 必须在完整解码前读取这两个路由字段；它们均为非零整数，不属于已知 serializer
@@ -217,12 +218,105 @@ function P:DecodePhysicalEnvelope(raw)
         if transport == 4 then return T.DecodeV4(raw) end
         if transport == 5 then return T.DecodeV5(raw) end
         if transport == 6 then return T.DecodeV6(raw) end
+        if transport == 7 then return T.DecodeV7(raw) end
         return nil, "transport_contract:" .. tostring(transport) .. ">" .. tostring(self.SupportedTransportContractVersion) -- 未知/future transport 不猜测，防止旧客户端覆盖新格式。
     end
     -- Framework2/无 metadata 的历史存档没有物理哨兵，保持原样进入既有 legacy/schema 迁移。
     -- transportVersion 单独出现而 framework 缺失属于损坏 envelope，不猜测恢复。
     if transport ~= nil then return nil, "transport_without_framework" end
     return raw, nil
+end
+
+local PAGE_BYTES,MAX_PAGES=4000,512
+local function PageChecksum(text)
+    local a,b=1,0
+    for i=1,#text do a=(a+text:byte(i))%65521;b=(b+a)%65521 end
+    return string.format('%08X',b*65536+a)
+end
+local function PageKey(key,bank,index)return key..'_rs_page_'..bank..'_'..index end
+local function SamePageMetadata(a,b)
+    if type(a)~='table' or type(b)~='table' then return false end
+    for key,value in pairs(a)do if type(value)=='table' or b[key]~=value then return false end end
+    for key,value in pairs(b)do if a[key]~=value then return false end end
+    return true
+end
+-- 大型 Store 可显式选择分页：两个物理 bank 轮换，所有新页回读成功后才切换根指针。
+-- 根 key 仍携带原 metadata；读完完整树后继续走原 transport/归属/预算/完整性链，缺页绝不回退为空档。
+function P:ReadPhysicalStore(store,key)
+    local root,err=S.Api:LoadData(key)
+    if err or type(root)~='table' or root.__rsPaged==nil then return root,err end
+    if store.nativePaged~=true then return nil,'paged_store_not_supported' end
+    local header=root.__rsPaged
+    if type(header)~='table' or header.version~=1 or (header.bank~=1 and header.bank~=2)
+        or type(header.count)~='number' or header.count~=math.floor(header.count) or header.count<1 or header.count>MAX_PAGES
+        or type(header.bytes)~='number' or header.bytes~=math.floor(header.bytes) or header.bytes<1
+        or header.bytes>MAX_PAGES*PAGE_BYTES or math.ceil(header.bytes/PAGE_BYTES)~=header.count
+        or type(header.checksum)~='string' or not header.checksum:match('^%x%x%x%x%x%x%x%x$') then return nil,'paged_header_invalid' end
+    local chunks={}
+    for i=1,header.count do
+        local page,readErr=S.Api:LoadData(PageKey(key,header.bank,i))
+        if readErr then return nil,'paged_read:'..tostring(readErr) end
+        local size=math.min(PAGE_BYTES,header.bytes-(i-1)*PAGE_BYTES)
+        if type(page)~='table' or page.revision~=header.checksum or page.index~=i or page.count~=header.count
+            or type(page.data)~='string' or #page.data~=size*2 or page.data:find('[^0-9A-F]') then return nil,'paged_part_invalid:'..i end
+        chunks[i]=(page.data:gsub('..',function(pair)return string.char(tonumber(pair,16))end))
+    end
+    local wire=table.concat(chunks)
+    if #wire~=header.bytes or PageChecksum(wire)~=header.checksum then return nil,'paged_checksum_mismatch' end
+    local raw,decodeErr=T.UnpackPhysicalTree(wire)
+    if not raw then return nil,decodeErr end
+    if not SamePageMetadata(root.__rsmeta,raw.__rsmeta) then return nil,'paged_metadata_mismatch' end
+    return raw
+end
+local function SamePhysical(a,b)
+    if a==nil or b==nil then return a==b end
+    local left=T.PackPhysicalTree(a);local right=T.PackPhysicalTree(b)
+    return left~=nil and left==right
+end
+local function CommitPhysicalRoot(key,root,previous)
+    local saved,saveErr=S.Api:SaveData(key,root)
+    local actual,verifyErr=S.Api:LoadData(key)
+    if not verifyErr and SamePhysical(actual,root) then return true end
+    -- 小快照/清空也会替换分页根，必须共用提交边界。Native false 可能已写，以完整回读为准。
+    -- 部分写坏时先恢复旧根，不能让完整旧 bank 失去入口。
+    if not verifyErr and SamePhysical(actual,previous) then return false,'paged_root_not_committed:'..tostring(saveErr or saved) end
+    if previous~=nil then
+        S.Api:SaveData(key,previous)
+        local restored,restoreErr=S.Api:LoadData(key)
+        if not restoreErr and SamePhysical(restored,previous) then return false,'paged_root_restored' end
+        return false,'paged_root_restore_failed:'..tostring(restoreErr or verifyErr or saveErr or 'readback_mismatch')
+    end
+    return false,'paged_root_unverified:'..tostring(verifyErr or saveErr or 'readback_mismatch')
+end
+function P:WritePhysicalStore(store,key,raw)
+    local limit=store.nativeByteBudget
+    if store.nativePaged~=true or not limit then return S.Api:SaveData(key,raw) end
+    local previous,readErr=S.Api:LoadData(key)
+    if readErr then return false,'paged_previous_read:'..tostring(readErr) end
+    local header=type(previous)=='table' and previous.__rsPaged or nil
+    if header~=nil and (type(header)~='table' or (header.bank~=1 and header.bank~=2)) then return false,'paged_previous_header' end
+    if T.EstimateNativeBytes(raw)<=limit then return CommitPhysicalRoot(key,raw,previous) end
+    local wire,err=T.PackPhysicalTree(raw)
+    if not wire then return false,err end
+    local count=math.ceil(#wire/PAGE_BYTES)
+    if count>MAX_PAGES then return false,'paged_capacity_exceeded' end
+    local bank=type(header)=='table' and (3-header.bank) or 1
+    local checksum=PageChecksum(wire)
+    local root={__rsmeta=DeepCopy(raw.__rsmeta),__rsPaged={version=1,bank=bank,count=count,bytes=#wire,checksum=checksum}}
+    if T.EstimateNativeBytes(root)>limit then return false,'paged_manifest_budget' end
+    for i=1,count do
+        local text=wire:sub((i-1)*PAGE_BYTES+1,i*PAGE_BYTES)
+        local hex=(text:gsub('.',function(ch)return string.format('%02X',ch:byte())end))
+        local page={revision=checksum,index=i,count=count,data=hex}
+        if T.EstimateNativeBytes(page)>limit then return false,'paged_part_budget' end
+        local pageKey=PageKey(key,bank,i)
+        local ok,saveErr=S.Api:SaveData(pageKey,page)
+        if ok~=true then return false,'paged_write:'..tostring(saveErr or 'rejected') end
+        local actual,verifyErr=S.Api:LoadData(pageKey)
+        if verifyErr or type(actual)~='table' or actual.revision~=checksum or actual.index~=i
+            or actual.count~=count or actual.data~=hex then return false,'paged_readback:'..i end
+    end
+    return CommitPhysicalRoot(key,root,previous)
 end
 
 -- 数字键被存成字符串后，ipairs 会读成空序列；这里只生成 Store 声明序列的无损形状候选。
@@ -553,6 +647,7 @@ local function ValidateDefinition(def)
     local tv=def.transportVersion
     if def.nativeByteBudget~=nil and (type(def.nativeByteBudget)~='number' or def.nativeByteBudget~=def.nativeByteBudget
         or def.nativeByteBudget<1024 or def.nativeByteBudget>65536 or def.nativeByteBudget~=math.floor(def.nativeByteBudget)) then return nil,'invalid native byte budget' end
+    if def.nativePaged~=nil and (type(def.nativePaged)~='boolean' or not def.nativeByteBudget or def.save) then return nil,'invalid native paging policy' end
     if tv~=nil and (type(tv)~="number" or tv~=math.floor(tv) or tv<1 or tv>P.SupportedTransportContractVersion) then return nil,"unsupported store transport" end
     local contractVersion = math.max(1, math.floor(tonumber(def.contractVersion) or 1))
     if contractVersion >= 2 then
@@ -609,6 +704,7 @@ function P:RegisterStore(def)
         -- 仅批量ID Store选择v4；其他Store继续原有v3，schema和canonical不变。
         transportVersion = def.transportVersion or P.TransportContractVersion,
         nativeByteBudget = def.nativeByteBudget,
+        nativePaged = def.nativePaged == true,
         legacySchemaVersion = math.max(0, math.floor(tonumber(def.legacySchemaVersion) or 0)),
         key = NonEmptyText(def.key),
         resolvedKey = nil,
@@ -1072,7 +1168,7 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
         return false, reason
     end
 
-    local raw, loadErr = S.Api:LoadData(key)
+    local raw, loadErr = self:ReadPhysicalStore(store,key)
     if loadErr ~= nil then return Fail("readback_load_failed:" .. tostring(loadErr)) end
     if raw == nil then return Fail("readback_missing") end
     if type(raw) ~= "table" then return Fail("readback_raw_type:" .. tostring(type(raw))) end
@@ -1301,12 +1397,12 @@ function P:LoadStore(id, options)
     -- 归属许可不跨读取复用。失败/空返回也先清证据，防止上一次健康档的所有权替本次未知档背书。
     store.replacementOwnershipOk = false
     store.replacementOwnershipError = "replacement_ownership_unverified"
-    local raw, loadErr = S.Api:LoadData(resolvedKey)
+    local raw, loadErr = self:ReadPhysicalStore(store,resolvedKey)
     local scopeKeyMigration = false
     -- 仅新键明确缺失且读无错时查一次旧键；损坏、未来格式和读失败不能退回旧副本。
     -- 所有排队写入始终绑定新键，旧键不写不删。
     if raw == nil and loadErr == nil and legacyScopeKey ~= nil then
-        local legacyRaw, legacyError = S.Api:LoadData(legacyScopeKey)
+        local legacyRaw, legacyError = self:ReadPhysicalStore(store,legacyScopeKey)
         if legacyError ~= nil then loadErr = legacyError
         elseif legacyRaw ~= nil then
             local ownership, ownershipError = InspectLegacyCharacterSource(store, legacyRaw, scopeFingerprint)
@@ -2388,7 +2484,7 @@ function P:SaveValue(id, value, options)
     if store.nativeByteBudget~=nil then
         local bytes=T.EstimateNativeBytes(physicalRaw)
         store.lastNativeByteEstimate=bytes
-        if bytes>store.nativeByteBudget then
+        if bytes>store.nativeByteBudget and store.nativePaged~=true then
             store.lastError='native_byte_budget_exceeded:'..bytes..'>'..store.nativeByteBudget
             self.stats.saveFailures=(tonumber(self.stats.saveFailures) or 0)+1
             Emit('error','STORE_NATIVE_BYTE_BUDGET_REJECTED','存档超过 Native 物理文本预算，已阻止写入',{store=store.id,error=store.lastError})
@@ -2408,7 +2504,7 @@ function P:SaveValue(id, value, options)
             saveErr = result
         end
     else
-        ok, saveErr = S.Api:SaveData(resolvedKey, physicalRaw)
+        ok, saveErr = self:WritePhysicalStore(store,resolvedKey,physicalRaw)
     end
     if ok ~= true then
         -- SaveData 返回失败不能证明物理键未被触碰。journal 分片单独通过指针提交，失败非活动 bank 可安全成为

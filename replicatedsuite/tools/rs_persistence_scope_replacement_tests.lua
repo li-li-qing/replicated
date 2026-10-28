@@ -119,7 +119,7 @@ for _,entry in ipairs({{'store','v3.foreign'},{'owner','v3.foreign'},{'scope','A
     end)
 end
 Test('future transport is refused without rewriting disk',function()
-    local a,key=Saved();a.disk[key].__rsmeta.transportVersion=7
+    local a,key=Saved();a.disk[key].__rsmeta.transportVersion=a.P.SupportedTransportContractVersion+1
     local b=New('张三@World',a.disk);b.store.recoverableReplacement=true
     assert(b.P:LoadStore('v3.audit')==false);Rejected(b,key)
 end)

@@ -9,8 +9,8 @@ local function Test(name,fn)
     if ok then passed=passed+1;print('PASS combat-history '..name)
     else failed=failed+1;print('FAIL combat-history '..name..': '..tostring(err))end
 end
-local function Boot()
-    local h=dofile('tools/rs_gear_page_test_host.lua')();local S=h.S
+local function Boot(options)
+    local h=dofile('tools/rs_gear_page_test_host.lua')(options);local S=h.S
     S.Features.CombatAnalytics={}
     S.Services.CombatAnalyticsV3={RegisterMetric=function()return true end,GetCollectionScope=function()return 'self'end}
     S.Utils.GetServerTime=function()return {year=2026,month=10,day=7,hour=8,minute=30}end
@@ -161,6 +161,166 @@ Test('recorded date catalog survives filtering and durable reload without invent
     assert(all.rows[1].date=='2026-10-09' and all.rows[#all.rows].date=='unknown','undated totals must follow the dated rows')
     assert(all.totals.kills==14 and all.totals.deaths==12,'date query must preserve all historical counts')
     assert(h.reads==reads and h.writes==writes and h.H.revision==revision,'date catalog projection must stay read-only')
+end)
+local function TruncatedHistory(h)
+    local raw=dofile('tools/fixtures/combat_history_truncated_20261028.lua')
+    local _,_,scope=h.P:ResolveStoreKey(h.store)
+    raw.__rsmeta.scopeIdentityFingerprint=scope
+    raw.__rsmeta.envelopeFingerprint=assert(h.P:FingerprintEnvelopeIntegrity(raw))
+    return raw
+end
+Test('16383-byte native truncation recovers the exact original history and resaves compactly',function()
+    local h=Boot();h.disk[h.key]=TruncatedHistory(h)
+    assert(h.H:EnsureLoaded(),'proven truncated history remains fenced')
+    local v=h.H.state;local row=assert(v.days['2026-10-24'])
+    assert(v.totals.kills==353 and v.totals.deaths==138 and v.totals.damage==1366617152)
+    assert(v.firstAt=='2026-10-05 01:11' and row.kills==36 and row.damage==113976877)
+    assert(row.firstAt=='2026-10-24 10:30' and row.lastAt=='2026-10-24 14:39')
+    assert(row.honorParticipations==nil and row.honorKills==nil,'recovery invented optional historical counts')
+    assert(h.P:FingerprintCanonicalValue(h.store,v)=='624DEB3B','recovery did not reproduce the original stamp')
+    assert(h.store.dirty and h.store.dueAt<=h.ms,'recovered physical representation was not queued for immediate rewrite')
+    assert(h.P:SaveStore(h.H.StoreId,{durable=true}))
+    assert(h.S.PersistenceTransport.EstimateNativeBytes(h.disk[h.key])<15000,'saved history can still be truncated')
+    h.store.loaded=false;h.H.loaded=false;assert(h.H:EnsureLoaded())
+    assert(h.H.state.days['2026-10-24'].damage==113976877 and h.clears==0)
+end)
+Test('unrecognized or modified truncated histories remain protected',function()
+    for _,tamper in ipairs({'stamp','counter','timestamp'}) do
+        local h=Boot();local raw=TruncatedHistory(h)
+        if tamper=='stamp' then raw.__rsmeta.encodedFingerprint='11111111'
+        elseif tamper=='counter' then raw.payload.totals.kills=354
+        else raw.payload.days['2026-10-25'].firstAt='2026-10-25 10:00' end
+        raw.__rsmeta.envelopeFingerprint=assert(h.P:FingerprintEnvelopeIntegrity(raw));h.disk[h.key]=raw
+        local writes=h.writes
+        assert(h.H:EnsureLoaded()~=true and h.store.writeFenced,'unproven repair accepted: '..tamper)
+        assert(h.writes==writes and h.clears==0,'failed recovery changed the disk')
+    end
+end)
+Test('compact physical history preserves optional zero and source strings without changing canonical',function()
+    local h=Boot();assert(h.H:EnsureLoaded())
+    h.H.state.totals.honorKills=0
+    for day=1,28 do
+        local date=string.format('2026-10-%02d',day)
+        local row=h.H.TransferHelpers.counts(nil);row.kills=day;row.damage=100000000+day
+        row.firstAt=date..' 10:00';row.lastAt=date..' 20:00';h.H.state.days[date]=row
+    end
+    assert(h.P:SaveStore(h.H.StoreId,{durable=true}))
+    assert(h.S.PersistenceTransport.EstimateNativeBytes(h.disk[h.key])<15000,'ordinary month exceeds the physical budget')
+    h.store.loaded=false;h.H.loaded=false;assert(h.H:EnsureLoaded())
+    assert(h.H.state.totals.honorKills==0 and h.H.state.days['2026-10-28'].honorKills==nil)
+    assert(h.H.state.days['2026-10-28'].damage==100000028)
+    local t=h.S.PersistenceTransport
+    local input={a='__rs_t3:z',b='__rs_t7:m',c='',d=false,e=0,f='123456789012345',g=1.25}
+    local packed=assert(t.EncodeV7({payload=input}));local decoded=assert(t.DecodeV7(packed))
+    assert(decoded.payload.a=='__rs_t3:z' and decoded.payload.b=='__rs_t7:m' and decoded.payload.c=='')
+    assert(decoded.payload.d==false and decoded.payload.e==0 and decoded.payload.f=='123456789012345' and decoded.payload.g==1.25)
+    packed.payload=packed.payload:sub(1,-2)
+    assert(t.DecodeV7(packed)==nil,'truncated compact row was accepted')
+end)
+Test('long histories span bounded physical pages and a failed page cannot replace the committed history',function()
+    local h=Boot();assert(h.H:EnsureLoaded());assert(h.P:SaveStore(h.H.StoreId,{durable=true}))
+    for year=2020,2025 do for day=1,28 do
+        local date=string.format('%04d-10-%02d',year,day)
+        local row=h.H.TransferHelpers.counts(nil);row.damage=123456789;row.firstAt=date..' 10:00';row.lastAt=date..' 20:00'
+        h.H.state.days[date]=row
+    end end
+    h.H.state.totals.damage=20740740552
+    assert(h.P:SaveStore(h.H.StoreId,{durable=true}),'long history cannot be stored')
+    local committed=h.disk[h.key]
+    assert(committed.__rsPaged and committed.__rsPaged.count>1,'long history was not paged')
+    for _,raw in pairs(h.disk)do assert(h.S.PersistenceTransport.EstimateNativeBytes(raw)<15000,'physical key exceeds the safe limit')end
+    h.store.loaded=false;h.H.loaded=false;assert(h.H:EnsureLoaded())
+    assert(h.H.state.days['2025-10-28'].damage==123456789 and h.H.state.totals.damage==20740740552)
+    local rootSave=ADDON.SaveData
+    h.H.state.totals.damage=20740740553
+    ADDON.SaveData=function(self,key,raw)local ok=rootSave(self,key,raw);if key==h.key then return false end;return ok end
+    assert(h.P:SaveStore(h.H.StoreId,{durable=true}),'complete root written despite Native false was not acknowledged')
+    ADDON.SaveData=rootSave;committed=h.disk[h.key]
+    local brokeRoot=false
+    h.H.state.totals.damage=20740740554
+    ADDON.SaveData=function(self,key,raw)
+        if key==h.key and not brokeRoot then
+            brokeRoot=true;raw=h.Copy(raw);raw.__rsPaged={version=1};rootSave(self,key,raw);return false
+        end
+        return rootSave(self,key,raw)
+    end
+    assert(h.P:SaveStore(h.H.StoreId,{durable=true})~=true,'partial root write was accepted')
+    ADDON.SaveData=rootSave
+    assert(h.disk[h.key].__rsPaged.checksum==committed.__rsPaged.checksum,'failed root did not restore the old manifest')
+    committed=h.disk[h.key]
+    h.H.state.totals.damage=20740740553
+    local save=ADDON.SaveData
+    ADDON.SaveData=function(self,key,raw)if key:find('_rs_page_',1,true)then return false end;return save(self,key,raw)end
+    assert(h.P:SaveStore(h.H.StoreId,{durable=true})~=true,'failed page write was reported successful')
+    ADDON.SaveData=save
+    assert(h.disk[h.key]==committed and h.clears==0,'failed page replaced the active manifest')
+    -- 真正重载会建立新 Runtime；旧 Runtime 对未完成写入保留 dirty barrier 是正确行为。
+    local nextHost=Boot({disk=h.disk});assert(nextHost.H:EnsureLoaded())
+    assert(nextHost.H.state.totals.damage==20740740553,'failed transaction changed the committed total')
+    nextHost.H.state.totals.damage=20740740554
+    local nextSave=ADDON.SaveData
+    ADDON.SaveData=function(self,key,raw)
+        if key:find('_rs_page_',1,true)then raw=nextHost.Copy(raw);raw.data=raw.data:sub(1,-3)end
+        return nextSave(self,key,raw)
+    end
+    assert(nextHost.P:SaveStore(nextHost.H.StoreId,{durable=true})~=true,'truncated page was committed')
+    ADDON.SaveData=nextSave
+    assert(nextHost.disk[nextHost.key]==committed,'truncated inactive bank replaced the active bank')
+    local rollbackDisk=nextHost.Copy(nextHost.disk)
+    nextHost.disk[nextHost.key..'_rs_page_'..committed.__rsPaged.bank..'_1']=nil
+    local broken=Boot({disk=nextHost.disk});local afterWrites=broken.writes
+    assert(broken.H:EnsureLoaded()~=true and broken.writes==afterWrites,'missing page was silently treated as empty history')
+    local rollback=Boot({disk=nextHost.Copy(rollbackDisk)});assert(rollback.H:EnsureLoaded())
+    rollback.H.state.totals.damage=20740740555
+    local rollbackSave=ADDON.SaveData
+    ADDON.SaveData=function(self,key,raw)
+        if key==rollback.key then
+            raw=rollback.Copy(raw);raw.__rsPaged={version=1};rollbackSave(self,key,raw);return false
+        end
+        return rollbackSave(self,key,raw)
+    end
+    local ok,err=rollback.P:SaveStore(rollback.H.StoreId,{durable=true})
+    ADDON.SaveData=rollbackSave
+    assert(ok~=true and tostring(err):find('paged_root_restore_failed',1,true),'failed rollback was hidden')
+    assert(rollback.store.needsBarrierVerify,'unverified root lost the write barrier')
+    local small=Boot({disk=rollbackDisk});assert(small.H:EnsureLoaded())
+    local smallRoot=small.disk[small.key];local smallSave=ADDON.SaveData;local dropped=false
+    ADDON.SaveData=function(self,key,raw)
+        if key==small.key and not dropped then
+            dropped=true;smallSave(self,key,{__rsmeta=raw.__rsmeta});return false
+        end
+        return smallSave(self,key,raw)
+    end
+    assert(small.P:SaveValue(small.H.StoreId,small.H:NormalizeState(nil),{durable=true})~=true)
+    ADDON.SaveData=smallSave
+    assert(small.disk[small.key].__rsPaged and small.disk[small.key].__rsPaged.checksum==smallRoot.__rsPaged.checksum,
+        'failed large-to-small root write lost the paged history')
+    local cleared=Boot({disk=small.disk});assert(cleared.H:EnsureLoaded())
+    local clearSave=ADDON.SaveData
+    ADDON.SaveData=function(self,key,raw)local saved=clearSave(self,key,raw);if key==cleared.key then return false end;return saved end
+    assert(cleared.P:SaveValue(cleared.H.StoreId,cleared.H:NormalizeState(nil),{durable=true}),
+        'complete inline root written despite false was not acknowledged')
+    ADDON.SaveData=clearSave
+    local cold=Boot({disk=cleared.disk});assert(cold.H:EnsureLoaded())
+    assert(cold.H.state.totals.damage==0 and next(cold.H.state.days)==nil,'retired pages resurrected after inline commit')
+end)
+Test('the full 2048-day retention survives paged bank rotation',function()
+    local h=Boot();assert(h.H:EnsureLoaded())
+    for i=1,2048 do
+        local date=string.format('%04d-%02d-%02d',2020+math.floor((i-1)/336),math.floor((i-1)/28)%12+1,(i-1)%28+1)
+        local row=h.H.TransferHelpers.counts(nil);row.damage=123456789
+        row.firstAt=date..' 10:00';row.lastAt=date..' 20:00';h.H.state.days[date]=row
+    end
+    h.H.state.totals.damage=252839503872
+    assert(h.P:SaveStore(h.H.StoreId,{durable=true}))
+    local first=h.disk[h.key].__rsPaged.bank
+    h.H.state.days['2020-01-01'].damage=123456790;h.H.state.totals.damage=252839503873
+    assert(h.P:SaveStore(h.H.StoreId,{durable=true}))
+    assert(h.disk[h.key].__rsPaged.bank==3-first,'new commit did not rotate away from the active bank')
+    h.store.loaded=false;h.H.loaded=false;assert(h.H:EnsureLoaded())
+    local count=0;for _ in pairs(h.H.state.days)do count=count+1 end
+    assert(count==2048 and h.H.state.days['2020-01-01'].damage==123456790)
+    assert(h.H.state.totals.damage==252839503873 and h.clears==0,'bank rotation changed historical totals')
 end)
 print('RESULT combat-history passed='..passed..' failed='..failed)
 if failed>0 then os.exit(1)end
