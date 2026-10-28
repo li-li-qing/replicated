@@ -115,11 +115,11 @@ function D.ResolveRequirementGrade(item,product,observedGrade)
     end
     return grade,source
 end
-local function Keys(t)
-    local r={}; for k in pairs(t or {}) do r[#r+1]=k end; table.sort(r); return r
+local function Keys(t,checkpoint)
+    local r={}; for k in pairs(t or {}) do if checkpoint then checkpoint() end;r[#r+1]=k end; table.sort(r); return r
 end
 
-function D.Evaluate(plan, facts, route, checkpoint)
+function D.Evaluate(plan, facts, route, checkpoint, evaluationContext)
     local function Tick() if checkpoint then checkpoint() end end
     local function Copy(v)
         if type(v)~='table' then return v end
@@ -183,13 +183,11 @@ function D.Evaluate(plan, facts, route, checkpoint)
     end
     if targetCount==0 then Issue('empty_plan') end
     for _,key in ipairs(Keys(demands)) do Visit(key,1) end
+    -- 上下文仅由当前 detached Compare job 持有；跨 facts 的传入不能复用身份。
+    local matching=evaluationContext and evaluationContext.facts==facts and evaluationContext or {facts=facts}
+    local inventory,bagInventory=facts.inventory or {},facts.bagInventory or facts.inventory or {}
     local remaining,remainingBag={},{}
-    for key,count in pairs(facts.inventory or {}) do Tick();remaining[key]=count end
-    for key,count in pairs(facts.bagInventory or facts.inventory or {}) do Tick();remainingBag[key]=count end
-    local requirementKeys,stockIdentities={},{}
     local function MatchKey(key,isRequirement)
-        local identities=isRequirement and requirementKeys or stockIdentities
-        if identities[key] then return identities[key] end
         local id,grade,variant=key:match('^([^:]+):([^:]+):(.+)$')
         if grade=='0' or grade=='*' then
             local resolved
@@ -199,42 +197,66 @@ function D.Evaluate(plan, facts, route, checkpoint)
                 -- 选中配方只能明确需求；不能给品质缺失的背包物品强套该品质。
                 resolved=D.ResolveItemGrade({itemType=tonumber(id),grade=tonumber(grade)})
             end
-            if resolved~=nil then identities[key]=id..':'..tostring(resolved)..':'..variant end
+            if resolved~=nil then return id..':'..tostring(resolved)..':'..variant end
         end
-        identities[key]=identities[key] or key;return identities[key]
+        return key
     end
-    local function Matches(requirement,stock)
-        local rt,rg,rv=MatchKey(requirement,true):match('^([^:]+):([^:]+):(.+)$')
-        local st,sg,sv=MatchKey(stock):match('^([^:]+):([^:]+):(.+)$')
-        return rt~=nil and rt==st and (rg=='*' or rg==sg) and (rv=='*' or rv==sv)
-    end
-    local stockKeys=Keys(remaining)
-    local matchCounts={}
-    for _,stock in ipairs(stockKeys)do
-        Tick()
-        local count,seen=0,{}
-        for key in pairs(items)do
+    if not matching.stockByType then
+        local byType={}
+        for _,key in ipairs(Keys(inventory,Tick)) do
             Tick()
-            local identity=MatchKey(key,true)
-            if not seen[identity] and Matches(key,stock) then count=count+1;seen[identity]=true end
+            local id,grade,variant=MatchKey(key):match('^([^:]+):([^:]+):(.+)$')
+            if id then
+                byType[id]=byType[id] or {}
+                local candidates=byType[id]
+                candidates[#candidates+1]={key=key,grade=grade,variant=variant}
+            end
         end
-        matchCounts[stock]=count
+        matching.stockByType=byType;matching.requirements={}
+    end
+    local function Requirement(key)
+        local requirement=matching.requirements[key]
+        if requirement then return requirement end
+        local identity=MatchKey(key,true)
+        local id,grade,variant=identity:match('^([^:]+):([^:]+):(.+)$')
+        requirement={identity=identity,grade=grade,matches={}}
+        for _,stock in ipairs(matching.stockByType[id] or {}) do
+            Tick()
+            if (grade=='*' or grade==stock.grade) and (variant=='*' or variant==stock.variant) then
+                requirement.matches[#requirement.matches+1]=stock
+            end
+        end
+        matching.requirements[key]=requirement
+        return requirement
+    end
+    -- 可达需求随买做路线改变；这里只复用只读候选，歧义计数必须每次重算。
+    local matchCounts,seen={},{}
+    for key in pairs(items) do
+        Tick()
+        local requirement=Requirement(key)
+        if not seen[requirement.identity] then
+            seen[requirement.identity]=true
+            for _,stock in ipairs(requirement.matches) do
+                Tick();matchCounts[stock.key]=(matchCounts[stock.key] or 0)+1
+            end
+        end
     end
     local function Consume(key,need)
         local owned,fromBag,uncertain=0,0,false
-        for _,stock in ipairs(stockKeys)do
-        Tick()
-            local count=Integer(remaining[stock],true) or 0
-            if count>0 and Matches(key,stock) then
-                local ambiguous=matchCounts[stock]>1
+        local requirement=Requirement(key)
+        for _,stock in ipairs(requirement.matches) do
+            Tick()
+            local stockKey=stock.key
+            local count=Integer(remaining[stockKey]~=nil and remaining[stockKey] or inventory[stockKey],true) or 0
+            if count>0 then
+                local ambiguous=matchCounts[stockKey]>1
                 if ambiguous then uncertain=true;Issue('inventory_match_ambiguous',key)
                 else
-                    local _,requestedGrade=MatchKey(key,true):match('^([^:]+):([^:]+):')
-                    local _,stockGrade=MatchKey(stock):match('^([^:]+):([^:]+):')
-                    if requestedGrade=='*' and stockGrade~='*' then uncertain=true end
+                    if requirement.grade=='*' and stock.grade~='*' then uncertain=true end
                     local take=math.min(count,need-owned)
-                    local bag=math.min(take,Integer(remainingBag[stock],true) or 0)
-                    remaining[stock]=count-take;remainingBag[stock]=(Integer(remainingBag[stock],true) or 0)-bag
+                    local bagCount=Integer(remainingBag[stockKey]~=nil and remainingBag[stockKey] or bagInventory[stockKey],true) or 0
+                    local bag=math.min(take,bagCount)
+                    remaining[stockKey]=count-take;remainingBag[stockKey]=bagCount-bag
                     owned=owned+take;fromBag=fromBag+bag
                     if owned==need then break end
                 end

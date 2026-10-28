@@ -154,9 +154,10 @@ local function Run(job)
         if bagCount>4096 or Number(value,D.MaxQuantity,true)==nil then Fail(job,'invalid_bag_inventory');return end
     end
     -- 行展示和推荐使用同一个评估器；检查点使这三份基线也能跨调度片运行。
-    job.result.manual=D.Evaluate(plan,facts,nil,Yield)
-    job.result.raw=D.Evaluate(plan,facts,'raw',Yield)
-    job.result.buy=D.Evaluate(plan,facts,'buy',Yield)
+    local evaluationContext={facts=facts}
+    job.result.manual=D.Evaluate(plan,facts,nil,Yield,evaluationContext)
+    job.result.raw=D.Evaluate(plan,facts,'raw',Yield,evaluationContext)
+    job.result.buy=D.Evaluate(plan,facts,'buy',Yield,evaluationContext)
     local demands,allocations={},{}
     for key,value in pairs(targets) do Yield();demands[key]=value end
     local unknownCash,unknownCombined=facts.inventoryComplete~=true or job.stale==true,facts.inventoryComplete~=true or job.stale==true
@@ -167,7 +168,7 @@ local function Run(job)
     local function Save(score,batches)
         local a=CloneAllocations(allocations)
         local candidate={targets=plan.targets,allocations=a,purchaseBlocks=plan.purchaseBlocks,laborValueCopper=lambda}
-        local evaluation=D.Evaluate(candidate,facts,nil,Yield)
+        local evaluation=D.Evaluate(candidate,facts,nil,Yield,evaluationContext)
         return {score=score,batches=batches,allocations=a,evaluation=evaluation}
     end
     local function Search(index,cash,labor,batches)

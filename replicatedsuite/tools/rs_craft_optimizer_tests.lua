@@ -44,27 +44,95 @@ local function Finish(job)
     until job.status~='searching'
     return D.GetCompareSnapshot(job)
 end
-Test('all sixteen crafting labor paths and whole-item buying',function()
+local function Alloy()
     local facts={inventoryComplete=true,inventory={},catalog={},recipes={},prices={}}
-    facts.recipes[K(1)]=Recipe(1,1,10,0,{})
-    for i,labor in ipairs({10,5,5,40}) do
-        local id=i+1
-        facts.recipes[K(1)].materials[i]={itemType=id,count=1}
-        facts.recipes[K(id)]=Recipe(id,1,labor,0,{{itemType=id+10,count=1}})
+    facts.recipes[K(1)]=Recipe(1,1,10,0,{{itemType=2,count=8},{itemType=3,count=1},
+        {itemType=4,count=1},{itemType=5,count=1}})
+    for id=2,4 do
+        facts.recipes[K(id)]=Recipe(id,1,5,0,{{itemType=id+10,count=3}})
         facts.prices[K(id)]=Quote(100);facts.prices[K(id+10)]=Quote(1)
         facts.catalog[K(id+10)]={base=true}
     end
+    facts.recipes[K(5)]=Recipe(5,1,10,0,{{itemType=15,count=20},{itemType=16,count=20},{itemType=17,count=3}})
+    facts.prices[K(5)]=Quote(100)
+    for id=15,17 do facts.catalog[K(id)]={base=true};facts.prices[K(id)]=Quote(1) end
     facts.prices[K(1)]=Quote(1000)
+    return facts
+end
+Test('all sixteen full alloy recipe labor paths and whole-item buying',function()
+    local facts=Alloy()
     local expected={10,20,15,25,15,25,20,30,50,60,55,65,55,65,60,70}
     for mask=0,15 do
         local p={targets={{itemType=1,count=1}},allocations={},expanded={}}
         for i=1,4 do
-            p.allocations[K(i+1)]={mode=math.floor(mask/2^(i-1))%2==1 and 'craft' or 'buy'}
+            -- 四位从高到低依次是铁、铜、银、双花；铁锭劳力来自八次真实制作。
+            p.allocations[K(i+1)]={mode=math.floor(mask/2^(4-i))%2==1 and 'craft' or 'buy'}
             p.expanded[K(i+1)]=true
         end
-        assert(D.Evaluate(p,facts).labor==expected[mask+1],'labor path '..mask)
+        local e=D.Evaluate(p,facts)
+        assert(e.labor==expected[mask+1],'labor path '..mask)
+        if mask>=8 then assert(e.byKey[K(2)].batches==8 and e.byKey[K(12)].demand==24) end
+        if mask%2==1 then
+            assert(e.byKey[K(15)].demand==20 and e.byKey[K(16)].demand==20 and e.byKey[K(17)].demand==3)
+        end
     end
     assert(D.Evaluate({targets={{itemType=1,count=1}}},facts,'buy').labor==0)
+end)
+Test('alloy batching inventory and mixed intermediate purchasing preserve labor',function()
+    local f=Alloy()
+    local p={targets={{itemType=1,count=3}},allocations={}}
+    assert(D.Evaluate(p,f,'raw').labor==210)
+    f.inventory={[K(1)]=1,[K(2)]=3,[K(3)]=1,[K(4)]=2,[K(5)]=1}
+    local e=D.Evaluate(p,f,'raw')
+    assert(e.labor==100 and e.byKey[K(2)].batches==13 and e.byKey[K(12)].demand==39)
+    assert(e.byKey[K(3)].batches==1 and e.byKey[K(4)].batches==0 and e.byKey[K(5)].batches==1)
+    f.inventory[K(1)]=nil
+    p.allocations={[K(2)]={mode='mixed',buy=5,craft=16},[K(3)]={mode='mixed',buy=1,craft=1},
+        [K(4)]={mode='buy'},[K(5)]={mode='mixed',buy=1,craft=1}}
+    e=D.Evaluate(p,f)
+    assert(e.costComplete and e.labor==125 and e.byKey[K(2)].batches==16 and e.byKey[K(12)].demand==48)
+    assert(e.byKey[K(15)].demand==20 and e.byKey[K(17)].demand==3)
+end)
+local function Same(a,b,path)
+    assert(type(a)==type(b),'type '..path)
+    if type(a)~='table' then assert(a==b,'value '..path);return end
+    for k,v in pairs(a) do Same(v,b[k],path..'.'..tostring(k)) end
+    for k in pairs(b) do assert(a[k]~=nil,'extra '..path..'.'..tostring(k)) end
+end
+Test('job-local evaluation context preserves routes and reduces repeated inventory work',function()
+    local f=Alloy()
+    for id=12,17 do f.inventory[K(id)]=3 end
+    for id=100,299 do f.inventory[K(id)]=2 end
+    local p={targets={{itemType=1,count=2}},allocations={}}
+    local context={facts=f}
+    D.Evaluate(p,f,'raw',nil,context)
+    local plainUnits,cachedUnits=0,0
+    local plain=D.Evaluate(p,f,'raw',function() plainUnits=plainUnits+1 end)
+    local cached=D.Evaluate(p,f,'raw',function() cachedUnits=cachedUnits+1 end,context)
+    Same(plain,cached,'raw')
+    assert(cachedUnits<plainUnits/2,'warm context must avoid unrelated inventory scans: '..cachedUnits..' / '..plainUnits)
+    for _,route in ipairs({'buy','manual','raw','buy','raw'}) do
+        local selected=route~='manual' and route or nil
+        Same(D.Evaluate(p,f,selected),D.Evaluate(p,f,selected,nil,context),route)
+    end
+    local other=Alloy();other.inventory={[K(1)]=2}
+    Same(D.Evaluate(p,other,'raw'),D.Evaluate(p,other,'raw',nil,context),'other facts')
+end)
+Test('route-local inventory ambiguity and quality variant identity survive cached matches',function()
+    local f={inventoryComplete=true,inventory={['2:3:a']=2,['2:4:a']=1,['2:3:b']=3},
+        recipes={[K(1)]=Recipe(1,1,1,0,{{itemType=2,count=1}})},prices={}}
+    local p={targets={{itemType=1,count=1},{itemType=2,grade=3,variant='a',count=1}}}
+    local context={facts=f}
+    local raw=D.Evaluate(p,f,'raw',nil,context)
+    assert(raw.byKey['2:3:a'].owned==0 and raw.byKey['2:3:a'].inventoryUncertain)
+    local buy=D.Evaluate(p,f,'buy',nil,context)
+    assert(buy.byKey['2:3:a'].owned==1 and not buy.byKey['2:3:a'].inventoryUncertain)
+    Same(buy,D.Evaluate(p,f,'buy'),'narrow route')
+    Same(raw,D.Evaluate(p,f,'raw'),'broad route')
+    local e=D.Evaluate({targets={{itemType=2,grade=4,variant='b',count=1}}},f,nil,nil,context)
+    assert(e.rows[1].owned==0,'grade and variant cannot be merged')
+    e=D.Evaluate({targets={{itemType=2,count=1}}},f,nil,nil,context)
+    assert(e.rows[1].owned==1 and e.rows[1].inventoryUncertain and not e.costComplete)
 end)
 Test('cash and combined optimize independently including zero labor valuation',function()
     local p,f=Small();f.recipes[K(1)].labor=20

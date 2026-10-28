@@ -1191,6 +1191,30 @@ Test('comparison consumes async projections and explicit objectives for complete
     p.comparison=Envelope('completed',90);w:Refresh();p.revision=8;w:Refresh()
     assert(not w.comparison and not CraftFind(w,'apply_all'):Click(),'stale revisions cannot be shown or applied')
 end)
+Test('progress events update comparison without rebinding material rows and hidden windows stay idle',function()
+    local p=StatusPlan();local fullReads=0
+    local h=Boot(1,{configure=function(host,F)
+        host.plan=p
+        local get=F.GetProjection
+        F.GetProjection=function(...)fullReads=fullReads+1;return get(...)end
+        F.GetPlanComparisonProjection=function()return {revision=p.revision,laborValueCopper=p.laborValueCopper,comparison=host.Copy(p.comparison)}end
+    end})
+    local w=h.window;w:SetComparisonMode(true);w.table:SetSelectedIndex(1)
+    local key=w.selectedMaterial.key;local rebound=0;local setItems=w.table.SetItems
+    w.table.SetItems=function(self,...)rebound=rebound+1;return setItems(self,...)end
+    p.comparison={revision=p.revision,status='searching',states=17,result={recommendations={}}}
+    local before=fullReads
+    h.S.Events:Publish(h.feature.UpdateTopic,p.revision,'plan_compare_progress')
+    assert(fullReads==before and rebound==0,'progress refreshed the full plan or rebound the table')
+    assert(w.comparison and w.comparison.states==17 and w.compareText.text:find('计算中',1,true))
+    assert(w.selectedMaterial.key==key,'progress changed material selection')
+    p.revision=p.revision+1;p.comparison=nil
+    h.S.Events:Publish(h.feature.UpdateTopic,p.revision,'plan_compare_progress')
+    assert(fullReads>before and rebound>0 and not w.comparison,'changed inputs reused the old material presentation')
+    assert(w:Hide());before=fullReads;local oldRebound=rebound
+    h.S.Events:Publish(h.feature.UpdateTopic,p.revision,'plan_compare_progress')
+    assert(fullReads==before and rebound==oldRebound,'hidden comparison still refreshed')
+end)
 Test('missing labor value makes the combined recommendation unavailable without assuming zero',function()
     local p=StatusPlan()
     p.comparison={revision=7,status='completed',result={recommendations={cash={status='optimal',available=true,
@@ -1218,11 +1242,14 @@ Test('the real Feature scheduler publishes the completed comparison into the sti
         assert(F.Commands:RecipeImportLink('|if11;成品|r',1));assert(F.Commands:PlanSetRecipeCosts('1:*:*',5,0))
         assert(F.Commands:PlanSetLaborValue(10));assert(F.Commands:PlanRefreshInventory(true))
         uiFeature.Commands=F.Commands;uiFeature.GetProjection=function()return F:GetProjection()end;uiFeature.UpdateTopic=F.UpdateTopic
+        uiFeature.GetPlanComparisonProjection=function()return F:GetPlanComparisonProjection()end
         S.Features.tools_craft=uiFeature
     end});local w=h.window
     assert(CraftFind(w,'compare'):Click())
     local before=actual:GetProjection().plan.comparison
     assert(before and (before.status=='preparing' or before.status=='searching'),'start must publish an unfinished job')
+    local rebinds=0;local setItems=w.table.SetItems
+    w.table.SetItems=function(self,...)rebinds=rebinds+1;return setItems(self,...)end
     local task='tools_craft_plan_compare'
     for _=1,200 do
         if not h.S.Scheduler:GetTaskState(task).registered then break end
@@ -1232,6 +1259,7 @@ Test('the real Feature scheduler publishes the completed comparison into the sti
     assert(after and after.status~='searching' and after.status~='preparing')
     assert(w.comparison and w.comparison.status==after.status and w.comparison.revision==after.revision,
         'the subscribed window must display the newly published result without a second compare click')
+    assert(rebinds==0,'real scheduler progress rebound the material rows')
     assert(w.compareText.text:find('最优',1,true) or w.compareText.text:find('缺数据',1,true),w.compareText.text)
     h.S.RSUI:FlushLayoutQueue()
     assert(w.table.visibility=='visible' and w.table.height>=53,'at least one material remains readable during comparison: '..tostring(w.table.height)..' split='..tostring(w.bodySplit.height)..' primary='..tostring(w.bodySplit.primarySize))

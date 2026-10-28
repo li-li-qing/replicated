@@ -60,6 +60,26 @@ Test('progress preserves input revision and publishes a detached envelope',funct
     p.comparison.states=999;assert(h.projection().comparison.states==200)
     h.finish();assert(h.projection().comparison.status=='completed')
 end)
+Test('comparison progress reuses the plan evaluation while public snapshots stay detached',function()
+    local h=Boot();Ready(h);local before=h.projection();local calls=0
+    local evaluate=h.S.CraftPlanDomain.Evaluate
+    h.S.CraftPlanDomain.Evaluate=function(...)calls=calls+1;return evaluate(...)end
+    assert(h.C:PlanCompare());h.run()
+    local progress=h.projection()
+    assert(calls==0,'search progress recomputed the unchanged current allocation')
+    assert(progress.revision==before.revision and progress.comparison.states==200)
+    progress.evaluation.rows[1].demand=999
+    progress.comparison.states=999
+    assert(h.projection().evaluation.rows[1].demand==1 and h.projection().comparison.states==200)
+    local light=h.F:GetPlanComparisonProjection();assert(light.revision==before.revision and light.comparison.states==200)
+    light.comparison.states=123;assert(h.F:GetPlanComparisonProjection().comparison.states==200)
+    assert(calls==0,'the lightweight comparison projection evaluated materials')
+    h.priceRevision=h.priceRevision+1
+    local invalid=h.F:GetPlanComparisonProjection()
+    assert(invalid.revision~=before.revision and not invalid.comparison and h.jobs[1].status=='cancelled')
+    assert(calls==0,'price invalidation must not synchronously rebuild the plan')
+    h.projection();assert(calls==1,'changed facts must still refresh the current evaluation')
+end)
 Test('wall pause continues the same snapshot and cancel and restart retire old work',function()
     local h=Boot();Ready(h);assert(h.C:PlanCompare());local first=h.jobs[1]
     h.ms=h.ms+10000;h.run();assert(h.projection().comparison.status=='paused' and first.states==0)

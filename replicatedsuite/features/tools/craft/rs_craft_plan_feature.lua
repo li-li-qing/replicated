@@ -159,7 +159,8 @@ if P:GetStore(STORE)==nil then
     if not store then error(err or 'craft plan store registration failed') end
 end
 local function PublishDisplay(reason)
-    cached=nil
+    -- 搜索进度不改变材料事实；整份缓存失效会在每个调度片重新计算当前方案。
+    if reason~='plan_compare_progress' then cached=nil end
     if S.Events and type(S.Events.Publish)=='function' then S.Events:Publish(F.UpdateTopic,revision,reason or 'plan_local') end
 end
 local function Notify(reason)
@@ -408,19 +409,27 @@ local function Facts(plan)
     end
     return facts
 end
+local function ObservePriceRevision()
+    local priceService=S.Services and S.Services.MaterialPriceServiceV3
+    local nextPriceRevision=priceService and type(priceService.GetRevision)=='function' and priceService:GetRevision() or nil
+    if nextPriceRevision~=priceRevision then
+        priceRevision=nextPriceRevision;InvalidateComparison('price_changed');revision=revision+1;cached=nil
+    end
+end
+local function CopyPlanProjection()
+    local out=Copy(cached)
+    out.comparison=Copy(recommendation)
+    return out
+end
 local function Projection()
     local ok,err=Load()
     if not ok then
         local replaceable=P:CanReplaceCorrupt(STORE)==true
         return {status='unavailable',error=tostring(err),canResetCorrupt=replaceable,targets={},plans={},rows={},revision=revision}
     end
-    local priceService=S.Services and S.Services.MaterialPriceServiceV3
-    local nextPriceRevision=priceService and type(priceService.GetRevision)=='function' and priceService:GetRevision() or nil
-    if nextPriceRevision~=priceRevision then
-        priceRevision=nextPriceRevision;InvalidateComparison('price_changed');revision=revision+1;cached=nil
-    end
+    ObservePriceRevision()
     LivePendingShare()
-    if cached then return Copy(cached) end
+    if cached then return CopyPlanProjection() end
     local plan=Snapshot()
     local facts=Facts(plan)
     local result=D.Evaluate(plan,facts)
@@ -442,18 +451,40 @@ local function Projection()
     contextRecipes=LibraryEntries()
     cached={revision=revision,sessionRevision=sessionRevision,activeId=state.active,name=plan.name,plans=plans,targets=targets,
         rows=result.rows,evaluation=result,catalog=options,allocations=Copy(plan.allocations),expanded=Copy(plan.expanded or {}),prices=Copy(facts.prices),
-        purchaseBlocks=Copy(plan.purchaseBlocks or {}),purchasePolicies=Copy(facts.purchasePolicies),comparison=Copy(recommendation),
+        purchaseBlocks=Copy(plan.purchaseBlocks or {}),purchasePolicies=Copy(facts.purchasePolicies),
         laborValueCopper=plan.laborValueCopper,inventoryNote=inventoryNote,inventoryComplete=inventoryComplete,inventoryScope=inventoryScope,
         recipeCatalog=Copy(state.catalog),recipes=Copy(state.recipes),choices=EffectiveChoices(),
         shareCaptureActive=shareCaptureActive,pendingShare=Copy(pendingShare),importFeedback=Copy(importFeedback),
         contextRecipeOptions=contextRecipes,
         libraryEntries=Copy(contextRecipes),libraryActiveId=plan.sourceRecipeId,
         scan=Copy(scan),scanResult=Copy(scanResult),quote=Copy(quoteBatch or quoteResult),quoteItems=Copy(quoteItems),status=result.complete and 'ready' or 'incomplete'}
-    return Copy(cached)
+    return CopyPlanProjection()
 end
 local baseProjection=F.GetProjection
 function F:GetProjection()
     local projection=baseProjection(self) or {};projection.plan=Projection();return projection
+end
+function F:GetPlanComparisonProjection()
+    ObservePriceRevision()
+    local plan=state and state.plans and state.plans[state.active]
+    local out={revision=revision,laborValueCopper=plan and plan.laborValueCopper}
+    if not recommendation then return out end
+    -- 进度界面只需成本标量；材料树和推荐分配保留在完整投影/命令内，避免每片复制整张图。
+    local function Evaluation(value)
+        if type(value)~='table' then return nil end
+        return {costComplete=value.costComplete,cashCopper=value.cashCopper,laborComplete=value.laborComplete,
+            labor=value.labor,combinedCopper=value.combinedCopper}
+    end
+    local result=recommendation.result or {}
+    local compact={manual=Evaluation(result.manual),raw=Evaluation(result.raw),buy=Evaluation(result.buy),recommendations={}}
+    for _,objective in ipairs({'cash','combined'})do
+        local advice=result.recommendations and result.recommendations[objective]
+        if advice then compact.recommendations[objective]={objective=advice.objective,status=advice.status,available=advice.available,
+            states=advice.states,batches=advice.batches,partial=advice.partial,kind=advice.kind,evaluation=Evaluation(advice.evaluation)} end
+    end
+    out.comparison={revision=recommendation.revision,status=recommendation.status,states=recommendation.states,
+        softBudgetClock=recommendation.softBudgetClock,result=compact}
+    return out
 end
 function F:GetRecipeReadDiagnostics()
     local active=state and state.plans and state.plans[state.active] or nil
@@ -1168,7 +1199,7 @@ local function ScheduleCompare(job,expected)
     return S.Scheduler:AddTask(COMPARE_TASK,50,function()
         if compareJob~=job or revision~=expected then return end
         -- 价格服务不保证发事件；每块先观察版本，旧输入不能继续计算或采纳。
-        Projection()
+        ObservePriceRevision()
         if compareJob~=job or revision~=expected then return end
         local now=S.NowMs and S.NowMs() or nil
         if now and compareStartedAt and now-compareStartedAt>=10000 then

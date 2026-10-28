@@ -1099,13 +1099,23 @@ local function CreateSidecar()
                 ..(quote.truncated and '（配方树超限，未全部查询）' or '')
         end
         self.surface:SetStatus(queryStatus or (projection.plan and ('当前计划 · '..tostring(#rows)..' 个条目') or (status..' · 材料 '..tostring(#rows))), (status == "failed" or status == "unavailable") and "orange" or "muted")
+        self.renderedPlanRevision=plan and plan.revision
         return true
     end
 
     function instance:Subscribe()
         if self.subscribed == true then return true end
         if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
-            S.Events:SubscribeInternal(Feature.UpdateTopic, self, function() if instance.visible == true then instance:Refresh() end end)
+            S.Events:SubscribeInternal(Feature.UpdateTopic, self, function(_,_,reason)
+                if instance.visible~=true then return end
+                if reason=='plan_compare_progress' and type(Feature.GetPlanComparisonProjection)=='function' then
+                    local plan=Feature:GetPlanComparisonProjection()
+                    if plan and plan.revision==instance.renderedPlanRevision then
+                        instance:UpdateComparison(plan);return
+                    end
+                end
+                instance:Refresh()
+            end)
         end
         self.subscribed = true; return true
     end
