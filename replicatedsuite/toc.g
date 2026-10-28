@@ -214,6 +214,7 @@ features/combat/raid_recruitment/rs_raid_recruitment_feature.lua
 features/combat/team_tools/rs_team_tools_feature.lua
 features/tools/craft/rs_craft_feature.lua
 features/tools/craft/rs_craft_plan_domain.lua
+features/tools/craft/rs_craft_plan_solver.lua
 features/tools/craft/rs_craft_plan_feature.lua
 features/tools/auction/rs_auction_feature.lua
 features/tools/bag/rs_bag_feature.lua

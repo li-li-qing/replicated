@@ -141,6 +141,7 @@ Test('an own-share parse failure stays visible beside a selected material while 
         local S=host.S
         dofile('core/rs_demand.lua');dofile('features/shared/rs_shared_bounds.lua');dofile('features/shared/rs_feature_slice_factory.lua')
         dofile('features/tools/craft/rs_craft_feature.lua');dofile('features/tools/craft/rs_craft_plan_domain.lua')
+        dofile('features/tools/craft/rs_craft_plan_solver.lua')
         dofile('features/tools/craft/rs_craft_plan_feature.lua')
         local F=S.Features.tools_craft;F.enabled=true;F.consumerCount=1
         F.ReadPlanRecipe=function()return {id='11',product={itemType=1,count=1,name='成品'},
@@ -169,6 +170,7 @@ Test('clicking get subrecipes runs the actual feature scan and refreshes newly d
         local S=host.S
         dofile('core/rs_demand.lua');dofile('features/shared/rs_shared_bounds.lua');dofile('features/shared/rs_feature_slice_factory.lua')
         dofile('features/tools/craft/rs_craft_feature.lua');dofile('features/tools/craft/rs_craft_plan_domain.lua')
+        dofile('features/tools/craft/rs_craft_plan_solver.lua')
         dofile('features/tools/craft/rs_craft_plan_feature.lua')
         local F=S.Features.tools_craft;F.enabled=true;F.consumerCount=1
         local recipes={
@@ -213,6 +215,7 @@ end)
 Test('a verified fixed-quality subrecipe is not described as an unknown product quality',function()
     local h=Boot(1,{configure=function(host)
         dofile('data/rs_craft_recipe_catalog.lua');dofile('features/tools/craft/rs_craft_plan_domain.lua')
+        dofile('features/tools/craft/rs_craft_plan_solver.lua')
         local row={key='46156:0:*',item={itemType=46156,name='新月石晶',grade=0},demand=3,owned=0,shortage=3}
         host.plan={targets={{id='t1',key=row.key,itemType=46156,count=3}},choices={[row.key]='11'},
             recipes={['11']={product={itemType=46156,count=5},materials={{itemType=8319,count=3,grade=0}}}},
@@ -269,7 +272,10 @@ Test('summary shows the known total and missing-price coverage without presentin
             missingPrices={'4:*:*'},purchaseCount=2,pricedPurchaseCount=1}}
     end})
     h.S.RSUI:FlushLayoutQueue()
-    local lines={};for _,label in ipairs(h.window.summary.lineLabels or {})do
+    local lines={}
+    -- 总价是单行省略控件，没有折行标签；明细仍是多行块，按可见行收集。两块合并后再断言。
+    if h.window.summaryTotal and h.window.summaryTotal.text then lines[#lines+1]=h.window.summaryTotal.text end
+    for _,label in ipairs(h.window.summary.lineLabels or {})do
         if label.visible~=false then lines[#lines+1]=label:GetText() end
     end
     local text=table.concat(lines,'\n')
@@ -289,7 +295,8 @@ end)
 Test('compact workflow keeps two top rows and settings never expands the popup',function()
     local route
     local h=Boot(1,{configure=function(host)
-        host.S.UIV3.shell={Navigate=function(_,value)route=value;return true end}
+        -- 必须是 S.UIV3.Shell（大写）：宿主和真实代码都用这个键，写成小写会掩盖真实入口失效。
+        host.S.UIV3.Shell={Navigate=function(_,value)route=value;return true end}
     end})
     local w=h.window
     local function Find(id,node)
@@ -424,7 +431,7 @@ end)
 
 Test('resize grows the material list and survives close and cold reload',function()
     local h=Boot(1);local w=h.window;local frame=w.shell.window
-    assert(frame.width==360 and frame.height==430,'new windows retain the compact default')
+    assert(frame.width==400 and frame.height==430,'new windows retain the compact default')
     local oldWidth,oldHeight=w.table.width,w.table.height
     local handle=assert(w.windowController.handles.bottom_right,'resize corner must be available')
     assert(handle.events.OnDragStart())
@@ -469,7 +476,7 @@ Test('drag and reset rejection restore Native geometry and state, recovery retur
     assert(w.shell.window.x==200 and w.shell.window.y==120,'rejected reset must leave the old position visible')
     h.failWindowSave=false
     assert(h.S.UIV3.CraftSidecar:ResetPosition())
-    assert(w.shell.window.x==460 and w.shell.window.y==169,'recovery should use the centred default intent')
+    assert(w.shell.window.x==440 and w.shell.window.y==169,'recovery should use the centred default intent')
     assert(not h.saved().userMoved)
 end)
 
@@ -684,11 +691,11 @@ Test('each row displays per-batch labor and cached unit price without inventing 
                 ['2:*:*']={item={itemType=2,name='木材'},demand=3,owned=0,shortage=3,buy=3,craft=0}}}}
     end})
     local w=h.window;assert(w.table:GetItem(1).labor=='5/次')
-    assert(w.table:GetItem(2).labor=='8/次' and w.table:GetItem(2).unitPrice=='~1银23铜')
+    assert(w.table:GetItem(2).labor=='8/次' and w.table:GetItem(2).unitPrice=='参考1银23铜')
     assert(w.table:GetItem(3).labor=='—' and w.table:GetItem(3).unitPrice=='—')
     local widths=w.table:GetResolvedColumns();local total=0
     for _,column in ipairs(widths)do assert(column.width>0);total=total+column.width end
-    assert(#widths==6 and total<=w.table.width+1,'all six columns must fit the default popup')
+    assert(#widths==7 and total<=w.table.width+1,'all seven columns must fit the default popup')
 end)
 Test('shared material rows show per-parent need while inventory is labeled as shared',function()
     local h=Boot(1,{configure=function(host)
@@ -724,6 +731,7 @@ Test('popup actions drive the real plan and update the visible purchase and labo
         local S=host.S
         dofile('core/rs_demand.lua');dofile('features/shared/rs_shared_bounds.lua');dofile('features/shared/rs_feature_slice_factory.lua')
         dofile('features/tools/craft/rs_craft_feature.lua');dofile('features/tools/craft/rs_craft_plan_domain.lua')
+        dofile('features/tools/craft/rs_craft_plan_solver.lua')
         dofile('features/tools/craft/rs_craft_plan_feature.lua')
         local F=S.Features.tools_craft
         F.enabled=true;F.consumerCount=1
@@ -780,6 +788,7 @@ Test('live-shaped recipe fields recalculate native visible quantities from one t
         local S=host.S
         dofile('core/rs_demand.lua');dofile('features/shared/rs_shared_bounds.lua');dofile('features/shared/rs_feature_slice_factory.lua')
         dofile('features/tools/craft/rs_craft_feature.lua');dofile('features/tools/craft/rs_craft_plan_domain.lua')
+        dofile('features/tools/craft/rs_craft_plan_solver.lua')
         dofile('features/tools/craft/rs_craft_plan_feature.lua')
         local F=S.Features.tools_craft;F.enabled=true;F.consumerCount=1
         local original=S.Api.CallCapability
@@ -834,7 +843,7 @@ Test('management mode keeps a selectable material list without moving the compac
     assert(Find('v3_craft_sidecar_manage').text=='返回材料','management mode needs a visible exit to the material list')
     assert(Find('v3_craft_sidecar_tree_actions').visibility=='visible','advanced recipe actions remain available in management')
     assert(w.manualLabor:ParticipatesInLayout() and w.shareInput:ParticipatesInLayout())
-    assert(frame.width==360 and frame.height==430)
+    assert(frame.width==400 and frame.height==430)
     assert(Find('v3_craft_sidecar_manage'):Click())
     h.S.RSUI:FlushLayoutQueue()
     assert(w.table.visibility=='visible' and w.table.height>=81)
@@ -894,7 +903,7 @@ Test('popup shows selected stale price and allows explicit labor calibration',fu
     end})
     local w=h.window;w.table:SetSelectedIndex(1)
     assert(w.status.text:find('旧',1,true),'selected price must disclose that it is stale')
-    assert(w.summary.text:find('1金00银01铜',1,true),'the popup must not truncate copper from the total')
+    assert(w.summaryTotal.text:find('1金00银01铜',1,true),'the popup must not truncate copper from the total')
     local function Find(id,node)
         node=node or w.shell.root;if node.id==id then return node end
         for _,child in ipairs(node.children or {})do local found=Find(id,child);if found then return found end end
@@ -941,7 +950,7 @@ Test('popup adds a saved target and compares routes without replacing the active
         F.Commands.PlanCompare=function()
             local raw={costComplete=true,laborComplete=true,cashCopper=60,combinedCopper=160,valueCopper=60,labor=10}
             local buy={costComplete=true,laborComplete=true,cashCopper=200,combinedCopper=200,valueCopper=200,labor=0}
-            return true,{revision=7,result={manual=raw,raw=raw,buy=buy,recommendation={evaluation=raw,available=true}}}
+            return true,{revision=7,status='completed',result={manual=raw,raw=raw,buy=buy,recommendations={cash={status='optimal',evaluation=raw,available=true},combined={status='optimal',evaluation=raw,available=true}}}}
         end
         F.Commands.PlanApplyRecommendation=function(_,revision,key)applied={revision,key};return true end
     end})
@@ -963,11 +972,15 @@ Test('popup adds a saved target and compares routes without replacing the active
     assert(w.addRecipe:SetSelectedValue('item:33:*:*'))
     assert(Click('confirm_target'));assert(catalogAdded and catalogAdded[1]=='33:*:*' and catalogAdded[2]==1)
     assert(Click('compare'))
-    assert(w.compareText.text:find('原料',1,true) and w.compareText.text:find('成品',1,true),w.compareText.text)
-    assert(w.compareText.text:find('含劳力',1,true) and w.compareText.text:find('1银60铜',1,true),w.compareText.text)
-    assert(w.table.visibility=='collapsed','comparison should have room without squeezing the material list')
+    -- 显式金币目标的建议同时给出与当前、整件成品路线的差额。
+    assert(w.compareText.text:find('当前',1,true) and w.compareText.text:find('成品',1,true),w.compareText.text)
+    assert(w.compareText.text:find('成品 省',1,true),'the saving must be stated')
+    assert(w.compareText.text:find('最优（本次参考价）',1,true),'the current quote scope must be explicit')
+    -- 比较结果只是底部多一块，材料列表必须继续可读；以前藏列表会让窗口重排并丢失材料对照。
+    assert(w.table.visibility~='collapsed','the material list must stay readable while comparing')
+    assert(w.compareText.visibility~='collapsed','the comparison block must be shown')
     assert(Click('apply_all') and applied[1]==7 and applied[2]==nil)
-    assert(w.table.visibility=='visible','applying a comparison should restore the material list')
+    assert(w.table.visibility~='collapsed','the material list stays after applying a comparison')
 end)
 Test('an unavailable plan never substitutes the trade specialty recipe list',function()
     local unavailable=true
@@ -1027,5 +1040,207 @@ Test('a missing plan cannot display materials from an old trade context',functio
         'the floating craft plan must not render stale trade recipe data')
     assert(h.window.status.text:find('计划',1,true),'a missing plan must be explained')
 end)
+Test('delete confirmation survives a save that bumps the session revision',function()
+    local deleted,hostRef
+    local h=Boot(1,{configure=function(host,F)
+        hostRef=host
+        host.plan={activeId='p1',sessionRevision=7,libraryActiveId='11',inventoryComplete=true,
+            targets={{id='t1',key='11:*:*',itemType=11,count=1}},choices={},recipes={},allocations={},
+            evaluation={byKey={['11:*:*']={key='11:*:*',item={itemType=11,name='木材'},demand=1,owned=0,shortage=1,craft=1,batches=1}}}}
+        F.Commands.RecipeDelete=function(_,id)deleted=id;return true end
+    end})
+    local w=h.window
+    local function Find(id,node)
+        node=node or w.shell.root;if node.id==id then return node end
+        for _,child in ipairs(node.children or {})do local found=Find(id,child);if found then return found end end
+    end
+    local button=assert(Find('v3_craft_sidecar_delete'),'the delete button must exist')
+    assert(button:Click())
+    assert(w.deleteArmed=='11' and button.text=='确认删','the first click must arm the confirmation')
+    -- 保存会递加 sessionRevision。以前这里连带清掉 deleteArmed，第二次点击永远只是重新确认。
+    hostRef.plan.sessionRevision=8
+    w:Refresh()
+    assert(w.deleteArmed=='11' and button.text=='确认删','the confirmation must survive a save')
+    assert(button:Click())
+    assert(deleted=='11','the second click must actually delete the recipe')
+end)
+Test('the compare action stays reachable in the default compact view',function()
+    local h=Boot(1,{})
+    local w=h.window
+    local function Find(id,node)
+        node=node or w.shell.root;if node.id==id then return node end
+        for _,child in ipairs(node.children or {})do local found=Find(id,child);if found then return found end end
+    end
+    local button=assert(Find('v3_craft_sidecar_compare'),'the compare action must exist in the floating window')
+    assert(button.width>0 and button.height>0,'compare must own a real slot')
+    -- 它原先待在 planRow 里，而 planRow 从创建起就一直是 collapsed，等于入口从未出现。
+    assert(button.parent and button.parent.id=='v3_craft_sidecar_recipe_row','compare must live in the visible recipe row')
+end)
+Test('management mode exposes the add-target action the compact view cannot show',function()
+    local h=Boot(1,{})
+    local w=h.window
+    local function Find(id,node)
+        node=node or w.shell.root;if node.id==id then return node end
+        for _,child in ipairs(node.children or {})do local found=Find(id,child);if found then return found end end
+    end
+    local add=assert(Find('v3_craft_sidecar_add_target'),'the add-target action must exist')
+    local row=assert(Find('v3_craft_sidecar_plan_row'),'the add-target row must exist')
+    assert(row.visibility=='collapsed','the compact view keeps two rows only')
+    assert(w:SetManagementMode(true))
+    assert(row.visibility~='collapsed','management mode must let users add a target')
+    assert(w:SetManagementMode(false))
+    assert(row.visibility=='collapsed','leaving management must restore the compact rows')
+end)
+Test('an empty plan points the user at the first step instead of a blank table',function()
+    local h=Boot(1,{configure=function(host)
+        host.plan={activeId='p1',sessionRevision=1,name='制作计划',inventoryComplete=true,
+            targets={},choices={},recipes={},allocations={},evaluation={byKey={},missingPrices={},rows={}}}
+    end})
+    local w=h.window
+    assert(w.status.text:find('加入目标',1,true),'an empty plan must say how to start: '..tostring(w.status.text))
+end)
+
+local function CraftFind(window,suffix,node)
+    node=node or window.shell.root
+    if node.id=='v3_craft_sidecar_'..suffix then return node end
+    for _,child in ipairs(node.children or {})do local found=CraftFind(window,suffix,child);if found then return found end end
+end
+local function StatusPlan()
+    local key='1:*:*'
+    local row={key=key,item={itemType=1,name='测试材料'},demand=5,owned=5,fromBank=0,shortage=0,buy=0,craft=0}
+    return {activeId='p1',sessionRevision=1,revision=7,inventoryComplete=true,inventoryScope='bag_bank',
+        targets={{id='t1',key=key,itemType=1,count=5}},recipes={},choices={},prices={},quoteItems={},purchasePolicies={},
+        evaluation={byKey={[key]=row},rows={row}}},row,key
+end
+Test('inventory colors and independent purple trade tag refresh every native pooled cell',function()
+    local p,row,key=StatusPlan()
+    p.purchasePolicies[key]={state='forbidden',source='manual',binding='unknown'}
+    p.prices[key]={price=123,freshness='fresh'}
+    local h=Boot(1,{configure=function(host)host.plan=p end});local w=h.window
+    local function Cell(id)
+        local visible=assert(w.table:GetListView():GetRowForIndex(1))
+        for index,column in ipairs(w.table.columns)do if column.id==id then return visible.cells[index] end end
+        error('missing column '..id)
+    end
+    for _,id in ipairs({'name','need','held','shortage','labor'})do assert(Cell(id).state.tone=='success',id..' must be green')end
+    assert(Cell('trade').state.tone=='purple' and Cell('trade').text:find('手动',1,true))
+    assert(Cell('unitPrice').state.tone=='info')
+    w.table:SetSelectedIndex(1);assert(w.status.text:find('已备齐',1,true) and not w.status.text:find('已制作',1,true))
+    row.owned=2;row.shortage=3;p.purchasePolicies={};p.prices={};p.quoteItems[key]={status='failed'};w:Refresh()
+    assert(Cell('name').state.tone=='warning' and Cell('need').state.tone=='warning')
+    assert(Cell('trade').state.tone=='muted' and Cell('trade').text=='—','rebound row must lose the old binding')
+    assert(Cell('unitPrice').state.tone=='danger','failure cannot imply binding')
+    row.owned=0;row.shortage=5;p.quoteItems[key]={status='none'};w:Refresh()
+    assert(Cell('name').state.tone=='danger' and Cell('unitPrice').state.tone=='warning')
+    p.quoteItems={};w:Refresh();assert(Cell('unitPrice').state.tone=='muted')
+    p.prices[key]={price=10,freshness='stale'};w:Refresh()
+    assert(Cell('unitPrice').text:find('参考',1,true),'old prices must be identified as reference')
+    p.purchasePolicies[key]={state='forbidden',source='native',binding='bound'};row.owned=5;row.shortage=0;w:Refresh()
+    assert(Cell('name').state.tone=='success' and Cell('trade').state.tone=='purple','bound stock can be ready')
+end)
+Test('bank stock stays pending pickup and manual purchase restriction can be revoked in compact mode',function()
+    local p,row,key=StatusPlan();row.fromBank=3
+    local blocked={}
+    local h=Boot(1,{configure=function(host,F)
+        host.plan=p;F.Commands.PlanSetPurchaseBlocked=function(_,k,value)
+            blocked[#blocked+1]={k,value};p.purchasePolicies[k]=value and {state='forbidden',source='manual',binding='unknown'} or nil
+            return true
+        end
+    end});local w=h.window
+    local item=w.table:GetItem(1)
+    assert(item.tone=='warning' and item.held:find('银3',1,true),'bank quantity must be distinct from backpack')
+    w.table:SetSelectedIndex(1);assert(w.status.text:find('待取银行',1,true) and not w.status.text:find('已备齐',1,true))
+    local toggle=assert(CraftFind(w,'purchase_block'))
+    assert(toggle:Click() and blocked[1][1]==key and blocked[1][2]==true)
+    assert(toggle:Click() and blocked[2][2]==false)
+    h.S.RSUI:FlushLayoutQueue()
+    for _,child in ipairs(toggle.parentComponent.children)do
+        if child:ParticipatesInLayout() then assert(child.x>=0 and child.x+child.width<=toggle.parentComponent.width+0.1,'compact material actions overflow')end
+    end
+    assert(w.shell.window.width==400 and w.shell.window.height==430)
+end)
+Test('comparison consumes async projections and explicit objectives for complete and selected adoption',function()
+    local p,row,key=StatusPlan();local applied,continued,cancelled={}
+    local function Evaluation(cash,labor,combined)return {costComplete=true,laborComplete=true,cashCopper=cash,labor=labor,combinedCopper=combined}end
+    local function Envelope(status,cash)
+        local recStatus=status=='completed' and 'optimal' or status
+        return {revision=7,status=status,states=15,result={manual=Evaluation(120,5,170),buy=Evaluation(220,0,220),
+            recommendations={cash={objective='cash',status=recStatus,available=cash~=nil,evaluation=cash and Evaluation(cash,10,190)},
+                combined={objective='combined',status=recStatus,available=cash~=nil,evaluation=cash and Evaluation(110,2,130)}}}}
+    end
+    local h=Boot(1,{configure=function(host,F)
+        host.plan=p
+        F.Commands.PlanCompare=function()p.comparison=Envelope('searching');return true,p.comparison end
+        F.Commands.PlanContinueCompare=function()continued=true;p.comparison=Envelope('searching',90);return true end
+        F.Commands.PlanCancelCompare=function()cancelled=true;p.comparison=Envelope('cancelled');return true end
+        F.Commands.PlanApplyRecommendation=function(_,revision,k,objective)applied[#applied+1]={revision,k,objective};return true end
+    end});local w=h.window
+    assert(CraftFind(w,'compare'):Click());assert(w.compareText.text:find('计算中',1,true))
+    p.comparison=Envelope('paused',90);w:Refresh()
+    assert(w.compareText.text:find('预算暂停',1,true) and w.compareText.text:find('未证最优',1,true))
+    assert(w.compareText.text:find('劳',1,true) and w.compareText.text:find('含劳',1,true))
+    assert(CraftFind(w,'continue_compare'):Click() and continued)
+    p.comparison=Envelope('completed',90);w:Refresh();w.table:SetSelectedIndex(1)
+    assert(w.compareText.text:find('最优',1,true) and w.compareText.text:find('当前',1,true) and w.compareText.text:find('成品',1,true))
+    assert(CraftFind(w,'apply_all'):Click());assert(applied[1][1]==7 and applied[1][2]==nil and applied[1][3]=='cash')
+    assert(CraftFind(w,'compare'):Click());p.comparison=Envelope('completed',90);w:Refresh();w.table:SetSelectedIndex(1)
+    assert(CraftFind(w,'objective'):Click());assert(w.comparisonObjective=='combined')
+    assert(CraftFind(w,'apply_one'):Click());assert(applied[2][2]==key and applied[2][3]=='combined')
+    assert(CraftFind(w,'compare'):Click());assert(CraftFind(w,'cancel_compare'):Click() and cancelled)
+    assert(w.compareText.text:find('已取消',1,true))
+    p.comparison=Envelope('completed',90);w:Refresh();p.revision=8;w:Refresh()
+    assert(not w.comparison and not CraftFind(w,'apply_all'):Click(),'stale revisions cannot be shown or applied')
+end)
+Test('missing labor value makes the combined recommendation unavailable without assuming zero',function()
+    local p=StatusPlan()
+    p.comparison={revision=7,status='completed',result={recommendations={cash={status='optimal',available=true,
+        evaluation={costComplete=true,cashCopper=10,laborComplete=true,labor=5}},combined={status='unavailable',available=false}}}}
+    local h=Boot(1,{configure=function(host)host.plan=p end});local w=h.window
+    w:SetComparisonMode(true);assert(w.compareText.text:find('未设劳力折价',1,true),w.compareText.text)
+    assert(CraftFind(w,'objective'):Click());assert(not CraftFind(w,'apply_all'):Click())
+end)
+
+
+Test('the real Feature scheduler publishes the completed comparison into the still-open compact table',function()
+    local actual
+    local h=Boot(1,{configure=function(host,uiFeature)
+        local S=host.S
+        dofile('core/rs_demand.lua');dofile('features/shared/rs_shared_bounds.lua');dofile('features/shared/rs_feature_slice_factory.lua')
+        dofile('features/tools/craft/rs_craft_feature.lua');dofile('features/tools/craft/rs_craft_plan_domain.lua')
+        dofile('features/tools/craft/rs_craft_plan_solver.lua');dofile('features/tools/craft/rs_craft_plan_feature.lua')
+        local F=S.Features.tools_craft;actual=F;F.enabled=true;F.consumerCount=1
+        F.ReadPlanRecipe=function()return {id='11',product={itemType=1,count=1,name='成品'},materials={{itemType=2,count=2,name='原料'}},labor=5,feeCopper=0}end
+        F.ReadPlanRecipeTypes=nil
+        S.Services.InventorySnapshotV3={BuildSnapshot=function()return {rows={},capacity=20,truncated=false,readErrors=0,unknown=0,fallback=0}end}
+        S.ApiImports={Acquire=function()return true end}
+        S.Features.tools_bag={GetStorageWindowContext=function()return {status='ready',visible=true}end}
+        S.Services.MaterialPriceServiceV3={GetPrice=function(_,id)return id==1 and 100 or 10,{freshness='fresh'}end}
+        assert(F.Commands:RecipeImportLink('|if11;成品|r',1));assert(F.Commands:PlanSetRecipeCosts('1:*:*',5,0))
+        assert(F.Commands:PlanSetLaborValue(10));assert(F.Commands:PlanRefreshInventory(true))
+        uiFeature.Commands=F.Commands;uiFeature.GetProjection=function()return F:GetProjection()end;uiFeature.UpdateTopic=F.UpdateTopic
+        S.Features.tools_craft=uiFeature
+    end});local w=h.window
+    assert(CraftFind(w,'compare'):Click())
+    local before=actual:GetProjection().plan.comparison
+    assert(before and (before.status=='preparing' or before.status=='searching'),'start must publish an unfinished job')
+    local task='tools_craft_plan_compare'
+    for _=1,200 do
+        if not h.S.Scheduler:GetTaskState(task).registered then break end
+        h.S.Scheduler:RunTask(task)
+    end
+    local after=actual:GetProjection().plan.comparison
+    assert(after and after.status~='searching' and after.status~='preparing')
+    assert(w.comparison and w.comparison.status==after.status and w.comparison.revision==after.revision,
+        'the subscribed window must display the newly published result without a second compare click')
+    assert(w.compareText.text:find('最优',1,true) or w.compareText.text:find('缺数据',1,true),w.compareText.text)
+    h.S.RSUI:FlushLayoutQueue()
+    assert(w.table.visibility=='visible' and w.table.height>=53,'at least one material remains readable during comparison: '..tostring(w.table.height)..' split='..tostring(w.bodySplit.height)..' primary='..tostring(w.bodySplit.primarySize))
+    local actions=CraftFind(w,'compare_actions')
+    for _,child in ipairs(actions.children)do
+        if child:ParticipatesInLayout() then assert(child.x>=0 and child.x+child.width<=actions.width+0.1,'comparison actions overflow')end
+    end
+    assert(w.shell.window.width==400 and w.shell.window.height==430)
+end)
+
 print('CRAFT WINDOW RESULT '..passed..' passed / '..failed..' failed')
 if failed>0 then os.exit(1)end

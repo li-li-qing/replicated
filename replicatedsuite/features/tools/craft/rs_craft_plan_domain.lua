@@ -1,5 +1,6 @@
 -- Replicated Suite · 制作计划纯计算
 -- 所有输入均为 detached 基础值；这里不读取游戏、不询价、不写存档。
+-- 作者：Replicated；QQ群：1104129461
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local D = { MaxQuantity = 1000000000, MaxNodes = 512, MaxDepth = 24 }
 ReplicatedSuite.CraftPlanDomain = D
@@ -118,7 +119,14 @@ local function Keys(t)
     local r={}; for k in pairs(t or {}) do r[#r+1]=k end; table.sort(r); return r
 end
 
-function D.Evaluate(plan, facts, route)
+function D.Evaluate(plan, facts, route, checkpoint)
+    local function Tick() if checkpoint then checkpoint() end end
+    local function Copy(v)
+        if type(v)~='table' then return v end
+        local out={}
+        for key,value in pairs(v) do Tick();out[key]=Copy(value) end
+        return out
+    end
     plan, facts = plan or {}, facts or {}
     local result = { rows={}, byKey={}, purchases={}, steps={}, issues={}, missingPrices={},
         complete=true, costComplete=true, valueComplete=true, laborComplete=true, priceStale=false, cashCopper=0, valueCopper=0,
@@ -132,10 +140,12 @@ function D.Evaluate(plan, facts, route)
     local function Allocation(key)
         if route=='buy' then return {mode='buy'} end
         if route=='raw' then return {mode='craft'} end
-        -- 目标默认制作，中间材料默认购买；已有手动安排始终优先。
-        return allocations[key] or {mode=targetKeys[key] and 'craft' or 'buy'}
+        -- 展开只影响树的显示；成本始终服从用户分配。
+        if targetKeys[key] then return allocations[key] or {mode='craft'} end
+        return allocations[key] or {mode='buy'}
     end
     local function Visit(key, depth)
+        Tick()
         if mark[key]==1 then cyclic[key]=true; Issue('cycle',key); return end
         if mark[key]==2 then return end
         nodes=nodes+1
@@ -144,6 +154,7 @@ function D.Evaluate(plan, facts, route)
         local recipe, a = recipes[key], Allocation(key)
         if a.mode~='buy' and (a.mode~='mixed' or tonumber(a.craft)~=0) and type(recipe)=='table' then
             for _, material in ipairs(recipe.materials or {}) do
+                Tick()
                 local child = D.Key(material)
                 if not child or type(material)~='table' or not Integer(material.count) then Issue('invalid_material',key)
                 else
@@ -159,6 +170,7 @@ function D.Evaluate(plan, facts, route)
     end
     local targetCount=0
     for _,target in ipairs(plan.targets or {}) do
+        Tick()
         targetCount=targetCount+1
         if targetCount>64 then Issue('target_limit'); break end
         local key = D.Key(target)
@@ -171,8 +183,9 @@ function D.Evaluate(plan, facts, route)
     end
     if targetCount==0 then Issue('empty_plan') end
     for _,key in ipairs(Keys(demands)) do Visit(key,1) end
-    local remaining=Copy(facts.inventory or {})
-    local remainingBag=Copy(facts.bagInventory or facts.inventory or {})
+    local remaining,remainingBag={},{}
+    for key,count in pairs(facts.inventory or {}) do Tick();remaining[key]=count end
+    for key,count in pairs(facts.bagInventory or facts.inventory or {}) do Tick();remainingBag[key]=count end
     local requirementKeys,stockIdentities={},{}
     local function MatchKey(key,isRequirement)
         local identities=isRequirement and requirementKeys or stockIdentities
@@ -198,8 +211,10 @@ function D.Evaluate(plan, facts, route)
     local stockKeys=Keys(remaining)
     local matchCounts={}
     for _,stock in ipairs(stockKeys)do
+        Tick()
         local count,seen=0,{}
         for key in pairs(items)do
+            Tick()
             local identity=MatchKey(key,true)
             if not seen[identity] and Matches(key,stock) then count=count+1;seen[identity]=true end
         end
@@ -208,6 +223,7 @@ function D.Evaluate(plan, facts, route)
     local function Consume(key,need)
         local owned,fromBag,uncertain=0,0,false
         for _,stock in ipairs(stockKeys)do
+        Tick()
             local count=Integer(remaining[stock],true) or 0
             if count>0 and Matches(key,stock) then
                 local ambiguous=matchCounts[stock]>1
@@ -229,6 +245,7 @@ function D.Evaluate(plan, facts, route)
     end
     -- 先收齐所有上游需求，再抵扣库存和取整；不能在树的各分支里各自扣一遍。
     for index=#order,1,-1 do
+        Tick()
         local key=order[index]
         local need=demands[key] or 0
         if need>0 then
@@ -265,6 +282,7 @@ function D.Evaluate(plan, facts, route)
                     if row.batches*recipe.product.count>D.MaxQuantity then Issue('quantity_limit',key)
                     else
                         for _,m in ipairs(recipe.materials) do
+                            Tick()
                             local child, count=D.Key(m), Integer(m.count)
                             if child and count then
                                 local total=(demands[child] or 0)+row.batches*count
@@ -281,6 +299,9 @@ function D.Evaluate(plan, facts, route)
                     result.steps[#result.steps+1]=row
                 end
             end
+            if row.buy>0 and ((plan.purchaseBlocks or {})[key]==true or ((facts.purchasePolicies or {})[key] or {}).state=='forbidden') then
+                Issue('purchase_forbidden',key)
+            end
             local quote=(facts.prices or {})[key]
             local price=type(quote)=='table' and tonumber(quote.price) or nil
             if not price or price~=price or price<0 or price>D.MaxQuantity then price=nil end
@@ -292,7 +313,9 @@ function D.Evaluate(plan, facts, route)
             if row.buy+owned>0 then
                 if price then
                     local source=tostring(quote.source or ''):gsub('^legacy:','')
-                    if quote.freshness~='fresh' or quote.candidatePrice~=nil or source=='name_search_direct_unit' then
+                    local quoteState=(facts.quoteStates or {})[key]
+                    if quote.freshness~='fresh' or quote.candidatePrice~=nil or source=='name_search_direct_unit'
+                        or (type(quoteState)=='table' and (quoteState.status~='ready' or quoteState.priceAccepted==false)) then
                         result.priceStale=true
                     end
                     local cash,ownedValue=row.buy*price,owned*price
@@ -315,46 +338,18 @@ function D.Evaluate(plan, facts, route)
     result.materialCostComplete=result.complete and #result.missingPrices==0
     result.cashCopper=result.cashCopper+result.feeCopper
     result.valueCopper=result.cashCopper+result.ownedValueCopper
+    if result.cashCopper>9000000000000 then Issue('money_limit');result.costComplete=false end
+    if result.valueCopper>9000000000000 then result.valueComplete=false end
     if facts.inventoryComplete~=true then Issue('inventory_unknown') end
     result.costComplete=result.costComplete and result.complete
     result.valueComplete=result.valueComplete and result.costComplete
     local laborValue=tonumber(plan.laborValueCopper)
     -- 未知库存或缺价时，部分现金合计不能被当作完整的含劳力成本。
-    if result.costComplete and laborValue and laborValue>=0 and result.laborComplete then
-        result.combinedCopper=result.cashCopper+result.labor*laborValue
+    if result.costComplete and laborValue and laborValue==laborValue and laborValue>=0 and laborValue<=D.MaxQuantity and result.laborComplete then
+        local combined=result.cashCopper+result.labor*laborValue
+        if combined<=9000000000000 then result.combinedCopper=combined end
     end
     return result
-end
-
-function D.Compare(plan,facts)
-    local r={manual=D.Evaluate(plan,facts),raw=D.Evaluate(plan,facts,'raw'),buy=D.Evaluate(plan,facts,'buy')}
-    local candidate=Copy(plan); candidate.allocations=candidate.allocations or {}
-    local best=r.manual
-    local laborPriced=tonumber(plan.laborValueCopper)~=nil
-    local function Score(value)
-        if not value.costComplete or (laborPriced and not value.laborComplete) then return nil end
-        return value.combinedCopper or value.cashCopper
-    end
-    local partial=Score(r.manual)==nil or Score(r.raw)==nil or Score(r.buy)==nil
-    -- 有界逐项候选比较，包含批次和共享库存；不宣称全局最优。
-    local tries=0
-    for _,key in ipairs(Keys(facts.recipes)) do
-        if tries>=32 then break end
-        if best.byKey[key] then
-            tries=tries+1
-            local previous=candidate.allocations[key]
-            local row=best.byKey[key]
-            local mode=previous and previous.mode or ((tonumber(row.craft) or 0)>0 and 'craft' or 'buy')
-            candidate.allocations[key]={mode=mode=='buy' and 'craft' or 'buy'}
-            local value=D.Evaluate(candidate,facts)
-            local before, after=Score(best), Score(value)
-            if not after then partial=true end
-            if after and (not before or after<before) then best=value else candidate.allocations[key]=previous end
-        end
-    end
-    r.recommendation={evaluation=best,allocations=Copy(candidate.allocations),compared=tries,kind='bounded_candidates',
-        available=Score(best)~=nil,partial=partial}
-    return r
 end
 
 function D.ReplaceSnapshot(ledger,source,generation,rows,complete)

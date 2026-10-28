@@ -9,12 +9,20 @@ local Copy=D.Copy
 local STORE='v3.craft_plans'
 local OWNER='v3.tools_craft.plan'
 local TASK='tools_craft_plan_recipes'
+local COMPARE_TASK='tools_craft_plan_compare'
 local state, revision, generation, cached = nil,0,0,nil
 local quoteGeneration=0
 local inventory, inventoryComplete, inventoryNote, inventoryScope = {},false,'库存未核对',nil
 local bagInventory={}
 local priceOwner={}
 local scan, quoteBatch, recommendation, undo = nil,nil,nil,nil
+local compareJob,compareStartedAt=nil,nil
+local compareSoftBudgetClock='unavailable'
+local function InvalidateComparison(reason)
+    if compareJob and type(D.CancelCompareJob)=='function' then D.CancelCompareJob(compareJob,reason or 'inputs_changed') end
+    compareJob=nil;compareStartedAt=nil;recommendation=nil;compareSoftBudgetClock='unavailable'
+    if S.Scheduler then S.Scheduler:RemoveTask(COMPARE_TASK) end
+end
 local quoteOwners, priceRevision = {}, nil
 local quoteResult,quoteItems=nil,{}
 local quoteGradeOverrides={}
@@ -61,7 +69,7 @@ local importFeedbackSequence=0
 local pendingShare=nil
 local scanResult=nil
 local ResetSession
-local function DefaultPlan(id,name) return {id=id,name=name,targets={},allocations={},nextTarget=1} end
+local function DefaultPlan(id,name) return {id=id,name=name,targets={},allocations={},expanded={},nextTarget=1} end
 local function Default()
     return {active='p1',nextPlan=2,plans={p1=DefaultPlan('p1','制作计划')},recipes={},catalog={},choices={}}
 end
@@ -72,6 +80,7 @@ local function PersistentSnapshot()
     for _,plan in pairs(saved.plans or {})do
         for _,target in pairs(plan.targets or {})do required[D.Key(target)]=true end
         for key in pairs(plan.allocations or {})do required[key]=true end
+        for key in pairs(plan.purchaseBlocks or {})do required[key]=true end
     end
     for id,recipe in pairs(saved.recipes or {})do
         if recipe.autoObserved==true and not recipe.shared and not recipe.userChosen
@@ -114,6 +123,12 @@ local function Load()
         for key,allocation in pairs(plan.allocations)do
             if type(key)~='string' or type(allocation)~='table' then return false,'来源分配无法确认，保留原数据' end
         end
+        if plan.purchaseBlocks~=nil then
+            if type(plan.purchaseBlocks)~='table' then return false,'购买限制无法确认，保留原数据' end
+            for key,blocked in pairs(plan.purchaseBlocks)do
+                if type(key)~='string' or key=='' or type(blocked)~='boolean' then return false,'购买限制无法确认，保留原数据' end
+            end
+        end
     end
     for id,recipe in pairs(state.recipes)do
         if type(recipe)~='table' or recipe.id~=id or not D.Key(recipe.product)
@@ -143,9 +158,12 @@ if P:GetStore(STORE)==nil then
         end,migrate=function(value)return value end})
     if not store then error(err or 'craft plan store registration failed') end
 end
-local function Notify(reason)
-    revision=revision+1;cached=nil;recommendation=nil
+local function PublishDisplay(reason)
+    cached=nil
     if S.Events and type(S.Events.Publish)=='function' then S.Events:Publish(F.UpdateTopic,revision,reason or 'plan_local') end
+end
+local function Notify(reason)
+    InvalidateComparison(reason);revision=revision+1;PublishDisplay(reason)
 end
 local function ImportReceipt(ok,message,reason)
     importFeedbackSequence=importFeedbackSequence+1
@@ -216,8 +234,8 @@ local function Mutate(reason,fn,durable)
     if changed~=true then state=before;cached=nil;return false,why or '计划保存失败，已回滚' end
     if reason=='plan_create' or reason=='plan_select' or reason=='plan_delete'
         or reason=='recipe_select' or reason=='recipe_delete' then pendingShare=nil end
-    if reason~='plan_recommendation_apply' and reason~='plan_undo' then undo=nil end
-    Notify(reason);return true
+    if reason~='plan_recommendation_apply' and reason~='plan_undo' and reason~='plan_expand' then undo=nil end
+    if reason=='plan_expand' then PublishDisplay(reason) else Notify(reason) end;return true
 end
 local function Running()
     if F.enabled~=true or (tonumber(F.consumerCount) or 0)<=0 then return false,'先启用并打开配方制作' end
@@ -251,6 +269,7 @@ local function CancelQuotes(reason)
     end
 end
 local function Cancel()
+    InvalidateComparison('cancelled')
     generation=generation+1;scan=nil
     if S.Scheduler then S.Scheduler:RemoveTask(TASK) end
     CancelQuotes('cancelled')
@@ -341,8 +360,24 @@ local function Snapshot()
     for _,id in ipairs(Sorted(Active().targets))do plan.targets[#plan.targets+1]=Copy(Active().targets[id])end
     return plan
 end
+-- 只接受现有静态表的明确物品 ID。搜索失败/无结果与未核实的绑定枚举都不是交易限制证据。
+local function PurchasePolicy(key,item,plan)
+    local policy={state='unknown',source='unknown',binding='unknown'}
+    local facade=S.Data and S.Data.TradeStaticV2
+    local record=item and facade and type(facade.GetMaterialByItemId)=='function' and facade:GetMaterialByItemId(item.itemType)
+    if type(record)=='table' and tonumber(record.itemId)==tonumber(item.itemType) then
+        if record.auctionable==false then
+            policy={state='forbidden',source='static_trade_material',binding=record.costKind=='bound_resource' and 'bound' or 'unknown'}
+        elseif record.auctionable==true then policy.state='allowed';policy.source='static_trade_material' end
+    end
+    if plan and plan.purchaseBlocks and plan.purchaseBlocks[key]==true then
+        policy.state='forbidden';policy.source='manual';policy.label='不可拍卖(手动)'
+    end
+    return policy
+end
 local function Facts(plan)
-    local facts={recipes={},catalog=Copy(state.catalog),inventory=Copy(inventory),bagInventory=Copy(bagInventory),inventoryComplete=inventoryComplete,prices={},itemGrades={}}
+    local facts={recipes={},catalog=Copy(state.catalog),inventory=Copy(inventory),bagInventory=Copy(bagInventory),inventoryComplete=inventoryComplete,
+        prices={},itemGrades={},purchasePolicies={},quoteStates=Copy(quoteItems)}
     local all={}
     for key,entry in pairs(state.catalog)do
         all[key]=entry.item
@@ -359,9 +394,10 @@ local function Facts(plan)
     for _,item in ipairs(plan.targets)do all[D.Key(item)]=item end
     local prices=S.Services and S.Services.MaterialPriceServiceV3
     for key,item in pairs(all)do
+        facts.purchasePolicies[key]=PurchasePolicy(key,item,plan)
         local grade,source=QuoteGrade(key,item)
         facts.itemGrades[key]=grade
-        if item and not (quoteItems[key] and quoteItems[key].status=='none') and prices and type(prices.GetPrice)=='function' then
+        if item and prices and type(prices.GetPrice)=='function' then
             local price,meta
             if grade~=nil then price,meta=prices:GetPrice(item.itemType,grade) end
             if price~=nil then
@@ -381,7 +417,7 @@ local function Projection()
     local priceService=S.Services and S.Services.MaterialPriceServiceV3
     local nextPriceRevision=priceService and type(priceService.GetRevision)=='function' and priceService:GetRevision() or nil
     if nextPriceRevision~=priceRevision then
-        priceRevision=nextPriceRevision;revision=revision+1;cached=nil;recommendation=nil
+        priceRevision=nextPriceRevision;InvalidateComparison('price_changed');revision=revision+1;cached=nil
     end
     LivePendingShare()
     if cached then return Copy(cached) end
@@ -405,7 +441,8 @@ local function Projection()
     end
     contextRecipes=LibraryEntries()
     cached={revision=revision,sessionRevision=sessionRevision,activeId=state.active,name=plan.name,plans=plans,targets=targets,
-        rows=result.rows,evaluation=result,catalog=options,allocations=Copy(plan.allocations),prices=Copy(facts.prices),
+        rows=result.rows,evaluation=result,catalog=options,allocations=Copy(plan.allocations),expanded=Copy(plan.expanded or {}),prices=Copy(facts.prices),
+        purchaseBlocks=Copy(plan.purchaseBlocks or {}),purchasePolicies=Copy(facts.purchasePolicies),comparison=Copy(recommendation),
         laborValueCopper=plan.laborValueCopper,inventoryNote=inventoryNote,inventoryComplete=inventoryComplete,inventoryScope=inventoryScope,
         recipeCatalog=Copy(state.catalog),recipes=Copy(state.recipes),choices=EffectiveChoices(),
         shareCaptureActive=shareCaptureActive,pendingShare=Copy(pendingShare),importFeedback=Copy(importFeedback),
@@ -500,13 +537,43 @@ function C:PlanRemoveTarget(id)
         plan.targets[id]=nil;return true
     end)
 end
+-- 展开只保存材料树的预览状态；来源分配与成本计算独立。
+function C:PlanSetExpanded(key,open)
+    key=tostring(key or '')
+    if key=='' then return false,'材料键无效' end
+    return Mutate('plan_expand',function(plan)
+        plan.expanded=plan.expanded or {}
+        if open==true then plan.expanded[key]=true else plan.expanded[key]=nil end
+        return true
+    end)
+end
 function C:PlanSetAllocation(key,mode,buy,craft)
     if mode~='buy' and mode~='craft' and mode~='mixed' then return false,'来源无效' end
     if mode=='mixed' and (not D.Integer(buy,true) or not D.Integer(craft,true)) then return false,'混合数量须为非负整数' end
     return Mutate('plan_allocation',function(plan)
         if not state.catalog[key] then return false,'物品身份未知' end
+        if PurchasePolicy(key,state.catalog[key].item,plan).state=='forbidden' then
+            if mode=='mixed' and D.Integer(buy,true)>0 then return false,'此材料不可拍卖，不能分配购买数量' end
+            if mode=='buy' then
+                local candidate=Snapshot();candidate.allocations[key]={mode='buy'}
+                local row=D.Evaluate(candidate,Facts(candidate)).byKey[key]
+                if not row or (tonumber(row.buy) or 0)>0 or (tonumber(row.shortage) or 0)>0 then
+                    return false,'此材料不可拍卖，库存不足时不能选择购买'
+                end
+            end
+        end
         plan.allocations[key]={mode=mode,buy=D.Integer(buy,true),craft=D.Integer(craft,true)};return true
     end)
+end
+function C:PlanSetPurchaseBlocked(key,blocked)
+    if type(blocked)~='boolean' then return false,'购买限制须为布尔值' end
+    local ok,err=Mutate('plan_purchase_block',function(plan)
+        if not state.catalog[key] then return false,'物品身份未知' end
+        plan.purchaseBlocks=plan.purchaseBlocks or {}
+        plan.purchaseBlocks[key]=blocked and true or nil;return true
+    end,true)
+    if ok and quoteBatch then CancelQuotes('purchase_policy_changed');PublishDisplay('plan_price_stopped') end
+    return ok,err
 end
 function C:PlanSetLaborValue(value)
     if value~=nil and not D.Integer(value,true) then return false,'每点劳力折价使用非负整数铜' end
@@ -1021,7 +1088,8 @@ function C:PlanReadRecipes()
                         end
                     end
                     state.catalog[key]=entry
-                    if not selected and #records==1 then state.choices[key]=records[1].id end
+                    -- 唯一配方直接选中：不选就没有劳动力/配方成本，材料行会一直显示为空。
+                    if #records==1 and not state.choices[key] then state.choices[key]=records[1].id end
                     return true
                 end)
                 if saved then
@@ -1083,28 +1151,118 @@ function C:PlanRefreshInventory(includeBank)
     if complete then inventoryNote=includeBank and '本次核对：背包＋银行；不含保管箱，移动后请重新核对' or '本次核对：背包；银行/保管箱未纳入' end
     Notify('plan_inventory');return complete,inventoryNote
 end
+local function CompareSnapshot(job)
+    local snapshot=D.GetCompareSnapshot(job)
+    recommendation={revision=revision,status=snapshot.status,states=snapshot.states,result=Copy(snapshot.result),softBudgetClock=compareSoftBudgetClock}
+    PublishDisplay('plan_compare_progress')
+end
+local function CompareRunning(status)return status=='preparing' or status=='searching' end
+local function ReadCompareTimer(timer)
+    if type(timer)~='function' then return nil end
+    local ok,value=pcall(timer)
+    if not ok or type(value)~='number' or value~=value or value==math.huge or value==-math.huge then return nil end
+    return value
+end
+local function ScheduleCompare(job,expected)
+    compareStartedAt=S.NowMs and S.NowMs() or nil
+    return S.Scheduler:AddTask(COMPARE_TASK,50,function()
+        if compareJob~=job or revision~=expected then return end
+        -- 价格服务不保证发事件；每块先观察版本，旧输入不能继续计算或采纳。
+        Projection()
+        if compareJob~=job or revision~=expected then return end
+        local now=S.NowMs and S.NowMs() or nil
+        if now and compareStartedAt and now-compareStartedAt>=10000 then
+            D.PauseCompareJob(job,'wall_time_budget')
+        else
+            local used=0
+            -- NowMs 是 OnUpdate 帧时钟，同一回调内不前进；只复用 Performance 已校验的毫秒计时器。
+            local timer=S.PerformanceMonitor and S.PerformanceMonitor.timer
+            local started=ReadCompareTimer(timer)
+            local previous=started
+            compareSoftBudgetClock=started~=nil and 'performance_timer' or 'unavailable'
+            repeat
+                -- 计时能力缺失或运行中失效时，明确退化为每块最多 200 units。
+                local status,units=D.StepCompareJob(job,1)
+                used=used+math.max(1,tonumber(units) or 1)
+                if not CompareRunning(status) then break end
+                if started~=nil then
+                    local measured=ReadCompareTimer(timer)
+                    if measured==nil or measured<previous then
+                        started=nil;compareSoftBudgetClock='unavailable'
+                    else
+                        previous=measured
+                        if measured-started>=2 then break end
+                    end
+                end
+            until used>=200
+        end
+        if compareJob~=job then return end
+        CompareSnapshot(job)
+        if compareJob~=job or not recommendation then return end
+        if not CompareRunning(recommendation.status) then S.Scheduler:RemoveTask(COMPARE_TASK) end
+    end,false,F,'P2',1)
+end
 function C:PlanCompare()
-    local ok,err=Load();if not ok then return false,err end
+    local ok,err=Running();if not ok then return false,err end
+    ok,err=Load();if not ok then return false,err end
     Projection()
+    InvalidateComparison('restarted')
+    if not S.Scheduler or type(D.CreateCompareJob)~='function' or type(D.PauseCompareJob)~='function' then return false,'比较服务不可用' end
     local plan=Snapshot();local facts=Facts(plan)
-    recommendation={revision=revision,result=D.Compare(plan,facts)}
+    compareJob=D.CreateCompareJob(plan,facts)
+    if not compareJob then return false,'无法建立比较任务' end
+    local job=compareJob
+    CompareSnapshot(job)
+    if compareJob~=job or not recommendation then return false,'比较输入已变化或任务已取消' end
+    if CompareRunning(recommendation.status) then
+        ok,err=ScheduleCompare(compareJob,revision)
+        if ok~=true then InvalidateComparison('scheduler_rejected');return false,err or '比较调度失败' end
+    end
     return true,Copy(recommendation)
 end
-function C:PlanApplyRecommendation(expected,key)
+function C:PlanContinueCompare()
+    local ok,err=Running();if not ok then return false,err end
     Projection()
+    if not compareJob or not recommendation or recommendation.revision~=revision or recommendation.status~='paused' then return false,'没有可继续的比较任务' end
+    ok,err=D.ResumeCompareJob(compareJob)
+    if ok==false then return false,err end
+    local job=compareJob
+    CompareSnapshot(job)
+    if compareJob~=job or not recommendation then return false,'比较输入已变化或任务已取消' end
+    ok,err=ScheduleCompare(job,revision)
+    if ok~=true then InvalidateComparison('scheduler_rejected');return false,err or '比较调度失败' end
+    return true,Copy(recommendation)
+end
+function C:PlanCancelCompare()
+    if S.Scheduler then S.Scheduler:RemoveTask(COMPARE_TASK) end
+    if compareJob then
+        local job=compareJob
+        compareJob=nil;compareStartedAt=nil
+        D.CancelCompareJob(job,'user_cancelled');CompareSnapshot(job)
+    end
+    return true,Copy(recommendation)
+end
+function C:PlanApplyRecommendation(expected,key,objective)
+    Projection()
+    objective=objective or 'cash'
+    if objective~='cash' and objective~='combined' then return false,'比较目标无效' end
     if not recommendation or expected~=revision or recommendation.revision~=revision then return false,'建议已失效，请重新比较' end
-    if not recommendation.result.recommendation.available then return false,'缺少有效成本，无法采纳建议' end
-    local allocation=Copy(recommendation.result.recommendation.allocations)
-    undo=Copy(Active().allocations)
-    return Mutate('plan_recommendation_apply',function(plan)
+    local advice=recommendation.result and recommendation.result.recommendations and recommendation.result.recommendations[objective]
+    if recommendation.status=='cancelled' or not advice or not advice.available or type(advice.allocations)~='table' then return false,'缺少有效成本，无法采纳建议' end
+    local allocation=Copy(advice.allocations)
+    if key and not allocation[key] then return false,'建议中没有此材料' end
+    local previous=Copy(Active().allocations)
+    local ok,err=Mutate('plan_recommendation_apply',function(plan)
         if key then plan.allocations[key]=Copy(allocation[key]) else plan.allocations=allocation end
         return true
-    end)
+    end,true)
+    if ok then undo=previous end
+    return ok,err
 end
 function C:PlanUndo()
     if not undo then return false,'没有可撤销的来源调整' end
     local previous=Copy(undo)
-    local ok,err=Mutate('plan_undo',function(plan)plan.allocations=previous;return true end)
+    local ok,err=Mutate('plan_undo',function(plan)plan.allocations=previous;return true end,true)
     if ok then undo=nil end;return ok,err
 end
 function C:PlanSearch(key)
@@ -1112,6 +1270,7 @@ function C:PlanSearch(key)
     ok,err=Load();if not ok then return false,err end
     local item=state.catalog[key] and state.catalog[key].item
     if not item or not item.name or item.name=='' then return false,'物品名称未确认，请先读取配方' end
+    if PurchasePolicy(key,item,Active()).state=='forbidden' then return false,'此材料不可拍卖' end
     local bridge=S.Services and S.Services.AuctionSearchBridgeV3
     if not bridge then return false,'拍卖搜索服务不可用' end
     return bridge:Search(OWNER..':search',item.name,{priority='user'})
@@ -1124,19 +1283,21 @@ function C:PlanCalibrate(key)
     if not queue then return false,'报价队列不可用' end
     local plan=Projection();local rows,seen,truncated={},{},false
     -- 查价遍历配方树，不能只取实际采购行，否则“购买”分支下面的预览材料永远查不到。
-    local function Walk(itemKey,depth)
+    local function Walk(itemKey,depth,item)
         if seen[itemKey] then return end
         if depth>24 or #rows>=512 then truncated=true;return end
         seen[itemKey]=true
         local entry=state.catalog[itemKey]
-        if entry and entry.item then rows[#rows+1]={key=itemKey,item=Copy(entry.item)} end
+        -- 配方里的材料未必进过 catalog，但它们同样要报价；只用 catalog 过滤会让这些材料永远查不到价格。
+        local rowItem=entry and entry.item or item
+        if type(rowItem)=='table' and PurchasePolicy(itemKey,rowItem,Active()).state~='forbidden' then rows[#rows+1]={key=itemKey,item=Copy(rowItem)} end
         if key then return end
         local recipe=plan.recipes[(plan.choices or {})[itemKey] or '']
         for _,material in ipairs(recipe and recipe.materials or {})do
-            local child=D.Key(material);if child then Walk(child,depth+1) end
+            local child=D.Key(material);if child then Walk(child,depth+1,material) end
         end
     end
-    if key then Walk(key,0) else for _,target in ipairs(plan.targets or {})do Walk(target.key,0) end end
+    if key then Walk(key,0,state.catalog[key] and state.catalog[key].item) else for _,target in ipairs(plan.targets or {})do Walk(target.key,0,target) end end
     if #rows==0 then return false,'当前没有可查询的配方物品' end
     quoteGeneration=quoteGeneration+1;local token=quoteGeneration
     local batch={status='querying',total=#rows,requested=0,completed=0,failed=0,empty=0,truncated=truncated,
@@ -1170,6 +1331,16 @@ function C:PlanCalibrate(key)
                         grade,gradeSource=QuoteGrade(row.key,row.item)
                     end
                 end
+            end
+        end
+        -- 配方反推不出来时（多是本身没有配方的原料）再问一次物品元数据。
+        -- 询价按严格品质搜索，没品质就会被整项跳过，用户连参考价都看不到。
+        if grade==nil and type(F.GetItemGrade)=='function' and type(row.item)=='table' then
+            local observedGrade,probe=F:GetItemGrade(row.item.itemType)
+            if observedGrade~=nil then
+                quoteGradeOverrides[row.key]={recipeId=ChosenRecipe(row.key),grade=observedGrade};cached=nil
+                grade,gradeSource=observedGrade,'item_metadata'
+                gradeResolution={recipeId=nil,itemInfo=Copy(probe),grade=observedGrade}
             end
         end
         local owner=OWNER..':quote:'..token..':'..row.key

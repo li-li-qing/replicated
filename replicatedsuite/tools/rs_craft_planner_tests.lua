@@ -371,6 +371,7 @@ Test("C11: Craft plan editor survives strict PageHost construction", function()
     local suite = host.S
     dofile("ui/framework/rs_ui_forms.lua")
     dofile("features/tools/craft/rs_craft_plan_domain.lua")
+    dofile("features/tools/craft/rs_craft_plan_solver.lua")
     dofile("presentation/v3/widgets/rs_v3_craft_plan_editor.lua")
     local domain = suite.CraftPlanDomain
     local target = { itemType = 8337, name = "合成测试物品", count = 2 }
@@ -412,6 +413,7 @@ Test("C12: Generic share and native quantities keep craft and item identities se
     dofile("features/shared/rs_feature_slice_factory.lua")
     dofile("features/tools/craft/rs_craft_feature.lua")
     dofile("features/tools/craft/rs_craft_plan_domain.lua")
+    dofile("features/tools/craft/rs_craft_plan_solver.lua")
     local domain, feature = suite.CraftPlanDomain, suite.Features.tools_craft
     assert(domain.ParseRecipeShare("/rsrecipe |if7450;合成家具|r").craftType == 7450)
     assert(not domain.ParseRecipeShare("7450"), "bare item IDs must not be interpreted as craft IDs")
@@ -468,6 +470,7 @@ Test("C13: Craft tools page exposes advanced settings and popup recovery", funct
     dofile("ui/framework/rs_ui_forms.lua")
     dofile("features/rs_feature_registry.lua")
     dofile("features/tools/craft/rs_craft_plan_domain.lua")
+    dofile("features/tools/craft/rs_craft_plan_solver.lua")
     dofile("presentation/v3/widgets/rs_v3_craft_plan_editor.lua")
     local plan = {revision=1, activeId="p1", plans={{value="p1", text="家具计划"}}, targets={},
         catalog={}, recipes={}, choices={}, allocations={}, evaluation=suite.CraftPlanDomain.Evaluate({}, {})}
@@ -523,6 +526,7 @@ Test("C14: One-click craft selection is explicit, visible and identity-checked",
     dofile("features/shared/rs_feature_slice_factory.lua")
     dofile("features/tools/craft/rs_craft_feature.lua")
     dofile("features/tools/craft/rs_craft_plan_domain.lua")
+    dofile("features/tools/craft/rs_craft_plan_solver.lua")
     dofile("features/tools/craft/rs_craft_plan_feature.lua")
     dofile("services/rs_craft_surface_v3.lua")
     local feature, surface = suite.Features.tools_craft, suite.Services.CraftSurfaceV3
@@ -613,6 +617,7 @@ Test("C16: One-shot own shares expire and remain owned when another consumer clo
     dofile("features/shared/rs_feature_slice_factory.lua")
     dofile("features/tools/craft/rs_craft_feature.lua")
     dofile("features/tools/craft/rs_craft_plan_domain.lua")
+    dofile("features/tools/craft/rs_craft_plan_solver.lua")
     dofile("features/tools/craft/rs_craft_plan_feature.lua")
     local feature = suite.Features.tools_craft
     feature.Authority.Refresh=function()return true end -- 本用例只测分享命令，原生材料形态另测。

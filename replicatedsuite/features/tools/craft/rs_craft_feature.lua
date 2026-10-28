@@ -782,6 +782,10 @@ local function ReadDefaultItemGrade(itemType)
     itemGradeCache[itemType]={grade=grade,probe=Copy(probe)}
     return grade,probe
 end
+-- 材料品质也要能问到这里：询价按严格品质搜索，缺品质会让整项被跳过，而配方本身通常不声明材料品质。
+function CraftAssistant:GetItemGrade(itemType)
+    return ReadDefaultItemGrade(itemType)
+end
 local function ReadFixedRecipe(craftType)
     local catalog=S.Data and S.Data.CraftRecipeCatalog
     local records=type(catalog)=='table' and catalog.schemaVersion==1 and catalog.records
@@ -883,6 +887,11 @@ function CraftAssistant:ReadPlanRecipe(craftType, options)
     evidence.baseStatus=okB and type(base) or 'unavailable'
     evidence.baseShape=Shape(base);evidence.baseNumbers=table.concat(baseNumbers,',')
     evidence.baseError=type(errB)=='string' and errB:sub(1,160) or nil
+    -- 原生 BaseInfo 只认 needed_lp 这一个实测存在的字段；泛化的 labor/fee 语义未核实，继续不接受。
+    -- needed_lp 是配方固有需求，用户手填仍优先（MergeRecipeCosts 保留 manual）。cost 的单位尚未核实，不据此填费用。
+    local nativeLabor=CraftNumberField(base,{'needed_lp'},false)
+    if nativeLabor==nil or nativeLabor<=0 then nativeLabor=nil end
+    evidence.nativeLabor=nativeLabor
     if type(nativeProduct)=='table' and type(nativeProduct.useGrade)=='boolean' then evidence.productUseGrade=nativeProduct.useGrade end
     if p.status ~= "ready" or m.status ~= "ready" or #p.items ~= 1 or p.truncated or m.truncated then
         return nil, "配方产量/材料字段待核；不支持未明确分摊的多产物配方",evidence
@@ -934,7 +943,8 @@ function CraftAssistant:ReadPlanRecipe(craftType, options)
         rows[#rows+1] = item
     end
     -- BaseInfo 没有已验证的有效劳动力/费用字段契约，保留未知，由用户校准。
-    return { id=tostring(craftType), product=output, materials=rows, source="X2Craft", outputSource=outputSource },nil,evidence
+    return { id=tostring(craftType), product=output, materials=rows, source="X2Craft", outputSource=outputSource,
+        labor=nativeLabor, laborSource=nativeLabor and 'native_base' or nil },nil,evidence
 end
 
 local fixedIndexSource,fixedIndex=nil,{}

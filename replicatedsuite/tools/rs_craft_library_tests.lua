@@ -11,7 +11,7 @@ local function Boot(disk)
     local h=dofile('tools/rs_gear_page_test_host.lua')({disk=disk})
     local S=h.S
     dofile('core/rs_demand.lua');dofile('features/shared/rs_shared_bounds.lua');dofile('features/shared/rs_feature_slice_factory.lua')
-    dofile('features/tools/craft/rs_craft_feature.lua');dofile('features/tools/craft/rs_craft_plan_domain.lua');dofile('features/tools/craft/rs_craft_plan_feature.lua')
+    dofile('features/tools/craft/rs_craft_feature.lua');dofile('features/tools/craft/rs_craft_plan_domain.lua');dofile('features/tools/craft/rs_craft_plan_solver.lua');dofile('features/tools/craft/rs_craft_plan_feature.lua')
     local F=S.Features.tools_craft
     h.nativeRecipeRead=F.ReadPlanRecipe;h.nativeRecipeTypes=F.ReadPlanRecipeTypes
     F.enabled=true;F.consumerCount=1
@@ -420,6 +420,21 @@ Test('native base cost fields are observable but unverified labor is not silentl
     F.ReadPlanRecipe=h.nativeRecipeRead
     assert(h.C:RecipeImportLink('|if11;木材|r',1))
     assert(F:GetRecipeReadDiagnostics().costProbes['11'].baseNumbers:find('labor=5',1,true))
+end)
+Test('native needed_lp is adopted as labor while the unverified generic fields stay out',function()
+    local h=Boot();local S,F=h.S,h.F
+    local original=S.Api.CallCapability
+    S.Api.CallCapability=function(self,capability,object,method,...)
+        if capability=='X2Craft:GetCraftProductInfo' then return true,{{itemType=11,amount=1,item_name='木材',useGrade=true,productGrade=0}} end
+        if capability=='X2Craft:GetCraftMaterialInfo' then return true,{{amount=3,item_info={itemType=12,itemGrade=0,name='原木'}}} end
+        if capability=='X2Craft:GetCraftBaseInfo' then return true,{needed_lp=400,consume_lp=500,cost=14,labor=5,fee=10} end
+        return original(self,capability,object,method,...)
+    end
+    local recipe,why,evidence=h.nativeRecipeRead(F,11)
+    assert(recipe,why)
+    assert(recipe.labor==400 and recipe.laborSource=='native_base','needed_lp is the measured field and must be adopted')
+    assert(recipe.feeCopper==nil,'cost units are still unverified and must not become a fee')
+    assert(evidence.baseNumbers:find('needed_lp=400',1,true),'base evidence must keep exposing the raw numbers')
 end)
 Test('a fixed recipe of another grade cannot replace the required native recipe',function()
     local h=Boot();local S,F=h.S,h.F
@@ -886,6 +901,47 @@ Test('a bag-only scan does not claim that the bank is known or the total cost co
     assert(not C:PlanRefreshInventory(true) and not h.projection().inventoryComplete,
         'an unreadable or closed bank must not be treated as a confirmed empty bank')
 end)
+Test('item grade metadata is readable for plain materials and cached across reads',function()
+    local h=Boot();local S,F=h.S,h.F
+    assert(type(F.GetItemGrade)=='function','item grade reader must be reachable from the plan feature')
+    local reads=0;local original=S.Api.CallCapability
+    S.ApiImports={Acquire=function(_,owner,dependencies)
+        assert(owner=='feature:tools_craft:item_metadata' and dependencies[1]=='X2Item:GetItemInfoByType');return true
+    end}
+    S.Api.CallCapability=function(self,capability,object,method,id,...)
+        if capability=='X2Item:GetItemInfoByType' then reads=reads+1;return true,{itemType=id,itemGrade=2} end
+        return original(self,capability,object,method,id,...)
+    end
+    local grade=select(1,F:GetItemGrade(19940))
+    assert(grade==2,'a plain material must resolve its quality from item metadata')
+    assert(select(1,F:GetItemGrade(19940))==2 and reads==1,'successful metadata must be cached')
+end)
+Test('integer search improves the hand-made allocation',function()
+    local h=Boot();local D=h.S.CraftPlanDomain
+    local facts={inventoryComplete=true,inventory={},recipes={
+        ['1:*:*']={id='1',product={itemType=1,count=1},materials={{itemType=2,count=1}},labor=10,feeCopper=0},
+        ['2:*:*']={id='2',product={itemType=2,count=1},materials={{itemType=3,count=2}},labor=5,feeCopper=0}},
+        prices={['2:*:*']={price=300,freshness='fresh'},['3:*:*']={price=100,freshness='fresh'}}}
+    -- 用户手动把 2 号设成买：300。自制只要 2*100。
+    local plan={targets={{itemType=1,count=1}},allocations={['2:*:*']={mode='buy'}},laborValueCopper=10}
+    local comparison=D.Compare(plan,facts)
+    assert(comparison.manual.cashCopper==300)
+    assert(comparison.recommendation.kind=='integer_batches','the recommendation must use the complete batch search')
+    assert(comparison.recommendation.allocations['2:*:*'].mode=='craft')
+    assert(comparison.recommendation.evaluation.cashCopper==200)
+end)
+Test('a target switched to buying stops expanding its materials',function()
+    local h=Boot();local D=h.S.CraftPlanDomain
+    local facts={inventoryComplete=true,inventory={},recipes={
+        ['1:*:*']={id='1',product={itemType=1,count=1},materials={{itemType=2,count=8}},labor=10,feeCopper=0}},
+        prices={['1:*:*']={price=500,freshness='fresh'},['2:*:*']={price=100,freshness='fresh'}}}
+    -- 目标默认自制：8 个材料 × 100。
+    local craft=D.Evaluate({targets={{itemType=1,count=1}},allocations={}},facts)
+    assert(craft.cashCopper==800)
+    -- 显式选「成品」：直接买成品，不再下探材料。
+    local buy=D.Evaluate({targets={{itemType=1,count=1}},allocations={['1:*:*']={mode='buy'}}},facts)
+    assert(buy.cashCopper==500 and buy.byKey['2:*:*']==nil,'buying the target must not expand its materials')
+end)
 Test('recommendation evaluates crafting an intermediate that defaults to buying',function()
     local h=Boot();local D=h.S.CraftPlanDomain
     local facts={inventoryComplete=true,inventory={},catalog={['3:*:*']={base=true}},
@@ -897,6 +953,28 @@ Test('recommendation evaluates crafting an intermediate that defaults to buying'
     assert(comparison.manual.cashCopper==60 and comparison.manual.byKey['2:*:*'].buy==6)
     assert(comparison.recommendation.evaluation.cashCopper==24)
     assert(comparison.recommendation.allocations['2:*:*'].mode=='craft' and not plan.allocations['2:*:*'])
+end)
+Test('recommendation reaches the whole-batch boundary when craft output does not divide the shortage',function()
+    local h=Boot();local D=h.S.CraftPlanDomain
+    -- 缺口 50、每批产出 30：全做要 2 批并留下 10 个余料，全买更贵，最优是 1 批加买 20。
+    local facts={inventoryComplete=true,inventory={},
+        recipes={['1:*:*']={id='1',product={itemType=1,count=30},materials={{itemType=2,count=10}},labor=0,feeCopper=0}},
+        prices={['1:*:*']={price=10},['2:*:*']={price=25}}}
+    local plan={targets={{itemType=1,count=50}},allocations={}}
+    local comparison=D.Compare(plan,facts)
+    assert(comparison.manual.cashCopper==500,'the default plan crafts two batches')
+    local chosen=comparison.recommendation.allocations['1:*:*']
+    assert(chosen and chosen.mode=='mixed' and chosen.buy==20 and chosen.craft==30,
+        'recommendation should keep one batch and buy the remainder')
+    assert(comparison.recommendation.evaluation.cashCopper==450)
+end)
+Test('integer batches handle an exact output multiple',function()
+    local h=Boot();local D=h.S.CraftPlanDomain
+    local facts={inventoryComplete=true,inventory={},
+        recipes={['1:*:*']={id='1',product={itemType=1,count=30},materials={{itemType=2,count=10}},feeCopper=0}},
+        prices={['1:*:*']={price=10},['2:*:*']={price=25}}}
+    local comparison=D.Compare({targets={{itemType=1,count=60}},allocations={}},facts)
+    assert(comparison.recommendations.cash.evaluation.cashCopper==500,'two batches are cheapest for this exact multiple')
 end)
 Test('cash recommendation remains available with unknown labor when labor is not priced',function()
     local h=Boot();local D=h.S.CraftPlanDomain
