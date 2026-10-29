@@ -118,6 +118,11 @@ function M:Build(parent,F,prefix,options)
         c.settings=R:Button({id=prefix.."settings",parent=row,text="设置",compact=true,slot={size="fixed",width=76}})
         c.settings.onClick=options.onSettings
     end
+    -- 损坏记录会影响各分类的库存；入口不藏在绘制/计时设置里，也不随海域分类隐藏。
+    if type(F.Commands.RepairCofferRecords)=="function" then
+        c.repair=R:Button({id=prefix.."repair_coffers",parent=parent,text="修复损坏记录（保留完整坐标）",compact=true,visible=false,
+            slot={size="fixed",height=26,hAlign="fill"},onClick=function()return Run("RepairCofferRecords")end})
+    end
     c.custom=self:BuildCustomPoint(parent,F,prefix,{onResult=options.onResult})
     if F.Inventory then
         -- 完整页与悬浮窗分派同一个逐箱识别命令；记录号来自Feature，不让UI预设/选择物理箱身份。
@@ -161,6 +166,10 @@ function M:Build(parent,F,prefix,options)
     c.hint=R:Text({id=prefix.."round_hint",parent=c.round,text="静态资料点，不代表当前存在",fontSize=9,tone="muted",overflow="ellipsis",slot={size="fill",fill=1,minWidth=60}})
     function c:Refresh(p)
         self.projection=p
+        if self.repair then
+            self.repair:SetVisible(p.inventoryRepairable==true)
+            self.repair:SetEnabled(F.enabled==true and not (p.withdraw and p.withdraw.status=="running"))
+        end
         if self.custom then self.custom:Refresh(p)end
         local sea=p.viewKind=="seabugs" or p.viewKind=="ships"
         self.kind:Render()
@@ -183,6 +192,7 @@ function M:Build(parent,F,prefix,options)
             self.sort:Render();self.quantity:Render();self.assign:Render()
             self.register:SetEnabled(F.enabled==true and not running)
             self.clear:SetEnabled(F.enabled==true and not running)
+            self.clear:SetVisible(p.inventoryRepairable~=true)
             self.assign:SetEnabled(selected~=nil and selected.groupKey~=nil)
             self.take:SetEnabled(F.enabled==true and not running and not p.inventoryUncertain and p.boundCofferId==self.boxId
                 and selected~=nil and selected.boxes~=nil and (selected.boxes[self.boxId] or 0)>0)

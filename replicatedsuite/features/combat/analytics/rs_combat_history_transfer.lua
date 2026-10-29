@@ -547,6 +547,11 @@ function H:ImportFile(options)
     local previous=self.transferDiagnostic or {}
     self.transferDiagnostic={attempts=(previous.attempts or 0)+1,failures=previous.failures or 0,
         readbackFailures=0,repages=0,action='import_file',ready=false}
+    -- 没有选择过文件是操作前置条件，不是传输损坏；保留指引，不向错误环追加伪故障。
+    if S.CombatHistoryImportFile==nil then
+        self:RecordTransferDiagnostic('file_waiting',nil,{ready=false})
+        return false,'请先运行“导入战斗历史.cmd”选择另一台电脑的TXT，重载插件后再点“导入TXT”合并。','file_not_prepared'
+    end
     self:RecordTransferDiagnostic('file_validate')
     local called,ok,result=xpcall(function()
         local parsed,err,id=ReadPreparedFile(S.CombatHistoryImportFile)

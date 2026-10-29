@@ -1897,12 +1897,15 @@ function G:Run(options)
             and (tonumber(persistence.integrityContractVersion) or 0) >= 1
             and (tonumber(persistence.historicalCanonicalRecoveryContractVersion) or 0) >= 3
             and (tonumber(persistence.knownLegacyCanonicalRecoveryContractVersion) or 0) >= 1
-            and (tonumber(persistenceStats.integrityLoadFailures) or 0) == 0
-            and (tonumber(persistenceStats.encodedLoadRejects) or 0) == 0,
+            -- 已验证恢复后，历史失败仍留在 incidents warning；当前阻断由逐 Store 故障汇总决定。
+            and (tonumber(persistence.currentFailureSummaryContractVersion) or 0) >= 1
+            and tonumber(persistence.currentFailures) == 0,
         "blocker", persistence and ("contract=" .. tostring(persistence.reliabilityContractVersion or 0)
             .. "/integrity=" .. tostring(persistence.integrityContractVersion or 0)
             .. "/historicalCanonical=" .. tostring(persistence.historicalCanonicalRecoveryContractVersion or 0)
             .. "/knownLegacy=" .. tostring(persistence.knownLegacyCanonicalRecoveryContractVersion or 0)
+            .. "/currentContract=" .. tostring(persistence.currentFailureSummaryContractVersion or 0)
+            .. "/currentFail=" .. tostring(persistence.currentFailures or "missing")
             .. "/knownRecover=" .. tostring(persistenceStats.knownLegacyCanonicalRecoveries or 0)
             .. "/knownReject=" .. tostring(persistenceStats.knownLegacyCanonicalRecoveryRejects or 0)
             .. "/stamped=" .. tostring(persistenceStats.integrityStampedSaves or 0)

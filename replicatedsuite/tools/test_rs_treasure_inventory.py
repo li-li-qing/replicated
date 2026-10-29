@@ -960,6 +960,41 @@ class TreasureInventoryTests(unittest.TestCase):
         assert(Label({inventoryRepairable=false}):find('清空本轮记录',1,true))
         ''')
 
+    def test_main_and_floating_repair_buttons_are_visible_for_corrupt_records_in_all_views(self):
+        self.floating().execute('''
+        dofile('presentation/v3/widgets/rs_v3_treasure_controls.lua')
+        h.storage={Map(0,2),Map(1,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        local box=h.disk[store.resolvedKey].payload.boxes['1']
+        box.chunks[1]=box.chunks[1]:match('^([^\\n]+\\n)')..'broken tail'
+        I.loaded=false;store.loaded=false;assert(not I:Initialize())
+        local native=h.Native(nil,'recovery_main_parent',0,0,700,600)
+        local body=assert(h.S.RSUI:VerticalBox({id='recovery_main',parent=native}))
+        local main=h.S.UIV3.TreasureControlsV3:Build(body,f,'recovery_',{})
+        assert(main.repair,'full page has no explicit recovery button')
+        local button=assert(content.treasureRepairButton,'floating window has no visible recovery button')
+        for _,kind in ipairs({'maps','seabugs','ships'})do
+            assert(f.Commands:SetViewKind(kind));main:Refresh(f:GetProjection());content:Refresh()
+            body:Layout(0,0,700,600)
+            assert(main.repair.visible and main.repair.enabled and h:VisibleRect(main.repair),'full-page repair is hidden by the selected catalog')
+            for _,width in ipairs({240,390})do
+                content.content:Layout(0,0,width,240)
+                assert(button.visible and button.enabled and h:VisibleRect(button),'floating repair is clipped or hidden')
+            end
+        end
+        local function RecoveryLabel()
+            for _,item in ipairs(content.treasureSettingsDropdown.items)do if item.value=='clear_coffers' then return item.text end end
+        end
+        assert(RecoveryLabel():find('修复损坏记录',1,true),'floating menu missed the newly failed inventory state')
+        h.failSave=true;assert(not main.repair.root.events.OnClick(main.repair.root,'LeftButton'));h.failSave=false
+        assert(button.root.events.OnClick(button.root,'LeftButton'))
+        main:Refresh(f:GetProjection());content:Refresh()
+        assert(I.loaded and I.State.boxes['1'].records==1 and not main.repair.visible and not button.visible)
+        assert(RecoveryLabel():find('清空本轮记录',1,true),'floating menu retained a stale repair label')
+        local writes=h.writes
+        assert(not f.Commands:RepairCofferRecords() and h.writes==writes and I.State.boxes['1'],'repair command cleared a healthy round')
+        ''')
+
     def test_explicit_corrupt_root_recovery_keeps_complete_lines_only_and_reports_loss(self):
         self.boot().execute('''
         h.storage={Map(0,2),Map(1,2)};assert(f.Commands:IdentifyCurrentCoffer())

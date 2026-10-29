@@ -10,9 +10,9 @@ local D,UI,H=S.UIV3Design,S.RSUI,S.UIV3 and S.UIV3.PageHost
 if not F or not DPS or not D or not UI or not H then return end
 -- 交换面板只持有冻结的导出文本和输入草稿；来源去重、角色校验和耐久合并均经 Feature Commands。
 -- 文本只在点击操作时写入，战斗刷新不能重写多行框、抢焦点或清掉用户正在选择/粘贴的内容。
-local function BuildTransfer(parent,onChanged)
+local function BuildTransfer(parent,onChanged,fileParent)
     local box=UI:VerticalBox({id="v3_history_transfer",parent=parent,gap=5,slot={size="auto",hAlign="fill"}})
-    local files=UI:HorizontalBox({id="v3_history_file_actions",parent=box,gap=5,slot={size="fixed",height=29,hAlign="fill"}})
+    local files=UI:HorizontalBox({id="v3_history_file_actions",parent=fileParent or box,gap=5,slot={size="fixed",height=29,hAlign="fill"}})
     local exportFile=UI:Button({id="v3_history_file_export",parent=files,text="导出TXT",compact=true,slot={size="fixed",width=92}})
     local importFile=UI:Button({id="v3_history_file_import",parent=files,text="导入TXT",compact=true,slot={size="fixed",width=92}})
     local textMode=UI:Button({id="v3_history_text_mode",parent=files,text="文本方式",compact=true,slot={size="fixed",width=84}})
@@ -22,7 +22,7 @@ local function BuildTransfer(parent,onChanged)
     local clear=UI:Button({id="v3_history_transfer_clear",parent=actions,text="清除输入",compact=true,slot={size="fixed",width=76}})
     local fold=UI:Button({id="v3_history_transfer_fold",parent=actions,text="展开文本",compact=true,slot={size="fixed",width=76}})
     local status=UI:Text({id="v3_history_transfer_status",parent=box,
-        text="跨电脑：点“导出TXT”后运行“导出战斗历史.cmd”。另一台运行“导入战斗历史.cmd”选择TXT，重新加载插件后点“导入TXT”。重复导入会去重。",
+        text="导出：先点“导出TXT”更新快照，再运行“导出战斗历史.cmd”保存文件；自动接收器开启时会自动生成。\n导入：先运行“导入战斗历史.cmd”选择另一台的TXT，重载插件，再点“导入TXT”合并。重复导入同一来源会去重。",
         fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=28,hAlign="fill"}})
     local editorHost=UI:Border({id="v3_history_transfer_editor_host",parent=box,visible=false,padding=0,variant="card",
         slot={size="fixed",height=150,hAlign="fill"}})
@@ -47,6 +47,10 @@ local function BuildTransfer(parent,onChanged)
         if edit then available=S.UI:BindDeferredInputActivation(edit,editorHost.owner,"history_transfer_edit",{preserveFocusedSelection=true})==true end
     end
     local controller={}
+    local function RevealTransfer()
+        -- 操作后的说明/文本在正文首部。只响应点击滚回这里，普通战斗刷新不改变用户滚动位置。
+        if type(parent.ScrollToTop)=='function' then parent:ScrollToTop() end
+    end
     function controller:Deactivate()
         if edit and S.UI and type(S.UI.DeactivateInputWidget)=='function' then
             S.UI:DeactivateInputWidget(edit,editorHost.owner,"history_transfer_hidden")
@@ -117,6 +121,7 @@ local function BuildTransfer(parent,onChanged)
         return true
     end
     exportFile.spec.onClick=function()
+        RevealTransfer()
         OpenEditor(false);actions:SetVisible(false);textMode:SetText('文本方式')
         fileConfirmId=nil;importFile:SetText('导入TXT')
         local ok,message=F.Commands:ExportPersonalHistoryFile()
@@ -124,9 +129,13 @@ local function BuildTransfer(parent,onChanged)
         return ok,message
     end
     importFile.spec.onClick=function()
+        RevealTransfer()
         OpenEditor(false);actions:SetVisible(false);textMode:SetText('文本方式')
-        local ok,result=F.Commands:ImportPersonalHistoryFile({confirmPackageId=fileConfirmId})
-        if ok~=true then status:SetText('导入TXT失败：'..tostring(result));return false,result end
+        local ok,result,code=F.Commands:ImportPersonalHistoryFile({confirmPackageId=fileConfirmId})
+        if ok~=true then
+            status:SetText(code=='file_not_prepared' and tostring(result) or ('导入TXT失败：'..tostring(result)))
+            return false,result
+        end
         if result.requiresConfirmation then
             fileConfirmId=result.packageId;importFile:SetText('确认合并');status:SetText((result.warning:gsub('“导入合并”','“确认合并”')))
         else
@@ -137,6 +146,7 @@ local function BuildTransfer(parent,onChanged)
         return true,result
     end
     textMode.spec.onClick=function()
+        RevealTransfer()
         local show=actions.visible~=true;actions:SetVisible(show);textMode:SetText(show and '收起文本' or '文本方式')
         if not show then OpenEditor(false) end
         return true
@@ -193,10 +203,14 @@ local function Build(parent)
     local root,err=D:PageRoot(parent,{id="v3_personal_history_page",padding=4,gap=7})
     if not root then error(err) end
     local scope=D:CombatStatisticsControls(root,"history")
-    -- 导航留在固定根中，只有查询正文滚动；否则回到曾滚动的历史页时，导航仍会跳走或被裁掉。
-    local content,contentErr=D:ScrollablePageRoot(root,{id="v3_personal_history_page_body",padding=0,gap=7,
-        slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
+    -- 文件入口随导航固定显示；长日账不能把跨电脑交换按钮挤出视口。
+    local transferBar=UI:VerticalBox({id="v3_personal_history_transfer_bar",parent=root,gap=0,
+        slot={size="fixed",height=29,hAlign="fill"}})
+    -- 查询和长说明可以滚动，日账表使用独立的剩余区域；不能让外层条目吸附滚动把整张表隐藏。
+    local content,contentErr=D:ScrollablePageRoot(root,{id="v3_personal_history_page_body",padding=0,gap=7,maxDesiredHeight=240,
+        slot={size="auto",maxHeight=240,hAlign="fill"}})
     if not content then error(contentErr or "个人历史滚动正文不可用") end
+    local transfer=BuildTransfer(content,function()return root:RefreshData()end,transferBar)
     D:PageHeader(content,"v3_personal_history_header","个人战斗历史","仅记录功能开启期间的个人数据；记录保存在本地当前角色存档。清空实时统计不会删除这里的记录。")
     -- 日期只是本页只读筛选状态；复用 RSUI 下拉弹层，不要求输入日期，也不写回历史 Store。
     local selectedFrom,selectedTo,lastDates="","",nil
@@ -235,13 +249,14 @@ local function Build(parent)
     UI:Button({id="v3_personal_history_all",parent=ranges,text="全部日期",compact=true,slot={size="fixed",width=80},onClick=function()
         selectedFrom,selectedTo="","";return root:RefreshData()
     end})
-    -- 查询和结果同属滚动正文；顶层只保留稳定导航，不改变历史的读取/存储 Authority。
+    -- 筛选、期间和保护说明同属查询区，不改变历史的读取/存储 Authority。
     rangeHint=UI:Text({id="v3_personal_history_range_hint",parent=content,text=rangeHelp,fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=26}})
     local period=UI:Text({id="v3_personal_history_period",parent=content,text="记录期间：--",fontSize=10,tone="strong",overflow="wrap",slot={size="auto",minHeight=26}})
     local totals=UI:Text({id="v3_personal_history_totals",parent=content,text="--",fontSize=12,tone="strong",overflow="wrap",slot={size="auto",minHeight=44}})
     local protection=UI:Text({id="v3_personal_history_protection",parent=content,text="",visible=false,fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=28}})
     local dailySummary=UI:Text({id="v3_personal_history_daily_summary",parent=content,text="每日记录",fontSize=10,tone="strong",overflow="wrap",slot={size="auto",minHeight=22}})
-    local tableHost=UI:VerticalBox({id="v3_personal_history_table_host",parent=content,gap=0,slot={size="fixed",height=410,hAlign="fill"}})
+    local tableHost=UI:VerticalBox({id="v3_personal_history_table_host",parent=root,gap=0,
+        slot={size="fill",fill=1,minHeight=72,hAlign="fill",vAlign="fill"}})
     local tableView,trackingToken,pendingScroll=nil,nil,nil
     local tables={}
     local function SyncTracking()
@@ -275,8 +290,16 @@ local function Build(parent)
         return damage,healing
     end
     local details=UI:Text({id="v3_personal_history_evidence",parent=content,text="--",fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=48}})
-    -- 先呈现每日击杀/死亡，再放交换和长说明，避免常见窗口高度下先看到导出操作却找不到记录。
-    local transfer=BuildTransfer(content,function()return root:RefreshData()end)
+    local layout=root.Layout
+    function root:Layout(x,y,width,height)
+        -- 查询区最多占窗口的一半，短窗口/长说明也始终为日账留出可滚动的行区域。
+        local limit=math.max(96,math.floor((tonumber(height) or 480)*0.5))
+        if content.spec.maxDesiredHeight~=limit then
+            content.spec.maxDesiredHeight=limit
+            content:SetSlot({size="auto",maxHeight=limit,hAlign="fill"})
+        end
+        return layout(self,x,y,width,height)
+    end
     function root:RefreshData()
         scope:Render()
         local showDamage,showHealing=SyncTracking()

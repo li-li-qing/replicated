@@ -12,11 +12,14 @@ local function Boot()
     local S=h.S
     dofile('ui/framework/rs_ui_forms.lua')
     -- 本组只测试历史页面；导航与设置不是被测对象。
-    S.UIV3Design.CombatStatisticsControls=function()return {Render=function()return true end}end
-    S.UIV3Design.CancelCombatStatisticsRefresh=function()return true end
-    S.Features.DPS={EnsureStoreLoaded=function()return true end,GetSettingsProjection=function()return {trackDamage=false,trackHealing=false}end}
+    S.Features.DPS={EnsureStoreLoaded=function()return true end,GetSettingsProjection=function()return {trackDamage=h.trackDamage==true,trackHealing=h.trackHealing==true}end}
     h.todayDate='2026-10-29';h.cachedTodayDate='2026-10-29';h.todayReads=0;h.queries={};h.protection=true
     local F={Commands={}}
+    function F:EnsureStoreLoaded()return true end
+    function F:GetCollectionScope()return 'self' end
+    h.fileExports=0;h.fileImports=0
+    function F.Commands:ExportPersonalHistoryFile()h.fileExports=h.fileExports+1;return false,'导出测试反馈'end
+    function F.Commands:ImportPersonalHistoryFile()h.fileImports=h.fileImports+1;return false,'导入测试反馈'end
     function F.Commands:GetPersonalHistoryToday()
         h.todayReads=h.todayReads+1
         if not h.todayDate then return nil,'服务器日期暂不可用' end
@@ -25,15 +28,18 @@ local function Boot()
     function F:GetPersonalHistoryProjection(range)
         range=range or {};h.queries[#h.queries+1]={fromDate=range.fromDate,toDate=range.toDate}
         local filtered=range.fromDate~=nil and range.fromDate~=''
+        local rows={}
+        for i=1,h.rowCount or 1 do rows[i]={date=filtered and range.fromDate or '2026-10-29',kills=3,deaths=2}end
         return {available=true,todayDate=h.cachedTodayDate,revision=1,complete=true,
             dateOptions={'2026-10-30','2026-10-29','2026-10-28'},
             totals={kills=filtered and 3 or 23,deaths=filtered and 2 or 12},
-            rows={{date=filtered and range.fromDate or '2026-10-29',kills=3,deaths=2}},
+            rows=rows,
             protection=h.protection and {enabled=true,status=h.status or 'basic',protectedKills=filtered and 2 or 20,
                 protectedDeaths=filtered and 1 or 10,legacyKills=filtered and 1 or 3,legacyDeaths=filtered and 1 or 2,
                 error=h.guardError} or nil}
     end
     S.Features.CombatAnalytics=F
+    dofile('presentation/v3/pages/rs_v3_combat_statistics_controls.lua')
     dofile('presentation/v3/pages/rs_v3_combat_personal_history_page.lua')
     local page=assert(S.UIV3.PageHost.factories['combat.personal_history'](h.page.spec.parent))
     assert(page:OnActivated());h.history=page;h.tree={}
@@ -43,11 +49,33 @@ local function Boot()
         local button=assert(self.tree[id],id..' missing')
         return button.root.events.OnClick(button.root,'LeftButton')
     end
-    function h:Arrange(width)
-        self.page.spec.parent.width=width;self.history:Layout(0,0,width,680);self.S.RSUI:FlushLayoutQueue(32)
+    function h:Arrange(width,height)
+        self.page.spec.parent.width=width;self.page.spec.parent.height=height or 680
+        self.history:Layout(0,0,width,height or 680);self.S.RSUI:FlushLayoutQueue(32)
     end
     return h
 end
+Test('history file actions remain visible above the scrollable daily records',function()
+    local h=Boot();h.rowCount=40;assert(h.history:RefreshData())
+    local body=assert(h.tree.v3_personal_history_page_body)
+    for _,size in ipairs({{820,680},{620,580},{480,480}})do
+        h:Arrange(size[1],size[2])
+        for _,offset in ipairs({0,10000})do
+            body:SetScrollOffset(offset,true);h:Arrange(size[1],size[2])
+            for _,id in ipairs({'v3_history_file_export','v3_history_file_import','v3_history_text_mode'})do
+                local button=assert(h.tree[id])
+                assert(button.root.width>40 and button.root.height>=20,id..' has no clickable area')
+                local ok,reason=h:VisibleRect(button);assert(ok,id..': '..tostring(reason))
+            end
+        end
+    end
+    assert(h:ClickHistory('v3_history_file_export')==false and h.fileExports==1)
+    h:Arrange(480,480)
+    assert(h:VisibleRect(h.tree.v3_history_transfer_status),'TXT failure feedback is outside the viewport')
+    assert(h.tree.v3_history_transfer_status.text:find('导出测试反馈',1,true))
+    assert(h:ClickHistory('v3_history_file_import')==false and h.fileImports==1)
+    assert(h.tree.v3_history_transfer_status.text:find('导入测试反馈',1,true))
+end)
 Test('today click selects the current server day and remains reachable at narrow widths',function()
     local h=Boot();local today=assert(h.tree.v3_personal_history_today,'today shortcut missing')
     for _,width in ipairs({820,620,480})do
@@ -65,6 +93,28 @@ Test('today click selects the current server day and remains reachable at narrow
     assert(h.todayReads==1,'all dates must not request the server clock')
     assert(h.tree.v3_personal_history_from:GetValue()=='' and h.tree.v3_personal_history_to:GetValue()=='','all dates must clear today selection')
     assert(h.tree.v3_personal_history_totals.text:find('击杀玩家 23',1,true),'all dates lost cumulative totals')
+end)
+Test('daily history stays visible with long records, transfer feedback and tracking switches',function()
+    local h=Boot();h.rowCount=17
+    local body=assert(h.tree.v3_personal_history_page_body)
+    for _,size in ipairs({{820,680},{620,580},{480,480}})do
+        for _,amounts in ipairs({false,true,false})do
+            h.trackDamage=amounts;h.trackHealing=amounts;assert(h.history:RefreshData())
+            for _,offset in ipairs({0,10000})do
+                body:SetScrollOffset(offset,true);h:Arrange(size[1],size[2])
+                local active
+                for _,view in ipairs(h.tree.v3_personal_history_table_host.children)do if view.visible then active=view end end
+                assert(active and active:GetItem(17),'daily data vanished')
+                assert(active.root.height>=72,'daily table has no usable viewport')
+                local ok,reason=h:VisibleRect(active);assert(ok,'daily table disappeared: '..tostring(reason))
+                for _,cell in ipairs(active.header.cells)do assert(h:VisibleRect(cell),'daily column was clipped')end
+            end
+        end
+    end
+    assert(h:ClickHistory('v3_history_file_import')==false)
+    h:Arrange(480,480)
+    local ok,reason=h:VisibleRect(h.tree.v3_personal_history_table_host)
+    assert(ok,'import feedback hid the daily table: '..tostring(reason))
 end)
 Test('each today click rechecks the server day after midnight',function()
     local h=Boot();assert(h:ClickHistory('v3_personal_history_today'))

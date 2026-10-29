@@ -89,6 +89,21 @@ Test('prepared TXT imports through the same history authority and deduplicates',
     assert(target.writes==writes and target.H:GetProjection().totals.kills==36,'duplicate TXT was counted twice')
     assert(target:Report().history.transfer.stage=='file_import_ready')
 end)
+Test('missing prepared TXT requests the file step without reporting a transfer failure',function()
+    local h=Boot({seed=false});local warnings=0
+    h.S.DiagnosticsManager={Emit=function()warnings=warnings+1 end}
+    local writes=h.writes
+    local ok,message,code=h.F.Commands:ImportPersonalHistoryFile()
+    assert(ok==false and code=='file_not_prepared' and message:find('导入战斗历史.cmd',1,true),'missing file was not distinguished from corrupt input')
+    local d=h.H:GetTransferDiagnostics()
+    assert(d.stage=='file_waiting' and not d.lastError and d.failures==0 and warnings==0,'normal import preparation became a fault')
+    assert(h.writes==writes and h.H:GetProjection().totals.kills==0)
+    assert(h:Click('v3_history_file_import')==false)
+    local text=h.u.widgets.v3_history_transfer_status.text
+    assert(not text:find('失败',1,true) and text:find('导入战斗历史.cmd',1,true),'missing-file instructions still look like a broken import')
+    h.S.CombatHistoryImportFile={protocol='unexpected'}
+    assert(h.F.Commands:ImportPersonalHistoryFile()==false and warnings==1,'malformed prepared input was silently accepted')
+end)
 Test('truncated prepared TXT is rejected without saving partial history',function()
     local source=Boot();local packet=assert(source.F.Commands:ExportPersonalHistory())
     local target=Boot({seed=false});target.S.CombatHistoryImportFile=ImportFile(source,packet)

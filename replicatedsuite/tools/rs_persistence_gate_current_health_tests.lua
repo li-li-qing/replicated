@@ -22,6 +22,9 @@ local G = assert(ReplicatedSuite.FoundationGate)
 local function Snapshot(overrides)
     local out = {
         reliabilityContractVersion = 8,
+        integrityContractVersion = 4,
+        historicalCanonicalRecoveryContractVersion = 3,
+        knownLegacyCanonicalRecoveryContractVersion = 1,
         envelopeIntegrityContractVersion = 1,
         scopeBindingContractVersion = 1,
         currentFailures = 0,
@@ -35,6 +38,8 @@ local function Snapshot(overrides)
             durableVerifyFailures = 4,
             scopeBindingMismatches = 0,
             scopeRebinds = 0,
+            integrityLoadFailures = 2,
+            encodedLoadRejects = 0,
         },
     }
     for k, v in pairs(overrides or {}) do out[k] = v end
@@ -64,6 +69,29 @@ Test("envelope and scope failures still block independently of current store cou
     snap = Snapshot(); snap.stats.scopeBindingMismatches = 1
     ok = G:EvaluatePersistenceReliabilityV6(snap)
     assert(ok == false, "scope mismatch was weakened")
+end)
+
+local function RunCheck(snapshot,id)
+    ReplicatedSuite.Persistence.Describe=function()return snapshot end
+    local report=G:Run({skipSequences=true})
+    for _,row in ipairs(report.checks)do if row.id==id then return row end end
+    error('missing check: '..id)
+end
+Test("recovered integrity incidents are warnings instead of current blockers",function()
+    local snap=Snapshot()
+    local row=RunCheck(snap,'persistence_reliability_v4')
+    assert(row.ok,row.detail)
+    assert(row.detail:find('integrityFail=2',1,true),'historical integrity evidence disappeared')
+    local incident=RunCheck(snap,'persistence_reliability_incidents')
+    assert(not incident.ok and incident.severity=='warning','recovered incidents were erased')
+    assert(snap.stats.integrityLoadFailures==2,'gate cleared historical failures')
+end)
+Test("active and unknown integrity health still block v4",function()
+    assert(not RunCheck(Snapshot({currentFailures=1}),'persistence_reliability_v4').ok)
+    local snap=Snapshot();snap.currentFailures=nil
+    assert(not RunCheck(snap,'persistence_reliability_v4').ok,'unknown current health was accepted')
+    snap=Snapshot();snap.currentFailureSummaryContractVersion=nil
+    assert(not RunCheck(snap,'persistence_reliability_v4').ok,'missing health contract was accepted')
 end)
 
 print(string.format("PERSISTENCE_GATE_CURRENT_HEALTH_RESULT passed=%d failed=%d", passed, failed))

@@ -479,12 +479,13 @@ function I:DropBrokenShards()
     self.loaded=true;self.bound=nil;self.openRecord=nil;self:RebuildGroups()
     return removed
 end
-function I:ResetCofferRound()
+function I:ResetCofferRound(repairOnly)
     if not F.enabled then return false,"寻宝功能已关闭" end
     if self.job then return false,"请先停止取图，再重新统计" end
     local ready=self:Initialize()
     local ok,err
     if ready then
+        if repairOnly==true then return false,"保管箱记录可正常读取，无需修复；原记录已保留" end
         ok,err=self:Commit("treasure_coffer_round_reset",function(state)
             state.boxes={};state.pendingCoffer=nil;state.scanRound=true
         end)
@@ -642,7 +643,7 @@ function I:Decorate(p)
     if not p.cofferRoundStarted then p.inventoryHint="打开保管箱后点击识别，自动清空旧登记并开始本轮统计。" end
     if p.inventoryUncertain then p.inventoryHint="记录"..self.State.pendingCoffer.."有未确认移动，未计入总量；请重新统计后逐箱识别。" end
     if not self.loaded then
-        p.inventoryHint=p.inventoryRepairable and "保管箱记录损坏，未计入箱内数量；请在设置中点击修复损坏记录。"
+        p.inventoryHint=p.inventoryRepairable and "保管箱记录损坏，未计入箱内数量；请点击“修复损坏记录”保留完整坐标。"
             or "保管箱记录读取失败，未计入箱内数量；请先导出诊断。"
     elseif self.lastError then p.inventoryHint=self.lastError.."；"..p.inventoryHint end
     if A.status=="unavailable" or A.inventoryError then p.inventoryHint="背包读取不可用，展示最后记录；"..p.inventoryHint end
@@ -714,6 +715,7 @@ function F:GetHealth()local p=health(self);p.inventory={storeId=I.storeId,loaded
 F.Commands.RegisterCoffer=function(_,id)return I:RegisterCoffer(id)end
 F.Commands.IdentifyCurrentCoffer=function()return I:IdentifyCurrentCoffer()end
 F.Commands.ResetCofferRound=function()return I:ResetCofferRound()end
+F.Commands.RepairCofferRecords=function()return I:ResetCofferRound(true)end
 F.Commands.WithdrawCoordinate=function(_,id,key,limit)return I:Withdraw(id,key,limit)end
 F.Commands.CancelWithdrawal=function()return I:Stop("cancelled")end
 F.Commands.SetCoordinateContinent=function(_,key,value)return I:SetContinent(key,value)end

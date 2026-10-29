@@ -1055,13 +1055,17 @@ ok, err = Register({
                 if minutes then return Run("SetShipRespawnMinutes",tonumber(minutes))end
                 if draw then return Run("SetRefreshMs",tonumber(draw))end
                 if value=="refresh" then return Run("Refresh")end
-                if value=="clear_coffers" then return Run("ResetCofferRound")end
+                if value=="clear_coffers" then return Run(Projection().inventoryRepairable and "RepairCofferRecords" or "ResetCofferRound")end
                 if value=="skip" then return Run("VisitAndNext","skipped")end
                 if value=="undo" then return Run("UndoVisit")end
                 if value=="round" then return Run("ResetRound")end
                 if value=="stop" then return Run("StopTracking")end
                 return false,"未知设置"
             end,onChanged=function(_,_,control)control:Render()end,slot={size="fixed",width=48}})
+        if type(Feature.Commands.RepairCofferRecords)=="function" then
+            instance.treasureRepairButton=RSUI:Button({id=prefix.."repair_coffers",parent=content,text="修复损坏记录（保留完整坐标）",fontSize=9,compact=true,visible=false,
+                slot={size="fixed",height=24,hAlign="fill"},onClick=function()return Run("RepairCofferRecords")end})
+        end
         local row=RSUI:HorizontalBox({id=prefix.."actions",parent=content,gap=3,slot={size="fixed",height=24,hAlign="fill"}})
         instance.treasureActionRow=row
         -- 保管箱统计的主操作直接露在浮窗；仅显式点击读取当前箱，按钮/刷新不自动枚举或扫描其它箱。
@@ -1118,6 +1122,10 @@ ok, err = Register({
         local selected=projection.selected
         local withdraw=projection.withdraw or {}
         local running=withdraw.status=="running"
+        if instance.treasureRepairButton then
+            instance.treasureRepairButton:SetVisible(projection.inventoryRepairable==true and not editing)
+            instance.treasureRepairButton:SetEnabled(Feature.enabled==true and not running)
+        end
         local boxId=projection.boundCofferId
         local selectedCount=tonumber(boxId and selected and selected.boxes and selected.boxes[boxId]) or 0
         local same=selected and selected.kind==projection.viewKind and (projection.region=="all" or selected.region==projection.region)
@@ -1141,8 +1149,9 @@ ok, err = Register({
             instance.treasureRegionDropdown:SetItems(projection.regionItems or {});instance.treasureLastKind=projection.viewKind
         end
         instance.treasureRegionDropdown:SetEnabled(sea or projection.inventoryContractVersion~=nil);instance.treasureRegionDropdown:Render()
-        if instance.treasureLastInterval~=projection.shipRespawnMinutes then
+        if instance.treasureLastInterval~=projection.shipRespawnMinutes or instance.treasureLastRepairable~=projection.inventoryRepairable then
             instance.treasureSettingsDropdown:SetItems(instance.treasureSettingsItems(projection));instance.treasureLastInterval=projection.shipRespawnMinutes
+            instance.treasureLastRepairable=projection.inventoryRepairable
         end
         instance.treasureSettingsDropdown:Render()
         if instance.treasureInteractionHint then
