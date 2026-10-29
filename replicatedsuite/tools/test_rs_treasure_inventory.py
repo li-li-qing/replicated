@@ -716,18 +716,23 @@ class TreasureInventoryTests(unittest.TestCase):
         E:UnsubscribeGlobalOwner(other);assert(releases==2)
         ''')
 
-    def test_snapshot_capacity_is_checked_before_native_write_and_keeps_the_previous_round(self):
+    def test_large_multi_box_snapshot_uses_shared_paging_and_keeps_previous_round_on_failure(self):
         self.boot().execute('''
-        h.storageCapacity=150
-        for i=1,150 do local item=Map(0,2);item.longitudeDeg=1+math.floor((i-1)/60);item.longitudeSec=(i-1)%60;h.storage[i]=item end
+        h.storageCapacity=200
+        for i=1,200 do local item=Map(0,2);item.longitudeDeg=1+math.floor((i-1)/60);item.longitudeSec=(i-1)%60;h.storage[i]=item end
         assert(f.Commands:IdentifyCurrentCoffer())
-        local writes=h.writes;NextCoffer()
-        local ok,err=f.Commands:IdentifyCurrentCoffer()
-        assert(not ok and err:find('存档容量',1,true))
-        assert(h.writes==writes,'an oversize snapshot reached native SaveData')
-        assert(f:GetProjection().scannedCofferCount==1 and f:GetProjection().totalMapCount==150)
-        local store=h.S.Persistence:GetStore(f.Inventory.storeId)
-        assert(not store.writeFenced and store.lastNativeByteEstimate>store.nativeByteBudget)
+        NextCoffer();assert(f.Commands:IdentifyCurrentCoffer())
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        assert(store.nativePaged==true and h.disk[store.resolvedKey].__rsPaged,'large snapshot must use shared transactional paging')
+        for _,raw in pairs(h.disk)do
+            assert(h.S.PersistenceTransport.EstimateNativeBytes(raw)<=14336,'physical save exceeds the native budget')
+        end
+        I.loaded=false;store.loaded=false;assert(I:Initialize())
+        assert(f:GetProjection().scannedCofferCount==2 and f:GetProjection().totalMapCount==400)
+        h.failSave=true;assert(not f.Commands:ResetCofferRound());h.failSave=false
+        assert(f:GetProjection().scannedCofferCount==2 and f:GetProjection().totalMapCount==400,'failed reset lost the previous full snapshot')
+        I.loaded=false;store.loaded=false;assert(I:Initialize())
+        assert(f:GetProjection().totalMapCount==400,'failed reset changed durable data')
         ''')
 
     def test_corrupt_snapshot_keeps_recovery_ui_and_is_reset_only_by_explicit_command(self):
@@ -773,6 +778,113 @@ class TreasureInventoryTests(unittest.TestCase):
         assert(not f.Commands:ResetCofferRound());assert(h.writes==writes)
         ''')
 
+
+    def test_decoder_accepts_long_and_crlf_chunks_and_salvages_a_truncated_tail(self):
+        self.boot().execute('''
+        local I=f.Inventory
+        local line='100.5|200.5|0|1|W 1 2\\n'
+        -- 落盘后块比内存切块长：读回上限必须容得下，否则整箱记录被判成损坏后连坐整个存档。
+        local long=string.rep(line,80)
+        assert(#long>1024 and #long<=2048)
+        assert(#I.DecodeBox({records=80,chunks={long}})==80)
+        -- 客户端把换行写成 \\r\\n，行尾的 \\r 不能被当成控制字符拒收。
+        assert(#I.DecodeBox({records=80,chunks={string.rep('100.5|200.5|0|1|W 1 2\\r\\n',80)}})==80)
+        -- 末块被 UDF 截断：正常读取必须拒绝，重建路径保留前面完整的记录。
+        local cut=long..'100.5|200.5|0|1|W'
+        assert(not pcall(I.DecodeBox,{records=81,chunks={cut}}))
+        assert(#I.DecodeBox({records=81,chunks={cut}},true)==80)
+        -- 只有末块允许不闭合；中间块断了说明不是尾部截断，抢救也不能放过。
+        assert(not pcall(I.DecodeBox,{records=81,chunks={cut,'100.5|200.5|0|1|W 3 4\\n'}},true))
+        ''')
+
+
+    def legacy_shards(self, lua):
+        lua.execute('''
+        local I,P=f.Inventory,h.S.Persistence
+        local root=h.Copy(I.State)
+        for id,box in pairs(root.boxes)do
+            local storeId='v3.life.treasure.box.'..id
+            if not P:GetStore(storeId)then
+                assert(P:RegisterV3Store({id=storeId,owner='v3.life.treasure',scope=P.Scope.Character,lifetime=P.Lifetime.Permanent,
+                    schemaVersion=1,legacySchemaVersion=0,key=P.V3KeyPrefix..'v3_life_treasure_box_'..id,
+                    budget={maxDepth=5,maxNodes=8000,maxEntriesPerTable=512,maxStringBytes=65536},
+                    recoverableReplacement=true,default=function()return {records=0,chunks={},stamp=''}end,
+                    get=function()return box end,apply=function()end}))
+            end
+            assert(P:PrepareRead(storeId));assert(P:SaveValue(storeId,box,{durable=true}))
+            root.boxes[id]={records=box.records,stamp=box.stamp}
+        end
+        assert(P:SaveValue(I.storeId,root,{durable=true}))
+        I.loaded=false;P:GetStore(I.storeId).loaded=false
+        ''')
+
+    def test_legacy_per_box_shards_import_without_writes_and_consolidate_on_explicit_change(self):
+        lua=self.boot()
+        lua.execute("h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer());NextCoffer();h.storage={Map(1,2)};assert(f.Commands:IdentifyCurrentCoffer())")
+        self.legacy_shards(lua)
+        lua.execute('''
+        local I,P=f.Inventory,h.S.Persistence;local writes=h.writes
+        assert(I:Initialize());assert(h.writes==writes,'import must not rewrite old shards during reads')
+        assert(f:GetProjection().scannedCofferCount==2 and f:GetProjection().totalMapCount==2)
+        assert(I:SetFilter('west'))
+        local root=P:ReadPhysicalStore(P:GetStore(I.storeId),P:GetStore(I.storeId).resolvedKey)
+        local decoded=P:DecodePhysicalEnvelope(root)
+        assert(decoded.payload.boxes['1'].chunks and decoded.payload.boxes['2'].chunks,'explicit save did not consolidate old shards')
+        I.loaded=false;P:GetStore(I.storeId).loaded=false;assert(I:Initialize())
+        assert(f:GetProjection().totalMapCount==2)
+        ''')
+
+    def test_broken_legacy_shard_reset_preserves_later_healthy_boxes_and_retry_after_save_failure(self):
+        lua=self.boot()
+        lua.execute("h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer());NextCoffer();h.storage={Map(1,2)};assert(f.Commands:IdentifyCurrentCoffer())")
+        self.legacy_shards(lua)
+        lua.execute('''
+        local I,P=f.Inventory,h.S.Persistence
+        local bad=P:GetStore('v3.life.treasure.box.1');h.disk[bad.resolvedKey].payload.chunks[1]='truncated snapshot'
+        bad.loaded=false
+        assert(not I:Initialize())
+        h.failSave=true;assert(not I:ResetCofferRound());h.failSave=false
+        assert(I.State.boxes['2'] and I.State.boxes['2'].chunks,'failed repair lost the healthy box in memory')
+        assert(I:ResetCofferRound())
+        assert(not I.State.boxes['1'] and I.State.boxes['2'],'repair discarded an unvisited healthy shard')
+        assert(f:GetProjection().scannedCofferCount==1 and f:GetProjection().totalMapCount==1)
+        I.loaded=false;P:GetStore(I.storeId).loaded=false;assert(I:Initialize())
+        assert(f:GetProjection().scannedCofferCount==1)
+        ''')
+
+    def test_legacy_shard_future_format_and_temporary_read_failure_cannot_be_discarded(self):
+        for mode in ('future','temporary'):
+            lua=self.boot()
+            lua.execute("h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())")
+            self.legacy_shards(lua)
+            lua.globals().TEST_FAILURE_MODE=mode
+            lua.execute('''
+            local I,P=f.Inventory,h.S.Persistence;local slice=P:GetStore('v3.life.treasure.box.1')
+            if TEST_FAILURE_MODE=='future' then
+                local version=slice.schemaVersion;slice.schemaVersion=version+1
+                local box={records=1,chunks={I:Pack({maps={{worldX=22528,worldY=30720,count=1,text='W 1 0 0'}}}).chunks[1]},stamp=''}
+                assert(P:SaveValue(slice.id,box,{durable=true}));slice.schemaVersion=version
+            else
+                local read=h.S.Api.LoadData
+                h.S.Api.LoadData=function(self,key,...)if key==slice.resolvedKey then return nil,'temporary shard read failure' end return read(self,key,...)end
+            end
+            slice.loaded=false;local writes=h.writes
+            assert(not I:Initialize());assert(not I:ResetCofferRound())
+            assert(h.writes==writes and I.State.boxes['1'],'unknown/temporary shard failure was destructively repaired')
+            ''')
+
+    def test_explicit_corrupt_root_recovery_keeps_complete_lines_only_and_reports_loss(self):
+        self.boot().execute('''
+        h.storage={Map(0,2),Map(1,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        local raw=h.disk[store.resolvedKey];local box=raw.payload.boxes['1']
+        box.chunks[1]=box.chunks[1]:match('^([^\\n]+\\n)')..'truncated tail'
+        I.loaded=false;store.loaded=false;assert(not I:Initialize())
+        assert(I:ResetCofferRound())
+        assert(f:GetProjection().scannedCofferCount==1 and f:GetProjection().totalMapCount==1)
+        assert(I.lastError:find('抢救 1',1,true) and I.lastError:find('放弃 1',1,true),'partial recovery did not disclose discarded lines')
+        I.loaded=false;store.loaded=false;assert(I:Initialize());assert(f:GetProjection().totalMapCount==1)
+        ''')
 
 if __name__ == '__main__':
     unittest.main()

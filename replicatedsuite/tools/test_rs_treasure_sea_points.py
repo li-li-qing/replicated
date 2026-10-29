@@ -31,9 +31,21 @@ class SeaPointsTests(unittest.TestCase):
         for _,row in ipairs(p.rows) do assert(row.region=='silent-sea' and row.kind=='seabugs') end
         assert(f.Commands:TrackNearest());assert(f.Authority.selected.key=='seabugs:silent-sea:4')
         assert(f.Commands:SetViewKind('ships'));assert(f.Commands:SetRegion('all'))
-        assert(#f:GetProjection().rows==444)
+        assert(#f:GetProjection().rows==445)
         assert(f.Commands:SetRegion('whale-strait'));assert(#f:GetProjection().rows==3)
         assert(not f.Commands:SetRegion('made-up'));assert(f:GetProjection().region=='whale-strait')
+        ''')
+
+    def test_user_reported_ship_keeps_exact_coordinates_and_waits_for_a_confirmed_map_region(self):
+        self.boot().execute('''
+        local f=H.Start();assert(f.Commands:SetViewKind('ships'));assert(f.Commands:SetRegion('user-reported'))
+        local p=f:GetProjection();assert(#p.rows==1)
+        local row=p.rows[1]
+        assert(row.sourceText=='用户补充' and row.text=='W 5°18′24″ · S 9°36′17″')
+        assert(math.abs(row.worldX-(21504-(5+18/60+24/3600)*1024))<0.000001)
+        assert(math.abs(row.worldY-(28672-(9+36/60+17/3600)*1024))<0.000001)
+        assert(f.Commands:TrackNearest());assert(f.Authority.selected.key==row.key)
+        assert(not f.Commands:ShowSelectedOnMap());assert(#H.mapCalls==0,'unknown region selected a guessed map layer')
         ''')
 
     def test_static_target_survives_empty_and_unreadable_bag(self):
@@ -171,7 +183,7 @@ class SeaPointsTests(unittest.TestCase):
         local scans,reads,count,revision=H.scans,H.reads,f.consumerCount,f.Authority.revision
         local key=f.Authority.selected.key
         local d=f:GetHealth();assert(d.viewKind=='ships' and d.region=='whale-strait' and d.filteredPointCount==3)
-        assert(d.catalogCounts.seabugs==60 and d.catalogCounts.ships==444 and d.selected.key==key)
+        assert(d.catalogCounts.seabugs==60 and d.catalogCounts.ships==445 and d.selected.key==key)
         d.selected.worldX=0;assert(f.Authority.selected.worldX~=0)
         assert(H.scans==scans and H.reads==reads and f.consumerCount==count and f.Authority.revision==revision)
         ''')

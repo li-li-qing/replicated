@@ -13,7 +13,7 @@ end
 local regions={}
 for _,r in ipairs(data.regions) do regions[r.id]=r end
 local labels={seabugs="海虫",ships="沉船"}
-local statusLabels={source_confirmed="原包已确认",unconfirmed="原包未确认",unreviewed="资料点"}
+local statusLabels={source_confirmed="原包已确认",unconfirmed="原包未确认",unreviewed="资料点",user_reported="用户补充"}
 for _,kind in ipairs({"seabugs","ships"}) do
     groups[kind].all={}
     for _,row in ipairs(data[kind] or {}) do

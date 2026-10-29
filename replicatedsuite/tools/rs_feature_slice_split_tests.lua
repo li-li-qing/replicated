@@ -872,7 +872,7 @@ local LifeSlices = {
             'SetWidgetWindowState', 'MarkStoreDirty', 'SetViewKind', 'SetRegion', 'TrackNearest',
             'VisitAndNext', 'UndoVisit', 'ResetRound', 'StopTracking', 'SetShipRespawnMinutes',
             'SetCompassRadius', 'SetRenderDistance', 'RegisterCoffer', 'IdentifyCurrentCoffer', 'ResetCofferRound',
-            'WithdrawCoordinate', 'CancelWithdrawal', 'SetCoordinateContinent', 'SetInventorySort' },
+            'WithdrawCoordinate', 'CancelWithdrawal', 'SetCoordinateContinent', 'SetInventorySort', 'TrackCustomPoint' },
         apiDependencies = { 'X2Bag:GetBagItemInfo', 'X2Bag:Capacity', 'X2Unit:GetUnitWorldPositionByTarget',
             'X2Unit:GetUnitScreenPosition', 'X2Unit:GetCurrentZoneGroup', 'X2Map:ShowWorldmapLocation',
             'X2Coffer:GetBagItemInfo', 'X2Coffer:Capacity', 'X2Coffer:MoveToEmptyBagSlot',

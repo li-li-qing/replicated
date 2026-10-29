@@ -3,6 +3,7 @@
 -- 压缩包 SHA256: 7fe9108255f4815d8aa01a50b8624092cdb62b9470c87fa4f56de3356b790b70
 -- 点位格式：区域、编号、经度方向/度/分/秒、纬度方向/度/分/秒、来源核验状态。
 -- source_confirmed 仅为原包标记；不表示本插件实机核验或当前资源存在。
+-- user_reported 为用户后续补充；未确认海域的点位不预填原生地图图层。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 ReplicatedSuite.Data = ReplicatedSuite.Data or {}
 -- 原生区域组来源：同一用户包 Astravia_Runtime.lua:127 的 targetMapZones；不按玩家位置或图片范围猜图层。
@@ -15,6 +16,7 @@ ReplicatedSuite.Data.TreasureSeaPoints = { version=2, nativeZoneSource="Astravia
  {id="crescent-sea",text="新月海湾",zoneGroupId=40},
  {id="whale-strait",text="鲸浪海峡",zoneGroupId=104},
  {id="pirate-sea",text="惊涛海域",zoneGroupId=60},
+ {id="user-reported",text="待确认海域"},
 },
 seabugs={
  {"silent-sea",1,"W",2,5,15,"S",5,26,40,"unreviewed"},
@@ -523,5 +525,6 @@ ships={
  {"freedom-sea",22,"W",1,9,2,"S",10,47,53,"unconfirmed"},
  {"freedom-sea",23,"W",1,11,26,"S",11,30,24,"unconfirmed"},
  {"freedom-sea",24,"W",1,27,20,"S",11,46,52,"source_confirmed"},
+ {"user-reported",1,"W",5,18,24,"S",9,36,17,"user_reported"}, -- 2026-10-29 用户补充沉船
 },
 }

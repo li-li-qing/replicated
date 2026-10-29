@@ -12,7 +12,9 @@ if not F or not LF or not P then error("Treasure inventory dependencies unavaila
 local Copy, Call, Action = LF.Copy, LF.Call, LF.Action
 local A = F.Authority
 local I = { storeId="v3.life.treasure.inventory", State={filter="all",sort="count",boxes={},overrides={}},
-    rows={}, byKey={}, withdraw={status="idle",moved=0}, maxBoxes=8192, maxSlots=240 } -- 记录按需增长；上界对应Store表预算，不再预置3箱或限制32箱。
+    rows={}, byKey={}, withdraw={status="idle",moved=0}, maxBoxes=8192, maxSlots=240,
+    -- 兼容本地补丁的较长块和 CRLF 文本；新快照按 512 字节切块，完整物理预算由 Core 检查。
+    chunkTarget=512, maxChunkBytes=2048 }
 F.Inventory, F.InventoryContractVersion = I, 1
 local TASK = "v3_life_treasure_withdraw"
 local LABEL = {all="全部大陆",west="西大陆",east="东大陆",auroria="原大陆",sea="海上",unknown="未分类"}
@@ -37,11 +39,20 @@ local function Stamp()
     end
     return "扫描时间不可用"
 end
-local function Decode(box)
+local function Decode(box,salvage)
     local maps={}
     assert(type(box)=="table" and type(box.chunks)=="table" and Integer(box.records,0,I.maxSlots),"箱子快照结构无效")
-    for _,chunk in ipairs(box.chunks) do
-        assert(type(chunk)=="string" and #chunk<=1024 and chunk:sub(-1)=="\n","箱子快照分块无效")
+    local total=#box.chunks
+    for index,chunk in ipairs(box.chunks) do
+        -- 允许有界的旧分块表示；规范化行尾仅用于解析，不改写旧档参与验章的原字符串。
+        assert(type(chunk)=="string" and #chunk<=I.maxChunkBytes,"箱子快照分块无效")
+        chunk=chunk:gsub("\r\n","\n")
+        if chunk:sub(-1)~="\n" then
+            -- 只有抢救路径允许最后一块不闭合：UDF 到 16383 字节会直接截断，丢掉断掉的那一行，
+            -- 保留它前面的完整记录，不能让整箱因为尾部几行全部作废。正常读取仍然要求每块闭合。
+            assert(salvage==true and index==total,"箱子快照分块无效")
+            chunk=chunk:match("^(.*\n)") or ""
+        end
         local consumed=0
         for line in chunk:gmatch("([^\n]+)\n") do
             local x,y,z,count,text=line:match("^([^|]+)|([^|]+)|([^|]+)|([^|]+)|([^|]+)$")
@@ -52,8 +63,20 @@ local function Decode(box)
         end
         assert(consumed==#chunk,"箱子快照存在残缺记录")
     end
-    assert(#maps==box.records,"箱子快照记录数量不符")
+    -- 抢救时尾部会少几条，按实际条数接受；正常读取仍要求与记录的 records 完全一致。
+    assert((salvage==true and #maps<=box.records) or #maps==box.records,"箱子快照记录数量不符")
     return maps
+end
+-- 暴露给本组件内的重建路径与离线测试；不属于公开 Commands，UI 不应直接调用。
+I.DecodeBox=Decode
+-- 本地试验版分片的规范形态；兼容读取时仍检查完整记录。
+local function NormalizeBox(value,boxId)
+    value=type(value)=="table" and value or {}
+    local id=boxId or value.boxId
+    assert(BoxId(id)==tostring(id) or BoxId(id)==id,"箱子分片编号无效")
+    local box={records=assert(Integer(value.records,0,I.maxSlots),"箱子记录数无效"),chunks=Copy(value.chunks or {}),stamp=value.stamp}
+    Decode(box)
+    return box
 end
 local function Normalize(value)
     value=type(value)=="table" and value or {}
@@ -62,8 +85,14 @@ local function Normalize(value)
     if value.scanRound==true then out.scanRound=true end
     local seen=0
     for id,box in pairs(value.boxes or {}) do
-        assert(BoxId(id)==id,"箱号无效");Decode(box);seen=seen+1;assert(seen<=I.maxBoxes,"登记箱数超出上限")
-        out.boxes[id]=Copy(box)
+        assert(BoxId(id)==id,"箱号无效");seen=seen+1;assert(seen<=I.maxBoxes,"登记箱数超出上限")
+        if type(box)=="table" and box.chunks~=nil then
+            -- 旧存档或刚写入的内存值：整份校验后保留。
+            Decode(box);out.boxes[id]=Copy(box)
+        else
+            -- 兼容本地试验版索引，读取后从旧分片补齐；正常保存始终包含完整坐标。
+            out.boxes[id]={records=assert(Integer(box and box.records,0,I.maxSlots),"箱子记录数无效"),stamp=box and box.stamp}
+        end
     end
     seen=0
     for key,continent in pairs(value.overrides or {}) do
@@ -75,13 +104,56 @@ local function Normalize(value)
 end
 local store,storeErr=P:RegisterV3Store({id=I.storeId,owner="v3.life.treasure",scope=P.Scope.Character,lifetime=P.Lifetime.Permanent,
     schemaVersion=1,legacySchemaVersion=0,key=P.V3KeyPrefix.."v3_life_treasure_inventory",
-    nativeByteBudget=14336, -- 实测 UDF 在 16383 字节截断；写入前按 Core 的整份存档预算检查，不能只限制单块。
+    -- 整份快照由 Core 双 bank 分页提交；箱子和取图意图共用同一个回滚边界。
+    nativeByteBudget=14336,nativePaged=true,
     recoverableReplacement=true, -- 仅显式“重新统计”可替换损坏的可再生箱记录；普通登记仍须PrepareWrite和完整校验。
     budget={maxDepth=6,maxNodes=12000,maxEntriesPerTable=8192,maxStringBytes=1048576},
     default=function()return Normalize(nil)end,get=function()return Copy(I.State)end,
     apply=function(v)I.State=Normalize(v)end,migrate=Normalize})
 if not store then error(storeErr or "Treasure inventory store registration failed") end
 
+-- 兼容本地试验版留下的每箱分片。只读入旧记录，后续显式操作统一保存完整快照；
+-- 不在读取/投影时搬迁或清空分片，也不再让索引和箱内容分别提交。
+local function LegacyBoxStore(id)
+    local storeId="v3.life.treasure.box."..id
+    if P:GetStore(storeId) then return storeId end
+    local value={records=0,chunks={},stamp=""}
+    local registered,err=P:RegisterV3Store({id=storeId,owner="v3.life.treasure",scope=P.Scope.Character,lifetime=P.Lifetime.Permanent,
+        schemaVersion=1,legacySchemaVersion=0,key=P.V3KeyPrefix.."v3_life_treasure_box_"..id,
+        recoverableReplacement=true,nativeByteBudget=14336,
+        budget={maxDepth=5,maxNodes=8000,maxEntriesPerTable=512,maxStringBytes=65536},
+        default=function()return {records=0,chunks={},stamp=""}end,
+        get=function()return Copy(value)end,apply=function(v)value=NormalizeBox(v,id)end,
+        migrate=function(v)return NormalizeBox(v,id)end})
+    if not registered then return nil,err end
+    return storeId
+end
+function I:HydrateBoxes()
+    self.legacyShardFailures={}
+    local firstError
+    for id,box in pairs(self.State.boxes)do
+        if type(box.chunks)~="table" then
+            local storeId,regErr=LegacyBoxStore(id)
+            local status,value,err
+            if storeId then
+                local called
+                called,status,value,err=pcall(P.LoadStore,P,storeId)
+                if not called then err=status;status=false end
+            end
+            local valid,full=pcall(NormalizeBox,value,id)
+            if (status==true or status=="empty") and valid and full.records==box.records then
+                self.State.boxes[id]=full
+            else
+                -- 遍历全部箱子，不能把遇到首个坏箱后尚未读取的正常箱也列为损坏。
+                local why=tostring(regErr or err or "箱子 "..id.." 的分片缺失或记录数量不符")
+                local replaceable=storeId and P:CanReplaceCorrupt(storeId)==true
+                self.legacyShardFailures[id]={error=why,replaceable=replaceable or status=="empty"}
+                firstError=firstError or why
+            end
+        end
+    end
+    return firstError==nil,firstError
+end
 function I:Initialize()
     -- 同代切角时 Core 绑定才是就绪权威；取消上一角色箱交互/取图任务，但不清 Domain，避免破坏待刷新旧角色存档。
     if self.loaded and P:IsStoreLoaded(self.storeId)==true then return true end
@@ -96,6 +168,8 @@ function I:Initialize()
     if A.selected and A.selected.kind=="catalog" then A.selected=nil end
     local ok,err=P:PrepareRead(self.storeId)
     if ok~=true then self.lastError=tostring(err or "箱子记录读取失败");self:RebuildGroups();return false,err end
+    local hydrated,hydrateErr=self:HydrateBoxes()
+    if hydrated~=true then self.lastError=tostring(hydrateErr or "箱子记录读取失败");self:RebuildGroups();return false,hydrateErr end
     self.lastError=nil
     self.loaded=true;self.bound=nil;self.openRecord=nil;self.job=nil;self.withdraw={status="idle",moved=0}
     self:RebuildGroups();return true
@@ -148,7 +222,9 @@ function I:Continent(map)
     local zone=zones[tonumber(map.zoneGroupId)]
     if zone and LABEL[zone.continentKey] then return zone.continentKey end
     local data=S.Data and S.Data.TreasureSeaPoints
-    for _,region in ipairs(data and data.regions or {})do if region.zoneGroupId==map.zoneGroupId then return "sea" end end
+    for _,region in ipairs(data and data.regions or {})do
+        if region.zoneGroupId~=nil and region.zoneGroupId==map.zoneGroupId then return "sea" end
+    end
     return "unknown"
 end
 function I:RebuildGroups()
@@ -178,9 +254,12 @@ function I:RebuildGroups()
     for _,map in ipairs(A.maps or {})do Add(map)end
     self.cofferSummaries,self.boxIds={},{}
     for id,box in pairs(self.loaded and self.State.boxes or {})do
-        local count=0;for _,map in ipairs(Decode(box))do Add(map,id,self.State.pendingCoffer==id);count=count+map.count end
-        self.cofferSummaries[id]={stamp=box.stamp,coordinateCount=box.records,count=count,uncertain=self.State.pendingCoffer==id}
-        self.boxIds[#self.boxIds+1]=id
+        -- 索引里只有元数据、分片还没补上的箱子不参与统计：读不到就等于还不知道，不能当成空箱。
+        if type(box)=="table" and type(box.chunks)=="table" then
+            local count=0;for _,map in ipairs(Decode(box))do Add(map,id,self.State.pendingCoffer==id);count=count+map.count end
+            self.cofferSummaries[id]={stamp=box.stamp,coordinateCount=box.records,count=count,uncertain=self.State.pendingCoffer==id}
+            self.boxIds[#self.boxIds+1]=id
+        end
     end
     table.sort(self.boxIds,function(a,b)return tonumber(a)<tonumber(b)end)
     self.sharedCoordinateCount=0
@@ -308,11 +387,37 @@ function I:Pack(scan)
     for _,key in ipairs(keys)do
         local m=grouped[key]
         local line=string.format("%.17g|%.17g|%d|%d|%s\n",m.worldX,m.worldY,m.zoneGroupId or 0,m.count,m.text)
-        if #chunk+#line>1024 then box.chunks[#box.chunks+1]=chunk;chunk="" end
+        -- 只在已攒到内容时才切块，避免攒出空块；单行本身最长约 250 字节，落盘后仍低于读回上限。
+        if #chunk>0 and #chunk+#line>I.chunkTarget then box.chunks[#box.chunks+1]=chunk;chunk="" end
         chunk=chunk..line
     end
     if chunk~="" then box.chunks[#box.chunks+1]=chunk end
     return box
+end
+-- 从被截断的 Native 原表里抢救仍完整的坐标记录。只在显式重建损坏存档时使用：
+-- 结果不参与完整性判定，抢救完立即作为新存档写回，写回失败则保持原状。
+-- 完整候选仍由 Core 执行总容量、分页和耐久校验，失败时不应用候选。
+function I:SalvageFrom(raw)
+    local decoded=P:DecodePhysicalEnvelope(raw)
+    local payload=type(decoded)=="table" and decoded.payload or nil
+    if type(payload)~="table" or type(payload.boxes)~="table" then return nil,"payload_unavailable" end
+    local fresh=Normalize(nil);fresh.scanRound=true
+    local rescued,kept,dropped=0,0,0
+    local ids={};for id in pairs(payload.boxes)do if BoxId(id)==id then ids[#ids+1]=id end end
+    table.sort(ids,function(a,b)return tonumber(a)<tonumber(b)end)
+    for _,id in ipairs(ids)do
+        local ok,maps=pcall(Decode,payload.boxes[id],true)
+        if ok and #maps>0 then
+            local box=I:Pack({maps=maps})
+            fresh.boxes[id]=box;rescued=rescued+#maps;kept=kept+1
+            dropped=dropped+math.max(0,payload.boxes[id].records-#maps)
+        else
+            -- 整箱读不了时按它记录的条数计入放弃量，避免把丢弃条数说少。
+            local declared=type(payload.boxes[id])=="table" and tonumber(payload.boxes[id].records) or nil
+            dropped=dropped+(declared or 1)
+        end
+    end
+    return fresh,rescued,kept,dropped
 end
 function I:RegisterCoffer(id,startRound)
     id=BoxId(id);if not id then return false,"本轮识别记录编号无效或已达存档容量，请重新统计" end
@@ -351,6 +456,22 @@ function I:IdentifyCurrentCoffer()
     -- 只复用尚未结束的开箱交互；不同交互即使内容完全相同也分别计数，不按签名合并物理箱。
     return self:RegisterCoffer(nextId,startRound)
 end
+-- 仅显式恢复可丢弃已确认为损坏/缺失的旧分片。先构造完整候选，再一次性提交；
+-- Native 拒写时保持内存和磁盘原样，未来格式、暂时读失败仍不得按损坏清空。
+function I:DropBrokenShards()
+    if P:IsStoreLoaded(self.storeId)~=true then return nil,"箱子索引尚未安全读取" end
+    local fresh=Copy(self.State);local removed=0
+    for id,failure in pairs(self.legacyShardFailures or {})do
+        if not failure.replaceable then return nil,failure.error end
+        fresh.boxes[id]=nil;removed=removed+1
+    end
+    if removed==0 then return nil,"没有可丢弃的损坏分片" end
+    local ok,err=P:SaveValue(self.storeId,fresh,{durable=true,reason="treasure_drop_broken_shard"})
+    if ok~=true then return nil,tostring(err or "箱子记录写入失败") end
+    self.State=Normalize(fresh);self.legacyShardFailures=nil
+    self.loaded=true;self.bound=nil;self.openRecord=nil;self:RebuildGroups()
+    return removed
+end
 function I:ResetCofferRound()
     if not F.enabled then return false,"寻宝功能已关闭" end
     if self.job then return false,"请先停止取图，再重新统计" end
@@ -361,16 +482,43 @@ function I:ResetCofferRound()
             state.boxes={};state.pendingCoffer=nil;state.scanRound=true
         end)
     else
-        -- 隔离的截断快照不能算已读或自动清空；显式清空也须由 Core 根据归属/版本/故障类型授权，不能只看 envelope 前缀。
-        -- 仅同角色完整 metadata 的内容损坏可重建，未知归属/未来格式/暂时读失败仍拒绝。SaveValue 重新校验并立即回读，成功才应用新轮。
+        -- 先分两种损坏：索引本身读不了才需要全量重建；只是某个箱子分片坏了，就只丢那一箱。
         local replaceable,replaceErr=P:CanReplaceCorrupt(self.storeId)
-        if replaceable~=true then return false,replaceErr or self.lastError or "箱子记录尚不可安全重置" end
-        local fresh=Normalize(nil);fresh.scanRound=true
-        ok,err=P:SaveValue(self.storeId,fresh,{replaceCorrupt=true,allowUnloadedWrite=true,durable=true,reason="treasure_coffer_round_reset_corrupt"})
-        if ok then self.State=fresh;self.loaded=true;self:RebuildGroups()else self.lastError=tostring(err or "箱子记录重置失败")end
+        if replaceable~=true then
+            local removed,why=self:DropBrokenShards()
+            if removed==nil then return false,why or replaceErr or self.lastError or "箱子记录尚不可安全重置" end
+            ok=true
+            if removed>0 then
+                self.salvageNote="已丢弃 "..removed.." 个损坏的箱子分片，其余箱子记录保留"
+            end
+        else
+            -- 重建前先抢救：客户端截断只影响存档尾部，前面完整的块仍能解析出坐标，不必整份作废。
+            local fresh=Normalize(nil);fresh.scanRound=true
+            local salvaged,dropped=0,0
+            local store=P:GetStore(self.storeId)
+            if store and store.resolvedKey and type(S.Api)=="table" and type(S.Api.LoadData)=="function" then
+                local okRaw,raw=pcall(S.Api.LoadData,S.Api,store.resolvedKey)
+                if okRaw and type(raw)=="table" then
+                    local okSalvage,value,rescuedCount,_,lostCount=pcall(self.SalvageFrom,self,raw)
+                    if okSalvage and type(value)=="table" then
+                        fresh=value
+                        salvaged=rescuedCount or 0
+                        dropped=lostCount or 0
+                    end
+                end
+            end
+            ok,err=P:SaveValue(self.storeId,fresh,{replaceCorrupt=true,allowUnloadedWrite=true,durable=true,reason="treasure_coffer_round_reset_corrupt"})
+            if ok then
+                self.State=fresh;self.loaded=true;self:RebuildGroups()
+                if salvaged>0 then
+                    self.salvageNote="已重建箱子记录：抢救 "..salvaged.." 条坐标"..(dropped>0 and ("，放弃 "..dropped.." 条被截断的记录") or "")
+                end
+            else self.lastError=tostring(err or "箱子记录重置失败")end
+        end
     end
     if not ok then return false,err end
-    self.bound=nil;self.openRecord=nil;self.lastError=nil;self.withdraw={status="idle",moved=0}
+    local salvageNote=self.salvageNote;self.salvageNote=nil
+    self.bound=nil;self.openRecord=nil;self.lastError=salvageNote;self.withdraw={status="idle",moved=0}
     if A.selected and A.selected.kind=="catalog" then F:StopTracking()end
     Publish("treasure_coffer_round_reset");return true
 end
