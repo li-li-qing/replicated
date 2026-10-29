@@ -27,8 +27,18 @@ local function Boot(metricsPath)
     S.Utils.GetServerTime = function() return { year=2026, month=10, day=25, hour=12, minute=30 } end
     S.Services.UnitIdentityV3 = { player={id='self-id',name='Self'}, IsPlayerName=function(_,name) return name=='Self' end,
         RefreshPlayerIdentity=function(self) return self.player end }
+    local nativeSubscribers={}
     S.Events = { Publish=function() end, SubscribeInternal=function() return true end, UnsubscribeInternal=function() end,
-        SubscribeOptional=function() error('basic statistics must not subscribe extra Native events') end }
+        -- 统一击杀已使用本人战争荣誉辅助事实；其余原生扩展仍由本宿主明确拒绝。
+        SubscribeOptional=function(_,event,owner,callback)
+            assert(event=='PLAYER_HONOR_POINT_CHANGED_IN_HPW','basic statistics must not subscribe extra Native events: '..tostring(event))
+            assert(owner~=nil and type(callback)=='function','invalid native subscription')
+            nativeSubscribers[owner]=callback;return true
+        end,
+        Unsubscribe=function(_,event,owner)
+            assert(event=='PLAYER_HONOR_POINT_CHANGED_IN_HPW','unexpected Native event release: '..tostring(event))
+            nativeSubscribers[owner]=nil;return true
+        end }
     S.Scheduler = { AddOneShot=function(_,id,delay,callback) h.tasks[id]={due=h.now+delay,callback=callback}; return true end,
         RemoveTask=function(_,id) h.tasks[id]=nil; return true end, SetTaskModule=function() end }
     S.Services.CombatEventBusV3 = { Subscribe=function(self,_,callback,options) self.callback=callback; self.scope=options.scope; return true end,

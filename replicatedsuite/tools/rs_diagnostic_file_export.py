@@ -448,7 +448,7 @@ def validate_history_file(data):
         raise ValueError('历史TXT头或长度不完整，请重新导出')
     if f'{zlib.adler32(payload):08X}'.encode('ascii') != found[1]:
         raise ValueError('历史TXT正文校验失败，请重新传送原文件')
-    if not re.match(rb'RS-HISTORY-[123]\|[0-9A-F]+\n', payload) or not payload.endswith(b'\nEND'):
+    if not re.match(rb'RS-HISTORY-[1234]\|[0-9A-F]+\n', payload) or not payload.endswith(b'\nEND'):
         raise ValueError('不是完整的战斗历史TXT')
     payload.decode('ascii', errors='strict')
     return data

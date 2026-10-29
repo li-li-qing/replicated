@@ -2190,6 +2190,13 @@ function P:LoadStore(id, options)
         end
     end
 
+    -- 同次加载既恢复受损的旧表示又迁移schema时，迁移不能把已验证恢复的立即重写延后。
+    -- 普通健康旧档仍沿用迁移去抖；只依据本次加载实际发生的恢复，不借别的Store历史计数触发。
+    if deferredSaveReason == "migration" and (physicalTransportRepairNeeded == true
+        or (tonumber(self.stats.integrityUpgradeRecoveries) or 0) > recoveriesAtEntry) then
+        deferredSaveDelayMs = 0
+    end
+
     local currentPeriod = select(1, self:GetPeriodId(store.lifetime, store.resetPolicy))
     local storedPeriod = meta and NonEmptyText(meta.periodId) or nil
     local payloadPeriod = nil

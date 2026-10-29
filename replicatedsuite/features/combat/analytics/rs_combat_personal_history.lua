@@ -110,31 +110,45 @@ end
 local store,registerErr=P:RegisterV3Store({
     id=H.StoreId,owner=H.StoreId,scope=P.Scope.Character,lifetime=P.Lifetime.Permanent,
     -- schema3 将来源账本和合计放在同一个 Store，导入只需一次耐久提交，不能出现“金额已加、去重标记未存”。
-    schemaVersion=5,legacySchemaVersion=0,key=(P.V3KeyPrefix or "rs.v3.").."combat_personal_history",
+    -- schema6 为独立凭据预留版本；旧schema按原章读取，旧程序回退时应明确拒绝未来格式。
+    schemaVersion=6,legacySchemaVersion=0,key=(P.V3KeyPrefix or "rs.v3.").."combat_personal_history",
     budget={maxDepth=8,maxNodes=120000,maxStringBytes=1000000,maxEntriesPerTable=2048},
     -- 单 key 的 Native 文本已实测在16383字节截断；压紧标量行并在写入前保守限额，不能靠回读发现后再覆盖旧档。
     transportVersion=7,nativeByteBudget=15000,nativePaged=true,
     rebuildCanonicalForIntegrity=RebuildHistoryCanonical,
-    default=function() return H:NormalizeState(nil) end,get=function() return H:NormalizeState(H.state) end,
+    default=function() return H:NormalizeState(nil) end,get=function()
+        if type(H.SealProtectionState)=='function' then
+            local ok,err=H:SealProtectionState(H.state);if not ok then error(err) end
+        end
+        return H:NormalizeState(H.state)
+    end,
     apply=function(value) H.state=H:NormalizeState(value);H.lastDirtyAt=-10000;H.loaded=false;H.revision=H.revision+1 end,
     migrate=function(value) return H:NormalizeState(value) end,
 })
 H.registerError=registerErr
+-- 读档/重新绑定时预热来源认证；战斗热路径只使用已经核验过的来源对象。
+function H:CheckLoadedProtection(tag)
+    self.identityTag=tag
+    if type(self.SealProtectionState)=='function' then
+        local ok,err=self:SealProtectionState(self.state)
+        if not ok then self.loaded=false;self.lastError=err;return false,err end
+    end
+    self.loaded=true;return true
+end
 function H:EnsureLoaded(verifyBinding)
     local identity=S.Services and S.Services.UnitIdentityV3
     local player=identity and identity.player
     local tag=type(player)=="table" and tostring(player.nameWithWorld or player.name or player.id or "") or ""
     if self.loaded==true and self.identityTag==tag and verifyBinding~=true then return true end
     if not P:GetStore(self.StoreId) then return false,self.registerError or "个人历史存档不可用" end
-    if type(P.IsStoreLoaded)=="function" and P:IsStoreLoaded(self.StoreId) then self.loaded=true;self.identityTag=tag;return true end
+    if type(P.IsStoreLoaded)=="function" and P:IsStoreLoaded(self.StoreId) then return self:CheckLoadedProtection(tag) end
     local ok,_,err=P:LoadStore(self.StoreId)
     if ok~=true and ok~="empty" then return false,err or tostring(ok) end
-    self.loaded=true;self.identityTag=tag
-    return true
+    return self:CheckLoadedProtection(tag)
 end
-function H:Timestamp()
+function H:Timestamp(force)
     local now=tonumber(S.NowMs and S.NowMs()) or 0
-    if now-self.clockAt<1000 then return self.clockDay,self.clockStamp end
+    if force~=true and now-self.clockAt<1000 then return self.clockDay,self.clockStamp end
     self.clockAt=now
     local t=S.Utils and S.Utils.GetServerTime and S.Utils.GetServerTime()
     self.clockDay,self.clockStamp="unknown",nil
@@ -149,12 +163,30 @@ function H:Timestamp()
     self.clockStamp=string.format("%s %02d:%02d",date,hour,minute)
     return self.clockDay,self.clockStamp
 end
+-- 只有显式“今日”查询主动读取服务器日期；常规投影/诊断只消费事件留下的缓存。
+F.Commands=F.Commands or {}
+function F.Commands:GetPersonalHistoryToday()
+    local ready,err=H:EnsureLoaded(true);if not ready then return nil,err end
+    local date=H:Timestamp(true)
+    if not ValidDate(date) then return nil,"服务器日期暂不可用" end
+    return date
+end
 function H:Record(delta,recordTime)
     if type(delta)~="table" then return false end
+    if self.Guard then
+        for _,key in ipairs({'kills','deaths'})do
+            local n=delta[key]
+            if n~=nil and (type(n)~='number' or (n~=0 and n~=1)) then return false,'击杀和死亡每次只能记录一次' end
+        end
+    end
     local hasValue=false
     for _,key in ipairs(LIVE_KEYS) do if Counter(delta[key])>0 then hasValue=true;break end end
     if not hasValue then return false end
     local ready,err=self:EnsureLoaded();if ready~=true then self.failures=self.failures+1;return false,err end
+    if type(self.PrepareGuardedDelta)=='function' then
+        local accepted,why=self:PrepareGuardedDelta(delta)
+        if not accepted then self.failures=self.failures+1;self.lastError=why;return false,why end
+    end
     local now=tonumber(S.NowMs and S.NowMs()) or 0
     -- 只标记脏存档，不在战斗事件中复制/保存整表；最多每秒标记一次，Persistence 在5秒内合并保存。
     if now-self.lastDirtyAt>=1000 then
@@ -201,6 +233,10 @@ end
 function H:GetProjection(options)
     local ready,err=self:EnsureLoaded(true)
     if ready~=true then return {available=false,error=err,totals=Counts(nil,LEGACY_KEYS),rows={}} end
+    if type(self.SealProtectionState)=='function' then
+        local checked,why=self:SealProtectionState(self.state)
+        if not checked then return {available=false,error=why,totals=Counts(nil,LEGACY_KEYS),rows={},protection={enabled=true,status='failed',error=why}} end
+    end
     options=type(options)=="table" and options or {}
     local from,to=tostring(options.fromDate or ""),tostring(options.toDate or "")
     if (from~="" and not ValidDate(from)) or (to~="" and not ValidDate(to)) or (from~="" and to~="" and from>to) then
@@ -224,7 +260,9 @@ function H:GetProjection(options)
     end)
     if filtered and self.state.archiveTo and (from=="" or from<=self.state.archiveTo) then complete=false end
     local store=P:GetStore(self.StoreId)
-    return {available=true,complete=complete,totals=ConfirmedCounts(totals),rows=rows,dateOptions=dateOptions,firstAt=self.state.firstAt,lastAt=self.state.lastAt,
+    local today=ValidDate(self.clockDay) and self.clockDay or nil
+    local protection=type(self.GetProtectionProjection)=='function' and self:GetProtectionProjection(options) or nil
+    return {available=true,complete=complete,todayDate=today,protection=protection,totals=ConfirmedCounts(totals),rows=rows,dateOptions=dateOptions,firstAt=self.state.firstAt,lastAt=self.state.lastAt,
         archive=ConfirmedCounts(self.state.archive),archiveFrom=self.state.archiveFrom,archiveTo=self.state.archiveTo,
         revision=self.revision,failures=self.failures,error=self.lastError or (store and store.lastError),scope=A:GetCollectionScope(),
         coverage="同一个击杀数：明确归属直接计入，普通区域没有荣誉也照常记录；战争/纷争荣誉只作备用补记。已知助攻3/12排除，仅匹配确认金额并与前后归属通知配对，其他金额不猜测。荣誉补记不编造死者或技能；旧版独立荣誉次数不并入击杀，已有历史不回补。伤害、治疗仅在对应追踪开启期间记录。日期时间为服务器时间（分钟精度）。"}

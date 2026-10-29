@@ -36,7 +36,7 @@ Test('genuine schema1 migrates without losing any old counts',function()
     assert(h.H:Record({inferredKills=1,inferredNpcKills=1})==false and h.H.revision==revision,'new inference still changes history')
     assert(h.H:Record({npcKills=2})==false and h.H.revision==revision,'retired NPC counter dirtied history')
     assert(h.H:Record({kills=1}));assert(h.P:SaveStore(h.H.StoreId,{reason='offline_roundtrip',durable=true}))
-    assert(h.disk[h.key].__rsmeta.schema==5) -- 原章验证后写入当前版本；冻结旧 fixture 本身不改。
+    assert(h.disk[h.key].__rsmeta.schema==6) -- 原章验证后写入当前版本；冻结旧 fixture 本身不改。
     h.store.loaded=false;h.H.loaded=false;assert(h.H:EnsureLoaded())
     local p=h.H:GetProjection({fromDate='2026-10-07',toDate='2026-10-07'})
     assert(p.totals.kills==3 and p.totals.assists==9)

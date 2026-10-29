@@ -29,7 +29,7 @@ G:RegisterSequenceCase("v3_combat_statistics_personal_history_contract",function
     local history=F.PersonalHistory
     local store=history and S.Persistence and S.Persistence:GetStore(history.StoreId) or nil
     -- schema3 的来源账本与合计原子保存；无同步字段的 schema1/2 原档仍按原 canonical 验证后迁移。
-    if store==nil or store.owner~="v3.combat_personal_history" or tonumber(store.schemaVersion)~=5
+    if store==nil or store.owner~="v3.combat_personal_history" or tonumber(store.schemaVersion)~=6
         or store.scope~=S.Persistence.Scope.Character or store.lifetime~=S.Persistence.Lifetime.Permanent then return Fail("personal_history_store") end
     if type(A.AcquireStatisticsConsumer)~="function" or type(A.GetCollectionScope)~="function" or type(F.Commands.SetCollectionScope)~="function"
         or type(F.GetPersonalHistoryProjection)~="function" then return Fail("unified_statistics_commands") end

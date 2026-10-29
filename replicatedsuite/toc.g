@@ -27,6 +27,7 @@ core/rs_diagnostics.lua
 core/rs_diagnostic_detail.lua
 core/rs_module_diagnostics.lua
 core/rs_report_copy_transport.lua
+core/rs_combat_history_auth.lua
 core/rs_self_check_report.lua
 core/rs_persistence_transport.lua
 core/rs_persistence.lua
@@ -144,6 +145,7 @@ features/combat/analytics/rs_combat_metric_common.lua
 features/combat/analytics/rs_combat_analytics_metrics.lua
 features/combat/analytics/rs_combat_analytics_store.lua
 features/combat/analytics/rs_combat_personal_history.lua
+features/combat/analytics/rs_combat_history_guard.lua
 data/rs_combat_history_import.lua
 features/combat/analytics/rs_combat_history_transfer.lua
 features/combat/analytics/rs_combat_analytics_feature.lua

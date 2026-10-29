@@ -175,6 +175,9 @@ RELEASE_READINESS_TESTS = [
     "tools/rs_combat_basic_statistics_tests.lua",
     "tools/rs_combat_basic_statistics_ui_tests.lua",
     "tools/rs_combat_history_integrity_tests.lua",
+    "tools/rs_combat_history_auth_tests.lua",
+    "tools/rs_combat_history_guard_tests.lua",
+    "tools/rs_combat_history_today_ui_tests.lua",
     "tools/rs_combat_history_transfer_tests.lua",  # 历史导出首段回读、无损重分页及失败进入模块TXT，不能只验Store完整性。
     "tools/rs_combat_kill_diagnostics_tests.lua",
     # 只用明确原生归属验证私有/全局低频回退、来源留证、去重和关闭释放；不将缺通知猜成击杀。

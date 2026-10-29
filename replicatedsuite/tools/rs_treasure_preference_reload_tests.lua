@@ -121,8 +121,9 @@ Test('undo and starting a new round persist without clearing other treasure sett
     assert(again.Features.Treasure:GetProjection().roundVisited==0)
     assert(restored:GetProjection().roundSearched==0)
 end)
-Test('all 504 point marks fit the existing store budget and survive verified reload',function()
+Test('all catalog point marks fit the existing store budget and survive verified reload',function()
     local S,R,n=Boot();assert(R:SetPreferredEnabled('life_treasure',true));local f=S.Features.Treasure
+    local counts=S.TreasureSeaCatalog:Counts();local expected=counts.seabugs+counts.ships
     assert(f.Commands:SetViewKind('ships'));assert(f.Commands:SetRegion('all'))
     for _,kind in ipairs({'seabugs','ships'})do
         for _,point in ipairs(S.TreasureSeaCatalog:List(kind,'all'))do f.Authority.visited[point.key]='searched' end
@@ -130,7 +131,7 @@ Test('all 504 point marks fit the existing store budget and survive verified rel
     local key='ships:whale-strait:1';f.Authority.visited[key]=nil
     assert(f.Commands:Select(key));assert(f.Commands:VisitAndNext('searched'))
     local fresh=Boot(n.disk);local count=0;for _ in pairs(fresh.Features.Treasure.Authority.visited)do count=count+1 end
-    assert(count==504,'round marks truncated at save or reload')
+    assert(count==expected,'round marks truncated at save or reload')
     assert(#fresh.Features.Treasure.State.seaRound.visits<4096,'compact progress exceeded its byte budget')
 end)
 Test('failed undo and new round keep the saved marks and session undo intact',function()
@@ -185,8 +186,9 @@ Test('unknown and backward clock cannot fabricate a countdown and undo restores 
     local reads,writes=n.reads,n.writes;f:GetProjection();f:GetHealth()
     assert(reads==n.reads and writes==n.writes,'timer projection touched storage')
 end)
-Test('timer saves are atomic and all 444 timers fit the real transport',function()
+Test('timer saves are atomic and all catalog ship timers fit the real transport',function()
     local S,R,n=Boot();assert(R:SetPreferredEnabled('life_treasure',true));local f=S.Features.Treasure
+    local expected=S.TreasureSeaCatalog:Counts().ships
     ShipClock(S,15,10,0);assert(f.Commands:SetViewKind('ships'));assert(f.Commands:SetRegion('all'))
     assert(f.Commands:TrackNearest());local key=f.Authority.selected.key;n.failSave=true
     assert(not f.Commands:VisitAndNext('searched'));assert(f.Authority.shipSearches[key]==nil)
@@ -198,7 +200,7 @@ Test('timer saves are atomic and all 444 timers fit the real transport',function
     for _,p in ipairs(S.TreasureSeaCatalog:List('seabugs','all'))do f.Authority.visited[p.key]='searched' end
     assert(f.Commands:VisitAndNext('searched'))
     local fresh=Boot(n.disk);local count=0;for _ in pairs(fresh.Features.Treasure.Authority.shipSearches)do count=count+1 end
-    assert(count==444,'timers were truncated by persistence transport')
+    assert(count==expected,'timers were truncated by persistence transport')
 end)
 Test('ship clock validates calendar and stays out of projections and compass frames',function()
     local S,R=Boot();assert(R:SetPreferredEnabled('life_treasure',true));local f=S.Features.Treasure

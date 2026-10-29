@@ -32,6 +32,10 @@ local function Boot(options)
     if options.seed~=false then
         for i=1,options.days or 8 do day=i;h.ms=h.ms+1500;assert(h.H:Record({damage=i*123456,kills=i,deaths=1}))end
     end
+    if options.protected then
+        dofile('core/rs_combat_history_auth.lua');dofile('features/combat/analytics/rs_combat_history_guard.lua')
+        dofile('features/combat/analytics/rs_combat_history_transfer.lua')
+    end
     local u=dofile('tools/rs_status_ui_test_host.lua')(S);h.u=u
     S.UIV3Design.CombatStatisticsControls=function()return {Render=function()end}end
     S.UIV3Design.CancelCombatStatisticsRefresh=function()end
@@ -265,8 +269,9 @@ print(string.format('HISTORY TRANSFER RESULT %d passed / %d failed (%s)',passed,
 assert(failed==0,'history transfer failures: '..failed)
 -- Python/便携exe使用真实Lua写出的文件信箱进行跨语言往返，不把两端独立的假数据当成链路证明。
 if arg and arg[1]=='--emit-file' then
-    local h=Boot({reject=true,days=336})
+    local h=Boot({reject=true,days=336,protected=arg[3]=='guard'})
     if arg[3]=='honor' then assert(h.H:Record({honorParticipations=14,honorKills=14})) end
+    if arg[3]=='guard' then assert(h.H:Record({kills=1,deaths=1})) end
     assert(h.F.Commands:ExportPersonalHistoryFile())
     local file=assert(io.open(arg[2],'wb'))
     for key,value in pairs(h.disk)do
@@ -279,11 +284,12 @@ if arg and arg[1]=='--emit-file' then
     end
     file:close()
 elseif arg and arg[1]=='--consume-file' then
-    local h=Boot({seed=false,reject=true});dofile(arg[2])
+    local h=Boot({seed=false,reject=true,protected=arg[3]=='guard'});dofile(arg[2])
     assert(h.F.Commands:ImportPersonalHistoryFile())
     local total=336*337/2
-    assert(h.H:GetProjection().totals.kills==total and h.H:GetProjection().totals.damage==total*123456)
+    assert(h.H:GetProjection().totals.kills==total+(arg[3]=='guard' and 1 or 0) and h.H:GetProjection().totals.damage==total*123456)
     if arg[3]=='honor' then assert(h.H:GetProjection().totals.honorParticipations==14 and h.H:GetProjection().totals.honorKills==14) end
+    if arg[3]=='guard' then local g=h.H:GetProjection().protection;assert(g.protectedKills==1 and g.protectedDeaths==1 and g.legacyKills==total) end
     local writes=h.writes;assert(h.F.Commands:ImportPersonalHistoryFile());assert(h.writes==writes)
     print('HISTORY TXT ROUNDTRIP PASS')
 elseif arg and arg[1]=='--reject-file' then

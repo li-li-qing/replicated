@@ -200,6 +200,8 @@ local function Build(parent)
     D:PageHeader(content,"v3_personal_history_header","个人战斗历史","仅记录功能开启期间的个人数据；记录保存在本地当前角色存档。清空实时统计不会删除这里的记录。")
     -- 日期只是本页只读筛选状态；复用 RSUI 下拉弹层，不要求输入日期，也不写回历史 Store。
     local selectedFrom,selectedTo,lastDates="","",nil
+    local rangeHint
+    local rangeHelp="选择后立即查询，含首尾当天；今日采用服务器日期。已选日期若无每日明细，会保留边界并标注。"
     local ranges=UI:HorizontalBox({id="v3_personal_history_ranges",parent=content,gap=6,slot={size="fixed",height=32,hAlign="fill"}})
     UI:Text({id="v3_personal_history_range_label",parent=ranges,text="日期：",slot={size="fixed",width=46}})
     local from=UI:Dropdown({id="v3_personal_history_from",parent=ranges,items={{value="",text="开始：不限"}},maxVisible=8,
@@ -215,13 +217,29 @@ local function Build(parent)
             if selectedFrom~="" and selectedTo~="" and selectedTo<selectedFrom then selectedFrom=selectedTo end
             return true
         end,onChanged=function()return root:RefreshData()end,slot={size="fill",fill=1,minWidth=106}})
+    UI:Button({id="v3_personal_history_today",parent=ranges,text="今日",compact=true,slot={size="fixed",width=48},onClick=function()
+        -- 只有点击明确读取服务器日期；普通投影刷新保持只读，未知时不能回退到缓存旧日。
+        local date
+        if type(F.Commands.GetPersonalHistoryToday)=="function" then
+            date=F.Commands:GetPersonalHistoryToday()
+        else
+            local p=F:GetPersonalHistoryProjection()
+            date=p and p.available==true and p.todayDate or nil
+        end
+        if type(date)~="string" or not date:match("^%d%d%d%d%-%d%d%-%d%d$") then
+            rangeHint:SetText("服务器日期暂不可用，无法查询今日；已保留当前日期筛选。")
+            return false,"服务器日期暂不可用"
+        end
+        selectedFrom,selectedTo=date,date;return root:RefreshData()
+    end})
     UI:Button({id="v3_personal_history_all",parent=ranges,text="全部日期",compact=true,slot={size="fixed",width=80},onClick=function()
         selectedFrom,selectedTo="","";return root:RefreshData()
     end})
     -- 查询和结果同属滚动正文；顶层只保留稳定导航，不改变历史的读取/存储 Authority。
-    UI:Text({id="v3_personal_history_range_hint",parent=content,text="选择后立即查询，含首尾当天；选同一天可查看当天。采用服务器日期；已选日期若无每日明细，会保留边界并标注。",fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=26}})
+    rangeHint=UI:Text({id="v3_personal_history_range_hint",parent=content,text=rangeHelp,fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=26}})
     local period=UI:Text({id="v3_personal_history_period",parent=content,text="记录期间：--",fontSize=10,tone="strong",overflow="wrap",slot={size="auto",minHeight=26}})
     local totals=UI:Text({id="v3_personal_history_totals",parent=content,text="--",fontSize=12,tone="strong",overflow="wrap",slot={size="auto",minHeight=44}})
+    local protection=UI:Text({id="v3_personal_history_protection",parent=content,text="",visible=false,fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=28}})
     local dailySummary=UI:Text({id="v3_personal_history_daily_summary",parent=content,text="每日记录",fontSize=10,tone="strong",overflow="wrap",slot={size="auto",minHeight=22}})
     local tableHost=UI:VerticalBox({id="v3_personal_history_table_host",parent=content,gap=0,slot={size="fixed",height=410,hAlign="fill"}})
     local tableView,trackingToken,pendingScroll=nil,nil,nil
@@ -263,6 +281,16 @@ local function Build(parent)
         scope:Render()
         local showDamage,showHealing=SyncTracking()
         local p=F:GetPersonalHistoryProjection({fromDate=selectedFrom,toDate=selectedTo})
+        rangeHint:SetText(rangeHelp)
+        -- 保护计数由同一筛选投影提供；页面不重算来源，避免今日显示成全期保护数。
+        local guard=p.protection
+        protection:SetVisible(type(guard)=="table")
+        if type(guard)=="table" then
+            local title=guard.status=="failed" and "本地记录校验失败，请保留存档并查看错误报告。"
+                or (guard.status=="legacy" and "旧记录尚未受保护。" or (guard.enabled==true and "基础保护已启用，仅用于本地记录检查。" or "基础保护尚未启用。"))
+            protection:SetText(title.."\n基础保护 · 击杀 "..tostring(guard.protectedKills or 0).." · 死亡 "..tostring(guard.protectedDeaths or 0)
+                .."；旧记录（未保护）· 击杀 "..tostring(guard.legacyKills or 0).." · 死亡 "..tostring(guard.legacyDeaths or 0).."，仍计入统计。")
+        else protection:SetText("") end
         if p.available~=true then period:SetText(tostring(p.error or "历史不可用"));totals:SetText("--");details:SetText("");dailySummary:SetText("每日记录不可用");tableView:SetItems({},"history_error");return true end
         -- 日账满额归档、导入或角色切换后，原边界可能不再有日明细；保留筛选并明确标注，不能显示“请选择”却继续暗中筛选。
         local fromListed,toListed=selectedFrom=="",selectedTo==""

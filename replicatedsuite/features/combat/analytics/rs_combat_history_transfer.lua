@@ -11,8 +11,11 @@ local H=F and F.PersonalHistory
 local P=S.Persistence
 if not H or not P or type(H.TransferHelpers)~='table' then return end
 local C=H.TransferHelpers
+local G=H.Guard
 H.TransferContractVersion=1 -- 只读验收可确认模块实际加载，不通过测试导入或创建本地来源来探测。
-local MAX_SOURCES,MAX_BYTES,PART_BYTES,MAX_COUNTER=16,1048576,7000,9007199254740991
+-- 旧版16个来源完整保留，额外为保护来源预留16个位置；不通过合并/改名旧来源腾容量。
+local MAX_SOURCES,MAX_LEGACY_SOURCES,MAX_PROTECTED_SOURCES=32,16,16
+local MAX_BYTES,PART_BYTES,MAX_COUNTER=1048576,7000,9007199254740991
 local function Copy(v) return S.Utils.DeepCopy(v) end
 local function NumberText(v) return string.format('%.0f',C.counter(v)) end
 local function Whole(v)
@@ -74,6 +77,7 @@ local function Snapshot(value)
     local function Strings(row)for _,key in ipairs(C.keys)do local n=C.counter(row[key]);row[key]=n>0 and NumberText(n) or nil end end
     Strings(out.totals);Strings(out.archive);for _,row in pairs(out.days)do Strings(row)end
     out.serial=NumberText(type(value)=='table' and value.serial or 0)
+    if type(value)=='table' and value.guard~=nil then out.guard=Copy(value.guard) end
     return out
 end
 local function CountText(row,keys)
@@ -85,6 +89,13 @@ local function AppendSource(lines,id,source,keys)
     for _,date in ipairs(Sorted(source.days))do
         local row=source.days[date]
         lines[#lines+1]=table.concat({'D',date,Hex(row.firstAt),Hex(row.lastAt),CountText(row,keys)},'|')
+    end
+    if source.guard~=nil then
+        local g=source.guard
+        lines[#lines+1]=table.concat({'P',g.v,g.k,g.d,g.ak,g.ad,g.tag},'|')
+        for _,date in ipairs(Sorted(g.days))do
+            local row=g.days[date];lines[#lines+1]=table.concat({'Q',date,row.k,row.d,row.tag},'|')
+        end
     end
     lines[#lines+1]='E'
 end
@@ -121,6 +132,38 @@ local function Binding()
     if not key or not fingerprint then return nil,err or '角色身份尚未就绪，请进入角色后重试' end
     return tostring(fingerprint)
 end
+-- 身份在冷路径绑定；连续战斗只复用当前角色身份，不逐次触发Native名称查询。
+local bindingTag,bindingValue
+local function GuardBinding()
+    if bindingTag==H.identityTag and bindingValue then return bindingValue end
+    local value,err=Binding();if not value then return nil,err end
+    bindingTag,bindingValue=H.identityTag,value;return value
+end
+local function NewSourceId(sources,incoming,protected)
+    for attempt=1,8 do
+        local parts={protected and 'p' or 'd'}
+        for _=1,8 do parts[#parts+1]=string.format('%04X',math.random(0,65535))end
+        parts[#parts+1]=NumberText(S.NowMs and S.NowMs());parts[#parts+1]=tostring(S.Generation or 0)
+        if protected then parts[#parts+1]=tostring({}) end
+        local id=table.concat(parts,'-')
+        if protected then id='p-'..S.CombatHistoryAuth.Sha256(id):sub(1,40) end
+        if not sources[id] and not (incoming and incoming[id]) then return id end
+    end
+    return nil,'无法建立独立的本地来源，请重载后重试'
+end
+local function AttachLocalSource(out,incoming)
+    local count,protected=0,0
+    for id in pairs(out.sync.sources)do count=count+1;if id:sub(1,2)=='p-' then protected=protected+1 end end
+    if count>=MAX_SOURCES or (G and protected>=MAX_PROTECTED_SOURCES) then return nil,'历史来源容量已满，原记录保留，请先导出备份后检查设备来源' end
+    local id,err=NewSourceId(out.sync.sources,incoming,G~=nil);if not id then return nil,err end
+    local source=Snapshot(nil)
+    if G then
+        local identity;identity,err=GuardBinding();if not identity then return nil,err end
+        local ok;ok,err=G:NewSource(id,source,identity);if not ok then return nil,err end
+    end
+    out.sync.localId=id;out.sync.sources[id]=source
+    return out
+end
 local function Enroll(value,incoming)
     local out=H:NormalizeState(value)
     if out.sync then return out end
@@ -132,17 +175,9 @@ local function Enroll(value,incoming)
         local hash,err=Check(text);if not hash then return nil,err end
         sources['l-'..hash..'-'..#text]=baseline
     end
-    local id
-    for attempt=1,8 do
-        local parts={'d'};for _=1,8 do parts[#parts+1]=string.format('%04X',math.random(0,65535))end
-        parts[#parts+1]=NumberText(S.NowMs and S.NowMs());parts[#parts+1]=tostring(S.Generation or 0)
-        id=table.concat(parts,'-')
-        if not sources[id] and not (incoming and incoming[id]) then break end
-        id=nil
-    end
-    if not id then return nil,'无法建立独立的本地来源，请重载后重试' end
-    sources[id]=Snapshot(nil);out.sync={localId=id,sources=sources}
-    return H:NormalizeState(out)
+    out.sync={sources=sources}
+    local value,err=AttachLocalSource(out,incoming);if not value then return nil,err end
+    return H:NormalizeState(value)
 end
 local function ValidSnapshot(source)
     -- 容量、非整数和总账守恒均在写存档前检查，坏输入不能被归一化成合法的空历史。
@@ -163,9 +198,10 @@ local function ValidSnapshot(source)
     return true
 end
 local function ValidateState(value)
-    local count=0
+    local count,legacy,protected=0,0,0
     for id,source in pairs(value.sync.sources)do
-        count=count+1;if count>MAX_SOURCES or not OriginId(id) then return false,'来源过多，最多支持16个来源；原记录未修改' end
+        count=count+1;if id:sub(1,2)=='p-' then protected=protected+1 else legacy=legacy+1 end
+        if count>MAX_SOURCES or legacy>MAX_LEGACY_SOURCES or protected>MAX_PROTECTED_SOURCES or not OriginId(id) then return false,'历史来源超过容量（旧来源16个、保护来源16个），原记录未修改' end
         local ok,err=ValidSnapshot(source);if not ok then return false,err end
     end
     for _,key in ipairs(C.keys)do if C.counter(value.totals[key])>MAX_COUNTER then return false,'合并累计超过精确数值范围' end end
@@ -173,7 +209,68 @@ local function ValidateState(value)
     if inspection.ok~=true then return false,'合并结果超过存档容量，原记录未修改' end
     return true
 end
+function H:SealProtectionState(value)
+    if not G or type(value)~='table' or type(value.sync)~='table' then return true end
+    local identity,err=GuardBinding();if not identity then return false,err end
+    local expected=self:NormalizeState(value)
+    for _,key in ipairs({'kills','deaths'})do
+        if C.counter(value.totals[key])~=C.counter(expected.totals[key]) or C.counter(value.archive[key])~=C.counter(expected.archive[key]) then
+            return false,'战绩合计与独立来源不一致，已拒绝保存或导出'
+        end
+        for date,row in pairs(value.days)do
+            if C.counter(row[key])~=C.counter(expected.days[date] and expected.days[date][key]) then return false,'每日战绩与独立来源不一致' end
+        end
+        for date,row in pairs(expected.days)do
+            if C.counter(row[key])~=C.counter(value.days[date] and value.days[date][key]) then return false,'每日战绩来源缺失' end
+        end
+    end
+    for id,source in pairs(value.sync.sources)do
+        local ok;ok,err=G:SealSource(id,source,identity);if not ok then return false,err end
+    end
+    return true
+end
+function H:PrepareGuardedDelta(delta)
+    if not G then return true end
+    for _,key in ipairs({'kills','deaths'})do
+        local n=delta[key]
+        if n~=nil and (type(n)~='number' or (n~=0 and n~=1)) then return false,'击杀和死亡每次只能记录一次，已拒绝异常增量' end
+    end
+    local sync=self.state.sync
+    if sync and type(sync.localId)=='string' and sync.localId:sub(1,2)=='p-' then return true end
+    local ok,err=self:SealProtectionState(self.state);if not ok then return false,err end
+    local value;value,err=Enroll(self.state);if not value then return false,err end
+    if value.sync.localId:sub(1,2)~='p-' then value,err=AttachLocalSource(value) end
+    if not value then return false,err end
+    -- 冻结旧来源，仅创建空保护来源；不会把旧计数补签成受保护数据。
+    local verified,why=self:SealProtectionState(value);if not verified then return false,why end
+    self.state=value;return true
+end
+function H:GetProtectionProjection(options)
+    if not G then return nil end
+    options=type(options)=='table' and options or {}
+    local result={enabled=true,protectedKills=0,protectedDeaths=0,legacyKills=0,legacyDeaths=0,status='basic'}
+    local from,to=options.fromDate or '',options.toDate or '';local filtered=from~='' or to~=''
+    local function Add(row,protected)
+        local prefix=protected and 'protected' or 'legacy'
+        local kills=math.max(0,C.counter(row.kills)-C.counter(row.inferredKills))
+        result[prefix..'Kills']=result[prefix..'Kills']+kills
+        result[prefix..'Deaths']=result[prefix..'Deaths']+C.counter(row.deaths)
+    end
+    if not self.state.sync then
+        if not filtered then Add(self.state.totals,false)
+        else for date,row in pairs(self.state.days)do if date~='unknown' and (from=='' or date>=from) and (to=='' or date<=to) then Add(row,false) end end end
+    else
+        for id,source in pairs(self.state.sync.sources)do
+            local protected=id:sub(1,2)=='p-'
+            if not filtered then Add(source.totals,protected)
+            else for date,row in pairs(source.days)do if date~='unknown' and (from=='' or date>=from) and (to=='' or date<=to) then Add(row,protected) end end end
+        end
+    end
+    if result.protectedKills==0 and result.protectedDeaths==0 then result.status='legacy' end
+    return result
+end
 local function Commit(value,reason)
+    if G then local checked,why=H:SealProtectionState(value);if not checked then return false,why end end
     local ok,err=P:PrepareWrite(H.StoreId);if ok~=true then return false,err end
     ok,err=ValidateState(value);if ok~=true then return false,err end
     ok,err=P:SaveValue(H.StoreId,value,{durable=true,reason=reason})
@@ -191,6 +288,13 @@ function H:RecordTransferDelta(delta,date,stamp)
         if C.counter(source.totals[key])+C.counter(delta[key])>MAX_COUNTER
             or C.counter(self.state.totals[key])+C.counter(delta[key])>MAX_COUNTER then return false,'历史累计超过精确数值范围' end
     end
+    if G then
+        local identity,err=GuardBinding();if not identity then return false,err end
+        if not source.days[date] then
+            local dates=Sorted(source.days)
+            if #dates>=C.maxDays then local ok;ok,err=G:ArchiveDay(sync.localId,source,dates[1],identity);if not ok then return false,err end end
+        end
+    end
     if not source.days[date] then
         local dates=Sorted(source.days)
         if #dates>=C.maxDays then
@@ -199,6 +303,10 @@ function H:RecordTransferDelta(delta,date,stamp)
             source.archiveFrom=source.archiveFrom or oldest;source.archiveTo=oldest;source.days[oldest]=nil
         end
         source.days[date]=Snapshot(nil).totals
+    end
+    if G then
+        local identity,err=GuardBinding();if not identity then return false,err end
+        local ok;ok,err=G:Advance(sync.localId,source,delta,date,identity);if not ok then return false,err end
     end
     local row=source.days[date]
     for _,key in ipairs(C.liveKeys)do
@@ -224,10 +332,11 @@ local function ExportTransfer(self)
     self:RecordTransferDiagnostic('identity')
     local identity;identity,err=Binding();if not identity then return nil,err end
     self:RecordTransferDiagnostic('enroll')
+    if G then local checked;checked,err=self:SealProtectionState(self.state);if not checked then return nil,err end end
     local value;value,err=Enroll(self.state);if not value then return nil,err end
     self:RecordTransferDiagnostic('encode')
-    local version=C.counter(value.totals.honorKills)>0 and 3 or (C.counter(value.totals.honorParticipations)>0 and 2 or 1)
-    local keys=version==3 and C.keys or (version==2 and C.v2Keys or C.legacyKeys)
+    local version=G and 4 or (C.counter(value.totals.honorKills)>0 and 3 or (C.counter(value.totals.honorParticipations)>0 and 2 or 1))
+    local keys=version>=3 and C.keys or (version==2 and C.v2Keys or C.legacyKeys)
     local lines={'RS-HISTORY-'..version..'|'..Hex(identity)}
     for _,id in ipairs(Sorted(value.sync.sources))do AppendSource(lines,id,value.sync.sources[id],keys)end
     lines[#lines+1]='END';local payload=table.concat(lines,'\n')
@@ -273,16 +382,16 @@ local function ReadCounts(text,keys)
     return row
 end
 local function ParsePayload(payload)
-    local lines={};for line in (payload..'\n'):gmatch('([^\n]*)\n')do lines[#lines+1]=line;if #lines>33000 then return nil,'记录过多' end end
+    local lines={};for line in (payload..'\n'):gmatch('([^\n]*)\n')do lines[#lines+1]=line;if #lines>66000 then return nil,'记录过多' end end
     local version,encoded
-    if lines[1] then version,encoded=lines[1]:match('^RS%-HISTORY%-([123])|(%x+)$') end
-    local keys=version=='3' and C.keys or (version=='2' and C.v2Keys or C.legacyKeys)
+    if lines[1] then version,encoded=lines[1]:match('^RS%-HISTORY%-([1234])|(%x+)$') end
+    local keys=(version=='3' or version=='4') and C.keys or (version=='2' and C.v2Keys or C.legacyKeys)
     local identity=encoded and Unhex(encoded,256);if not identity then return nil,'不是受支持的历史导出文本' end
     local sources,index={},2
     while lines[index]~='END' do
         local header=Split(lines[index] or '','|')
         if #header~=7 or header[1]~='S' or not OriginId(header[2]) or not Whole(header[3]) or sources[header[2]] then return nil,'来源记录无效或重复' end
-        if #Sorted(sources)>=MAX_SOURCES then return nil,'来源超过16个' end
+        if #Sorted(sources)>=MAX_SOURCES then return nil,'来源超过32个' end
         local source={serial=header[3],days={}}
         for offset,key in ipairs({'firstAt','lastAt','archiveFrom','archiveTo'})do
             local value=Unhex(header[offset+3]);if value==nil then return nil,'日期说明编码无效' end
@@ -291,14 +400,28 @@ local function ParsePayload(payload)
         source.totals=ReadCounts((lines[index+1] or ''):match('^T|(.*)$') or '',keys)
         source.archive=ReadCounts((lines[index+2] or ''):match('^A|(.*)$') or '',keys)
         if not source.totals or not source.archive then return nil,'历史累计字段不完整' end
-        index=index+3;local days=0
+        index=index+3;local days,proofDays=0,0
         while lines[index]~='E' do
-            local fields=Split(lines[index] or '','|');days=days+1
-            if #fields~=5 or fields[1]~='D' or days>C.maxDays or not (C.validDate(fields[2]) or fields[2]=='unknown') or source.days[fields[2]] then return nil,'每日记录无效、重复或超限' end
-            local row=ReadCounts(fields[5],keys);local first,last=Unhex(fields[3]),Unhex(fields[4])
-            if not row or first==nil or last==nil then return nil,'每日记录内容不完整' end
-            row.firstAt=first~='' and first or nil;row.lastAt=last~='' and last or nil;source.days[fields[2]]=row
+            local fields=Split(lines[index] or '','|')
+            if fields[1]=='D' then
+                days=days+1
+                if #fields~=5 or days>C.maxDays or not (C.validDate(fields[2]) or fields[2]=='unknown') or source.days[fields[2]] then return nil,'每日记录无效、重复或超限' end
+                local row=ReadCounts(fields[5],keys);local first,last=Unhex(fields[3]),Unhex(fields[4])
+                if not row or first==nil or last==nil then return nil,'每日记录内容不完整' end
+                row.firstAt=first~='' and first or nil;row.lastAt=last~='' and last or nil;source.days[fields[2]]=row
+            elseif version=='4' and fields[1]=='P' then
+                if #fields~=7 or source.guard or fields[2]~='1' then return nil,'战绩保护头无效或重复' end
+                source.guard={v=1,k=fields[3],d=fields[4],ak=fields[5],ad=fields[6],tag=fields[7],days={}}
+            elseif version=='4' and fields[1]=='Q' then
+                proofDays=proofDays+1;local g=source.guard
+                if #fields~=5 or not g or proofDays>C.maxDays or g.days[fields[2]] or not (C.validDate(fields[2]) or fields[2]=='unknown') then return nil,'战绩每日凭据无效或重复' end
+                g.days[fields[2]]={k=fields[3],d=fields[4],tag=fields[5]}
+            else return nil,'历史记录格式无效' end
             index=index+1
+        end
+        if source.guard~=nil or header[2]:sub(1,2)=='p-' then
+            if not G then return nil,'战绩保护模块未加载，请更新完整插件' end
+            local verified,why=G:VerifySource(header[2],source,identity);if not verified then return nil,why end
         end
         local valid,err=ValidSnapshot(source);if valid~=true then return nil,err end
         sources[header[2]]=source;index=index+1
@@ -317,6 +440,10 @@ function H:MergeTransfer(parsed,packageId,options)
     local ready,err=self:EnsureLoaded(true);if ready~=true then return false,err end
     local identity;identity,err=Binding();if not identity then return false,err end
     if parsed.identity~=identity then return false,'导出属于另一个角色/服务器，未合并' end
+    if G then
+        local checked;checked,err=self:SealProtectionState(self.state);if not checked then return false,err end
+        for id,source in pairs(parsed.sources)do checked,err=G:VerifySource(id,source,identity);if not checked then return false,err end end
+    end
     local value;value,err=Enroll(self.state,parsed.sources);if not value then return false,err end
     local changed=self.state.sync==nil;local overlap=false;local previousLegacy={}
     for id,source in pairs(value.sync.sources)do if id:sub(1,2)=='l-' then previousLegacy[id]=source end end
