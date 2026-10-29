@@ -1033,7 +1033,7 @@ ok, err = Register({
                 {value="timer:0",text=(interval==0 and "✓ " or "").."沉船：仅显示已过时间"}}
             if type(Feature.Commands.TrackCustomPoint)=="function" then table.insert(items,1,{value="custom",text="自定义点：输入坐标"})end
             if type(Feature.Commands.ResetCofferRound)=="function" then
-                table.insert(items,2,{value="clear_coffers",text="重新统计保管箱（清空本轮记录）"})
+                table.insert(items,2,{value="clear_coffers",text=p.inventoryRepairable and "修复损坏记录（保留完整坐标）" or "重新统计保管箱（清空本轮记录）"})
             end
             for _,hours in ipairs({1,2,4,6,12,24,48})do
                 items[#items+1]={value="timer:"..(hours*60),text=(interval==hours*60 and "✓ " or "").."沉船预估："..hours.."小时"}

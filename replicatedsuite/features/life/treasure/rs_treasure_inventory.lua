@@ -401,14 +401,21 @@ function I:SalvageFrom(raw)
     local decoded=P:DecodePhysicalEnvelope(raw)
     local payload=type(decoded)=="table" and decoded.payload or nil
     if type(payload)~="table" or type(payload.boxes)~="table" then return nil,"payload_unavailable" end
-    local fresh=Normalize(nil);fresh.scanRound=true
+    -- 恢复只替换损坏的箱内容；筛选、手动分类和未确认移动仍属于原快照，不能因抢救被清掉。
+    local settings=Copy(payload);settings.boxes={}
+    local fresh=Normalize(settings);fresh.scanRound=true
     local rescued,kept,dropped=0,0,0
     local ids={};for id in pairs(payload.boxes)do if BoxId(id)==id then ids[#ids+1]=id end end
     table.sort(ids,function(a,b)return tonumber(a)<tonumber(b)end)
     for _,id in ipairs(ids)do
         local ok,maps=pcall(Decode,payload.boxes[id],true)
-        if ok and #maps>0 then
-            local box=I:Pack({maps=maps})
+        if ok and (#maps>0 or payload.boxes[id].records==0) then
+            -- 完整箱（含空箱）原样保留。只有截断箱重分块，扫描时间也保留原值，不能伪装成刚识别。
+            local box=Copy(payload.boxes[id])
+            if not pcall(Decode,box) then
+                local stamp=box.stamp
+                box=I:Pack({maps=maps});box.stamp=stamp
+            end
             fresh.boxes[id]=box;rescued=rescued+#maps;kept=kept+1
             dropped=dropped+math.max(0,payload.boxes[id].records-#maps)
         else
@@ -493,12 +500,20 @@ function I:ResetCofferRound()
             end
         else
             -- 重建前先抢救：客户端截断只影响存档尾部，前面完整的块仍能解析出坐标，不必整份作废。
-            local fresh=Normalize(nil);fresh.scanRound=true
-            local salvaged,dropped=0,0
+            -- 显式修复时重新核验当前物理档；不能沿用旧故障许可覆盖后来恢复的正常档或未知/未来格式。
+            local status,_,reloadErr=P:LoadStore(self.storeId,{revalidateTerminal=true})
+            if status==true or status=="empty" then
+                self:Initialize()
+                return false,"存档已可正常读取，本次未清空记录；需要重新统计时请再次明确操作"
+            end
+            local canReplace,why=P:CanReplaceCorrupt(self.storeId)
+            if canReplace~=true then return false,reloadErr or why or "箱子记录尚不可安全修复" end
+            local fresh,salvaged,dropped
             local store=P:GetStore(self.storeId)
-            if store and store.resolvedKey and type(S.Api)=="table" and type(S.Api.LoadData)=="function" then
-                local okRaw,raw=pcall(S.Api.LoadData,S.Api,store.resolvedKey)
-                if okRaw and type(raw)=="table" then
+            if store and store.resolvedKey then
+                -- 通过 Core 读完整分页档；读取失败时禁止拿空默认值替换损坏快照。
+                local okRaw,raw,readErr=pcall(P.ReadPhysicalStore,P,store,store.resolvedKey)
+                if okRaw and type(raw)=="table" and readErr==nil then
                     local okSalvage,value,rescuedCount,_,lostCount=pcall(self.SalvageFrom,self,raw)
                     if okSalvage and type(value)=="table" then
                         fresh=value
@@ -507,12 +522,11 @@ function I:ResetCofferRound()
                     end
                 end
             end
+            if not fresh then return false,"无法完整读取待修复快照，原记录已保留；请重新导出诊断" end
             ok,err=P:SaveValue(self.storeId,fresh,{replaceCorrupt=true,allowUnloadedWrite=true,durable=true,reason="treasure_coffer_round_reset_corrupt"})
             if ok then
                 self.State=fresh;self.loaded=true;self:RebuildGroups()
-                if salvaged>0 then
-                    self.salvageNote="已重建箱子记录：抢救 "..salvaged.." 条坐标"..(dropped>0 and ("，放弃 "..dropped.." 条被截断的记录") or "")
-                end
+                self.salvageNote="已重建箱子记录：抢救 "..salvaged.." 条坐标"..(dropped>0 and ("，放弃 "..dropped.." 条被截断的记录") or "")
             else self.lastError=tostring(err or "箱子记录重置失败")end
         end
     end
@@ -620,13 +634,17 @@ end
 function I:Decorate(p)
     p.inventoryContractVersion=1;p.withdraw=Copy(self.withdraw);p.boundCofferId=self.bound and self.bound.id
     p.inventoryUncertain=self.State.pendingCoffer~=nil;p.inventoryError=self.lastError
+    p.inventoryRepairable=not self.loaded and P:CanReplaceCorrupt(self.storeId)==true
     p.scannedCofferCount=#(self.boxIds or {});p.sharedCoordinateCount=self.sharedCoordinateCount or 0
     p.cofferRoundStarted=self.State.scanRound==true
     p.coffers=Copy(self.cofferSummaries or {});p.sortMode=self.State.sort
     p.inventoryHint="本轮已识别 "..p.scannedCofferCount.." 箱 · 跨箱同坐标 "..p.sharedCoordinateCount.." 处 · 同箱重复识别更新记录"
     if not p.cofferRoundStarted then p.inventoryHint="打开保管箱后点击识别，自动清空旧登记并开始本轮统计。" end
     if p.inventoryUncertain then p.inventoryHint="记录"..self.State.pendingCoffer.."有未确认移动，未计入总量；请重新统计后逐箱识别。" end
-    if not self.loaded then p.inventoryHint="保管箱记录读取失败，未计入箱内数量；请在设置中点击重新统计。" end
+    if not self.loaded then
+        p.inventoryHint=p.inventoryRepairable and "保管箱记录损坏，未计入箱内数量；请在设置中点击修复损坏记录。"
+            or "保管箱记录读取失败，未计入箱内数量；请先导出诊断。"
+    elseif self.lastError then p.inventoryHint=self.lastError.."；"..p.inventoryHint end
     if A.status=="unavailable" or A.inventoryError then p.inventoryHint="背包读取不可用，展示最后记录；"..p.inventoryHint end
     if p.viewKind~="maps" then return p end
     p.region=self.State.filter;p.regionItems={}

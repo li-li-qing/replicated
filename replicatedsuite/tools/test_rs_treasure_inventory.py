@@ -745,12 +745,15 @@ class TreasureInventoryTests(unittest.TestCase):
         local writes=h.writes
         assert(f:Initialize(),'corrupt derived records locked the entire feature')
         assert(not I.loaded and store.writeFenced and h.writes==writes)
-        assert(f:GetProjection().scannedCofferCount==0 and f:GetProjection().inventoryError)
+        local unavailable=f:GetProjection()
+        assert(unavailable.scannedCofferCount==0 and unavailable.inventoryError and unavailable.inventoryRepairable)
+        assert(unavailable.inventoryHint:find('修复损坏记录',1,true))
         assert(not f.Commands:IdentifyCurrentCoffer());assert(h.writes==writes)
         h.failSave=true;assert(not f.Commands:ResetCofferRound())
         assert(not I.loaded and store.writeFenced)
         h.failSave=false;assert(f.Commands:ResetCofferRound())
         assert(I.loaded and not store.writeFenced and f:GetProjection().scannedCofferCount==0)
+        assert(not f:GetProjection().inventoryRepairable and f:GetProjection().inventoryHint:find('放弃 1',1,true))
         assert(store.lastVerifyOk==true and not store.needsBarrierVerify)
         assert(f.Commands:IdentifyCurrentCoffer());assert(f:GetProjection().scannedCofferCount==1)
         I.loaded=false;store.loaded=false;assert(I:Initialize())
@@ -872,6 +875,90 @@ class TreasureInventoryTests(unittest.TestCase):
             assert(not I:Initialize());assert(not I:ResetCofferRound())
             assert(h.writes==writes and I.State.boxes['1'],'unknown/temporary shard failure was destructively repaired')
             ''')
+
+    def test_recovery_preserves_empty_boxes_settings_stamps_and_pending_move(self):
+        self.boot().execute('''
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        local value={filter='east',sort='coordinate',overrides={['coord:1:2']='sea'},pendingCoffer='3',scanRound=true,boxes={}}
+        value.boxes['1']={records=1,chunks={'1|2|0|1|saved coordinate\\n'},stamp='original one'}
+        value.boxes['2']={records=0,chunks={},stamp='original empty'}
+        value.boxes['3']={records=2,chunks={'3|4|0|1|complete coordinate\\n5|6|0|1|second coordinate\\n'},stamp='original three'}
+        assert(P:SaveValue(I.storeId,value,{durable=true}))
+        local raw=h.disk[store.resolvedKey]
+        raw.payload.boxes['3'].chunks[1]='3|4|0|1|complete coordinate\\ntruncated tail'
+        local before=h.Copy(raw);I.loaded=false;store.loaded=false;assert(not I:Initialize())
+        h.failSave=true;assert(not I:ResetCofferRound());h.failSave=false
+        assert(P:FingerprintCanonicalValue(store,h.disk[store.resolvedKey])==P:FingerprintCanonicalValue(store,before),'failed repair changed old disk')
+        assert(not I.loaded and store.writeFenced)
+        assert(I:ResetCofferRound())
+        assert(I.State.filter=='east' and I.State.sort=='coordinate' and I.State.overrides['coord:1:2']=='sea','repair discarded settings')
+        assert(I.State.pendingCoffer=='3','repair confirmed an uncertain move')
+        assert(I.State.boxes['2'] and I.State.boxes['2'].records==0,'repair discarded a valid empty box')
+        assert(I.State.boxes['1'].chunks[1]==value.boxes['1'].chunks[1],'healthy box was repacked')
+        for id,box in pairs(I.State.boxes)do assert(box.stamp==value.boxes[id].stamp,'repair invented a new scan timestamp')end
+        assert(f:GetProjection().scannedCofferCount==3 and f:GetProjection().inventoryUncertain)
+        I.loaded=false;store.loaded=false;assert(I:Initialize())
+        assert(I.State.boxes['2'] and I.State.pendingCoffer=='3' and I.State.filter=='east')
+        ''')
+
+    def test_recovery_aborts_when_fenced_root_cannot_be_reread(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        h.disk[store.resolvedKey].payload.boxes['1'].chunks[1]='truncated tail'
+        I.loaded=false;store.loaded=false;assert(not I:Initialize())
+        local writes=h.writes
+        h.S.Api.LoadData=function()return nil,'temporary read failure' end
+        assert(not I:ResetCofferRound(),'failed reread was replaced with empty records')
+        assert(h.writes==writes and not I.loaded)
+        ''')
+
+    def test_recovery_removes_broken_suffix_even_when_declared_records_are_complete(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        local box=h.disk[store.resolvedKey].payload.boxes['1']
+        box.chunks[1]=box.chunks[1]..'broken suffix'
+        I.loaded=false;store.loaded=false;assert(not I:Initialize())
+        assert(I:ResetCofferRound());assert(f:GetProjection().totalMapCount==1)
+        I.loaded=false;store.loaded=false;assert(I:Initialize())
+        ''')
+
+    def test_recovery_does_not_reuse_cached_ownership_for_a_new_future_root(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        local healthy=h.Copy(h.disk[store.resolvedKey])
+        store.schemaVersion=store.schemaVersion+1
+        assert(P:SaveValue(I.storeId,I.State,{durable=true}));store.schemaVersion=store.schemaVersion-1
+        local future=h.Copy(h.disk[store.resolvedKey]);h.disk[store.resolvedKey]=healthy
+        healthy.payload.boxes['1'].chunks[1]='truncated tail'
+        I.loaded=false;store.loaded=false;assert(not I:Initialize())
+        h.disk[store.resolvedKey]=future;local writes=h.writes
+        assert(not I:ResetCofferRound());assert(h.writes==writes and not I.loaded)
+        ''')
+
+    def test_recovery_does_not_overwrite_a_newer_healthy_root(self):
+        self.boot().execute('''
+        h.storage={Map(0,2)};assert(f.Commands:IdentifyCurrentCoffer())
+        local I,P=f.Inventory,h.S.Persistence;local store=P:GetStore(I.storeId)
+        local healthy=h.Copy(h.disk[store.resolvedKey])
+        h.disk[store.resolvedKey].payload.boxes['1'].chunks[1]='truncated tail'
+        I.loaded=false;store.loaded=false;assert(not I:Initialize())
+        h.disk[store.resolvedKey]=healthy;local writes=h.writes
+        assert(not I:ResetCofferRound(),'repair became a clear after the fault disappeared')
+        assert(h.writes==writes and I.loaded and f:GetProjection().totalMapCount==1)
+        ''')
+
+    def test_settings_distinguish_corrupt_repair_from_healthy_clear(self):
+        lua=self.floating()
+        lua.execute('''
+        local function Label(p)
+            for _,item in ipairs(content.treasureSettingsItems(p))do if item.value=='clear_coffers' then return item.text end end
+        end
+        assert(Label({inventoryRepairable=true}):find('修复损坏记录',1,true))
+        assert(Label({inventoryRepairable=false}):find('清空本轮记录',1,true))
+        ''')
 
     def test_explicit_corrupt_root_recovery_keeps_complete_lines_only_and_reports_loss(self):
         self.boot().execute('''
