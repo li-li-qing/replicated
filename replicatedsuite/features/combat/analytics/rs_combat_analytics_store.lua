@@ -16,7 +16,8 @@ local STORE_ID = "v3.combat_analytics"
 local SCHEMA = 4
 -- 用户确认的首次/重复击杀奖励，配合明确归属去重；助攻3/12必须先排除。
 -- 魔法之地实测战争击杀60、纷争击杀15，区域状态变化不能漏掉小额击杀。
-local DEFAULT_HONOR_KILL_AMOUNTS={15,19,21,60,68,76,84,86}
+-- 鲸鱼歌湾实测击杀17/60；战场亡灵会影响附加荣誉，金额只收已确认值。
+local DEFAULT_HONOR_KILL_AMOUNTS={15,17,19,21,60,68,76,84,86}
 local function HonorAmount(value)
     local n=tonumber(value)
     return n and n==n and n>=1 and n<=1000000 and n==math.floor(n) and n or nil
