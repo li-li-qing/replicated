@@ -145,6 +145,7 @@ features/combat/analytics/rs_combat_metric_common.lua
 features/combat/analytics/rs_combat_analytics_metrics.lua
 features/combat/analytics/rs_combat_analytics_store.lua
 features/combat/analytics/rs_combat_personal_history.lua
+features/combat/analytics/rs_combat_history_kill_targets.lua
 features/combat/analytics/rs_combat_history_guard.lua
 data/rs_combat_history_import.lua
 features/combat/analytics/rs_combat_history_transfer.lua

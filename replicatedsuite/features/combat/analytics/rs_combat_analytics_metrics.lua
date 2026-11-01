@@ -431,6 +431,11 @@ do
                 delta.kills=1
             end
             if next(delta)~=nil then historyKill=h:Record(delta,pairedHonor and pairedHonor.recordTime)==true and delta.kills==1 end
+            if ownKill and historyKill and type(h.RecordKillTarget)=="function" then
+                local when=pairedHonor and pairedHonor.recordTime
+                local date=type(when)=="table" and when.date or h:Timestamp()
+                h:RecordKillTarget(date,victimName)
+            end
         end
         if ownKill and not pairedHonor then AddExplicitReceipt(state,now,liveKill,historyKill,death) end
         local reason

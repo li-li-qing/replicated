@@ -263,6 +263,9 @@ if hub and type(hub.RegisterProvider)=="function" then
     -- 隐藏的旧分析入口与主入口共享 Store，明确绑定到用户实际导出的主模块。
     if type(hub.RegisterStoreOwner)=="function" then
         hub:RegisterStoreOwner("combat_stats",F.StoreId)
-        if F.PersonalHistory then hub:RegisterStoreOwner("combat_stats",F.PersonalHistory.StoreId) end
+        if F.PersonalHistory then
+            hub:RegisterStoreOwner("combat_stats",F.PersonalHistory.StoreId)
+            if F.PersonalHistory.KillTargetsStoreId then hub:RegisterStoreOwner("combat_stats",F.PersonalHistory.KillTargetsStoreId) end
+        end
     end
 end

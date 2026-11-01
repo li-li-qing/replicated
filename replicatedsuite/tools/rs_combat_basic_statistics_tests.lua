@@ -26,6 +26,7 @@ dofile('features/combat/analytics/rs_combat_metric_common.lua')
 dofile('features/combat/analytics/rs_combat_analytics_metrics.lua')
 dofile('features/combat/analytics/rs_combat_analytics_store.lua')
 dofile('features/combat/analytics/rs_combat_personal_history.lua')
+dofile('features/combat/analytics/rs_combat_history_kill_targets.lua')
 dofile('features/combat/analytics/rs_combat_analytics_feature.lua')
 local A,F=S.Services.CombatAnalyticsV3,S.Features.CombatAnalytics
 local function Relation(name) return name=='Self' and 'SELF' or (name=='Other' and 'FRIENDLY' or 'OPPONENT') end
@@ -65,6 +66,13 @@ local function Rows() local p=D:GetCombatOverview();local out={} for _,r in ipai
 Fact('damage','Self','Enemy',100);Fact('damage','Enemy','Self',40);Fact('heal','Self','Self',60)
 Fact('death','Self','Enemy');Fact('death','Enemy','Self');Fact('damage','Self','Npc',30);Fact('death','Self','Npc')
 local rows,p=Rows();local me=assert(rows.Self)
+local names=assert(F.PersonalHistory:GetKillTargets('2026-10-05'))
+assert(#names.rows==1 and names.rows[1].name=='Enemy' and names.rows[1].kills==1,'confirmed personal kill must be retained by server date')
+local nameStore=P.stores['v3.combat_history_kill_targets']
+P.disk[nameStore.id]=Copy(nameStore.get());P.loaded[nameStore.id]=nil;nameStore.apply(nil)
+names=assert(F.PersonalHistory:GetKillTargets('2026-10-05'))
+assert(#names.rows==1 and names.rows[1].name=='Enemy','kill names must survive store reload')
+assert(#assert(F.PersonalHistory:GetKillTargets('2026-10-04')).rows==0,'names cannot leak into another day')
 assert(#p.rows==1 and me.damage==130 and me.taken==40 and me.heal==60 and me.kills==1 and me.deaths==1,'NPC damage remains while only player kills count')
 assert(me.assists==nil and me.dps==nil and me.npcKills==nil,'overview calculates only five statistics')
 local before=A.metricDispatches

@@ -15,6 +15,10 @@ local function Boot()
     S.Features.DPS={EnsureStoreLoaded=function()return true end,GetSettingsProjection=function()return {trackDamage=h.trackDamage==true,trackHealing=h.trackHealing==true}end}
     h.todayDate='2026-10-29';h.cachedTodayDate='2026-10-29';h.todayReads=0;h.queries={};h.protection=true
     local F={Commands={}}
+    function F:GetPersonalHistoryKillTargets(date)
+        if date=='2026-10-29' then return {rows={{name='Enemy',kills=2}},omitted=0,revision=1} end
+        return {rows={},omitted=0,revision=1}
+    end
     function F:EnsureStoreLoaded()return true end
     function F:GetCollectionScope()return 'self' end
     h.fileExports=0;h.fileImports=0
@@ -33,7 +37,7 @@ local function Boot()
         return {available=true,todayDate=h.cachedTodayDate,revision=1,complete=true,
             dateOptions={'2026-10-30','2026-10-29','2026-10-28'},
             totals={kills=filtered and 3 or 23,deaths=filtered and 2 or 12},
-            rows=rows,
+            rows=h.historyRows or rows,firstAt=h.firstAt,lastAt=h.lastAt,
             protection=h.protection and {enabled=true,status=h.status or 'basic',protectedKills=filtered and 2 or 20,
                 protectedDeaths=filtered and 1 or 10,legacyKills=filtered and 1 or 3,legacyDeaths=filtered and 1 or 2,
                 error=h.guardError} or nil}
@@ -123,6 +127,12 @@ Test('each today click rechecks the server day after midnight',function()
     assert(h.todayReads==2,'each today click must request a fresh date')
     assert(h.tree.v3_personal_history_from:GetValue()=='2026-10-30' and h.tree.v3_personal_history_to:GetValue()=='2026-10-30','today reused a stale date')
 end)
+Test('reopening history does not leave an old today filter hiding records',function()
+    local h=Boot();assert(h:ClickHistory('v3_personal_history_today'))
+    assert(h.history:OnDeactivated());assert(h.history:OnActivated())
+    assert(h.tree.v3_personal_history_from:GetValue()=='' and h.tree.v3_personal_history_to:GetValue()=='')
+    assert(h.tree.v3_personal_history_totals.text:find('击杀玩家 23',1,true),'reopening did not restore all dates')
+end)
 Test('unknown server day refuses today and preserves the selected dates',function()
     local h=Boot();assert(h.tree.v3_personal_history_from:SetValue('2026-10-28'));assert(h.tree.v3_personal_history_to:SetValue('2026-10-28'))
     h.todayDate=nil
@@ -141,6 +151,49 @@ Test('today protection summary uses filtered counts and distinguishes retained l
     h.status='failed';h.guardError='测试存档异常';assert(h.history:RefreshData())
     assert(h.tree.v3_personal_history_protection.text:find('校验失败',1,true),'failed protection was presented as healthy')
 end)
+Test('history collection times display server time plus five hours without changing the source',function()
+    local h=Boot()
+    local row={date='2026-10-29',kills=3,deaths=2,firstAt='2026-10-29 15:10',lastAt='2026-10-29 18:59'}
+    h.historyRows={row};h.firstAt=row.firstAt;h.lastAt=row.lastAt
+    for _=1,2 do
+        assert(h.history:RefreshData())
+        local shown=h.tree.v3_personal_history_table:GetItem(1)
+        assert(shown.period=='20:10 → 23:59','collection time was not converted to Beijing time: '..tostring(shown.period))
+        local period=h.tree.v3_personal_history_period.text
+        assert(period:find('北京时间',1,true) and period:find('2026-10-29 20:10 → 2026-10-29 23:59',1,true),'overall period needs the same time conversion')
+        assert(row.firstAt=='2026-10-29 15:10' and row.lastAt=='2026-10-29 18:59','display rewrote the stored timestamps')
+    end
+    assert(h.todayReads==0,'formatting times must not request a Native clock')
+    assert(h:ClickHistory('v3_personal_history_today'))
+    assert(h.tree.v3_personal_history_from:GetValue()=='2026-10-29','time display changed server-day filtering')
+end)
+Test('Beijing collection times carry midnight through month year and Gregorian leap boundaries',function()
+    local h=Boot()
+    for _,dates in ipairs({
+        {'2026-10-29','2026-10-30'}, {'2026-10-31','2026-11-01'},
+        {'2026-12-31','2027-01-01'}, {'2028-02-28','2028-02-29'},
+        {'2028-02-29','2028-03-01'}, {'2100-02-28','2100-03-01'},
+    })do
+        local row={date=dates[1],kills=3,deaths=2,firstAt=dates[1]..' 18:55',lastAt=dates[1]..' 20:05'}
+        h.historyRows={row};h.firstAt=row.firstAt;h.lastAt=row.lastAt
+        assert(h.history:RefreshData())
+        local shown=h.tree.v3_personal_history_table:GetItem(1)
+        assert(shown.period=='23:55 → 次日 01:05','midnight must be visible relative to the server-day row: '..tostring(shown.period))
+        assert(shown.dateDisplay==dates[1],'display conversion rebucketed a server-day total')
+        assert(h.tree.v3_personal_history_period.text:find(dates[2]..' 01:05',1,true),'incorrect Beijing calendar date for '..dates[1])
+    end
+    assert(h.tree.v3_personal_history_range_hint.text:find('北京时间',1,true),'display timezone needs a visible explanation')
+    assert(h.tree.v3_personal_history_range_hint.text:find('服务器日期',1,true),'day filtering needs its server-date explanation')
+end)
+Test('missing or invalid collection timestamps remain unknown in the display',function()
+    local h=Boot()
+    for _,value in ipairs({'unknown','2026-02-30 20:00','2026-10-29 24:00','2026-10-29 12:60'})do
+        h.historyRows={{date='unknown',kills=0,deaths=0,firstAt=value}}
+        h.firstAt=value;h.lastAt=nil;assert(h.history:RefreshData())
+        assert(h.tree.v3_personal_history_table:GetItem(1).period=='-- → --','invalid timestamp became a known time')
+        assert(h.tree.v3_personal_history_period.text:find('尚无已知时间样本',1,true),'invalid timestamp became a known date')
+    end
+end)
 Test('old projection hosts remain readable without invented protection claims',function()
     local h=Boot();h.protection=false;h.S.Features.CombatAnalytics.Commands.GetPersonalHistoryToday=nil;assert(h.history:RefreshData())
     assert(h.tree.v3_personal_history_totals.text:find('击杀玩家 23',1,true),'old hosts lost history totals')
@@ -149,6 +202,17 @@ Test('old projection hosts remain readable without invented protection claims',f
     assert(h:ClickHistory('v3_personal_history_today'))
     assert(h.tree.v3_personal_history_from:GetValue()=='2026-10-29' and h.tree.v3_personal_history_to:GetValue()=='2026-10-29','old hosts lost the projection date fallback')
     assert(h.todayReads==0,'fallback should be used only when the command is absent')
+end)
+Test('clicking a daily row shows its names and returns to the daily table',function()
+    local h=Boot();h:Arrange(620,580)
+    local tableView=h.tree.v3_personal_history_table
+    local row=assert(tableView:GetItem(1))
+    local slot=assert(tableView.list.poolByIndex[1], 'daily row was not bound')
+    assert(slot.row.root.events.OnClick(slot.row.root,'LeftButton')~=false)
+    assert(h.tree.v3_history_kill_targets.visible and not tableView.visible,'daily detail did not replace the date list')
+    assert(h.tree.v3_history_kill_targets:GetItem(1).name=='Enemy','selected date did not show the target name')
+    assert(h:ClickHistory('v3_history_kill_back'))
+    assert(tableView.visible and not h.tree.v3_history_kill_targets.visible,'back did not restore daily rows')
 end)
 print('RESULT combat-history-today-ui passed='..passed..' failed='..failed)
 if failed>0 then os.exit(1)end

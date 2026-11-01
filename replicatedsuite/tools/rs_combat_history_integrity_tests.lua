@@ -23,6 +23,31 @@ end
 local function NoNpc(row)
     assert(row.npcKills==nil and row.inferredNpcKills==nil and row.recordedNpcKills==nil,'retired NPC counters exposed')
 end
+Test('daily kill names survive real persistence and reject failed writes',function()
+    local h=Boot();dofile('features/combat/analytics/rs_combat_history_kill_targets.lua')
+    local id='v3.combat_history_kill_targets';local store=h.P:GetStore(id)
+    assert(h.H:RecordKillTarget('2026-10-07','Enemy'))
+    assert(h.H:RecordKillTarget('2026-10-07','Enemy'))
+    assert(h.H:RecordKillTarget('2026-10-07','测试玩家'))
+    assert(h.P:SaveStore(id,{durable=true}));store.loaded=false
+    local result=assert(h.H:GetKillTargets('2026-10-07'))
+    assert(#result.rows==2 and result.rows[1].name=='Enemy' and result.rows[1].kills==2 and result.rows[2].name=='测试玩家')
+    assert(#assert(h.H:GetKillTargets('2026-10-08')).rows==0)
+    local mark=h.P.MarkDirty;h.P.MarkDirty=function()return false,'rejected'end
+    assert(h.H:RecordKillTarget('2026-10-07','Other')==false)
+    h.P.MarkDirty=mark
+    assert(#assert(h.H:GetKillTargets('2026-10-07')).rows==2,'rejected write changed names')
+end)
+Test('daily name capacity reports omitted kills without discarding retained names',function()
+    local h=Boot();dofile('features/combat/analytics/rs_combat_history_kill_targets.lua')
+    for i=1,129 do assert(h.H:RecordKillTarget('2026-10-07','Player'..i)) end
+    local result=assert(h.H:GetKillTargets('2026-10-07'))
+    assert(#result.rows==128 and result.omitted==1)
+    assert(h.P:SaveStore('v3.combat_history_kill_targets',{durable=true}))
+    h.P:GetStore('v3.combat_history_kill_targets').loaded=false
+    result=assert(h.H:GetKillTargets('2026-10-07'))
+    assert(#result.rows==128 and result.omitted==1,'capacity result did not survive reload')
+end)
 Test('genuine schema1 migrates without losing any old counts',function()
     local h=Boot();h.disk[h.key]=dofile('tools/fixtures/combat_history_schema1_20261007.lua')
     local stamped=h.disk[h.key].__rsmeta.encodedFingerprint;local clears=h.clears

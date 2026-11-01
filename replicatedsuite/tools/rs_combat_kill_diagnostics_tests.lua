@@ -47,7 +47,7 @@ local function Boot()
     h.bus._StartGlobalBridge=function()error('self diagnostics opened global bridge')end
     dofile('services/rs_combat_analytics_v3.lua');dofile('features/combat/analytics/rs_combat_metric_common.lua')
     dofile('features/combat/analytics/rs_combat_analytics_metrics.lua');dofile('features/combat/analytics/rs_combat_analytics_store.lua')
-    dofile('features/combat/analytics/rs_combat_personal_history.lua');dofile('features/combat/analytics/rs_combat_analytics_feature.lua')
+    dofile('features/combat/analytics/rs_combat_personal_history.lua');dofile('features/combat/analytics/rs_combat_history_kill_targets.lua');dofile('features/combat/analytics/rs_combat_analytics_feature.lua')
     h.F=S.Features.CombatAnalytics;h.A=S.Services.CombatAnalyticsV3
     assert(h.F:Initialize());assert(h.F:Enable('test'))
     function h:Damage(target)self.bus:_OnCombatRaw('private','self-id','SPELL_DAMAGE','Self',target,11,'Hit',0,100,true)end
@@ -67,6 +67,7 @@ Test('merged module TXT includes missing-source decision and both stores',functi
     assert(text:find('missing_killer_source',1,true),'missing source skip reason omitted')
     assert(text:find('notice-two',1,true),'raw death notice payload omitted')
     assert(text:find(h.F.StoreId,1,true) and text:find(h.F.PersonalHistory.StoreId,1,true),'merged report omitted analytics/history stores')
+    assert(text:find('v3.combat_history_kill_targets',1,true),'merged report omitted daily kill-name store')
 end)
 Test('direct kill remains counted and its evidence is detached',function()
     local h=Boot();h:Damage(victim);h:Death(victim)

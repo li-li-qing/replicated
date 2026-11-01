@@ -8,6 +8,31 @@ local F=S.Features and S.Features.CombatAnalytics
 local DPS=S.Features and S.Features.DPS
 local D,UI,H=S.UIV3Design,S.RSUI,S.UIV3 and S.UIV3.PageHost
 if not F or not DPS or not D or not UI or not H then return end
+-- 仅在展示时换算北京时间（服务器+5小时）；原始时间参与历史认证和去重，不能写回。
+local MONTH_DAYS={31,28,31,30,31,30,31,31,30,31,30,31}
+local function FormatHistoryTime(value,rowDate)
+    if type(value)~="string" then return nil end
+    local year,month,day,hour,minute=value:match("^(%d%d%d%d)%-(%d%d)%-(%d%d) (%d%d):(%d%d)$")
+    year,month,day,hour,minute=tonumber(year),tonumber(month),tonumber(day),tonumber(hour),tonumber(minute)
+    if not year or year<2000 or month<1 or month>12 or day<1 or hour>23 or minute>59 then return nil end
+    local days=MONTH_DAYS[month]
+    if month==2 and year%4==0 and (year%100~=0 or year%400==0) then days=29 end
+    if day>days then return nil end
+    hour=hour+5
+    if hour>=24 then
+        hour=hour-24;day=day+1
+        if day>days then
+            day=1;month=month+1
+            if month>12 then month=1;year=year+1 end
+        end
+    end
+    if year>9999 then return nil end
+    local date=string.format("%04d-%02d-%02d",year,month,day)
+    local time=string.format("%02d:%02d",hour,minute)
+    if rowDate==date then return time end
+    if rowDate==value:sub(1,10) then return "次日 "..time end
+    return date.." "..time
+end
 -- 交换面板只持有冻结的导出文本和输入草稿；来源去重、角色校验和耐久合并均经 Feature Commands。
 -- 文本只在点击操作时写入，战斗刷新不能重写多行框、抢焦点或清掉用户正在选择/粘贴的内容。
 local function BuildTransfer(parent,onChanged,fileParent)
@@ -215,7 +240,7 @@ local function Build(parent)
     -- 日期只是本页只读筛选状态；复用 RSUI 下拉弹层，不要求输入日期，也不写回历史 Store。
     local selectedFrom,selectedTo,lastDates="","",nil
     local rangeHint
-    local rangeHelp="选择后立即查询，含首尾当天；今日采用服务器日期。已选日期若无每日明细，会保留边界并标注。"
+    local rangeHelp="采集起止为北京时间（服务器时间+5小时）；今日和日期筛选采用服务器日期。选择后立即查询，含首尾当天；已选日期若无每日明细，会保留边界并标注。"
     local ranges=UI:HorizontalBox({id="v3_personal_history_ranges",parent=content,gap=6,slot={size="fixed",height=32,hAlign="fill"}})
     UI:Text({id="v3_personal_history_range_label",parent=ranges,text="日期：",slot={size="fixed",width=46}})
     local from=UI:Dropdown({id="v3_personal_history_from",parent=ranges,items={{value="",text="开始：不限"}},maxVisible=8,
@@ -255,6 +280,12 @@ local function Build(parent)
     local totals=UI:Text({id="v3_personal_history_totals",parent=content,text="--",fontSize=12,tone="strong",overflow="wrap",slot={size="auto",minHeight=44}})
     local protection=UI:Text({id="v3_personal_history_protection",parent=content,text="",visible=false,fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=28}})
     local dailySummary=UI:Text({id="v3_personal_history_daily_summary",parent=content,text="每日记录",fontSize=10,tone="strong",overflow="wrap",slot={size="auto",minHeight=22}})
+    local detailBar=UI:HorizontalBox({id="v3_history_kill_detail_bar",parent=root,gap=4,slot={size="fixed",height=28,hAlign="fill"}})
+    local detailTitle=UI:Text({id="v3_history_kill_detail_title",parent=detailBar,text="点击日期查看击杀名单",fontSize=10,overflow="ellipsis",slot={size="fill",fill=1,minWidth=80}})
+    local back=UI:Button({id="v3_history_kill_back",parent=detailBar,text="返回日期",compact=true,slot={size="fixed",width=80},onClick=function()
+        root.selectedHistoryDate=nil;return root:RefreshData()
+    end})
+    back:SetVisible(false)
     local tableHost=UI:VerticalBox({id="v3_personal_history_table_host",parent=root,gap=0,
         slot={size="fill",fill=1,minHeight=72,hAlign="fill",vAlign="fill"}})
     local tableView,trackingToken,pendingScroll=nil,nil,nil
@@ -272,6 +303,7 @@ local function Build(parent)
         if not nextTable then
             local id=next(tables)==nil and "v3_personal_history_table" or ("v3_personal_history_table_"..token)
             nextTable=UI:TableView({id=id,parent=tableHost,items={},rowHeight=24,headerHeight=25,desiredRows=14,scrollbar=true,columnResize=true,
+                onItemActivated=function(row) if row then root.selectedHistoryDate=row.date;root:RefreshData() end end,
                 columns={
                     {id="date",title="日期",field="dateDisplay",size="fixed",width=100,minWidth=92},
                     {id="kills",title="击杀",field="kills",size="fixed",width=76,minWidth=56,getText=function(row)
@@ -289,6 +321,11 @@ local function Build(parent)
         tableView=nextTable;trackingToken=token;tableView:SetVisible(true)
         return damage,healing
     end
+    local targetTable=UI:TableView({id="v3_history_kill_targets",parent=tableHost,items={},rowHeight=24,headerHeight=25,desiredRows=12,scrollbar=true,
+        columns={{id="name",title="被击杀玩家",field="name",size="fill",fill=1,minWidth=100},
+            {id="kills",title="击杀次数",field="kills",size="fixed",width=90,minWidth=60}},
+        slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
+    targetTable:SetVisible(false)
     local details=UI:Text({id="v3_personal_history_evidence",parent=content,text="--",fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=48}})
     local layout=root.Layout
     function root:Layout(x,y,width,height)
@@ -314,7 +351,12 @@ local function Build(parent)
             protection:SetText(title.."\n基础保护 · 击杀 "..tostring(guard.protectedKills or 0).." · 死亡 "..tostring(guard.protectedDeaths or 0)
                 .."；旧记录（未保护）· 击杀 "..tostring(guard.legacyKills or 0).." · 死亡 "..tostring(guard.legacyDeaths or 0).."，仍计入统计。")
         else protection:SetText("") end
-        if p.available~=true then period:SetText(tostring(p.error or "历史不可用"));totals:SetText("--");details:SetText("");dailySummary:SetText("每日记录不可用");tableView:SetItems({},"history_error");return true end
+        if p.available~=true then
+            period:SetText(tostring(p.error or "历史不可用"));totals:SetText("--");details:SetText("");dailySummary:SetText("每日记录不可用")
+            detailTitle:SetText("历史读取失败："..tostring(p.error or "请查看诊断"))
+            targetTable:SetVisible(false);tableView:SetVisible(true);back:SetVisible(false);self.selectedHistoryDate=nil
+            tableView:SetItems({},"history_error");return true
+        end
         -- 日账满额归档、导入或角色切换后，原边界可能不再有日明细；保留筛选并明确标注，不能显示“请选择”却继续暗中筛选。
         local fromListed,toListed=selectedFrom=="",selectedTo==""
         for _,date in ipairs(p.dateOptions or {}) do
@@ -336,7 +378,7 @@ local function Build(parent)
         local t=p.totals or {}
         local countKey=type(F.GetStatisticsCountKey)=="function" and F:GetStatisticsCountKey() or "kills"
         local countTitle=type(F.GetStatisticsCountTitle)=="function" and F:GetStatisticsCountTitle() or "击杀玩家"
-        period:SetText("全期记录："..tostring(p.firstAt or "尚无已知时间样本").." → "..tostring(p.lastAt or "--"))
+        period:SetText("全期记录（北京时间）："..tostring(FormatHistoryTime(p.firstAt) or "尚无已知时间样本").." → "..tostring(FormatHistoryTime(p.lastAt) or "--"))
         local amounts={}
         if showDamage then amounts[#amounts+1]="伤害 "..tostring(t.damage or 0);amounts[#amounts+1]="承伤 "..tostring(t.taken or 0) end
         if showHealing then amounts[#amounts+1]="治疗 "..tostring(t.healing or 0) end
@@ -354,15 +396,35 @@ local function Build(parent)
         for i,row in ipairs(p.rows or {}) do
             if i>120 then break end
             row.dateDisplay=row.date=="unknown" and "日期未定" or row.date
-            row.period=(row.firstAt and row.firstAt:sub(12) or "--").." → "..(row.lastAt and row.lastAt:sub(12) or "--")
+            row.period=(FormatHistoryTime(row.firstAt,row.date) or "--").." → "..(FormatHistoryTime(row.lastAt,row.date) or "--")
             rows[#rows+1]=row
         end
         tableView:SetItems(rows,"personal_history:"..tostring(p.revision)..":"..selectedFrom..":"..selectedTo..":"..countKey)
+        local selected=self.selectedHistoryDate
+        if selected then
+            local found=false;for _,row in ipairs(rows)do if row.date==selected then found=true;break end end
+            if not found then selected=nil;self.selectedHistoryDate=nil end
+        end
+        if selected then
+            local result,why
+            if type(F.GetPersonalHistoryKillTargets)=="function" then result,why=F:GetPersonalHistoryKillTargets(selected) end
+            local targets=result and result.rows or {}
+            detailTitle:SetText((selected=="unknown" and "日期未定" or selected).." · 本机名单 · "..(result and (#targets>0 and (#targets.." 人") or "暂无名单（旧记录无法还原）") or tostring(why or "名单不可用"))
+                ..(result and result.omitted>0 and (" · 超限未记录 "..result.omitted.." 次") or "")
+                ..(result and result.error and (" · 保存异常："..tostring(result.error)) or ""))
+            tableView:SetVisible(false);targetTable:SetVisible(true);back:SetVisible(true)
+            targetTable:SetItems(targets,"history_targets:"..selected..":"..tostring(result and result.revision or 0))
+        else
+            detailTitle:SetText("点击日期查看击杀名单；名单保存在本机，不随历史导出。")
+            targetTable:SetVisible(false);tableView:SetVisible(true);back:SetVisible(false)
+        end
         if pendingScroll~=nil then tableView:SetScrollOffset(pendingScroll);pendingScroll=nil end
         return true
     end
     function root:OnActivated()
         local loaded,loadErr=DPS:EnsureStoreLoaded();if loaded~=true then return false,loadErr end
+        -- 返回历史页时默认显示全期，避免上次“今日”筛选跨日后看起来像整份历史消失。
+        selectedFrom,selectedTo="","";self.selectedHistoryDate=nil
         self.combatStatisticsActive=true -- 历史查询同样只在可见期间合并战斗通知，不领取采集 Consumer。
         if S.Events and S.Events.SubscribeInternal then
             S.Events:SubscribeInternal("v3.combat_analytics.updated",self,function() return D:RequestCombatStatisticsRefresh(root,root.RefreshData) end)

@@ -265,7 +265,7 @@ function H:GetProjection(options)
     return {available=true,complete=complete,todayDate=today,protection=protection,totals=ConfirmedCounts(totals),rows=rows,dateOptions=dateOptions,firstAt=self.state.firstAt,lastAt=self.state.lastAt,
         archive=ConfirmedCounts(self.state.archive),archiveFrom=self.state.archiveFrom,archiveTo=self.state.archiveTo,
         revision=self.revision,failures=self.failures,error=self.lastError or (store and store.lastError),scope=A:GetCollectionScope(),
-        coverage="同一个击杀数：明确归属直接计入，普通区域没有荣誉也照常记录；战争/纷争荣誉只作备用补记。已知助攻3/12排除，仅匹配确认金额并与前后归属通知配对，其他金额不猜测。荣誉补记不编造死者或技能；旧版独立荣誉次数不并入击杀，已有历史不回补。伤害、治疗仅在对应追踪开启期间记录。日期时间为服务器时间（分钟精度）。"}
+        coverage="同一个击杀数：明确归属直接计入，普通区域没有荣誉也照常记录；战争/纷争荣誉只作备用补记。已知助攻3/12排除，仅匹配确认金额并与前后归属通知配对，其他金额不猜测。荣誉补记不编造死者或技能；旧版独立荣誉次数不并入击杀，已有历史不回补。伤害、治疗仅在对应追踪开启期间记录。每日归档与日期筛选按服务器日期，原始时间精度为分钟。"}
 end
 A:RegisterMetric({id="personal_history",title="个人长期统计",hidden=true,order=6,factCategories={"damage","heal"},
     OnFact=function(_,fact)
