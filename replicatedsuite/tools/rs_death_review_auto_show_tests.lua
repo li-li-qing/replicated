@@ -114,4 +114,16 @@ Test('native show rejection remains hidden and reports auto-show failure', funct
     assert(h.warnings[1] == 'DEATH_REVIEW_AUTO_SHOW_FAILED', 'auto-show rejection was swallowed')
 end)
 
+Test('consecutive deaths replace the popup skill and damage while open and after closing',function()
+    local h,s,f,host=Boot()
+    for i,skill in ipairs({'Charge','Triple Slash','Final Strike'})do
+        f.Authority.incoming={{time=4990,sequence=i,source='Enemy '..i,ability=skill,amount=i*111}}
+        h:Die()
+        local widget=assert(host:GetInstance('combat.death_review'))
+        assert(widget.content.lethalSummary.text:find(skill,1,true),'popup kept the previous death skill')
+        assert(widget.summary.text:find(tostring(i*111),1,true),'popup kept the previous death damage')
+        if i==2 then assert(host:SetVisible('combat.death_review',false,{persist=false}))end
+    end
+    assert(host.stats.creates==1 and s.LastInternalEventError==nil)
+end)
 print('DEATH_REVIEW_AUTO_SHOW PASS: ' .. passed .. ' cases (Native display modeled)')

@@ -149,4 +149,93 @@ Test('real page history picker switches damage and status together and keeps sel
     assert(f:DeleteRecord(1));page:Refresh();assert(page.selectedSerial==2)
     assert(f:ClearHistory());page:Refresh();assert(page.selectedSerial==nil and #page.detail.buffs.list.items==0)
 end)
+Test('consecutive unsaved deaths replace visible values even when their serial is reused',function()
+    local h,c=Boot();local s=h.S
+    s.UI.CreateWindowShell=function()error('Native window not used by content test')end
+    dofile('ui/framework/rs_ui_floating_surface.lua')
+    dofile('features/combat/death_review/rs_death_review_store.lua')
+    local f=s.Features.DeathReview;assert(f:EnsureStoreLoaded());f.State.settings.showDebuffs=false
+    dofile('features/combat/death_review/rs_death_review_authority.lua')
+    h.failSave=true
+    local function Death(at,source,ability,amount)
+        h.ms=at
+        f.Authority.incoming={{time=at-100,sequence=1,source=source,ability=ability,amount=amount}}
+        f.Authority:FinalizeDeath(at,2)
+        assert(f.Authority.volatileRecord and f.State.history.serial==0,'save failure did not retain a temporary death')
+        local rows,record=f.Authority:GetTimelineRows()
+        c:Render(rows,record);c.root:Layout(0,0,740,440)
+        return record
+    end
+    local first=Death(5000,'First enemy','First hit',111)
+    local second=Death(9000,'Second enemy','Second hit',222)
+    assert(first.serial==second.serial,'fixture must exercise a reused record identity')
+    local row=assert(c.timeline.list:GetRowForIndex(1))
+    assert(c.summary.text:find('222',1,true),'summary did not show the new total')
+    assert(row.cells[3].text=='Second hit' and row.cells[4].text=='Second enemy' and row.cells[5].text=='222',
+        'new total retained the previous death skill/source/damage cells')
+end)
+Test('reordered rows keep skill source damage and status cells paired at the same record identity',function()
+    local h,c=Boot();local r=Record();local rows={}
+    for i=1,12 do rows[i]={timeText='-'..i..'s',source='Enemy '..i,ability='Skill '..i,amount=i*111,iconPath='skill.dds'} end
+    c:Render(rows,r);c.root:Layout(0,0,740,440)
+    c.timeline.list:ScrollToBottom()
+    local reversed={};for i=#rows,1,-1 do reversed[#reversed+1]=rows[i] end
+    r.buffs[1].name='New buff';r.buffs[1].timeLeft=2400
+    r.debuffs[1].name='New debuff';r.debuffs[1].timeLeft=1700
+    c:Render(reversed,r);c.root:Layout(0,0,740,440)
+    for index=c.timeline.list.visibleStart,c.timeline.list.visibleEnd do
+        local row=assert(c.timeline.list:GetRowForIndex(index));local expected=reversed[index]
+        assert(row.cells[2].text==expected.timeText and row.cells[3].text==expected.ability
+            and row.cells[4].text==expected.source and row.cells[5].text==tostring(expected.amount),'reordered visible cells retained old values')
+    end
+    local buff=assert(c.buffs.list:GetRowForIndex(1));local debuff=assert(c.debuffs.list:GetRowForIndex(1))
+    assert(buff.cells[2].text:find('New buff',1,true) and buff.cells[3].text=='2.4s','buff values stayed at the old revision')
+    assert(debuff.cells[2].text:find('New debuff',1,true) and debuff.cells[3].text=='1.7s','debuff values stayed at the old revision')
+end)
+Test('real store publication and popup refresh keep consecutive death identities aligned',function()
+    local h=Boot();local s=h.S
+    s.UI.CreateWindowShell=function()error('Native window not used by popup replay')end
+    dofile('core/rs_demand.lua');dofile('ui/framework/rs_ui_floating_surface.lua')
+    s.FeatureRuntime.GetSnapshot=function()return {enabled=true}end
+    dofile('features/combat/death_review/rs_death_review_store.lua')
+    dofile('features/combat/death_review/rs_death_review_authority.lua')
+    dofile('features/combat/death_review/rs_death_review_feature.lua')
+    local floating=s.RSUI.FloatingSurface
+    floating.Create=function()
+        return {shell={root={}},windowController={},GetContentRoot=function()return h.page end,
+            SetStatus=function(self,text)self.status=text end,Show=function()return true end}
+    end
+    dofile('presentation/v3/widgets/rs_v3_widget_host.lua')
+    local windowDiagnostic
+    s.ModuleDiagnosticsHub={RegisterProvider=function(_,module,id,fn)
+        assert(module=='combat_death_review' and id=='death_review_window');windowDiagnostic=fn;return true
+    end}
+    dofile('presentation/v3/widgets/rs_v3_death_review_widget.lua')
+    local f=s.Features.DeathReview;assert(f:EnsureStoreLoaded());f.State.settings.showDebuffs=false
+    local host=s.UIV3.WidgetHost
+    assert(windowDiagnostic and windowDiagnostic().created==false,'diagnostic created a popup')
+    -- 通知携带本次完整记录；即使无明确身份的历史查询落后，弹窗也不能换成上一条。
+    local project=f.GetProjection
+    f.GetProjection=function(self,request)
+        if not request.deathRecord and not request.serial and self.State.history.serial>1 then
+            request.serial=self.State.history.serial-1
+        end
+        return project(self,request)
+    end
+    for i,skill in ipairs({'Charge','Triple Slash','Final Strike'})do
+        h.ms=5000+i*3000
+        f.Authority.incoming={{time=h.ms-100,sequence=i,source='Enemy '..i,ability=skill,amount=i*111}}
+        local record=f.Authority:FinalizeDeath(h.ms,i+1)
+        assert(record.serial==i and f.State.history.serial==i,'death did not commit before publication')
+        local widget=assert(host:GetInstance('combat.death_review'))
+        widget.content.root:Layout(0,0,740,440)
+        local row=assert(widget.timeline.list:GetRowForIndex(1))
+        assert(widget.surface.status=='记录 #'..i and row.cells[3].text==skill and row.cells[5].text==tostring(i*111),
+            'popup displayed the previous death after committing the current one')
+        local diagnostic=windowDiagnostic()
+        assert(diagnostic.lastDeathSerial==i and diagnostic.displayedSerial==i,'popup record identities are absent from diagnostics')
+        if i==2 then assert(host:SetVisible('combat.death_review',false,{persist=false}))end
+    end
+    assert(host.stats.creates==1 and s.LastInternalEventError==nil)
+end)
 print('DEATH_REVIEW_CONTENT PASS: '..passed..' cases (Native modeled)')

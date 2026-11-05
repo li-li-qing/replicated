@@ -163,4 +163,32 @@ Test('history picker exposes sequence order and preserves the selected record on
     assert(h.page.selectedSerial==10)
     assert(picker.spec.set(9));assert(h.page:Refresh());assert(h.page.selectedSerial==9,'refresh switched away from the selected record')
 end)
+Test('a new death replaces the previous page selection with the current death',function()
+    local h=Boot();local latest=2
+    h.f.GetProjection=function(_,request)
+        local selected=request and request.serial or latest
+        return {enabled=true,health={},historyRows={{serial=latest},{serial=latest-1}},timelineRows={},
+            record={serial=selected,totalDamage=selected*100}}
+    end
+    assert(h.page:Refresh());assert(h.page.selectedSerial==2)
+    assert(h.page.historyPicker.spec.set(1));assert(h.page:Refresh())
+    assert(h.page.selectedSerial==1,'ordinary refresh must preserve manual history browsing')
+    assert(h.page.historyPicker.spec.set(2))
+    latest=3;h.S.Events:Publish('v3.death_review.updated',1,'death',{serial=3})
+    assert(h.page.selectedSerial==3,'new death kept the previous death selected')
+    assert(h.page.detail.summary.text:find('300',1,true),'page retained the previous death detail')
+end)
+Test('reopening the page after a hidden death shows the new record',function()
+    local h=Boot();local latest=2
+    h.f.GetProjection=function(_,request)
+        local selected=request and request.serial or latest
+        return {enabled=true,health={},historyRows={{serial=latest},{serial=latest-1}},timelineRows={},
+            record={serial=selected,totalDamage=selected*100}}
+    end
+    assert(h.page:Refresh());assert(h.page.selectedSerial==2)
+    assert(h.page:OnDeactivated());latest=3
+    h.S.Events:Publish('v3.death_review.updated',1,'death',{serial=3})
+    assert(h.page:OnActivated())
+    assert(h.page.selectedSerial==3,'cached page reopened the previous death')
+end)
 print('DEATH_REVIEW_LAYOUT PASS: '..passed..' cases (Native and storage boundaries modeled)')

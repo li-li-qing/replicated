@@ -200,4 +200,103 @@ Test('sealed legacy codec2 scientific rows load only with their complete origina
     local _,_,damaged,p3=Boot(disk)
     assert(damaged:LoadRecord(1)==nil and p3:GetStore(id).writeFenced,'tampered legacy damage bypassed proof')
 end)
+Test('death window and relative times stay anchored to the death notice',function()
+    local h,s,f=Boot();f.State.settings.windowMs=3000
+    h:Damage('spell_damage',456,6500)
+    h:Damage('spell_damage',789,9500)
+    local record=f.Authority:FinalizeDeath(10000,3)
+    assert(record.time==10000,'timeline moved death time back to the previous hit')
+    assert(#record.events==1 and record.events[1].abilityId==789 and record.totalDamage==321,
+        'damage before the configured death window inflated the total')
+    local rows=f.Authority:GetTimelineRows()
+    assert(rows[1].secondsBefore==0.5 and rows[1].timeText=='-0.5s','last hit was falsely shown at death time')
+end)
+Test('damage delivered just after the death notice participates in bounded finalization',function()
+    local h,s,f=Boot();local delay
+    local schedule=s.Scheduler.AddOneShot
+    s.Scheduler.AddOneShot=function(self,id,ms,fn,...)
+        if id=='death_review_finalize' then delay=ms end
+        return schedule(self,id,ms,fn,...)
+    end
+    h:Damage('spell_damage',456,4900)
+    f.Authority:OnCombatFact({kind='death_notice',subjectName='Me',receivedAt=5000,sequence=2})
+    f.Authority:OnCombatFact({kind='spell_damage',category='damage',targetName='Me',sourceName='Late enemy',
+        abilityName='Final hit',amount=999,rawAbilityId=789,receivedAt=5100,sequence=3})
+    h.at=5250;assert(h.tasks.death_review_finalize())
+    local record=assert(f.Authority:GetRecord())
+    assert(#record.events==2 and record.totalDamage==1320,'late final hit was excluded by dispatch sequence')
+    assert(record.lethal.ability=='Final hit' and record.lethal.amount==999,'previous hit was selected as the final hit')
+    assert(delay>=100 and delay<=250,'finalization does not wait through its accepted late-damage interval')
+end)
+Test('delayed scheduler execution cannot absorb damage beyond the bounded death interval',function()
+    local h,s,f=Boot();h:Damage('spell_damage',456,4900)
+    f.Authority:OnCombatFact({kind='death_notice',subjectName='Me',receivedAt=5000,sequence=2})
+    f.Authority:OnCombatFact({kind='spell_damage',category='damage',targetName='Me',sourceName='Too late',
+        abilityName='Unrelated hit',amount=999,rawAbilityId=789,receivedAt=5400,sequence=3})
+    h.at=5500;assert(h.tasks.death_review_finalize())
+    local record=assert(f.Authority:GetRecord())
+    assert(#record.events==1 and record.totalDamage==321 and record.lethal.source=='Enemy','damage outside the death interval was included')
+end)
+Test('native numeric tail cannot remove the final melee skill from the death window',function()
+    local h,s,f=Boot();f.State.settings.showDebuffs=false
+    s.PhysicalId=function(id)return id end
+    s.NativeObjectFactory={CreateWindow=function()
+        local host={handlers={}}
+        function host:SetHandler(key,fn)self.handlers[key]=fn;return true end
+        function host:RegisterEvent()return true end
+        function host:Show()end
+        return host
+    end}
+    dofile('core/rs_events.lua');assert(s.Events:Start())
+    dofile('services/rs_combat_event_bus_v3.lua')
+    local bus=s.Services.CombatEventBusV3
+    assert(bus:Subscribe(f,function(_,fact)f.Authority:OnCombatFact(fact)end,{scope='self'}))
+    local host=bus.privateHost
+    h.at=4999800
+    host.handlers.OnEvent(host,'COMBAT_MSG','self-id','MELEE_DAMAGE','Enemy','Me',1000,'Charge',0,0,true)
+    h.at=5000000
+    host.handlers.OnEvent(host,'COMBAT_MSG','self-id','MELEE_DAMAGE','Enemy','Me',9000,'Triple Slash',0,0,true,
+        nil,nil,nil,nil,nil,0)
+    h.at=5000050;host.handlers.OnEvent(host,'UNIT_DEAD_NOTICE','Me')
+    h.at=5000300;assert(h.tasks.death_review_finalize())
+    local r=assert(f.Authority:GetRecord())
+    assert(#r.events==2 and r.totalDamage==10000,'final melee skill disappeared from the death window')
+    assert(r.lethal.ability=='Triple Slash' and r.lethal.amount==9000,'earlier Charge was reported as the final hit')
+end)
+Test('death diagnostic provider exports cached combat evidence without reads or mutation',function()
+    local h,s,f=Boot();h:Damage('melee_damage',1000,5000000);f.Authority:FinalizeDeath(5000050,2)
+    local provider
+    s.ModuleDiagnosticsHub={RegisterProvider=function(_,module,id,fn,priority,options)
+        assert(module=='combat_death_review' and options.detailOnly==true);provider=fn;return true
+    end}
+    s.FeatureRuntime={RegisterImplementation=function()return true end}
+    s.Services.CombatEventBusV3={GetDiagnosticDetail=function()return {health={privateRows=2},unknownEvents={}}end}
+    dofile('features/combat/death_review/rs_death_review_feature.lua')
+    assert(type(provider)=='function','death review export has no full combat evidence provider')
+    ADDON.LoadData=function()error('diagnostic read disk')end
+    ADDON.SaveData=function()error('diagnostic wrote disk')end
+    f.LoadRecord=function()error('diagnostic loaded an unobserved shard')end
+    local detail=provider()
+    assert(detail.latestCachedRecord.serial==1 and detail.latestCachedRecord.events[1].amount==321)
+    assert(detail.combatBus.health.privateRows==2 and detail.authority.incomingAccepted==1)
+    detail.latestCachedRecord.events[1].amount=0
+    assert(provider().latestCachedRecord.events[1].amount==321,'diagnostic exposed live record ownership')
+    f.Records={}
+    detail=provider()
+    assert(not detail.latestRecordAvailable and detail.latestSummary.serial==1,'uncached shard was presented as captured')
+    f.Authority.volatileRecord={serial=2,events={{amount=99}}}
+    detail=provider()
+    assert(detail.latestCachedRecord.serial==2,'latest unsaved death was missing from the export')
+end)
+Test('published death projection is detached and never resolves the default history record',function()
+    local h,s,f=Boot();s.FeatureRuntime={RegisterImplementation=function()return true end,GetSnapshot=function()return {enabled=true}end}
+    dofile('features/combat/death_review/rs_death_review_feature.lua')
+    local death={serial=42,time=5000,events={{time=4900,source='Current enemy',ability='Triple Slash',amount=9000}}}
+    f.Authority.GetRecord=function()error('published death fell back to history')end
+    local projection=f:GetProjection({deathRecord=death,timelineLimit=96})
+    assert(projection.record.serial==42 and projection.timelineRows[1].ability=='Triple Slash')
+    assert(projection.timelineRows[1].timeText=='-0.1s')
+    projection.record.events[1].amount=0
+    assert(death.events[1].amount==9000,'projection mutated the published death')
+end)
 print('DEATH_REVIEW_STATUS: '..passed..' pass / '..failed..' fail (Native modeled)');assert(failed==0)

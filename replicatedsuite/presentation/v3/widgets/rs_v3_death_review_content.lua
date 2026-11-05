@@ -73,7 +73,9 @@ function C:Create(parent, id)
     view.debuffTitle, view.debuffs = Group("debuff", "Debuff 减益", "red")
     view.buffTitle, view.buffs = Group("buff", "Buff 增益", "green")
     function view:Render(rows, record)
-        local revision = record and record.serial or 0
+        -- serial 是历史身份；连续保存失败会复用它。每次投影提交独立版本，避免行池保留上一次的数值。
+        self.renderRevision = (self.renderRevision or 0) + 1
+        local revision = self.renderRevision
         self.timeline:SetItems(rows or {}, revision)
         self.timeline:SetViewState("ready")
         local buffs, debuffs = StatusRows(record and record.buffs), StatusRows(record and record.debuffs)

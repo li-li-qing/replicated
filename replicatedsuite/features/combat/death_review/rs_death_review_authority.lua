@@ -9,6 +9,7 @@ if type(F) ~= "table" then return end
 local Identity = S.Services and S.Services.UnitIdentityV3 or nil
 local Aura = S.Services and S.Services.AuraObservationV3 or nil
 local U = S.Utils
+local DEATH_SETTLE_MS = 250
 
 local A = {
     version = 2,
@@ -132,7 +133,7 @@ function A:RequestFinalizeDeath(noticeAt, noticeSequence)
         return false, "scheduler unavailable for death finalize"
     end
     self.finalizeScheduled = true
-    local added = scheduler:AddOneShot("death_review_finalize", 50, function()
+    local added = scheduler:AddOneShot("death_review_finalize", DEATH_SETTLE_MS, function()
         A.finalizeScheduled = false
         local request = A.pendingDeath
         A.pendingDeath = nil
@@ -290,21 +291,19 @@ end
 function A:FinalizeDeath(noticeAt, noticeSequence)
     local settings = F:GetSettings()
     noticeAt = tonumber(noticeAt) or NowMs()
-    noticeSequence = math.max(0, tonumber(noticeSequence) or math.huge)
     -- 死亡后客户端会清空状态；仅冻结通知前观测，收尾禁止强制重读。
     self.debuffSampleScheduled = false
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.debuffSampleTask) end
     local captured = settings.showDebuffs == true and self:CopyDeathStatus(noticeAt)
         or { buffs = {}, debuffs = {}, statusSnapshot = { buff = "disabled", debuff = "disabled" } }
+    -- 窗口始终相对死亡通知；移到最后一次受伤会多算窗口外伤害，也会把较早的命中显示为 -0.0s。
     local anchorAt = noticeAt
-    local latest = self.incoming[#self.incoming]
-    local latestAt = latest ~= nil and tonumber(latest.time) or nil
-    if latestAt ~= nil and latestAt <= noticeAt + 250 and noticeAt - latestAt <= 2000 then anchorAt = latestAt end
     local cutoff = anchorAt - settings.windowMs
     local events, total = {}, 0
     for _, event in ipairs(self.incoming) do
         local at = tonumber(event.time) or 0
-        if at >= cutoff and at <= anchorAt + 250 and (tonumber(event.sequence) or 0) <= noticeSequence then
+        -- 死亡通知和伤害可以先后倒置；派发序号不是伤害所属死亡的边界，按同一有界收尾区间接收。
+        if at >= cutoff and at <= noticeAt + DEATH_SETTLE_MS then
             local copy = DeepCopy(event)
             local metadata = S.Services and S.Services.SkillMetadataV3
             if copy.abilityId and metadata and type(metadata.GetSkillInfo) == "function" then
@@ -416,6 +415,10 @@ end
 
 function A:GetTimelineRows(serial, limit)
     local record = self:GetRecord(serial)
+    return self:ProjectRecord(record, limit)
+end
+
+function A:ProjectRecord(record, limit)
     if record == nil then return {}, nil end
     local rows, anchor = {}, tonumber(record.time) or 0
     for _, event in ipairs(record.events or {}) do

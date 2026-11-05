@@ -204,6 +204,10 @@ local function Build(parent, route)
         healthText:SetTone(enabled and "green" or "muted")
         local previousSerial = self.selectedSerial
         self.rows = projection.historyRows or {}
+        local latestSerial = self.rows[1] and tonumber(self.rows[1].serial) or nil
+        -- PageHost 会缓存页面；停用期间不收死亡通知，重开时也须识别新记录，不能继续锁在上次死亡。
+        if latestSerial and self.latestHistorySerial and latestSerial > self.latestHistorySerial then previousSerial = nil end
+        self.latestHistorySerial = latestSerial
         local options, selected = {}, nil
         for _, row in ipairs(self.rows) do
             options[#options + 1] = { value = tonumber(row.serial), text = "#" .. tostring(row.serial or "?") .. " · " .. tostring(row.clock or "--:--:--")
@@ -266,7 +270,10 @@ local function Build(parent, route)
     function root:Subscribe()
         if self.subscribed then return true end
         if S.Events and type(S.Events.SubscribeInternal) == "function" then
-            S.Events:SubscribeInternal("v3.death_review.updated", self, function() root:Refresh() end)
+            S.Events:SubscribeInternal("v3.death_review.updated", self, function(_, revision, reason)
+                if reason == "death" then root.selectedSerial = nil end
+                root:Refresh()
+            end)
             S.Events:SubscribeInternal("v3.death_review.settings", self, function() root:Refresh() end)
             S.Events:SubscribeInternal("v3.death_review.layout", self, function() root:RefreshWidgetLayout() end)
         end

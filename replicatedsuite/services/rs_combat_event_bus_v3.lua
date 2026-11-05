@@ -282,10 +282,11 @@ function C:_StartPrivateHost()
         local generation = S.Generation
         local ok, result = pcall(host.SetHandler, host, "OnEvent", function(_, eventName,...)
             if C:_IsCurrentGeneration(generation) ~= true or C.running ~= true then return end
-            local a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15=...
+            local a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14=...
             if eventName == "COMBAT_MSG" then
                 C.privateRows = C.privateRows + 1
-                C:_OnCombatRaw("private", a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15)
+                -- receivedAt 是内部接收时钟；原生第15项即使是数字，也不能占用它，否则受伤会被死亡窗口剔除。
+                C:_OnCombatRaw("private", a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, NowMs())
             elseif eventName == "UNIT_DEAD_NOTICE" then
                 C:_OnDeathNotice(a1, a2, a3, a4, a5)
             elseif eventName == "INSTANT_GAME_KILL" or eventName == "UNIT_KILL_STREAK" then

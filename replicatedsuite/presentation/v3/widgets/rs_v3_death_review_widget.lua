@@ -49,10 +49,14 @@ local function CreateWidget()
     instance.summary, instance.timeline = content.summary, content.timeline
     instance.debuffs, instance.buffs = content.debuffs, content.buffs
 
-    function instance:Refresh()
-        local projection = Feature:GetProjection({ historyLimit = 1, timelineLimit = 96 })
+    function instance:Refresh(deathRecord)
+        if type(deathRecord) == "table" then self.lastDeathSerial = tonumber(deathRecord.serial) end
+        local projection = Feature:GetProjection({ historyLimit = 1, timelineLimit = 96, deathRecord = deathRecord })
         local record = projection.record
         self.content:Render(projection.timelineRows or {}, record)
+        self.displayedSerial = record and tonumber(record.serial) or nil
+        self.refreshes = (self.refreshes or 0) + 1
+        self.lastRefreshAt = S.NowMs and S.NowMs() or nil
         self.surface:SetStatus(record and ("记录 #" .. tostring(record.serial or 0)) or "等待记录", record and "red" or "muted")
         return true
     end
@@ -60,7 +64,9 @@ local function CreateWidget()
     function instance:Subscribe()
         if self.subscribed then return true end
         if S.Events and type(S.Events.SubscribeInternal) == "function" then
-            S.Events:SubscribeInternal("v3.death_review.updated", self, function() if instance.visible then instance:Refresh() end end)
+            S.Events:SubscribeInternal("v3.death_review.updated", self, function(_, revision, reason, record)
+                if instance.visible then instance:Refresh(reason == "death" and record or nil) end
+            end)
         end
         self.subscribed = true
         return true
@@ -75,7 +81,7 @@ local function CreateWidget()
         if S.FeatureRuntime:IsEnabled(FEATURE_ID) ~= true then return false, "死亡回顾功能已关闭" end
         local subscribed, subscribeErr = self:Subscribe()
         if subscribed ~= true then return false, subscribeErr end
-        local refreshed, refreshErr = self:Refresh()
+        local refreshed, refreshErr = self:Refresh(type(context) == "table" and context.deathRecord or nil)
         if refreshed ~= true then self:Unsubscribe(); return false, refreshErr end
         local shown, showErr = self.surface:Show(true)
         if shown ~= true then self:Unsubscribe(); self.visible = false; return false, showErr end
@@ -132,9 +138,9 @@ if ok ~= true then error(err) end
 local AutoPresenter = { id = "v3:death_review:auto_presenter" }
 if S.Events and type(S.Events.SubscribeInternal) == "function" then
     -- Events 先传 owner，Authority 再传 revision、reason、record；跳过 revision 才能识别死亡通知。
-    S.Events:SubscribeInternal("v3.death_review.updated", AutoPresenter, function(_, revision, reason)
+    S.Events:SubscribeInternal("v3.death_review.updated", AutoPresenter, function(_, revision, reason, record)
         if tostring(reason or "") ~= "death" or S.FeatureRuntime:IsEnabled(FEATURE_ID) ~= true or Feature:GetSettingsProjection().autoShow ~= true then return end
-        local okShow, showErr = Host:SetVisible(WIDGET_ID, true, { source = "death_auto", persist = false })
+        local okShow, showErr = Host:SetVisible(WIDGET_ID, true, { source = "death_auto", persist = false, deathRecord = record })
         if okShow ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then
             S.DiagnosticsManager:WarningRateLimited("death_review_v3", "DEATH_REVIEW_AUTO_SHOW_FAILED", 3000,
                 "死亡回顾自动窗口显示失败", { error = tostring(showErr) })
@@ -144,4 +150,15 @@ if S.Events and type(S.Events.SubscribeInternal) == "function" then
         if tostring(state or "") ~= "disabled" then return end
         Host:SetVisible(WIDGET_ID, false, { persist = false, source = tostring(reason or "feature_disable") })
     end)
+end
+
+local hub = S.ModuleDiagnosticsHub
+if hub and type(hub.RegisterProvider) == "function" then
+    hub:RegisterProvider(FEATURE_ID, "death_review_window", function()
+        local instance = Host:GetInstance(WIDGET_ID)
+        if instance == nil then return { created = false } end
+        return { created = true, visible = instance.visible == true, lastDeathSerial = instance.lastDeathSerial,
+            displayedSerial = instance.displayedSerial, refreshes = instance.refreshes, lastRefreshAt = instance.lastRefreshAt,
+            coverage = "死亡通知与内容投影提交的记录身份；不代表原生文本回读。" }
+    end, 35, { detailOnly = true })
 end

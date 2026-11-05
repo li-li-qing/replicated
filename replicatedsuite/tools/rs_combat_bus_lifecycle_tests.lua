@@ -101,5 +101,20 @@ Test('resubscribing the same owner does not reuse a revoked record', function()
     assert(Q.subscribers[owner] ~= old and not old.active, 'new demand reused revoked execution authority')
     assert(oldCalls == 0 and newCalls == 1)
 end)
+Test('native combat tail cannot replace the local receipt timestamp', function()
+    local h = Boot(); local facts = {}
+    h.S.NowMs = function() return 5000000 end
+    assert(h.bus:Subscribe({}, function(_, fact) facts[#facts + 1] = Copy(fact) end))
+    local host = h.bus.privateHost
+    for _, tail in ipairs({ 0, 1, 18132, '18132', false }) do
+        host.handlers.OnEvent(host, 'COMBAT_MSG', 'self-id', 'MELEE_DAMAGE', 'Enemy', 'Self',
+            9000, 'Triple Slash', 0, 0, true, nil, nil, nil, nil, nil, tail)
+    end
+    assert(#facts == 5, 'native damage was not delivered')
+    for _, fact in ipairs(facts) do
+        assert(fact.receivedAt == 5000000, 'native payload was interpreted as receipt time: ' .. tostring(fact.receivedAt))
+        assert(fact.amount == 9000 and fact.abilityName == 'Triple Slash', 'known damage fields changed')
+    end
+end)
 print('COMBAT BUS LIFECYCLE RESULT ' .. passed .. ' passed / ' .. failed .. ' failed (' .. _VERSION .. ')')
 if failed > 0 then error('combat bus lifecycle failures: ' .. failed) end

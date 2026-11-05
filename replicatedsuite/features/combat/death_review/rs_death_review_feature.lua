@@ -215,7 +215,13 @@ function F:GetProjection(request)
     local historyLimit = math.max(1, math.min(30, math.floor(tonumber(request.historyLimit) or 30)))
     local timelineLimit = math.max(1, math.min(96, math.floor(tonumber(request.timelineLimit) or 96)))
     local historyRows = self.Authority:GetHistoryRows(historyLimit)
-    local timelineRows, record = self.Authority:GetTimelineRows(request.serial, timelineLimit)
+    local timelineRows, record
+    if type(request.deathRecord) == "table" then
+        -- 自动弹窗绑定已发布的本次记录；不能再用不带身份的“最近一条”查询替换通知内容。
+        timelineRows, record = self.Authority:ProjectRecord(S.Utils.DeepCopy(request.deathRecord), timelineLimit)
+    else
+        timelineRows, record = self.Authority:GetTimelineRows(request.serial, timelineLimit)
+    end
     return {
         enabled = runtime ~= nil and runtime.enabled == true or false,
         settings = S.Utils.DeepCopy(self:GetSettings()),
@@ -255,6 +261,33 @@ function F:GetHealth()
         persistenceFailures = tonumber(domain.persistenceFailures) or 0,
         revision = domain.revision,
     }
+end
+
+-- 导出只复制已观察的缓存；不为补齐历史明细而读分片、取得租约或触发采样。
+function F:DescribeDiagnosticDetail()
+    local authority = self.Authority
+    local meta = self:FindHistoryMeta(nil)
+    local record = meta and self.Records and self.Records[tonumber(meta.storageId)] or nil
+    if record and tonumber(record.serial) ~= tonumber(meta.serial) then record = nil end
+    local volatile = authority.volatileRecord
+    if volatile and (meta == nil or (tonumber(volatile.serial) or 0) > (tonumber(meta.serial) or 0)) then record = volatile end
+    local bus = Bus()
+    return {
+        authority = S.Utils.DeepCopy(authority:GetHealth()),
+        lastDeathNoticeAt = authority.lastDeathNoticeAt,
+        pendingDeath = S.Utils.DeepCopy(authority.pendingDeath),
+        incoming = S.Utils.DeepCopy(authority.incoming),
+        latestSummary = S.Utils.DeepCopy(meta),
+        latestCachedRecord = S.Utils.DeepCopy(record),
+        latestRecordAvailable = record ~= nil,
+        combatBus = bus and type(bus.GetDiagnosticDetail) == "function" and bus:GetDiagnosticDetail() or { available = false },
+        coverage = "本代已采集受伤缓冲、最近死亡的缓存明细及共享总线证据；未缓存分片不读盘，未收到的伤害不能补回。",
+    }
+end
+
+local hub = S.ModuleDiagnosticsHub
+if hub and type(hub.RegisterProvider) == "function" then
+    hub:RegisterProvider(F.Id, "death_review_combat", function() return F:DescribeDiagnosticDetail() end, 30, { detailOnly = true })
 end
 
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
