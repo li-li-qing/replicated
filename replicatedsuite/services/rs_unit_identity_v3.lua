@@ -300,6 +300,18 @@ function I:IsPlayerName(value)
     return NamesEquivalent(value, player.name) or NamesEquivalent(value, player.nameWithWorld)
 end
 
+-- 战斗事件的已绑定 ID 与完整跨服名优先于短名兼容，避免把同名玩家的输出归给自己。
+function I:IsPlayerEndpoint(name, id)
+    local player = self.player or self:RefreshPlayerIdentity(false)
+    if type(player) ~= "table" then return false end
+    local endpointId = ValidId(id)
+    if endpointId and player.id then return endpointId == player.id end
+    local fullName, _, world = SplitWorldName(name)
+    local playerName, _, playerWorld = SplitWorldName(player.nameWithWorld)
+    if world and playerWorld then return fullName == playerName end
+    return self:IsPlayerName(name)
+end
+
 function I:ClearCache(reason)
     self.cache = {}
     self.cacheOrder = {}

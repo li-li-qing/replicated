@@ -112,4 +112,63 @@ P.fail=false
 assert(D:Disable('basic_test'));assert(A.consumerCount==0 and S.Services.CombatEventBusV3.callback==nil,'disabled statistics release the shared bus')
 assert(D.Commands:ClearOverview('basic_clear'));assert(#D:GetCombatOverview().rows==0,'clear resets five live counters')
 assert(F:GetPersonalHistoryProjection().totals.damage==331,'clear leaves permanent personal history intact')
+
+-- 复现已导出现场：伤害已采集，双方类型缺失且同属团队，三条 7520 全部等待模式补证。
+local relation=S.Services.CombatRelationV3
+local originalGetUnit,originalGetRelationAt,originalRecord=relation.GetUnit,relation.GetRelationAt,relation.RecordCombatFact
+relation.GetUnit=function() return nil end
+relation.GetRelationAt=function(_,name) return name=='Self' and 'SELF' or 'TEAM' end
+relation.RecordCombatFact=function(self,fact) return true,{sourceRelation=self:GetRelationAt(fact.sourceName),targetRelation=self:GetRelationAt(fact.targetName)} end
+assert(D:Enable('pending_overview_test'));assert(F.Commands:SetCollectionScope('self'))
+local function PendingDamage(source,target,amount)
+    now=now+2000
+    A:_DispatchFact({category='damage',kind='spell_damage',sourceName=source,targetName=target,
+        amount=amount,receivedAt=now,sequence=now,rawAbilityId=12,abilityName='Pending Hit'})
+end
+local historyBefore=F:GetPersonalHistoryProjection().totals.damage
+for _,amount in ipairs({3000,2520,2000}) do PendingDamage('Self','DuelMate',amount) end
+local health=D.Domain:GetHealth()
+assert(health.classifiedUnknown==3 and health.unresolvedDamage==7520,'fixture must reproduce pending damage, not resolved PVP/PVE')
+rows,p=Rows();me=assert(rows.Self,'pending-only self actor must appear in overview')
+assert(me.damage==7520 and #p.rows==1,'all received damage must appear before mode classification')
+assert(me.side=='friendly' and me.self==true,'mode uncertainty must not hide verified self in side filters')
+assert(((me.modeValues.PVP or {}).damage or 0)==0 and ((me.modeValues.PVE or {}).damage or 0)==0,'pending damage must not be guessed into a mode')
+assert(F:GetPersonalHistoryProjection().totals.damage==historyBefore+7520,'overview must not write or duplicate history')
+assert(Rows().Self.damage==7520,'cached projection must not add pending damage again')
+
+-- 迟到类型让原事件转入 PVP；总览金额守恒，待确认账本清空。
+relation.GetUnit=function() return {kind='PLAYER'} end
+assert(D.Domain:ReplayPending('player_kind_arrived'))
+me=Rows().Self
+assert(me.damage==7520 and me.modeValues.PVP.damage==7520,'reclassification must move, not duplicate, pending damage')
+assert(me.modeValues.UNKNOWN==nil,'undone zero-amount pending rows must not remain in overview')
+assert(D.Domain:GetHealth().unresolvedDamage==0 and D.Domain.pendingCount==0,'resolved rows must leave pending ledger')
+
+-- 只有承伤的自身行也必须保留；不能用“伤害大于零”的排行过滤丢掉它。
+assert(D.Commands:ClearOverview('pending_taken_test'))
+relation.GetUnit=function() return nil end
+relation.GetRelationAt=function(_,name) return name=='Self' and 'SELF' or 'OPPONENT' end
+PendingDamage('UnknownEnemy','Self',71)
+me=assert(Rows().Self,'pending taken-only self must appear in overview')
+assert(me.damage==0 and me.taken==71 and me.side=='friendly','pending taken must survive damage ranking projection')
+
+-- 全员范围下，模式未定的双方各保留自己的输出/承伤；未知阵营不能被猜成友方。
+assert(F.Commands:SetCollectionScope('all'))
+relation.GetRelationAt=function() return 'UNKNOWN' end
+PendingDamage('UnknownA','UnknownB',53)
+rows,p=Rows()
+assert(rows.UnknownA.damage==53 and rows.UnknownB.taken==53,'all-scope pending source and target must both appear')
+assert(rows.UnknownA.side=='unknown' and rows.UnknownB.side=='unknown','unproven sides remain unknown')
+
+-- 共享候选有界；自身金额很小时也不能被 512 名未分类单位挤出总览。
+assert(D.Commands:ClearOverview('pending_self_cap'))
+relation.GetRelationAt=function(_,name) return name=='Self' and 'SELF' or 'TEAM' end
+PendingDamage('Self','DuelMate',1)
+for index=1,520 do PendingDamage('Crowd'..index,'CrowdTarget',100) end
+me=assert(Rows().Self,'bounded unresolved projection must preserve the verified self candidate')
+assert(me.damage==1 and me.self==true,'crowd truncation must not remove own pending damage')
+relation.GetUnit,relation.GetRelationAt,relation.RecordCombatFact=originalGetUnit,originalGetRelationAt,originalRecord
+assert(D:Disable('pending_overview_test'))
+assert(D.Commands:ClearOverview('pending_cleanup'));assert(#D:GetCombatOverview().rows==0,'clear must remove pending overview rows')
+print('PASS pending overview / 7520 damage / pending taken / reclassification conservation / self and all scopes')
 print('PASS five basic statistics / retired NPC kills with PVE damage preserved / suspended advanced metrics / no assist ledger / self crowd filter / history compatibility / lease rollback')

@@ -31,6 +31,92 @@ local function Relation() return S.Services and S.Services.CombatRelationV3 or n
 local function Domain() return F.Domain end
 local trackingPolicyChanging = false
 
+local DAMAGE_TEST_DEADLINE = "v3.dps.damage_test_deadline"
+local damageTest
+
+local function PublishDamageTest(reason)
+    if S.Events then S.Events:Publish("v3.dps.damage_test", reason) end
+end
+
+local function FinishDamageTest(reason, deferPublish)
+    local round = damageTest
+    if round == nil or round.endedAt ~= nil then return false, "当前没有正在记录的测试" end
+    local now = S.NowMs()
+    if round.deadline and now >= round.deadline then
+        now, reason = round.deadline, "deadline"
+    end
+    round.endedAt, round.reason = now, reason
+    if round.deadline then S.Scheduler:RemoveTask(DAMAGE_TEST_DEADLINE) end
+    if not deferPublish then PublishDamageTest(reason) end
+    return true
+end
+
+local function ScheduleDamageTestDeadline(round)
+    local scheduler = S.Scheduler
+    local function Expire()
+        if damageTest ~= round or round.endedAt ~= nil then return true end
+        local remaining = round.deadline - S.NowMs()
+        if remaining <= 0 then return FinishDamageTest("deadline") end
+        if scheduler:AddOneShot(DAMAGE_TEST_DEADLINE, remaining, Expire, F, "P1", 1) then return true end
+        return FinishDamageTest("timer_unavailable")
+    end
+    return scheduler:AddOneShot(DAMAGE_TEST_DEADLINE, round.deadline - S.NowMs(), Expire, F, "P1", 1)
+end
+
+function F:StartDamageTest(seconds)
+    if damageTest and damageTest.endedAt == nil then return false, "本轮测试已开启" end
+    if self.enabled ~= true or self.analyticsHeld ~= true then return false, "伤害统计尚未就绪" end
+    if not self:IsTrackingCategoryEnabled("damage") then return false, "请先开启追踪伤害" end
+    if type(seconds) ~= "number" or seconds < 0 or seconds > 60 or seconds % 5 ~= 0 then
+        return false, "请选择自由计时或 5～60 秒的计时档位"
+    end
+    if seconds > 0 then
+        local scheduler = S.Scheduler
+        if not scheduler or not scheduler.AddOneShot or not scheduler.RemoveTask then return false, "计时器不可用" end
+    end
+    damageTest = { armedAt = S.NowMs(), durationMs = seconds * 1000, damage = 0 }
+    PublishDamageTest("waiting")
+    return true
+end
+
+function F:GetDamageTest()
+    local canStart = self.enabled == true and self.analyticsHeld == true and self:IsTrackingCategoryEnabled("damage")
+    local round = damageTest
+    if round == nil then return { status = "idle", active = false, canStart = canStart, damage = 0, dps = 0, elapsedMs = 0 } end
+    local active = round.endedAt == nil
+    local now = round.endedAt or S.NowMs()
+    if round.deadline then now = math.min(now, round.deadline) end
+    local elapsed = round.startedAt and math.max(0, now - round.startedAt) or 0
+    return {
+        status = active and (round.startedAt and "running" or "waiting") or "finished",
+        active = active, canStart = canStart,
+        reason = round.reason, damage = round.damage, elapsedMs = elapsed,
+        remainingMs = active and round.durationMs > 0 and math.max(0, round.durationMs - elapsed) or nil,
+        dps = elapsed > 0 and round.damage * 1000 / elapsed or 0,
+    }
+end
+
+-- 采集使用原事件的接收时间和本人身份，与 PVP/PVE 分类及补证重放分开。
+local function CaptureDamageTest(fact)
+    local round = damageTest
+    if round == nil or round.endedAt ~= nil or fact.category ~= "damage" or fact.environmental == true then return end
+    local at, amount = tonumber(fact.receivedAt), tonumber(fact.amount)
+    if at == nil or at < (round.startedAt or round.armedAt) or (round.deadline and at >= round.deadline) then return end
+    local identity = S.Services and S.Services.UnitIdentityV3
+    if amount and amount > 0 and amount < math.huge and identity and identity:IsPlayerEndpoint(fact.sourceName, fact.sourceId) then
+        round.damage = round.damage + amount
+        if round.startedAt == nil then
+            round.startedAt = at
+            if round.durationMs > 0 then
+                round.deadline = at + round.durationMs
+                if not ScheduleDamageTestDeadline(round) then FinishDamageTest("timer_unavailable", true) end
+            end
+            -- 复用下一次统计投影刷新，避免在原生伤害回调内同步重绘悬浮窗。
+            return true
+        end
+    end
+end
+
 -- held 只是 DPS 的重试凭证；下游 Demand 才拥有消费者意图。只有本 token 明确不存在且
 -- 下游没有待静默故障且事务已结算，才能承认 Core 已代为撤销；查询缺失、nil、异常均不构成释放证据。
 local function DependencyCleanupState(service, token)
@@ -84,13 +170,12 @@ function F:_EnsureAnalyticsMetric()
         id = "dps_core", title = "DPS Core", category = "core", order = 5, hidden = true,
         factCategories = { "damage", "heal" }, owner = self,
         OnFact = function(_, fact)
+            local testChanged = CaptureDamageTest(fact)
             local d = Domain()
             local consumed, meta = false, nil
             if type(d) == "table" and type(d.OnCombatFact) == "function" then consumed, meta = d:OnCombatFact(fact) end
-            if consumed == true then
-                if type(meta) == "table" and meta.replaySuggested == true then F:SchedulePendingReplay("fact_evidence") end
-                F:ScheduleProjectionPublish()
-            end
+            if consumed == true and type(meta) == "table" and meta.replaySuggested == true then F:SchedulePendingReplay("fact_evidence") end
+            if consumed == true or testChanged then F:ScheduleProjectionPublish() end
             return consumed == true
         end,
         Reset = function(_, reason, resetKind)
@@ -224,6 +309,7 @@ local lease, leaseErr = S.Demand:Create({
         F.busSubscribed = false -- DPS 从不直接拥有 Bus，仅清理旧诊断兼容字段。
         F:CancelProjectionPublish()
         F:CancelPendingReplay()
+        if damageTest and damageTest.endedAt == nil then FinishDamageTest("feature_disabled") end
         return ok
     end,
 })
@@ -244,6 +330,7 @@ function F:Disable(reason)
     if ok ~= true then return false, err end
     self.enabled = false
     self:CancelProjectionPublish()
+    if damageTest and damageTest.endedAt == nil then FinishDamageTest("feature_disabled") end
     return true
 end
 
@@ -296,6 +383,9 @@ function F:SetTrackingEnabled(category, enabled)
         return false, err
     end
     trackingPolicyChanging = false
+    if category == "damage" and enabled ~= true and damageTest and damageTest.endedAt == nil then
+        FinishDamageTest("tracking_disabled")
+    end
     -- 只截断已关闭类别，另一项仍可用后续证据纠正分类；已累计的排行和永久历史保留。
     local d = Domain()
     if d and not self:IsTrackingCategoryEnabled("damage") and not self:IsTrackingCategoryEnabled("heal") then
@@ -437,6 +527,8 @@ function F.Commands:SetMetric(metric) return F:SetMetric(metric) end
 function F.Commands:SetDisplayRows(rows) return F:SetDisplayRows(rows) end
 function F.Commands:SetAlwaysShowSelf(value) return F:SetAlwaysShowSelf(value) end
 function F.Commands:SetTrackingEnabled(category, value) return F:SetTrackingEnabled(category, value) end
+function F.Commands:StartDamageTest(seconds) return F:StartDamageTest(seconds) end
+function F.Commands:StopDamageTest() return FinishDamageTest("manual") end
 function F.Commands:AddBossName(name) return F:AddBossName(name) end
 function F.Commands:RemoveBossName(name) return F:RemoveBossName(name) end
 function F.Commands:GetActorDetail(request) return F:GetActorDetail(request) end
@@ -527,7 +619,7 @@ function F:GetSettingsProjection()
 end
 
 -- 总览是只读组合投影，不新建累计表或 Native Consumer。按精确名字/世界保守连接。
--- PVP/PVE 的伤害与承伤相加；共享治疗只取一次，击杀/死亡来自同一采集期。
+-- PVP/PVE 与模式未定的伤害、承伤相加；共享治疗只取一次，击杀/死亡来自同一采集期。
 function F:GetCombatOverview()
     local d,a=Domain(),Analytics()
     if not d or not a then return {rows={},revision="unavailable",statsAvailable=false,assistsAvailable=false} end
@@ -554,8 +646,10 @@ function F:GetCombatOverview()
         elseif side and row.side~=side then row.side="unknown" end
         return row
     end
+    local unresolved
     for _,mode in ipairs({"PVP","PVE"}) do
         local p=d:GetProjection({mode=mode,metric="damage",displayRows=512,includeZero=true,overview=true})
+        unresolved=unresolved or p.unresolved
         for _,side in ipairs({"friendly","enemy","unknown"}) do
             for _,source in ipairs(p.sides[side].rows or {}) do
                 local row=Touch(source.key,source.name,side)
@@ -567,6 +661,23 @@ function F:GetCombatOverview()
         end
     end
     local relation=Relation()
+    -- 模式未定不等于伤害未发生。共享待确认桶只合并一次，补证重放移走原金额后自然转入对应模式。
+    for _,source in ipairs(unresolved and unresolved.rows or {}) do
+        if (tonumber(source.damage) or 0)+(tonumber(source.taken) or 0)+(tonumber(source.heal) or 0)>0 then
+            local existing=byKey[string.lower(tostring(source.key or ""))]
+            local side=existing and existing.side
+            if not side then
+                local rel=a:IsSelfActor(source.name) and "SELF" or (relation and type(relation.GetRelationAt)=="function" and relation:GetRelationAt(source.name) or "UNKNOWN")
+                side=(rel=="SELF" or rel=="FRIENDLY" or rel=="TEAM") and "friendly" or (rel=="OPPONENT" and "enemy" or "unknown")
+            end
+            local row=Touch(source.key,source.name,side)
+            if row then
+                row.damage=row.damage+(tonumber(source.damage) or 0);row.taken=row.taken+(tonumber(source.taken) or 0)
+                row.heal=math.max(row.heal,tonumber(source.heal) or 0)
+                row.modeValues.UNKNOWN={damage=source.damage,taken=source.taken,heal=source.heal}
+            end
+        end
+    end
     for _,source in ipairs(scores.rows or {}) do
         local key=string.lower(tostring(source.key or ""));local side
         if not byKey[key] then

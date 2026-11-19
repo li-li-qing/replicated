@@ -13,6 +13,7 @@ if type(RSUI) ~= "table" or type(Host) ~= "table" or type(Floating) ~= "table" o
 local FEATURE_ID, STORE_ID = "combat_stats", "v3.dps"
 local WIDGET_ID = "combat.dps"
 local OWNER = "v3:widget:dps"
+local DAMAGE_TEST_DISPLAY = "v3.dps.damage_test_display"
 
 local function N(value) return math.max(0, math.floor((tonumber(value) or 0) + 0.5)) end
 local function CompactNumber(value)
@@ -29,13 +30,31 @@ local function Policy()
 end
 local function Persist(reason, delayMs) return Feature.Commands:MarkStoreDirty(delayMs or 300, "widget_" .. tostring(reason or "state")) end
 
+local function TestNumber(value)
+    local text = string.format("%.0f", value)
+    local grouped = text:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+    return grouped
+end
+
+local function TestTime(ms, countdown)
+    local tenths = countdown and math.ceil(ms / 100) or math.floor(ms / 100)
+    if tenths <= 600 then return string.format("%.1f 秒", tenths / 10) end
+    return string.format("%d:%02d.%d", math.floor(tenths / 600), math.floor(tenths / 10) % 60, tenths % 10)
+end
+
 local function CreateWidget()
-    local instance = { id = WIDGET_ID, visible = false, subscribed = false, revision = -1 }
+    local instance = { id = WIDGET_ID, visible = false, subscribed = false, revision = -1, view = "ranking", testSeconds = 0 }
     local surface, err = Floating:Create({
         id = "v3_dps_widget", owner = OWNER, title = "伤害统计", status = "--", footer = true,
         movable = true, resizable = true, minimizeMode = "compact", boundaryMode = "free", defaultPlacement = "right",
         statePolicy = Policy(), getState = function() return Feature:GetWidgetWindowState() end,
         setState = function(value, reason) return Feature.Commands:SetWidgetWindowState(value, reason) end, persist = Persist,
+        onStateChanged = function(surface, _, reason)
+            if not instance.visible or instance.view ~= "test" then return end
+            if reason ~= "minimized" and reason ~= "layout_reset" and reason ~= "size" then return end
+            if instance.durationInput.open and surface:IsMinimized() then instance.durationInput:Close() end
+            instance:RefreshDamageTest()
+        end,
         onClosed = function(_, reason)
             -- 关闭是用户明确的 durable visibility 选择。过去 persist=false
             -- 只隐藏当前实例，Store 仍保留 widgetVisible=true，Reload/下次登录会再次弹出。
@@ -46,7 +65,19 @@ local function CreateWidget()
     instance.surface, instance.shell, instance.window = surface, surface.shell, surface.window
     instance.root, instance.windowController = surface.shell.root, surface.windowController
 
-    local stack = RSUI:VerticalBox({ id = "v3_dps_widget_stack", parent = surface:GetContentRoot(), gap = 5 })
+    local root = RSUI:VerticalBox({ id = "v3_dps_widget_views_root", parent = surface:GetContentRoot(), gap = 5,
+        slot = { hAlign = "fill", vAlign = "fill" } })
+    local views = RSUI:HorizontalBox({ id = "v3_dps_widget_views", parent = root, slot = { size = "fixed", height = 26 } })
+    instance.viewSelector = RSUI:SegmentedSelector({
+        id = "v3_dps_widget_view", parent = views, itemWidth = 88, height = 26,
+        items = { {value="ranking",text="排行"}, {value="test",text="伤害测试"} },
+        get = function() return instance.view end,
+        set = function(view) return instance:SetView(view) end,
+    })
+    instance.viewSwitcher = RSUI:WidgetSwitcher({ id = "v3_dps_widget_switcher", parent = root,
+        slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+    local stack = RSUI:VerticalBox({ id = "v3_dps_widget_stack", parent = instance.viewSwitcher, gap = 5,
+        slot = { hAlign = "fill", vAlign = "fill" } })
 
     -- HUD 快速筛选与完整页面共用 Feature 设置，不维护组件影子状态；切换立即更新页面、经 DPS Store 持久化，仅改变显示投影，统计仍累积全部 PVE/PVP 与关系桶。
     instance.quickBar = RSUI:HorizontalBox({ id = "v3_dps_widget_quickbar", parent = stack, gap = 6,
@@ -114,7 +145,100 @@ local function CreateWidget()
         tone = "muted", overflow = "wrap", maxLines = 4, minHeight = 34, visible = false,
         slot = { size = "auto", minHeight = 34, hAlign = "fill" } })
 
+    local test = RSUI:VerticalBox({ id = "v3_dps_widget_test", parent = instance.viewSwitcher, gap = 4,
+        slot = { hAlign = "fill", vAlign = "center", padding = { left = 8, right = 8 } } })
+    instance.testRate = RSUI:Text({ id = "v3_dps_widget_test_rate", parent = test, text = "—", fontSize = 25,
+        tone = "strong", align = ALIGN_CENTER, overflow = "shrink", slot = { size = "fixed", height = 38, hAlign = "fill" } })
+    RSUI:Text({ id = "v3_dps_widget_test_rate_label", parent = test, text = "平均 DPS", fontSize = 11,
+        tone = "muted", align = ALIGN_CENTER, slot = { size = "fixed", height = 20, hAlign = "fill" } })
+    local stats = RSUI:HorizontalBox({ id = "v3_dps_widget_test_stats", parent = test, gap = 8,
+        slot = { size = "fixed", height = 30, hAlign = "fill" } })
+    instance.testDamage = RSUI:Text({ id = "v3_dps_widget_test_damage", parent = stats, overflow = "shrink",
+        slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+    instance.testTime = RSUI:Text({ id = "v3_dps_widget_test_time", parent = stats, align = ALIGN_RIGHT,
+        slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+    local actions = RSUI:HorizontalBox({ id = "v3_dps_widget_test_actions", parent = test, gap = 8,
+        slot = { size = "fixed", height = 28, hAlign = "fill" } })
+    local durations = { { value = 0, text = "自由计时" } }
+    for seconds = 5, 60, 5 do durations[#durations + 1] = { value = seconds, text = seconds .. " 秒" } end
+    instance.durationInput = RSUI:Dropdown({ id = "v3_dps_widget_test_duration", parent = actions, items = durations,
+        maxVisible = 8, height = 28, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
+        get = function() return instance.testSeconds end,
+        set = function(seconds)
+            if Feature:GetDamageTest().active then return false end
+            instance.testSeconds = seconds
+            return true
+        end,
+    })
+    instance.testAction = RSUI:Button({ id = "v3_dps_widget_test_action", parent = actions, text = "开始记录",
+        slot = { size = "fixed", width = 112, vAlign = "fill" },
+        onClick = function()
+            local ok, err
+            if Feature:GetDamageTest().active then ok, err = Feature.Commands:StopDamageTest()
+            else ok, err = Feature.Commands:StartDamageTest(instance.testSeconds) end
+            if ok ~= true then surface:SetStatus(err or "记录操作失败", "warn") end
+            return ok, err
+        end,
+    })
+
+    function instance:DrawDamageTest(round)
+        local rate = round.status == "idle" and "—" or TestNumber(round.dps)
+        local damage = "累计伤害 " .. TestNumber(round.damage)
+        local time = round.remainingMs and "剩余 " .. TestTime(round.remainingMs, true)
+            or "用时 " .. TestTime(round.elapsedMs)
+        -- 读数槽位使用固定几何；恢复窗口时原位绘制最新值，避免等待上一视图的布局队列。
+        if rate ~= self.lastTestRate then self.testRate:Render({text=rate}); self.lastTestRate = rate end
+        if damage ~= self.lastTestDamage then self.testDamage:Render({text=damage}); self.lastTestDamage = damage end
+        if time ~= self.lastTestTime then self.testTime:Render({text=time}); self.lastTestTime = time end
+    end
+
+    function instance:StopDamageTestDisplay()
+        if self.testDisplayActive and S.Scheduler then S.Scheduler:RemoveTask(DAMAGE_TEST_DISPLAY) end
+        self.testDisplayActive = false
+    end
+
+    function instance:RefreshDamageTest()
+        if self.surface:IsMinimized() then self:StopDamageTestDisplay(); return true end
+        local round = Feature:GetDamageTest()
+        local running = round.status == "running"
+        self.testWaiting = round.status == "waiting"
+        self:DrawDamageTest(round)
+        self.durationInput:SetEnabled(not round.active)
+        self.testAction:SetEnabled(round.active or round.canStart)
+        self.testAction:SetText(round.active and "停止记录" or "开始记录")
+        if self.testWaiting then self.surface:SetStatus("等待首次伤害", "accent")
+        elseif running then self.surface:SetStatus("记录中 · 本人输出", "accent")
+        elseif round.reason == "tracking_disabled" and not round.canStart then self.surface:SetStatus("已结算 · 伤害追踪已关闭", "warn")
+        elseif round.reason == "tracking_disabled" or round.reason == "feature_disabled" or round.reason == "timer_unavailable" then self.surface:SetStatus("记录中断 · 已结算", "warn")
+        elseif not round.canStart then self.surface:SetStatus("请先开启追踪伤害", "warn")
+        elseif round.status == "finished" then self.surface:SetStatus("已结算 · 本人输出", "default")
+        else self.surface:SetStatus("本人输出", "default") end
+        if not running or not self.visible then
+            self:StopDamageTestDisplay()
+        elseif not self.testDisplayActive and S.Scheduler then
+            self.testDisplayActive = S.Scheduler:AddTask(DAMAGE_TEST_DISPLAY, 100, function()
+                if self.visible and self.view == "test" and not self.surface:IsMinimized() then
+                    self:DrawDamageTest(Feature:GetDamageTest())
+                else self:StopDamageTestDisplay() end
+                return true
+            end, false, self, "P2", 1) == true
+        end
+        return true
+    end
+
+    function instance:SetView(view)
+        if self.view == view then return true end
+        if view == "ranking" then
+            if self.durationInput.open then self.durationInput:Close() end
+            self:StopDamageTestDisplay()
+        end
+        self.view = view
+        self.viewSwitcher:SetActiveWidget(view == "test" and test or stack)
+        return self:Refresh()
+    end
+
     function instance:Refresh()
+        if self.view == "test" then return self:RefreshDamageTest() end
         local settings = Feature:GetSettingsProjection()
         local projection = Feature:GetProjection({ mode = settings.mode, side = settings.side, metric = settings.metric, displayRows = settings.displayRows })
         local p = projection.projection or {}
@@ -131,16 +255,23 @@ local function CreateWidget()
         self.modeSelector:Render()
         self.sideSelector:Render()
         self.metricSelector:Render()
-        self.summary:SetText("伤 " .. CompactNumber(totals.damage)
+        local summaryChanged = self.summary:SetText("伤 " .. CompactNumber(totals.damage)
             .. " · 承 " .. CompactNumber(totals.taken)
             .. " · 治 " .. CompactNumber(totals.heal)
             .. " · 单位 " .. tostring(N(totals.actorCount)) .. truncatedNote)
         local pendingAmount = N(unresolvedTotals.damage) + N(unresolvedTotals.taken) + N(unresolvedTotals.heal)
             + N(sideUnknownTotals.damage) + N(sideUnknownTotals.taken) + N(sideUnknownTotals.heal)
         local hasPending = N(h.pendingRows) > 0 or N(h.pendingEvicted) > 0 or pendingAmount > 0
+        local detailWasShown = not self.detail:IsCollapsed()
+        local canLayout = stack.width ~= nil and stack.height ~= nil and not self.surface:IsMinimized()
+        local revealAfterLayout = hasPending and not detailWasShown and canLayout
+        local detailChanged = false
         if hasPending then
-            self.detail:SetVisible(true)
-            self.detail:SetText("待确认：重放 " .. tostring(N(h.pendingRows))
+            if not detailWasShown then
+                -- 隐藏状态仍参与布局，先取得表格下方的坐标再亮出文字。
+                self.detail:SetVisibility(revealAfterLayout and "hidden" or "visible")
+            end
+            detailChanged = self.detail:SetText("待确认：重放 " .. tostring(N(h.pendingRows))
                 .. " · 淘汰 " .. tostring(N(h.pendingEvicted))
                 .. " · 模式未定[伤 " .. CompactNumber(unresolvedTotals.damage)
                 .. "/承 " .. CompactNumber(unresolvedTotals.taken)
@@ -149,10 +280,15 @@ local function CreateWidget()
                 .. "/承 " .. CompactNumber(sideUnknownTotals.taken)
                 .. "/治 " .. CompactNumber(sideUnknownTotals.heal) .. "]")
             self.detail:SetTone("warn")
-        else
+        elseif detailWasShown then
             -- 技术回放诊断不应永久占用 HUD 高度；仅玩家有可能影响排行的未解决数据时显示。
             self.detail:SetVisible(false)
         end
+        -- WindowShell 的根关闭了自动重排，状态变化只重排当前排行内容，窗口几何仍归外框管理。
+        if canLayout and (summaryChanged or detailChanged or hasPending ~= detailWasShown) then
+            stack:Layout(stack.x, stack.y, stack.width, stack.height)
+        end
+        if revealAfterLayout then self.detail:SetVisible(true) end
         if coverage ~= "FULL" then
             self.surface:SetStatus("覆盖不完整：" .. coverage, "warn")
         else
@@ -164,14 +300,25 @@ local function CreateWidget()
     function instance:Subscribe()
         if self.subscribed then return true end
         if S.Events and type(S.Events.SubscribeInternal) == "function" then
-            S.Events:SubscribeInternal("v3.dps.updated", self, function() if instance.visible then instance:Refresh() end end)
+            S.Events:SubscribeInternal("v3.dps.updated", self, function()
+                if not instance.visible then return end
+                if instance.view == "ranking" then instance:Refresh()
+                elseif instance.testWaiting and not instance.surface:IsMinimized() and Feature:GetDamageTest().status ~= "waiting" then
+                    instance:RefreshDamageTest()
+                end
+            end)
             S.Events:SubscribeInternal("v3.dps.settings", self, function() if instance.visible then instance:Refresh() end end)
+            S.Events:SubscribeInternal("v3.dps.damage_test", self, function()
+                if instance.visible and instance.view == "test" then instance:RefreshDamageTest() end
+            end)
         end
         self.subscribed = true
         return true
     end
 
     function instance:Unsubscribe()
+        self:StopDamageTestDisplay()
+        if self.durationInput.open then self.durationInput:Close() end
         if not self.subscribed then return true end
         if S.Events and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
         self.subscribed = false
@@ -187,6 +334,7 @@ local function CreateWidget()
         local okShow, showErr = self.surface:Show(true)
         if okShow ~= true then self:Unsubscribe(); self.visible = false; return false, showErr end
         self.visible = true
+        if self.view == "test" then self:RefreshDamageTest() end
         if type(context) ~= "table" or context.persist ~= false then
             Feature.Commands:SetWidgetVisible(true, "show")
         end

@@ -109,7 +109,7 @@ local function CopyBucketProjection(bucket, limit, alwaysShowSelf)
         metric = bucket.metric, truncated = bucket.totalRows > limit, totalRows = bucket.totalRows,
     }
 end
-local function CopyRankingProjection(value, sideName, limit, alwaysShowSelf)
+local function CopyRankingProjection(value, sideName, limit, alwaysShowSelf, preserveUnresolvedSelf)
     local friendly, enemy, unknown = CopyBucketProjection(value.sides.friendly, limit, alwaysShowSelf), CopyBucketProjection(value.sides.enemy, limit, false), CopyBucketProjection(value.sides.unknown, limit, false)
     local selected = sideName == "enemy" and enemy or (sideName == "unknown" and unknown or friendly)
     return {
@@ -117,7 +117,7 @@ local function CopyRankingProjection(value, sideName, limit, alwaysShowSelf)
         displayRows = limit, maxRankingRows = value.maxRankingRows,
         rows = selected.rows, totals = selected.totals, truncated = selected.truncated, totalRows = selected.totalRows,
         durationMs = value.durationMs, sides = { friendly = friendly, enemy = enemy, unknown = unknown },
-        unresolved = CopyBucketProjection(value.unresolved, limit, false), modeEvents = value.modeEvents,
+        unresolved = CopyBucketProjection(value.unresolved, limit, preserveUnresolvedSelf == true), modeEvents = value.modeEvents,
     }
 end
 local function CopyDetailRows(rows)
@@ -962,14 +962,14 @@ function A:GetProjection(request)
     -- 候选与阵营选择、显示行数及 Self 偏好无关；同一模式/指标的不同表面共用排序。
     local cacheKey = "ranking:" .. modeName .. ":" .. metric .. ":" .. tostring(request.includeZero == true)
     local cached = request.summaryOnly ~= true and ReadProjectionCache(cacheKey) or nil
-    if cached ~= nil then return CopyRankingProjection(cached, sideName, limit, settings.alwaysShowSelf == true) end
+    if cached ~= nil then return CopyRankingProjection(cached, sideName, limit, settings.alwaysShowSelf == true, request.overview == true) end
 
     local m = EnsureMode(modeName)
     -- 只有显式汇总请求省略名单；悬浮窗、待确认详情和全模式总览保持原有完整投影。
     local friendly = ProjectBucket(m.friendly, self.healing.friendly, metric, request.includeZero, request.summaryOnly)
     local enemy = ProjectBucket(m.enemy, self.healing.enemy, metric, request.includeZero, request.summaryOnly)
     local unknown = ProjectBucket(m.unknown, self.healing.unknown, metric, request.includeZero, request.summaryOnly)
-    local unresolved = ProjectBucket(self.unclassified, nil, metric, nil, request.summaryOnly)
+    local unresolved = ProjectBucket(self.unclassified, nil, metric, request.includeZero, request.summaryOnly)
     local selected = sideName == "enemy" and enemy or (sideName == "unknown" and unknown or friendly)
     local durationMs = m.startedAt > 0 and math.max(0, (tonumber(m.lastEventAt) or 0) - (tonumber(m.startedAt) or 0)) or 0
 
@@ -991,7 +991,7 @@ function A:GetProjection(request)
     }
     if request.summaryOnly == true then return projection end
     WriteProjectionCache(cacheKey, projection)
-    return CopyRankingProjection(projection, sideName, limit, settings.alwaysShowSelf == true)
+    return CopyRankingProjection(projection, sideName, limit, settings.alwaysShowSelf == true, request.overview == true)
 end
 
 function A:GetHealth()

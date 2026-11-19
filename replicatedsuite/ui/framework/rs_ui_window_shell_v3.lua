@@ -1101,7 +1101,9 @@ function Shell:Create(spec)
     function shell:SetTitle(text) self.title = tostring(text or ""); self.titleText:SetText(self.title); return true end
     function shell:SetStatus(text, tone)
         if self.statusText == nil then return false end
-        self.statusText:SetText(tostring(text or ""))
+        -- 页脚几何由窗口壳管理，状态变化直接绘制，不等待被禁用的根布局队列。
+        local value = tostring(text or "")
+        if self.statusText.text ~= value then self.statusText:Render({ text = value }) end
         if tone ~= nil then self.statusText:SetTone(tostring(tone)) end
         return true
     end

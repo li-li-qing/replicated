@@ -67,13 +67,23 @@ local function Boot(options)
     local shell, err = assert(UI.WindowShell:Create({
         id="compact_drag_contract", owner="test:compact", title="测试", width=360, height=260,
         minWidth=200, minHeight=120, compactChrome=true, minimizeMode=options.minimizeMode or "compact", minimizedSize=30,
-        resizable=false, appearanceControls=false, footer=false,
+        resizable=false, appearanceControls=false, footer=options.footer == true,
         closeOnEscape=options.closeOnEscape,onClosed=options.onClosed,
     }))
     assert(shell, err)
     assert(shell:Show(true))
     return S, shell
 end
+
+Test("status text paints immediately on the fixed footer", function()
+    local _, shell = Boot({footer=true})
+    assert(shell:Layout(360,260))
+    local width, height = shell.statusText.width, shell.statusText.height
+    assert(shell:SetStatus("记录中", "accent"))
+    assert(shell.statusText.root.text == "记录中", "footer waited for a disabled layout flush")
+    assert(shell:SetStatus("已结算", "default"))
+    assert(shell.statusText.root.text == "已结算" and shell.statusText.width == width and shell.statusText.height == height)
+end)
 
 Test("native Escape opt-in synchronizes visibility and notifies close exactly once",function()
     local closes=0
